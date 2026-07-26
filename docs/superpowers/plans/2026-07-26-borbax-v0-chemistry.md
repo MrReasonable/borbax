@@ -2087,3 +2087,476 @@ pub fn find_raf(
 - [ ] **Step 4: Run** — expect 4 passed. **Step 5: Commit.**
 
 ---
+
+## Phase 6 — The beaker and seeing inside it
+
+### Task 18: The well-mixed beaker
+
+**Files:** Create `crates/borbax-beaker/{Cargo.toml,src/lib.rs,src/propensity.rs}`; test both.
+
+**Interfaces:**
+- Consumes: `Interner`, `Reaction`, `decay_channels`, `Universe`, `Stream`
+- Produces: `SegmentTree::{with_capacity, set, total, sample}`, `Beaker::{new, step, time, counts, species_count}`, `ChannelId(u32)`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sampling_is_proportional_to_propensity() {
+        let mut t = SegmentTree::with_capacity(4);
+        t.set(0, 1.0);
+        t.set(1, 3.0);
+        assert!((t.total() - 4.0).abs() < 1e-12);
+        let mut hits = [0u32; 2];
+        for i in 0..10_000 {
+            hits[t.sample(f64::from(i) / 10_000.0)] += 1;
+        }
+        let ratio = f64::from(hits[1]) / f64::from(hits[0]);
+        assert!((ratio - 3.0).abs() < 0.2, "ratio {ratio}");
+    }
+
+    /// A Fenwick tree updated by deltas accumulates rounding drift in its
+    /// partial sums, and drift slowly changes which reaction a given RNG draw
+    /// selects. A segment tree recomputes parents as left + right, so stored
+    /// totals stay bit-identical to a full rebuild — forever.
+    #[test]
+    fn totals_stay_bit_identical_to_a_rebuild() {
+        let mut t = SegmentTree::with_capacity(64);
+        let mut r = borbax_rng::Stream::new(5, borbax_rng::Domain::Beaker, 0);
+        for _ in 0..50_000 {
+            t.set(r.next_range(64) as usize, r.next_f64() * 1e6);
+        }
+        let mut fresh = SegmentTree::with_capacity(64);
+        for i in 0..64 {
+            fresh.set(i, t.leaf(i));
+        }
+        assert_eq!(t.total().to_bits(), fresh.total().to_bits(), "drift detected");
+    }
+
+    #[test]
+    fn zero_propensity_slots_are_never_selected() {
+        let mut t = SegmentTree::with_capacity(8);
+        t.set(3, 1.0);
+        for i in 0..1_000 {
+            assert_eq!(t.sample(f64::from(i) / 1_000.0), 3);
+        }
+    }
+
+    #[test]
+    fn stepping_is_deterministic_and_advances_time() {
+        let (u, g) = fixture();
+        let mut a = Beaker::new(&u, &g, 1);
+        let mut b = Beaker::new(&u, &g, 1);
+        for _ in 0..500 {
+            a.step(&u, &g);
+            b.step(&u, &g);
+        }
+        assert_eq!(a.time(), b.time());
+        assert_eq!(a.counts(), b.counts());
+        assert!(a.time().get() > 0.0);
+    }
+
+    /// Reactions appear and vanish. If slots were compacted on removal,
+    /// indices would shift and identical physics would sample differently.
+    #[test]
+    fn freed_slots_do_not_shift_other_indices() {
+        let mut t = SegmentTree::with_capacity(8);
+        t.set(2, 5.0);
+        t.set(5, 7.0);
+        t.set(2, 0.0); // "removed"
+        assert_eq!(t.sample(0.5), 5, "indices shifted when a slot was freed");
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+- [ ] **Step 3: Implement the propensity tree**
+
+```rust
+//! Propensity selection for the stochastic step.
+//!
+//! A **segment tree**, not a Fenwick tree. Both are O(log n), but a Fenwick
+//! updated by deltas accumulates rounding drift in its partial sums, and that
+//! drift slowly changes which reaction a given RNG draw selects — a
+//! determinism failure that would appear as a slow divergence rather than an
+//! obvious bug. A segment tree recomputes each parent as `left + right`, so
+//! its stored totals are bit-identical to a full rebuild no matter how many
+//! updates have happened.
+//!
+//! Gibson-Bruck was considered and rejected for V0: its advantage is few
+//! propensity updates per event, which is undercut in a well-mixed volume
+//! where one firing changes counts many channels depend on — and its
+//! dependency-graph bookkeeping is where the bugs live.
+
+pub struct SegmentTree {
+    cap: usize,
+    tree: Vec<f64>,
+}
+
+impl SegmentTree {
+    #[must_use]
+    pub fn with_capacity(n: usize) -> Self {
+        let cap = n.next_power_of_two().max(1);
+        Self { cap, tree: vec![0.0; cap * 2] }
+    }
+
+    #[must_use]
+    pub fn leaf(&self, slot: usize) -> f64 {
+        self.tree[self.cap + slot]
+    }
+
+    #[must_use]
+    pub fn total(&self) -> f64 {
+        self.tree[1]
+    }
+
+    /// Set a slot's propensity. Freeing a channel means setting it to 0.0 —
+    /// **never** compacting, because that would shift every later index and
+    /// make identical physics sample differently.
+    pub fn set(&mut self, slot: usize, value: f64) {
+        let mut i = self.cap + slot;
+        self.tree[i] = value;
+        while i > 1 {
+            i /= 2;
+            self.tree[i] = self.tree[2 * i] + self.tree[2 * i + 1];
+        }
+    }
+
+    /// Select a slot with probability proportional to its propensity.
+    /// `u` must be uniform in [0, 1).
+    #[must_use]
+    pub fn sample(&self, u: f64) -> usize {
+        let mut t = u * self.tree[1];
+        let mut i = 1;
+        while i < self.cap {
+            let left = self.tree[2 * i];
+            if t < left {
+                i *= 2;
+            } else {
+                t -= left;
+                i = 2 * i + 1;
+            }
+        }
+        let mut slot = i - self.cap;
+        // Guard the rounding case where `u` near 1 lands on a zero-propensity
+        // leaf. Deterministic forward scan, so the fallback is reproducible.
+        if self.tree[self.cap + slot] <= 0.0 {
+            for k in 0..self.cap {
+                let s = (slot + k) % self.cap;
+                if self.tree[self.cap + s] > 0.0 {
+                    slot = s;
+                    break;
+                }
+            }
+        }
+        slot
+    }
+}
+```
+
+- [ ] **Step 4: Implement the beaker**
+
+The `Beaker` holds an `Interner`, a `Vec<f64>` of counts indexed by
+`SpeciesId`, a `Vec<Reaction>` of channels, a `SegmentTree` over their
+propensities, a free-slot list, and a `WorldYear` clock.
+
+`step` performs one Gillespie iteration:
+
+1. Compute `total = tree.total()`. If zero, the beaker is dead — return.
+2. Draw `u1`, advance the clock by `-ln(u1) / total` (via `det_math::ln`).
+3. Draw `u2`, select a channel with `tree.sample(u2)`.
+4. Apply it: decrement reactant counts, increment product counts. Products
+   were resolved when the channel was created (spec §8.6), so no
+   canonicalisation happens here.
+5. Update the propensity of every channel whose species changed. Below
+   `FLAT_SCAN_LIMIT` (start at 256) rescan all channels — a contiguous scan
+   beats a dependent-load tree descent at small counts. Above it, use the
+   incidence structure from Task 17 to touch only affected channels.
+6. When a genuinely novel species appears, intern it and create its channels.
+   **This is the only path on which canonicalisation runs.**
+
+Decay channels from Task 15 are ordinary entries in the same tree — decay is
+not a separate pass.
+
+- [ ] **Step 5: Run** — expect 5 passed. **Step 6: Commit**, recording the
+measured flat-scan/tree crossover in the message (perf review benchmark 2).
+
+---
+
+### Task 19: Geometry and SVG rendering
+
+**Files:** Create `crates/borbax-geometry/{Cargo.toml,src/{lib,project,net,palette}.rs}` and
+`crates/borbax-render/{Cargo.toml,src/{lib,svg,molecule,geodesic_net,fold,binding}.rs}`; test both.
+
+**Interfaces:**
+- Produces: `project::{orthographic, isometric, depth_sort}`, `net::unfold`, `palette::{affinity_colour, burial_colour}`, `Svg::{new, line, circle, polygon, text, finish}`, `render_molecule`, `render_signature_net`, `render_fold`, `render_binding`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn svg_output_is_deterministic() {
+        assert_eq!(render_molecule(&fixture_mol(), &u(), &g()), render_molecule(&fixture_mol(), &u(), &g()));
+    }
+
+    #[test]
+    fn svg_is_well_formed_and_self_contained() {
+        let s = render_molecule(&fixture_mol(), &u(), &g());
+        assert!(s.starts_with("<svg "));
+        assert!(s.ends_with("</svg>"));
+        assert!(!s.contains("http://"), "external reference in output");
+        assert_eq!(s.matches("<g").count(), s.matches("</g>").count());
+    }
+
+    #[test]
+    fn floats_are_written_at_fixed_precision() {
+        // Full f64 precision would make goldens fragile against harmless
+        // last-bit differences; fixed precision makes the diff meaningful.
+        let s = render_molecule(&fixture_mol(), &u(), &g());
+        for tok in s.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')) {
+            if let Some((_, frac)) = tok.split_once('.') {
+                assert!(frac.len() <= 3, "over-precise coordinate: {tok}");
+            }
+        }
+    }
+
+    /// Golden render test (spec §16). SVG is a string, so a rendering
+    /// regression is caught like any other regression — no image diffing,
+    /// no browser, runs headless in CI.
+    #[test]
+    fn goldens_match() {
+        for (name, actual) in [
+            ("molecule", render_molecule(&fixture_mol(), &u(), &g())),
+            ("signature", render_signature_net(&fixture_sig(), &g())),
+            ("fold", render_fold(&fixture_fold(), &fixture_poly(), &u())),
+        ] {
+            let path = format!("tests/goldens/{name}.svg");
+            if std::env::var("UPDATE_GOLDENS").is_ok() {
+                std::fs::write(&path, &actual).unwrap();
+                continue;
+            }
+            let expected = std::fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("missing golden {path}; run with UPDATE_GOLDENS=1"));
+            assert_eq!(actual, expected, "{name} render changed");
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+- [ ] **Step 3: Implement**
+
+`borbax-geometry` computes *what* to draw; `borbax-render` turns it into SVG.
+The split exists now rather than later because V1's `borbax-ui` becomes a
+second backend over the same geometry (spec §14.5) — one projection, two
+renderers, no duplicated maths.
+
+Key points for the implementer:
+
+- **`Svg`** is a plain `String` builder. Write floats with `format!("{:.3}")`
+  throughout — full precision makes goldens fragile against harmless last-bit
+  differences and makes a real diff impossible to read.
+- **`project::orthographic`** projects the 3D embedding along a fixed axis;
+  **`isometric`** uses a fixed rotation. Both are constants, not parameters:
+  a golden test needs a fixed viewpoint, and §14.5's argument is that a
+  well-chosen fixed viewpoint beats an interactive one for "why did these two
+  bind?".
+- **`net::unfold`** flattens the icosahedron into 20 triangles in a fixed
+  layout, so a spherical function is legible on a flat page. This is the
+  map-projection trick and it is what makes a 42-direction signature
+  readable at all.
+- **`render_fold`** draws monomers back-to-front by depth, shades each by
+  burial (`exposure` from Task 11), and outlines cavities from Task 13.
+- **`render_binding`** draws both signatures in the winning orientation with
+  per-direction contributions annotated, so you can see *which* part of the
+  fit carried the score. This is the diagram that makes a binding bug
+  diagnosable rather than mysterious.
+
+- [ ] **Step 4: Generate goldens** — `UPDATE_GOLDENS=1 cargo test -p borbax-render`,
+then **inspect every generated SVG by eye** before committing. A golden
+committed without being looked at locks in whatever was wrong at the time.
+
+- [ ] **Step 5: Run** — `cargo test -p borbax-render`, expect 4 passed.
+**Step 6: Commit** goldens and code together.
+
+---
+
+### Task 20: The beaker battery and metrics
+
+**Files:** Create `crates/borbax-beaker/src/{battery.rs,metrics.rs}`; test both.
+
+**Interfaces:**
+- Produces: `BatteryReport`, `run_battery(&Universe, &Geodesic<D>) -> BatteryReport`, `BatteryReport::passes()`, `Metrics`, `MetricFamily`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_battery_runs_in_seconds_not_minutes() {
+        // The battery's entire value is that it turns a chemistry-tuning
+        // iteration from hours into seconds (spec §7.2). If it gets slow,
+        // the tuning loop this project depends on stops working.
+        let start = std::time::Instant::now();
+        let _ = run_battery(&Universe::generate(1), &Geodesic::<42>::build().unwrap());
+        assert!(start.elapsed().as_secs() < 5, "battery took {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn it_rejects_an_inert_universe() {
+        let mut u = Universe::generate(1);
+        u.consts.rate_prefactor = 1e-30; // nothing will ever react
+        assert!(!run_battery(&u, &Geodesic::<42>::build().unwrap()).passes());
+    }
+
+    #[test]
+    fn it_rejects_a_universe_that_burns() {
+        let mut u = Universe::generate(1);
+        u.consts.rate_prefactor = 1e30;
+        assert!(!run_battery(&u, &Geodesic::<42>::build().unwrap()).passes());
+    }
+
+    #[test]
+    fn it_rejects_a_universe_with_no_decay() {
+        let mut u = Universe::generate(1);
+        u.consts.decay_scale = 0.0;
+        let r = run_battery(&u, &Geodesic::<42>::build().unwrap());
+        assert!(!r.passes(), "a universe where nothing decays cannot select (spec §9.4)");
+    }
+
+    #[test]
+    fn some_universes_pass() {
+        let g = Geodesic::<42>::build().unwrap();
+        let passing = (0..40u64).filter(|&s| run_battery(&Universe::generate(s), &g).passes()).count();
+        assert!(passing > 0, "no seed in 40 produced a workable universe");
+        println!("{passing}/40 universes passed the battery");
+    }
+
+    /// Activity and novelty are separate families on purpose (spec §2.7):
+    /// a system can show unbounded activity with zero novelty and pass a
+    /// naive open-endedness test while producing nothing new.
+    #[test]
+    fn activity_and_novelty_are_tracked_separately() {
+        let m = Metrics::default();
+        assert_ne!(MetricFamily::Activity, MetricFamily::Novelty);
+        assert!(m.field_families().iter().any(|f| *f == MetricFamily::Novelty));
+        assert!(m.field_families().iter().any(|f| *f == MetricFamily::Decay));
+    }
+}
+```
+
+- [ ] **Step 2–4: Implement, run, commit.**
+
+`run_battery` runs a few hundred thousand reactions in one well-mixed volume
+and checks the criteria of spec §7.2:
+
+| Criterion | Rejects |
+|---|---|
+| Reactivity band | inert universes, and universes that burn |
+| **Decay band** | universes where nothing persists, or nothing decays (§22.6) |
+| Polymer viability | chains of length ≥ 20 that cannot form *or* cannot survive |
+| Shape diversity | signatures collapsing into a few clusters |
+| Neutral-network structure | folding maps close to one-to-one (§2.5) |
+| Catalytic potential | no folded polymer producing an enclosed cavity |
+| Energy landscape | chemistries that only ever run downhill |
+
+`Metrics` tracks the families of spec §15.2, with **activity, novelty,
+complexity, organisation and decay kept distinct**. Novelty must never be
+inferred from activity.
+
+---
+
+## Phase 7 — V0 exit criteria
+
+### Task 21: Prove the chemistry works
+
+This task is experiments, not features. Each produces a number or a decision
+that gets recorded in the spec. **Nothing here is complete until its result is
+written back into `docs/superpowers/specs/2026-07-26-borbax-prd.md`.**
+
+**Files:** Create `crates/borbax-cli/{Cargo.toml,src/main.rs}`; replace bodies in
+`crates/borbax-molecule/src/det_math.rs`; add `docs/v0-results.md`.
+
+- [ ] **Step 1: Signature resolution sweep (spec §22.2, exit criterion 3)**
+
+`borbax sweep --resolutions 12,42,162` runs the battery and the folding-map
+property tests at each resolution, reporting pass/fail per criterion **and
+cost per binding call**. Pick the smallest that passes everything.
+
+Dispatch once at the top, so the const generic is monomorphised rather than
+carried as a runtime parameter:
+
+```rust
+match cfg.resolution {
+    12 => run::<12>(&cfg),
+    42 => run::<42>(&cfg),
+    162 => run::<162>(&cfg),
+    n => return Err(Error::BadResolution(n)),
+}
+```
+
+Record the winner in §22.2 and replace the const generic with a crate const.
+**This is a V0 exit criterion**: changing it later invalidates every golden.
+
+- [ ] **Step 2: Decay band search (spec §22.6, exit criterion 4)**
+
+`borbax band --sweep decay_scale` bisects `decay_scale` for the widest range
+where polymers both form and turn over. Record the band in §22.6.
+
+- [ ] **Step 3: Damage measurability gate (spec §22.7, exit criterion 5)**
+
+Inject a known quantity of damage into a beaker; confirm the composition-
+divergence metric recovers it above noise. **If it fails, do not reach
+straight for the provenance fallback** — it breaks the interchangeability
+that makes decay O(1) per species (§9.5), which is a change of asymptotic
+class. Try reworking the measurement first, and record the outcome either way.
+
+- [ ] **Step 4: Catalysis emergence (exit criterion 6 — the one that matters)**
+
+`borbax beaker --seed N --steps 1e7 --detect-catalysis` runs until it finds a
+folded polymer with two cavities measurably accelerating a reaction. Report
+the polymer, its cavities, the reaction, and the measured enhancement — and
+render all of it with Task 19.
+
+**If this does not happen, no amount of world-building above it will help and
+the design needs rethinking before another line is written.** Write up what
+was observed instead; a negative result here is the most valuable output V0
+can produce.
+
+- [ ] **Step 5: Decay-off shadow equivalence (exit criterion 7)**
+
+With decay disabled, a run and its neutral shadow must become statistically
+indistinguishable — the direct experimental test of "no death, no life"
+(§9.4). It runs in seconds and catches decay being nominally implemented but
+not actually biting.
+
+- [ ] **Step 6: Portable transcendentals, then the cross-platform matrix**
+
+Replace the `det_math` bodies with a vendored pure-Rust implementation.
+`exp`, `ln`, `sin`, `cos` differ between Apple's libm and glibc, and between
+glibc versions, so goldens generated on the M1 will not reproduce on CI
+runners until this lands (spec §13.1).
+
+Then enable `determinism-matrix` in CI (Task 1) and confirm goldens are
+identical across macOS/aarch64, Windows/x86-64 and Linux/x86-64. **Do this
+last on purpose:** the matrix fails loudly if the transcendental work was
+skipped, which is a better guarantee than remembering.
+
+- [ ] **Step 7: Write up `docs/v0-results.md`** — every number, every decision,
+and every criterion's outcome. Update the spec sections each result belongs
+to. Commit.
+
+**V0 is complete when all eight criteria in spec §23 are met and recorded.**

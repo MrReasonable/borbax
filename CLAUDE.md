@@ -16,7 +16,7 @@ implementation plan. Read them before proposing anything:
 |---|---|
 | `docs/superpowers/specs/2026-07-26-borbax-prd.md` | The PRD. Numbered sections (§n) are referenced everywhere — cite them in code comments and commit messages. V0 exit criteria are §23. |
 | `docs/superpowers/plans/2026-07-26-borbax-v0.md` | V0 plan, Tasks 1–10. Holds the Global Constraints and File Structure that both plan files share. |
-| `docs/superpowers/plans/2026-07-26-borbax-v0-chemistry.md` | V0 plan, Tasks 11–21 (folding onward). Tasks 12+ are not yet written. |
+| `docs/superpowers/plans/2026-07-26-borbax-v0-chemistry.md` | V0 plan, Tasks 11–21 (folding onward). Complete. |
 
 Work is plan-driven: execute tasks in order with `superpowers:subagent-driven-development`
 or `superpowers:executing-plans`, ticking the `- [ ]` checkboxes. Every task is TDD —
