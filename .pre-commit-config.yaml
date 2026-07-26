@@ -1,0 +1,75 @@
+# Git hooks, run by prek — https://prek.j178.dev
+#
+#   cargo install prek --locked
+#   prek install --hook-type pre-commit --hook-type pre-push
+#
+# prek is a single Rust binary with no runtime dependency, which keeps the
+# "one language, one build" property the native-viewer decision bought
+# (spec §14.0). The file format is pre-commit's rather than prek's own, and
+# that is the point: if prek is ever abandoned the same config runs unchanged
+# under pre-commit itself. The two Rust hook crates that came before it,
+# cargo-husky and rusty-hook, have both been unmaintained since 2020 — a
+# config that outlives its runner is the hedge against repeating that.
+#
+# `language: system` throughout: these run the workspace's own cargo commands,
+# so there is no toolchain for prek to provision. The pinned compiler is
+# enforced by `rust-version.workspace = true` in every crate — cargo refuses
+# to build with anything older, so a hook cannot quietly check your work with
+# the wrong rustc.
+
+repos:
+  - repo: local
+    hooks:
+      # --- pre-commit: fast and mechanical, sub-second ---------------------
+      #
+      # The expensive gate lives in pre-push deliberately. A pre-commit hook
+      # that takes a minute teaches you `--no-verify`, and a routinely
+      # bypassed hook is worse than none: it manufactures confidence it is
+      # not earning.
+
+      # `--check` rather than rewriting in place. Auto-formatting and
+      # re-staging quietly widens what you are committing — stage one hunk
+      # with `git add -p` and a reformat drags the rest of the file in behind
+      # it.
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      # Rank 1 in the review precedence order (CLAUDE.md). Always runs rather
+      # than filtering on `types`, because the violation this exists to catch
+      # is a .json/.csv appearing in a chemistry crate — which is precisely
+      # not a Rust file.
+      - id: fiction-guarantees
+        name: fiction guarantees (spec §5)
+        entry: cargo run -q -p xtask
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+      # --- pre-push: the real gate ----------------------------------------
+      #
+      # This cannot check the thing that matters most. Cross-platform
+      # determinism is invisible on one machine by definition (spec §13.4) —
+      # every hazard on that list runs, passes and looks fine locally. The
+      # 3-OS CI matrix is the contract; these two only spare you a wasted
+      # round trip, and must never be mistaken for the same guarantee.
+      - id: cargo-clippy
+        name: cargo clippy -D warnings
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: cargo-test
+        name: cargo test --workspace
+        entry: cargo test --workspace
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
