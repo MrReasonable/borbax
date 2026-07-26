@@ -142,9 +142,10 @@ These were settled before drafting and the rest of the document assumes them.
 |---|---|
 | **Emergence model** | Open rules, loaded dice. Nothing about replication is hardcoded; the environment supplies realistic ratchets that make it probable. |
 | **V1 scope ceiling** | Stop at protocells. Genomes, cells, multicellularity and organs are V2+. |
-| **Platform** | Rust simulation core, browser-based viewer over a local socket. |
+| **Platform** | Rust throughout — simulation core plus a native `egui` + `wgpu` viewer (§14.0). No second language. |
 | **Interaction model** | Observatory and time machine. Watch, zoom, scrub through deep time. Intervention tools come later. |
-| **Shape model** | Hybrid — small molecules are atom graphs reduced to a shape signature; polymers physically fold into pockets. |
+| **Shape model** | Hybrid — small molecules are atom graphs reduced to a directional shape signature; polymers physically fold into cavities. |
+| **Geometry** | Three-dimensional. Signatures sample a subdivided icosahedron; folding runs on an FCC lattice (§8.2, §8.4). |
 | **Seeding** | Two seeds. `universe_seed` generates the physics and chemistry; `world_seed` generates a planet under those laws. |
 | **Run length** | Overnight. First self-replicator within roughly 8 hours on the target machine. |
 | **V1 playfield** | One focused region (~256 km²) at high fidelity. The 1,000,000 km² planetary field arrives in V3 when complex life needs the room. |
@@ -222,14 +223,16 @@ Together these mean the interesting question — *what does it take for chemistr
    │   └────────────────────────────────────────────────┘   │
    └───────────────────────┬────────────────────────────────┘
                            │ keyframes + event journal
-                    ┌──────▼──────┐
-                    │  WebSocket  │
-                    └──────┬──────┘
-                           │
-                  ┌────────▼────────┐
-                  │  Browser viewer │  Lab skin → Wonder skin
-                  │  The Chronicle  │  depth dial
-                  └─────────────────┘
+                           │ in-process — no serialisation boundary
+              ┌────────────▼────────────┐
+              │     borbax-geometry     │  projection, layout, colour
+              └──────┬───────────┬──────┘
+                     │           │
+        ┌────────────▼──┐   ┌────▼─────────────────┐
+        │ SVG           │   │  egui + wgpu         │  Lab → Wonder skin
+        │ headless,     │   │  native application  │  depth dial
+        │ golden-tested │   │  The Chronicle       │
+        └───────────────┘   └──────────────────────┘
 ```
 
 A world is addressed by both seeds together, written `U-7F3A21C9 / W-0004`. Share that pair and someone else gets a bit-identical planet. Keep the universe seed and change the world seed to get a new planet under chemistry you already understand. Change the universe seed to start over in a universe where nothing you learned applies.
@@ -277,7 +280,7 @@ It runs a **beaker battery** — a few hundred thousand simulated reactions in a
 - **Polymer viability.** Chains of length ≥ 20 must form and persist *against the prevailing decay rate*. Persistence is a balance between formation and destruction, never a property of the molecule alone.
 - **Shape diversity.** The realised shape signatures must spread across signature space rather than collapsing into a few clusters.
 - **Neutral-network structure.** Per §2.5 — the folding map must exhibit neutral networks and approximate shape-space covering. A universe whose folding map is close to one-to-one is rejected: it cannot support drift, and lineages in it will be brittle.
-- **Catalytic potential.** At least some folded polymers must produce pockets that complement common small molecules.
+- **Catalytic potential.** At least some folded polymers must produce cavities that complement common small molecules — and those cavities must be *enclosed* enough to be selective, not merely present.
 - **Energy landscape.** There must exist reactions in both directions across a usable energy range — a chemistry that only ever runs downhill cannot build anything.
 
 Universes failing the battery are rejected and the seed is advanced. The battery is also the tuning harness: it makes the chemistry-design loop seconds long instead of hours long, which is the difference between a tractable project and an intractable one.
@@ -296,52 +299,60 @@ Identical molecules must be recognised as identical, so every molecule is reduce
 
 This is the heart of the engine and everything else depends on it.
 
-A molecule's graph is embedded in 2D by **stress majorization over graph-theoretic distances**, initialised deterministically from the canonical atom order. This is stable under small graph changes — a small mutation produces a small shape change — and that property is what makes the chemistry *evolvable* rather than merely complicated.
+A molecule's graph is embedded in **three dimensions** by stress majorization over graph-theoretic distances, initialised deterministically from the canonical atom order. This is stable under small graph changes — a small mutation produces a small shape change — and that property is what makes the chemistry *evolvable* rather than merely complicated.
 
 Laplacian eigenvectors were the obvious first choice and are the wrong one. Eigenvectors have arbitrary sign, and degenerate eigenvalues — extremely common in the symmetric graphs that small molecules actually are — leave the eigenspace basis arbitrary. Since the signature keys species identity, the fold cache, and the shape-space novelty histogram, that arbitrariness would propagate straight into the parts of the system that most need to be well-defined. Stress majorization from a canonical starting order sidesteps the problem rather than managing it.
 
-The embedded molecule is then sampled around its perimeter into **8 angular sectors**. Each sector records two numbers:
+The embedded molecule is then sampled along **D directions distributed over a sphere** — the vertices of a subdivided icosahedron, so D ∈ {12, 42, 162}. Each direction records two numbers:
 
-- `r` — how far the molecular surface extends in that direction (shape)
-- `a` — the summed affinity of atoms facing that direction (surface character)
+- `r` — how far the molecular surface extends that way (shape)
+- `a` — the summed affinity of atoms facing that way (surface character)
 
 ```
-        sector 2
-           │
-   s3 ╲    │    ╱ s1              signature =
-       ╲ ╭─┴─╮ ╱                    [(r₀,a₀), (r₁,a₁), … (r₇,a₇)]
-  s4 ───┤ mol ├─── s0
-       ╱ ╰─┬─╯ ╲                  16 floats. That's the whole molecule,
-   s5 ╱    │    ╲ s7              as far as binding is concerned.
-           │
-        sector 6
+   Sample directions = vertices of a geodesic sphere
+   (icosahedron, subdivided)
+
+            ·  ·  ·                signature =
+         ·           ·               [(r₀,a₀), (r₁,a₁), … (r_D₋₁,a_D₋₁)]
+       ·    ╭─────╮    ·
+      ·    │  mol  │    ·          At D = 42 that is 84 floats — the whole
+       ·    ╰─────╯    ·           molecule, as far as binding is concerned.
+         ·           ·
+            ·  ·  ·
+
+   12 verts (icosahedron) · 42 (1 subdivision) · 162 (2 subdivisions)
 ```
 
-**The signature is then rotation-canonicalised**: of its N possible rotations, the lexicographically smallest is stored, with the mirror image resolved the same way. Without this, the same molecule could produce different signatures depending on how it happened to be embedded, and species identity would stop being well-defined. Binding is unaffected, because only *relative* orientation matters there — it searches rotations regardless.
+**Why an icosahedral sampling specifically.** The rotation group of the icosahedron has 60 elements, and every one of them maps the vertex set onto itself. A rotation is therefore an exact **permutation of the sample directions** — precomputable as a lookup table, with no interpolation and no resampling error. With an arbitrary set of directions, rotating a signature would require interpolating between samples, which is both expensive and lossy, and the loss would land squarely on the comparison that decides whether two molecules bind. The geometry and the algebra line up, and that is not a coincidence worth passing up.
+
+**The signature is then rotation-canonicalised**: of its 60 rotations, the lexicographically smallest is stored. Without this, the same molecule could produce different signatures depending on how it happened to be embedded, and species identity would stop being well-defined. Binding is unaffected, because only *relative* orientation matters there — it searches rotations regardless.
 
 ### 8.3 Binding — one operation, used everywhere
 
 Two molecules bind when their signatures are **complementary**: their shapes interlock and their surface characters oppose.
 
 ```
-For each of 8 relative rotations θ:
-    for each sector i:
-        shape_term  = −( r_A[i] + r_B[(i+4+θ) mod 8] − IDEAL_GAP )²
-        charge_term = −( a_A[i] + a_B[(i+4+θ) mod 8] )²
-    score(θ) = Σᵢ ( w_shape · shape_term + w_charge · charge_term )
+For each of the 60 rotations R in the icosahedral rotation group:
+    for each direction i:
+        j = PERM[R][i]                             // exact, precomputed
+        shape_term  = −( r_A[i] + r_B[j] − IDEAL_GAP )²
+        charge_term = −( a_A[i] + a_B[j] )²
+    score(R) = Σᵢ ( w_shape · shape_term + w_charge · charge_term )
 
-affinity(A,B) = max over θ of score(θ)
+affinity(A,B) = max over R of score(R)
 P(bind)       = sigmoid( affinity / temperature )
 ```
 
-A bump must meet a hollow (radii sum to the ideal gap) and a positive face must meet a negative one (affinities sum to zero). Sixty-four multiply-adds per pair, fully vectorisable, and it expresses lock-and-key literally.
+A bump must meet a hollow (radii sum to the ideal gap) and a positive face must meet a negative one (affinities sum to zero). At D = 42 that is 2,520 iterations per pair — around forty times the two-dimensional version, and affordable only because of §8.6: `affinity` is a pure function of a species *pair*, so it is memoised and runs once per novel pair rather than once per collision.
+
+Where the memo misses, a cheap rotation-invariant pre-filter (the sorted multiset of `r` values, which any rotation leaves unchanged) rejects hopeless pairs before the full search runs.
 
 Every higher-level phenomenon in Borbax is this function called at a different scale:
 
 | Phenomenon | What it actually is |
 |---|---|
 | Two molecules sticking together | `affinity(A, B)` above threshold |
-| An enzyme recognising a substrate | `affinity(pocket, molecule)` |
+| An enzyme recognising a substrate | `affinity(cavity, molecule)` |
 | A membrane self-assembling | Many molecules with mutually complementary flanks |
 | A pore letting something through | `affinity(pore, molecule)` gating passage |
 
@@ -351,19 +362,27 @@ One mechanism. This is the design working.
 
 Polymers are sequences of monomer units, and unlike small molecules they **fold**.
 
-Folding runs on a 2D triangular lattice by simulated annealing against a contact-energy model derived from monomer affinities. It is the expensive operation in the engine, so folds are aggressively cached: a fold is a pure function of the sequence, so the cache is a straightforward sequence-hash → conformation map with high hit rates once a population stabilises.
+Folding runs on a **face-centred cubic lattice** by simulated annealing against a contact-energy model derived from monomer affinities. FCC gives each site twelve nearest neighbours — the densest packing available on a lattice — which matters because it is what lets a chain fold genuinely *compactly* rather than into something loose and stringy. Coordinates are integer triples constrained to even parity, so the twelve neighbour offsets are compile-time constants and self-avoidance is a single array lookup.
 
-The folded conformation is scanned for **pockets** — concave regions on the surface — and each pocket gets its own 8-sector signature computed locally.
+Folding is the expensive operation in the engine, so folds are aggressively cached. A fold is a pure function of the sequence, so the cache is a sequence-hash → conformation map with high hit rates once a population stabilises.
+
+The folded conformation is then scanned for **cavities** — connected empty regions substantially enclosed by the chain — and each cavity gets its own directional signature computed from the monomers surrounding it.
 
 ```
   V K Z V V K R Z T V Q V K
-              │  anneal on lattice
+              │  anneal on FCC lattice (12 neighbours per site)
               ▼
-        ▓ ▓ ▓ · ▓ ▓
-        ▓ · · · ▓ ▓          ← pocket A, signature [−3,+1,0,−2,…]
-        ▓ ▓ ▓ ▓ · ▓
-          ▓ · · ▓            ← pocket B, signature [+2,−1,…]
+         ▓▓▓▓▓▓▓            buried core: monomers with few
+        ▓▓░░░▓▓▓▓           empty neighbours, protected from
+        ▓▓░ A ░▓▓▓▓         solvent attack (§9.5)
+        ▓▓░░░▓▓▓▓
+         ▓▓▓▓░░▓▓           A, B = cavities. Each is enclosed on
+          ▓▓░ B ░▓          most sides and reachable through a
+           ▓▓░░▓▓           mouth — a real binding site, not a
+            ▓▓▓▓            notch on a perimeter.
 ```
+
+**This is the reason for three dimensions.** In two, a chain of *n* monomers has roughly √n interior against √n boundary, so there is almost no inside to be inside of: burial barely protects anything and a "pocket" is a notch on an edge, open on two sides and correspondingly unselective. In three, the same chain has *n* interior against n^⅔ surface. Burial becomes genuinely protective, and a cavity can be enclosed on many sides at once — which is what makes a binding site *specific* rather than merely sticky. The catalysis mechanism in §8.5 depends on that specificity, and so does V0's exit criterion 6.
 
 **The folding map is many-to-one by design.** Per §2.5, this is what produces neutral networks — many sequences folding to the same shape — and it is the single most important property for evolvability, because it lets a lineage accumulate variation without losing function and then innovate from somewhere new. The beaker battery measures it explicitly (§7.2), and a universe whose folding map lacks it is rejected before a run ever starts.
 
@@ -371,9 +390,11 @@ The folded conformation is scanned for **pockets** — concave regions on the su
 
 Catalysis is not implemented. It falls out.
 
-A polymer with a single pocket that complements some small molecule will bind it — that is a receptor. A polymer with **two pockets close together** will bind two molecules and hold them adjacent, in a fixed relative orientation, for as long as the complex persists. That proximity and orientation is precisely what lowers a reaction's activation barrier.
+A polymer with a single cavity that complements some small molecule will bind it — that is a receptor. A polymer with **two cavities close together** will bind two molecules and hold them adjacent, in a fixed relative orientation, for as long as the complex persists. That proximity and orientation is precisely what lowers a reaction's activation barrier.
 
-So the rate enhancement is computed geometrically from pocket separation and alignment, and an enzyme is simply a folded chain that happened to end up with two well-placed pockets. Nothing declares it an enzyme. We detect that it is one, and the Chronicle reports it.
+So the rate enhancement is computed geometrically from cavity separation and alignment, and an enzyme is simply a folded chain that happened to end up with two well-placed cavities. Nothing declares it an enzyme. We detect that it is one, and the Chronicle reports it.
+
+A cavity enclosed on many sides is selective in a way a surface dimple is not — it admits molecules of roughly the right shape and excludes everything else. That selectivity is the whole difference between a catalyst and a sticky patch, and it is the concrete payoff of §8.4's three dimensions.
 
 This is the moment the whole design pays off, and it is the first headline event of a run.
 
@@ -381,7 +402,7 @@ This is the moment the whole design pays off, and it is the first headline event
 
 This invariant is what makes the performance budget in §17 reachable at all, and it is easy to violate by accident, so it is stated here rather than left implicit.
 
-Canonicalisation, the 2D embedding, signature construction, folding, pocket extraction, and per-bond decay rates are **all pure functions of the species**. None depends on which particular copy of a molecule is under consideration, or on when. So each runs exactly once, when a species is first interned, and never again.
+Canonicalisation, the 3D embedding, signature construction, folding, cavity extraction, and per-bond decay rates are **all pure functions of the species**. None depends on which particular copy of a molecule is under consideration, or on when. So each runs exactly once, when a species is first interned, and never again.
 
 Concretely: **no code reachable from a simulation step may call any of them.** A species record computed at intern time carries everything the hot loop needs — signature, pre-rotated binding view, mass, bond inventory, precomputed solvent-attack rate, fold reference. The step loop reads that record and does arithmetic on it.
 
@@ -457,7 +478,7 @@ Consistent with principle 1, there is no decay timer and there are no hitpoints.
 | Source | Mechanism | What it means |
 |---|---|---|
 | **Spontaneous cleavage** | Every bond carries a thermal breaking probability `k = A·exp(−E_bond/T)`. This is the Cleave class of §9.1 firing with no catalyst present. | Hot places destroy structure quickly, cold places preserve it. Vents are energy-rich *and* corrosive — the first real environmental trade-off. |
-| **Solvent attack** | The solvent binds exposed bonds by ordinary complementarity (§8.3) and cleaves them. Same mechanism as everything else; nothing new is introduced. | **A molecule's shape determines its lifespan.** Compact folds that bury their backbone survive; sprawling ones are eaten. Folding therefore acquires a survival payoff for free, without us ever rewarding it. |
+| **Solvent attack** | The solvent binds exposed bonds by ordinary complementarity (§8.3) and cleaves them. A monomer's exposure is simply its count of empty lattice neighbours out of twelve. Same mechanism as everything else; nothing new is introduced. | **A molecule's shape determines its lifespan.** Compact folds that bury their backbone survive; sprawling ones are eaten. Folding therefore acquires a survival payoff for free, without us ever rewarding it — and in three dimensions a folded chain has a real interior for that burial to happen in (§8.4). |
 | **Radiogenic damage** | Unstable elements decay according to their `stability` (§7.1), destroying their host molecule and damaging neighbours. | One process serves as both the mutation source and a decay source. |
 | **Reactive by-products** | Some reactions yield small molecules with unusually *broad* complementarity — they bind almost anything and cleave it. | **Metabolism produces its own poison.** The harder a system runs, the faster it damages itself. |
 | **Photic damage** | High-energy input in the surface layer breaks bonds outright. | The photic zone is energy-rich and dangerous at once, which makes depth a genuine niche axis rather than just a coordinate. |
@@ -678,7 +699,25 @@ This matters more than it might appear. Every hazard in §13.4 is invisible loca
 
 ## 14. Layer 7 — The viewer
 
-A TypeScript browser application receiving state over a local WebSocket.
+**A native desktop application: `egui` for the interface, `wgpu` for the 3D scene beneath it.** One language, one build, and the viewer reads simulation state directly rather than serialising it across a boundary sixty times a second.
+
+### 14.0 Why native, and why not a game engine
+
+The original plan was a browser application over a local WebSocket. That was a reflexive choice rather than a reasoned one, and three things undermine it:
+
+- The geometry is three-dimensional (§8.2), so the browser path needs WebGL regardless — it buys no rendering capability the native path lacks.
+- `wgpu` is already required for GPU screening (§13.5), so it is in the dependency tree either way.
+- A web viewer adds a second language, a second toolchain, and a wire protocol to design and version — for a program running on the same machine as the simulation.
+
+There is also an audience argument, which matters here more than it usually would: a double-clickable application is meaningfully easier for a child than "start a server, then open localhost".
+
+Going native does not close the browser door. **egui compiles to WebAssembly**, so a browser build remains available from the same source if it is ever wanted.
+
+**Game engines** — Unity, Unreal, Godot — were considered and rejected for V1, but not for the obvious reason. They are excellent at what V5 needs. The problem is the FFI boundary: the simulation must stay Rust for determinism (§13.1) and throughput (§17), so a C# or C++ engine means marshalling state across a C ABI every frame. That is the same objection as the WebSocket, with a harder debugging story and a build system that wants to own the repository.
+
+**Bevy** avoids that entirely, being Rust and built on wgpu — and it is the right thing to revisit for the Wonder skin at V5. It is wrong for V1 because of what V1's viewer actually is. Zoom levels, a depth dial, the Chronicle, population graphs, lineage trees, reaction-network diagrams, a molecule inspector: this is a *tool*, not a game. An engine's strengths — lighting, particles, terrain, physics, asset pipelines — go almost entirely unused, while its comparative weakness at dense two-dimensional interface work applies to nearly every screen.
+
+The sequencing is what makes this safe. **Bevy is built on wgpu**, so renderer code written against wgpu now carries forward into Bevy later. Choosing Unity now would instead create a boundary that never goes away.
 
 ### 14.1 Zoom levels
 
@@ -695,9 +734,11 @@ Continuous navigation across four scales, each rendering the tier beneath it:
 
 ### 14.2 Two skins, one data model
 
-**Lab skin** ships first: schematic, high-contrast, precise. Molecules as clear diagrams, signatures as radial plots, reaction networks as graphs. This is the debugging tool, and it is what makes the simulation trustworthy — you can see exactly what the engine believes.
+**Lab skin** ships first: schematic, high-contrast, precise. Molecules as clear diagrams, signatures as unfolded geodesic nets, reaction networks as graphs. This is the debugging tool, and it is what makes the simulation trustworthy — you can see exactly what the engine believes.
 
 **Wonder skin** arrives once the simulation is believed: painterly, atmospheric, with depth and light and weather, and a microscopic view that feels like looking down a real instrument. Same data, different presentation. Lenia and Flow-Lenia (§2.3) are the bar.
+
+This is the point at which a game engine genuinely earns its keep, and where **Bevy** should be revisited (§14.0). Because it is built on wgpu, the renderer written for the Lab skin carries forward rather than being thrown away.
 
 ### 14.3 The depth dial
 
@@ -717,7 +758,7 @@ This is what "build it to scale" means in practice: one interface that neither c
 
 The Chronicle is an automatically generated narrative log. Every significant event gets an entry with its timestamp, its location, a plain-language description at the current depth register, and a link that jumps the time machine straight to that moment.
 
-Milestone events include: first polymer above threshold length; first stable fold; first catalytic pocket; first two-pocket enzyme; first membrane sheet; first closed vesicle; first RAF set; first compartment growth; first division; first lineage divergence.
+Milestone events include: first polymer above threshold length; first stable fold; first enclosed cavity; first two-cavity enzyme; first membrane sheet; first closed vesicle; first RAF set; first compartment growth; first division; first lineage divergence.
 
 Deaths are milestones too, and are reported with their computed cause (§9.6): the first compartment death, the first lineage to outlive its founder, the first repair of damage rather than mere replacement, and — if it happens — the first evidence of asymmetric damage segregation (§9.7). A chronicle of only the triumphs would misrepresent what is actually going on, which is overwhelmingly a story about things falling apart slightly slower than they are built.
 
@@ -727,14 +768,32 @@ The Chronicle turns "I left it running overnight" into "come and read what happe
 
 The viewer proper is a V1 deliverable, but a shape-based chemistry cannot be developed blind. If you cannot see that two molecules interlock, you cannot distinguish a binding bug from a chemistry that is simply not very interesting — and those two failures look identical from the outside. So V0 ships a deliberately minimal precursor.
 
-The Rust core emits **static SVG** directly: a molecule as a graph diagram, its signature as a radial plot, a folded polymer on its lattice with pockets marked, and a binding pair drawn in the winning orientation with the per-sector contributions annotated. A single self-contained HTML page collects these and adds a species-population timeline for a beaker run.
+The Rust core emits **static SVG** directly:
 
-Two reasons it is SVG-from-Rust rather than a JavaScript renderer:
+- a molecule as a graph diagram, plus an orthographic projection of its 3D embedding
+- its signature as an **unfolded geodesic net** — the icosahedron flattened into triangles, each sample direction coloured by extent and affinity. This is the map-projection trick, and it makes a spherical function legible on a flat page without any interaction
+- a folded polymer in isometric projection with depth cueing, cavities highlighted, and buried monomers shaded by how enclosed they are
+- a binding pair in the winning orientation, with per-direction contributions annotated so you can see *which* part of the fit carried the score
 
-- **It is testable.** Deterministic string output means renders can be golden-tested in CI, so a rendering regression is caught like any other regression. A canvas renderer would need image diffing and a headless browser to achieve the same thing.
-- **It has no build step.** An SVG opens in a browser, an editor, or a diff. During V0 the render loop needs to be as short as the simulation loop, and anything requiring a bundler run breaks that.
+A contact sheet — a plain index page of the emitted SVGs — collects these for a run.
 
-The Lab skin (§14.2) grows out of this rather than replacing it — the same diagrams, moved behind a live socket.
+Three dimensions do make this harder, since a rotatable view is V1 work. But static projections chosen well are often *clearer* than interactive ones for the specific question "why did these two bind?", because a fixed viewpoint can be picked to show exactly the face that mattered.
+
+Two reasons for SVG specifically:
+
+- **It is testable.** Deterministic string output means renders can be golden-tested in CI, so a rendering regression is caught like any other regression. A GPU renderer would need image diffing and a windowing system to achieve the same thing.
+- **It has no build step and no window.** An SVG opens in a browser, an editor, or a diff, and it can be produced headlessly on a CI runner. During V0 the render loop needs to be as short as the simulation loop.
+
+**SVG does not become redundant when the interactive viewer arrives.** The two have different jobs and both keep them:
+
+| | SVG (§14.5) | egui + wgpu (§14.0) |
+|---|---|---|
+| Runs headless in CI | yes | no |
+| Golden-testable | yes — the output is a string | no, needs image diffing |
+| Embeddable in docs and diffs | yes | no |
+| Interactive, rotatable, live | no | yes |
+
+The duplication is smaller than it appears, because **the geometry is computed once and rendered twice**. Projection, layout, cavity extraction and colour mapping live in `borbax-geometry`; SVG and wgpu are two backends consuming the same computed result. What SVG costs on top is a few hundred lines of string emission — a cheap price for having the renderers under test at all.
 
 ---
 
@@ -832,6 +891,8 @@ Target machine: Apple M1 Pro — 8 performance cores, 2 efficiency cores, 16-cor
 | Bulk tier | ~10⁵ patch-updates/sec/core |
 | Molecular tier | ~10⁵ molecule-steps/sec/core |
 | Fold cache | 2 GB, target hit rate > 95% at steady state |
+| Binding memo | Dense table over the most abundant species (§8.6). This, not the kernel, is what makes 3D binding affordable |
+| Fold workspace | ~512 KB per worker thread for the FCC occupancy grid, allocated once and reset by trail rather than cleared |
 | Bulk field state | ~256 MB |
 | Total working set | < 8 GB, leaving headroom for viewer and keyframe buffers |
 | Keyframe storage | < 20 GB per 8-hour run, compressed |
@@ -848,7 +909,7 @@ The reason to defer it is not difficulty. It is that a GPU screening path is an 
 
 ### 18.1 Toolchain
 
-**proto is the sole toolchain manager**, with `.prototools` at the repo root pinning Rust, Node and pnpm. This matches the convention already established across the other repositories here, so there is nothing new to learn and no second mechanism to keep in sync.
+**proto is the sole toolchain manager**, with `.prototools` at the repo root pinning Rust. This matches the convention already established across the other repositories here, so there is nothing new to learn and no second mechanism to keep in sync.
 
 There is also a reason specific to this project, and it is a strong one. **The toolchain pin is part of the reproducibility contract, not a developer convenience.** Determinism is a hard requirement (§13.1) and golden-run state hashes (§16) are only meaningful relative to a fixed compiler — a rustc bump can change floating-point codegen, autovectorisation, or intrinsic selection, any of which will silently change state hashes without changing a line of our code. Pinning makes that a deliberate, visible event: **a toolchain bump requires regenerating goldens, and the regeneration is reviewed like any other change to physics.** Without the pin, a background dependency update would look exactly like a physics regression, and we would waste a day finding that out.
 
@@ -861,14 +922,6 @@ There is also a reason specific to this project, and it is a strong one. **The t
 # Current stable, released 2026-07-14.
 # renovate: datasource=github-releases depName=rust-lang/rust
 rust = "1.97.1"
-# Node 24 LTS ("Krypton"), not the newer 26.x. A simulation that runs
-# unattended overnight wants the boring, long-supported line — and the
-# viewer is not where this project's difficulty lives, so there is
-# nothing to gain from tracking current.
-# renovate: datasource=node-version depName=nodejs/node
-node = "24.18.0"
-# renovate: datasource=npm depName=pnpm
-pnpm = "11.17.0"
 
 [settings]
 # Auto-install a pinned version when it isn't present yet, so a
@@ -877,21 +930,19 @@ pnpm = "11.17.0"
 auto-install = true
 ```
 
-Rust and pnpm track current stable; Node stays on the LTS line for the reason given in the comment. Renovate keeps all three moving, subject to the golden-regeneration rule above.
-
-**TypeScript is deliberately not in `.prototools`.** It is an npm package rather than a standalone toolchain binary, so it belongs in `viewer/package.json` as an exactly-pinned `devDependency` (currently `7.0.2`) where it sits alongside the code that consumes it. Putting it in the toolchain manager would split the viewer's dependency story across two files for no benefit.
+**Rust is the only entry, and that is a consequence worth noticing.** The native viewer decision in §14.0 removed Node, pnpm and TypeScript from the project entirely — one language, one toolchain, one dependency graph, one test command. A cross-language build was never going to be the hardest thing here, but it was pure overhead, and it is now simply absent.
 
 ### 18.2 Language choice
 
 Rust for the core: the performance is necessary rather than aspirational, the type system is genuinely useful for enforcing unit safety (G4), and fearless concurrency matters a great deal when determinism under parallelism is a hard requirement rather than a preference.
 
-TypeScript and Vite for the viewer, which is a conventional choice for a conventional problem — the interesting engineering is all on the other side of the socket.
+`egui` and `wgpu` for the viewer (§14.0), which keeps the whole project in one language and lets the interface read simulation state directly. `wgpu` is needed regardless for GPU screening (§13.5), so the viewer's renderer and the screening path share a stack rather than duplicating one.
 
 ### 18.3 Repository layout
 
 ```
 borbax/
-├── .prototools              Toolchain pins — rust, node, pnpm (§18.1)
+├── .prototools              Toolchain pin — rust only (§18.1)
 ├── crates/
 │   ├── borbax-units/        Newtype units — thermals, quanta, spans, world-years
 │   ├── borbax-rng/          Counter-based deterministic RNG streams
@@ -902,10 +953,10 @@ borbax/
 │   ├── borbax-sim/          Multi-scale engine, scheduler, governor, LOD
 │   ├── borbax-metrics/      Activity/novelty metrics, shadow comparison, model fitting
 │   ├── borbax-record/       Keyframes, event journal, branching
-│   ├── borbax-render/       Static SVG emitters — molecules, signatures, folds, binding (§14.5)
-│   ├── borbax-server/       WebSocket server, state streaming
+│   ├── borbax-geometry/     Projection, layout, colour mapping — shared by both renderers
+│   ├── borbax-render/       Static SVG emitters, golden-testable (§14.5)
+│   ├── borbax-ui/           egui interface + wgpu 3D scene (§14.0)
 │   └── borbax-cli/          Headless runner, beaker harness, tooling
-├── viewer/                  TypeScript + Vite browser application
 └── docs/
 ```
 
@@ -922,7 +973,7 @@ The crate split follows principle: each has one clear purpose, a defined interfa
 | **V2** | Template-copying polymers, mutation, true heredity. Darwinian evolution proper. | Life gets a genome |
 | **V3** | Cells, ecology, and the expansion to the 1,000,000 km² planetary field with real biomes. | The world gets big |
 | **V4** | Gene regulatory networks, morphogenesis, body plans, sensory organs. **Eyes.** | The original dream |
-| **V5** | Wonder skin, intervention tools, branching timeline comparison. | Making it hers |
+| **V5** | Wonder skin, intervention tools, branching timeline comparison. Revisit **Bevy** here (§14.0) — the wgpu renderer carries forward. | Making it hers |
 
 V1 is deliberately the hardest and least certain. Everything above it is comparatively well-trodden — evolution, ecology, and morphogenesis all have substantial prior art. Getting non-living generated chemistry to produce a self-replicating compartment is the part nobody has done this way, and it is the part worth doing first.
 
@@ -973,11 +1024,13 @@ The shelf already contains several distinct micro-environments with real gradien
 
 Multi-region ecology is a V3 concern, when there is something alive to migrate. Revisit before then only if runs show chemistry saturating in a way that looks environment-limited rather than parameter-limited — and note that per §2.7 the more likely cause of saturation is total space-time volume, not variety.
 
-### 22.2 Signature dimensionality — 8 sectors, confirmed empirically in V0
+### 22.2 Signature resolution — 42 directions, confirmed empirically in V0
 
-8 is a reasonable prior: cheap at 64 multiply-adds per pair, and enough to express both interlock and polarity. But it is an empirical question the beaker harness can answer in minutes, so it gets answered rather than assumed.
+The sample directions are vertices of a subdivided icosahedron, so the available resolutions are not free parameters but a discrete ladder: **12** (the icosahedron itself), **42** (one subdivision), **162** (two). Only these preserve the symmetry that makes rotation an exact permutation (§8.2), so intermediate values are not on the table.
 
-V0 sweeps 4, 6, 8, 12 and 16 sectors against the folding-map property tests (§16) and the chemistry-diversity criteria (§7.2), and picks the smallest value that passes all of them. **Locking this value is a V0 exit criterion** — changing it later invalidates every golden hash and every tuned parameter downstream, so it must not be left drifting.
+42 is the prior. 12 is likely too coarse to distinguish shapes that ought to bind differently; 162 is likely to cost roughly four times as much for detail the chemistry cannot use. But this is an empirical question the beaker harness answers in minutes, so it gets answered rather than assumed.
+
+V0 sweeps all three against the folding-map property tests (§16) and the chemistry-diversity criteria (§7.2), and picks the smallest that passes all of them — reporting the cost per binding call alongside the chemistry results, so "smallest that passes" is read against what each actually costs. **Locking this value is a V0 exit criterion**: changing it later invalidates every golden hash and every tuned parameter downstream, so it must not be left drifting.
 
 ### 22.3 Neutral shadow — spawned on demand, not run continuously
 
@@ -1015,15 +1068,17 @@ The fallback is more expensive than it looks, and the cost should be weighed bef
 
 ### 22.8 The binding search covers rotations but not reflections
 
-A two-dimensional shape can be matched against a partner in N rotations — or in 2N, if the partner is also allowed to present its mirror image. This has to be decided before the sector sweep in §22.2, because it doubles the cost of what is being swept.
+The icosahedral **rotation** group has 60 elements. The full symmetry group, which also admits reflections, has 120. Binding searches the former. This has to be settled before the resolution sweep in §22.2, because it doubles the cost of what is being swept.
 
 **Reflections are excluded.** Two reasons, and the second is the interesting one.
 
-The cheap reason is that it halves the hottest kernel in the engine.
+The cheap reason is that it halves the most expensive kernel in the engine.
 
-The real reason is that excluding reflections means **Borbax chemistry is handed**. A molecule and its mirror image are genuinely different species, binding different partners, and neither can substitute for the other. That is a real physical property with real consequences — and it makes homochirality, where a chemistry comes to use predominantly one handedness, an *emergent result the simulation could produce* rather than something ruled out by construction. Given that homochirality is one of the genuinely open questions about the origin of life, having it available as a possible headline event is worth more than the modelling convenience of ignoring it.
+The real reason is that excluding reflections means **Borbax chemistry is handed**. A molecule and its mirror image are genuinely different species, binding different partners, and neither can substitute for the other. In three dimensions this is a substantial claim rather than a bookkeeping choice: a left-handed helix genuinely cannot be rotated onto a right-handed one, no matter how it is turned. Handedness becomes a real structural property that a lineage can commit to.
 
-The honest caveat is that this treats molecules as constrained to a plane, whereas a molecule tumbling freely in solution could present either face. That is defensible — the whole 2D geometry is an abstraction — but it points at something better for later: molecules bound to a **mineral surface** genuinely cannot flip, while those in free solution can. Making reflections permitted in solution and forbidden on surfaces would turn mineral surfaces into chirality-selecting environments, which is one of the actual proposed mechanisms for how homochirality arose. That is a V1+ opportunity, deliberately not taken now.
+Which makes **homochirality** — a chemistry coming to use predominantly one handedness — an *emergent result the simulation could produce* rather than something ruled out by construction. That is one of the genuinely open questions about the origin of life, and having it available as a possible headline event is worth more than the modelling convenience of ignoring it.
+
+There is a natural extension deliberately not taken now. A molecule tumbling freely in solution is not obviously prevented from presenting either face, whereas one adsorbed onto a **mineral surface** demonstrably cannot flip. Permitting reflections in free solution and forbidding them on surfaces would make mineral surfaces chirality-selecting environments — which is one of the actual proposed mechanisms for how homochirality arose, and would connect it directly to a ratchet §11 already provides. A V1+ opportunity, noted so it is not lost.
 
 ---
 
@@ -1036,9 +1091,9 @@ V0 has no world and no viewer. It exists to establish that the chemistry is wort
 3. Signature dimensionality is swept and **locked** (§22.2)
 4. The decay band is located with a global rate (§22.6)
 5. Damage load is shown to be measurable above noise, or the provenance fallback is adopted (§22.7)
-6. Catalysis is observed emerging — a folded polymer with two pockets measurably accelerating a reaction, with nothing in the code that knows what an enzyme is (§8.5)
+6. Catalysis is observed emerging — a folded polymer with two cavities measurably accelerating a reaction, with nothing in the code that knows what an enzyme is (§8.5)
 7. With decay disabled, a run and its shadow become statistically indistinguishable (§16)
-8. Molecules, signatures, folds, pockets and binding pairs can be rendered and visually inspected, with the renderers under golden-image test (§14.5)
+8. Molecules, signatures, folds, cavities and binding pairs can be rendered and visually inspected, with the renderers under golden-image test (§14.5)
 
 Criterion 8 is listed last but should be built early — several of the criteria above it are far easier to evaluate, and far easier to *trust*, once the shapes can actually be seen.
 
