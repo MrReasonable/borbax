@@ -1,0 +1,21 @@
+# Line endings are part of the determinism contract (spec §13.4), not a
+# formatting preference.
+#
+# Git's default on Windows converts to CRLF on checkout. That alone broke the
+# Windows CI leg — `rustfmt.toml` pins `newline_style = "Unix"`, so
+# `cargo fmt --check` reported "Incorrect newline style" for a file nobody had
+# touched. The deeper problem is the one after it: `borbax-render` emits SVG
+# goldens compared byte-for-byte across a three-platform matrix, and a golden
+# that differs only in line endings is a determinism failure that has nothing
+# to do with the simulation. Those are the most expensive kind, because the
+# first instinct is to distrust the physics.
+#
+# `eol=lf` makes the working tree LF everywhere, so every platform hashes,
+# diffs and formats exactly the same bytes.
+* text=auto eol=lf
+
+# Excluded so git never rewrites them. None exist yet; the render goldens are
+# SVG, which is text and must stay normalised above.
+*.png binary
+*.jpg binary
+*.ico binary
