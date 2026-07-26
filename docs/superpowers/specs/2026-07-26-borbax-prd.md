@@ -103,7 +103,7 @@ The most valuable output of the survey. These are the documented reasons project
 
 | Failure mode | Countermeasure |
 |---|---|
-| **Uncreative unbounded (Bedau class 2)** — a system shows unbounded cumulative activity while producing *zero* novelty, passing the standard open-endedness test while doing nothing new | Track novelty as a metric entirely separate from activity; never infer one from the other (§15.2) |
+| **Uncreative unbounded (Bedau class 3b)** — unbounded activity concentrated in a *bounded* diversity of components, so cumulative activity climbs while nothing new ever appears. It passes a naive open-endedness test while doing nothing. (Bedau, Snyder & Packard 1998: class 1 is no adaptive activity, class 2 is *bounded* activity, class 3 is unbounded — and 3b is the subcase where diversity is bounded.) | Track novelty as a metric entirely separate from activity; never infer one from the other. Detecting 3b specifically needs the persistence-weighted Bedau–Packard statistics, not a raw species count (§15.2) |
 | **The boundedness illusion** (Wiser, Dolson, Vostinar, Lenski & Ofria) — plateaus are usually declared by eyeballing a flattening curve. Judged by fitting and comparing competing models instead, the LTEE fitness trajectory is best fit by an *unbounded power law* | Never declare a plateau from a graph. Fit competing models and compare them (§15.3) |
 | **No neutral baseline** — activity statistics are uninterpretable without a control | **Neutral shadow runs** (Rechtsteiner & Bedau): an identical run with selection switched off, used to calibrate thresholds and subtract drift. Adopted as a V1 deliverable (§15.3) |
 | **Gameable metrics** (Hintze, "Open-Endedness for the Sake of Open-Endedness") — a trivial system can satisfy every published open-endedness criterion | No single metric is trusted. Every novelty measure is read against the neutral shadow |
@@ -249,11 +249,15 @@ The critical design choice is that the table has **genuine periodicity**. Purely
 
 So the generator invents a shell structure and derives properties from position:
 
-1. Pick a **shell pattern** — a sequence of period lengths, e.g. `[2, 8, 8, 18, 18]`. Different universes get genuinely different table shapes.
+1. Pick a **shell pattern** — a sequence of period lengths drawn from the seed, e.g. `[3, 7, 7, 15, 22]`. Different universes get genuinely different table shapes.
+
+   **Draw the lengths, do not pick them from a menu.** G3 requires that period lengths do not follow any real shell structure, and a fixed candidate list of `{2, 8, 18}` ∪ `{6, 10, 14}` *is* real shell structure — real period lengths unioned with real subshell capacities — however randomly it is sampled. The generated-ness has to be in the numbers themselves. Note the `xtask` guarantee check cannot catch this: it scans for data *files*, and a violation of this kind lives in a `const`.
 2. Lay elements out in periods and groups according to that pattern.
 3. Derive each property as a smooth function of (period, group) plus a small amount of seeded noise.
 
 The result is a table with **families**: elements sharing a group behave alike. This produces the moment we actually want — *"wait, everything in this column makes rings"* — which is the moment a person starts to understand a chemistry rather than just watch it.
+
+**The trends must have generated *direction*, not just generated magnitude.** It is not enough that `affinity` rises across a period and `radius` shrinks across one while growing down a group — those are the real trends, in the real direction, and reproducing them makes G3 an assertion rather than a fact. The sign of each trend is drawn from the seed, so one universe has affinity rising across a period and another has it falling. This costs nothing and is the difference between "invented" and "renamed".
 
 Each element carries:
 
@@ -334,7 +338,7 @@ Two molecules bind when their signatures are **complementary**: their shapes int
 ```
 For each of the 60 rotations R in the icosahedral rotation group:
     for each direction i:
-        j = PERM[R][i]                             // exact, precomputed
+        j = ANTI[ PERM[R][i] ]                     // exact, precomputed
         shape_term  = −( r_A[i] + r_B[j] − IDEAL_GAP )²
         charge_term = −( a_A[i] + a_B[j] )²
     score(R) = Σᵢ ( w_shape · shape_term + w_charge · charge_term )
@@ -343,9 +347,15 @@ affinity(A,B) = max over R of score(R)
 P(bind)       = sigmoid( affinity / temperature )
 ```
 
-A bump must meet a hollow (radii sum to the ideal gap) and a positive face must meet a negative one (affinities sum to zero). At D = 42 that is 2,520 iterations per pair — around forty times the two-dimensional version, and affordable only because of §8.6: `affinity` is a pure function of a species *pair*, so it is memoised and runs once per novel pair rather than once per collision.
+**The `ANTI` lookup is load-bearing and easy to omit.** Two bodies in contact touch along *opposite* directions: A's surface reaching along `+d` meets B's surface reaching along `−d`. Pairing `r_A[i]` with `r_B[PERM[R][i]]` directly — the obvious form — compares each molecule against the *point inversion* of its partner.
 
-Where the memo misses, a cheap rotation-invariant pre-filter (the sorted multiset of `r` values, which any rotation leaves unchanged) rejects hopeless pairs before the full search runs.
+The error does not announce itself, and it is not absorbed by maximising over rotations. The sample directions are antipodally closed, but `−I` has determinant −1 and so is **not** a member of the 60-element rotation group. Omitting `ANTI` therefore searches the 60 *improper* elements of the full icosahedral group — the exact opposite of §22.8's deliberate choice, and with nothing failing to signal it. Bumps would meet bumps, cavity recognition would select the enantiomer of the molecule that actually fits, and any homochirality result would report the wrong handedness.
+
+A test built by constructing a complement at the *same* index cannot catch this, because it encodes the same mistake. The complement must be built through `ANTI`, from a real embedded molecule.
+
+At D = 42 the search is 2,520 iterations per pair — around forty times the two-dimensional version, and affordable only because of §8.6: `affinity` is a pure function of a species *pair*, so it is memoised and runs once per novel pair rather than once per collision.
+
+Where the memo misses, a rotation-invariant upper bound on the score rejects hopeless pairs before the full search runs. It must be a genuine bound — a filter that cannot state the property it guarantees is not conservative, it is merely untested.
 
 Every higher-level phenomenon in Borbax is this function called at a different scale:
 
@@ -814,7 +824,9 @@ All six, from chemistry alone, with no code path anywhere in the engine that men
 
 ### 15.2 Instrumented metrics
 
-Tracked continuously and graphable across a run. Note that **activity and novelty are deliberately separated**, per the Bedau class 2 failure mode in §2.7 — a system can generate unbounded activity while producing nothing new, and reading one as a proxy for the other is exactly how that goes unnoticed.
+Tracked continuously and graphable across a run. Note that **activity and novelty are deliberately separated**, per the Bedau class 3b failure mode in §2.7 — a system can generate unbounded activity while producing nothing new, and reading one as a proxy for the other is exactly how that goes unnoticed.
+
+**Raw counts are not sufficient to detect it.** A species that appears once and dies counts the same as one that persists for a million years, so "distinct species" and "novel species rate" are proxies that miss the failure mode they exist to catch. The Bedau–Packard statistics are persistence-weighted by construction, and that weighting *is* the mechanism: per-species cumulative existence counters `aᵢ(t)`, diversity `D(t)`, cumulative activity `A(t) = Σaᵢ`, mean cumulative activity `Ā = A/D`, and new activity `A_new(t)`. Class 3b is exactly `A` unbounded with `D` bounded, which is only visible if both are computed.
 
 | Metric | Family | What it tells us |
 |---|---|---|
@@ -843,6 +855,10 @@ Every run may be paired with a *shadow run*: the same universe, the same world, 
 
 Every claim of the form "look what evolved" is then read as **run minus shadow**. Without this, activity statistics are uninterpretable, and the entire success criterion in §15.1 reduces to a person looking at a graph and feeling optimistic.
 
+**"Selection switched off" means decay rates are *equalised*, not disabled.** This distinction is easy to lose and gets the experiment wrong in a way that still produces plausible-looking output. Borbax has no fitness function — selection *is* differential persistence (§9.4) — so a shadow with decay turned off is not a neutral control, it is a different universe in which nothing dies. The shadow must apply a single common decay rate to every species, set so the total removal *flux* matches the focal run at the fork keyframe. Otherwise the two runs differ in mass balance and any diversity difference is explained by that rather than by selection.
+
+Two honest limits. First, this is a **drift control on persistence only**: catalysis produces differential *formation* rates, which is also selection in Bedau's sense, and equalising it would destroy the chemistry we are trying to observe. Second, it does not answer the question that matters most about a RAF. For that, the standard control in this literature is different — **randomise which molecule catalyses which reaction**, holding catalysis density fixed, and ask how often a RAF still appears. That distinguishes "a RAF appeared because of the shape chemistry" from "any network this dense has one", and the persistence shadow cannot.
+
 This is cheap to implement because the branching machinery (§13.3) already exists for the time machine, and it is the difference between a result and an anecdote.
 
 ### 15.4 Plateau detection, done properly
@@ -851,7 +867,13 @@ The most likely way this project fails is not a crash. It is becoming boring, si
 
 But per the boundedness illusion (§2.7), **a flattening curve is not evidence of a plateau.** Judged by eye, even genuinely unbounded processes look like they are levelling off; the same reasoning applied to real long-term evolution experiments turns out to be wrong once competing models are actually fitted.
 
-So Borbax never declares stagnation from a graph. It fits several candidate models — saturating, linear, power-law — to the novelty trajectory, compares them, and reports which fits best along with its confidence. A run flags itself as stalled only when a saturating model genuinely beats an unbounded one, and even then the finding is checked against the shadow.
+So Borbax never declares stagnation from a graph. It fits several candidate models — saturating, linear, power-law — to the novelty trajectory, compares them by **AICc and BIC reported together with the fitted parameters**, and reports which fits best along with its confidence. A run flags itself as stalled only when a saturating model genuinely beats an unbounded one, and even then the finding is checked against the shadow.
+
+Three constraints on the fit, each of which is a way the comparison silently becomes meaningless:
+
+- **Fit every model on the same scale by the same method.** Fitting the power law on log–log axes and the saturating model on linear axes is not a comparison of models, it is a comparison of axes.
+- **Fit increments, not cumulative totals.** A cumulative curve has near-perfectly autocorrelated residuals, and an information criterion computed on it under an i.i.d. error assumption will confidently "prove" whichever model was fitted.
+- **Hold out the tail.** The boundedness illusion is a *projection* failure, so fit on the first half and score predictive error on the second. That tests the exact claim being made, and is more convincing than any information criterion.
 
 ---
 
@@ -967,7 +989,8 @@ The bottom four rows are most of the work, and they are novel *by construction* 
 borbax/
 ├── .prototools              Toolchain pin — rust only (§18.1)
 ├── crates/
-│   ├── borbax-units/        Newtype units — thermals, quanta, spans, world-years
+│   ├── borbax-units/        Newtype units, and det_math — see below
+│   │                        (thermals, quanta, spans, world-years, fixed-point mass)
 │   ├── borbax-rng/          Counter-based deterministic RNG streams
 │   ├── borbax-universe/     Physics generation, periodic table, beaker battery
 │   ├── borbax-molecule/     Graphs, canonicalisation, signatures, folding
@@ -984,6 +1007,8 @@ borbax/
 ```
 
 The crate split follows principle: each has one clear purpose, a defined interface, and can be understood and tested without reading the others. `borbax-molecule` in particular must be comprehensible in isolation — it is where the conceptual weight of the project sits, and where most of the iteration will happen.
+
+**`det_math` belongs in `borbax-units`, at the bottom of the chain.** Every transcendental in the project routes through it (§13.1), and its callers include `borbax-rng`'s normal-variate draw and `borbax-universe`'s mass generation — both of which sit *below* `borbax-molecule`. Placing it any higher makes the one file that exists to guarantee portability unreachable from two of the crates that need it, and the only way out would be a dependency edge that inverts the crate order.
 
 ---
 
@@ -1093,6 +1118,8 @@ The fallback is more expensive than it looks, and the cost should be weighed bef
 
 The icosahedral **rotation** group has 60 elements. The full symmetry group, which also admits reflections, has 120. Binding searches the former. This has to be settled before the resolution sweep in §22.2, because it doubles the cost of what is being swept.
 
+This is also why §8.3's `ANTI` lookup exists and why omitting it is so damaging: without it the kernel searches the 60 *improper* elements instead — reflections and nothing else — which is the precise opposite of the decision recorded here, arrived at by accident.
+
 **Reflections are excluded.** Two reasons, and the second is the interesting one.
 
 The cheap reason is that it halves the most expensive kernel in the engine.
@@ -1115,8 +1142,11 @@ V0 has no world and no viewer. It exists to establish that the chemistry is wort
 4. The decay band is located with a global rate (§22.6)
 5. Damage load is shown to be measurable above noise, or the provenance fallback is adopted (§22.7)
 6. Catalysis is observed emerging — a folded polymer with two cavities measurably accelerating a reaction, with nothing in the code that knows what an enzyme is (§8.5)
-7. With decay disabled, a run and its shadow become statistically indistinguishable (§16)
+7. With decay disabled, a run and its shadow become statistically indistinguishable (§16) — the direct test of "no death, no life". Note this is a *different* experiment from the neutral shadow of §15.3, which equalises decay rather than removing it; both are needed and conflating them produces plausible output from the wrong control
 8. Molecules, signatures, folds, cavities and binding pairs can be rendered and visually inspected, with the renderers under golden-image test (§14.5)
+9. The metric families of §15.2 are computed — including the persistence-weighted Bedau–Packard statistics — and a shadow can be forked from a beaker run and compared against it (§15.3)
+
+Criterion 9 was added late, and the reason is worth recording. Criterion 7 requires a shadow comparison, but nothing in the plan built one: §15's novelty metrics, the shadow, and the plateau fitting were all specified and then never scheduled. The plan could not reach its own bar. The alternative was to move criterion 7 to V1, which would have removed the direct experimental test of "no death, no life" — the claim §9.4 rests on — from the version that establishes the chemistry. Building it was the cheaper mistake to make: on a well-mixed beaker the statistics are straightforward, and the shadow reuses machinery §13.3 already needs.
 
 Criterion 8 is listed last but should be built early — several of the criteria above it are far easier to evaluate, and far easier to *trust*, once the shapes can actually be seen.
 
