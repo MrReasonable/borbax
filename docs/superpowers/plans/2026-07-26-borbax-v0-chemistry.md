@@ -2934,13 +2934,152 @@ and checks the criteria of spec §7.2:
 | **Decay band** | universes where nothing persists, or nothing decays (§22.6) |
 | Polymer viability | chains of length ≥ 20 that cannot form *or* cannot survive |
 | Shape diversity | signatures collapsing into a few clusters |
-| Neutral-network structure | folding maps close to one-to-one (§2.5) |
+| Neutral-network structure | see below — **not** a redundancy test |
 | Catalytic potential | no folded polymer producing an enclosed cavity |
 | Energy landscape | chemistries that only ever run downhill |
+
+**The neutral-network criterion needs three numbers, not one.** "Folding maps
+close to one-to-one" tests *redundancy*, which is necessary and nowhere near
+sufficient: a map can be massively many-to-one with every preimage a scattered
+set of isolated points — no connected network, no drift, no evolvability. As
+written, an implementer writes a distinct-shape-count assertion and ticks the
+box. What the literature actually measures (§2.5):
+
+- **Neutral network connectivity** — sample a shape's preimage, build the graph
+  on Hamming-1 edges, report the largest-connected-component fraction.
+- **Shape-space covering radius** — smallest `r` such that a ball of radius `r`
+  around a random sequence contains a sequence folding to every *common* shape.
+  Covering was only ever claimed for common shapes; rare ones are not covered,
+  so report the phenotype-frequency distribution alongside it. Otherwise a map
+  where three shapes account for 90% of sequences passes trivially.
+- **Plastogenetic congruence** — currently unmeasurable, because `fold()`
+  produces one conformation and there is no ensemble to correlate against.
+  Either state the omission or fold each polymer under `k` diagnostic seeds
+  (`fold_with_seed`) and treat the distinct results as the plastic repertoire.
+  §16 lists all three properties while §23 criterion 2 lists two; that gap
+  should be closed deliberately rather than by omission.
 
 `Metrics` tracks the families of spec §15.2, with **activity, novelty,
 complexity, organisation and decay kept distinct**. Novelty must never be
 inferred from activity.
+
+---
+
+### Task 20b: Evolutionary-activity metrics, the shadow, and plateau fitting
+
+**This task exists because the plan could not previously reach its own exit
+criteria.** §15's novelty metrics, neutral shadow and plateau fitting are all
+specified in the spec and none was scheduled; meanwhile exit criterion 7
+requires a shadow comparison, and Task 20's only novelty test asserted that two
+enum variants are unequal.
+
+**Files:** Create `crates/borbax-beaker/src/{activity.rs,shadow.rs,plateau.rs}`;
+test each.
+
+**Interfaces:**
+- Produces: `ActivityStats { diversity, cumulative, mean_cumulative, new_activity }`,
+  `ShadowRun::fork_from`, `shape_novelty`, `fit_models`, `ModelVerdict`
+
+- [ ] **Step 1: Bedau–Packard activity statistics** (`activity.rs`)
+
+Raw counts cannot detect the failure mode they exist to catch. A species
+appearing once weighs the same as one persisting a million years, so "distinct
+species" and "novel species rate" miss class 3b entirely (§2.7). The
+Bedau–Packard statistics are persistence-weighted by construction, and that
+weighting *is* the mechanism:
+
+```rust
+/// Per-species cumulative existence counters and the four aggregates.
+///
+/// Class 3b is `cumulative` unbounded with `diversity` bounded — visible only
+/// if both are computed, which is why they are separate fields rather than one
+/// "activity" number.
+pub struct ActivityStats {
+    /// a_i(t): cumulative existence per species, indexed by SpeciesId.
+    pub per_species: Vec<f64>,
+    /// D(t): count of species above the activity threshold.
+    pub diversity: f64,
+    /// A(t) = sum of a_i.
+    pub cumulative: f64,
+    /// Ā(t) = A/D.
+    pub mean_cumulative: f64,
+    /// A_new(t): activity of species newly crossing the threshold.
+    pub new_activity: f64,
+}
+```
+
+Add the **MODES persistence filter** alongside: discard components not
+surviving a set interval before counting. It is the cheap, well-tested
+substitute for a full shadow and maps directly onto these families.
+
+- [ ] **Step 2: Shape-space novelty** (`activity.rs`)
+
+```rust
+/// Novelty as *minimum* distance to any prior state — nearest-neighbour-in-
+/// history, following ASAL and the Lehman-Stanley archive measure.
+///
+/// **Min, not mean.** §15.2 said "distance to every prior one" without saying
+/// which. Mean-to-all is a different and much weaker statistic that grows
+/// automatically with run length, which would make novelty rise simply because
+/// the run got longer.
+///
+/// Histograms are subsampled to a constant N first: histogram-distance
+/// estimates from finite samples are positively biased, and the bias grows
+/// with the number of occupied bins — so without this, novelty rises merely
+/// because species count rose, which is exactly the activity/novelty
+/// conflation this metric exists to prevent.
+pub fn shape_novelty(current: &Histogram, history: &[Histogram]) -> f64 { /* ... */ }
+```
+
+Validate on a null trajectory of pure multinomial noise: it must score ~0.
+
+- [ ] **Step 3: The neutral shadow** (`shadow.rs`)
+
+Fork from a keyframe with decay rates **equalised**, not disabled (§15.3). The
+common rate is set so total removal flux matches the focal run at the fork
+point — otherwise the two differ in mass balance and any diversity difference
+is explained by that rather than by selection.
+
+Note in the module header that this is a drift control on *persistence only*:
+catalysis produces differential formation rates, which is also selection, and
+equalising it would destroy the chemistry.
+
+- [ ] **Step 4: Randomised-catalysis control** (`shadow.rs`)
+
+The persistence shadow cannot answer the question that actually matters about a
+RAF. Reassign which species catalyses which reaction uniformly at random,
+holding catalysis density fixed, and measure how often a RAF still appears.
+That distinguishes "a RAF appeared because of the shape chemistry" from "any
+network this dense has one" — and without it, §15.1 criterion 2 means very
+little.
+
+- [ ] **Step 5: Plateau model fitting** (`plateau.rs`)
+
+Use `levenberg-marquardt` (a MINPACK port) rather than hand-rolling nonlinear
+least squares. **This is a cheap dependency despite appearances**: it runs over
+already-emitted trajectories, never feeds back into physics, and does not enter
+golden hashes.
+
+Fit saturating, linear and power-law models to the novelty **increments** —
+not the cumulative curve, whose residuals are near-perfectly autocorrelated and
+which will confidently "prove" whichever model was fitted. Compare by AICc and
+BIC, reported with the fitted parameters:
+
+```
+aic = n·ln(rss/n) + 2k;  aicc = aic + 2k(k+1)/(n-k-1);  bic = n·ln(rss/n) + k·ln(n)
+```
+
+Write the Jacobians analytically; `differentiate_numerically` is a test helper
+for verifying them, not a substitute — and it makes a good unit test.
+
+Route the models' `exp`/`powf` through `det_math`, so the verdict reproduces
+cross-platform for free. Fit on the first half and score predictive error on
+the second: the boundedness illusion is a *projection* failure, so a held-out
+tail tests the actual claim in a way no information criterion does.
+
+- [ ] **Step 6: Run, then commit.** Record the measured null-trajectory novelty
+score in the commit message — a metric that has never been shown to read zero
+on noise has not been validated.
 
 ---
 
@@ -3001,12 +3140,24 @@ the design needs rethinking before another line is written.** Write up what
 was observed instead; a negative result here is the most valuable output V0
 can produce.
 
-- [ ] **Step 5: Decay-off shadow equivalence (exit criterion 7)**
+- [ ] **Step 5: Decay-off equivalence (exit criterion 7)**
 
-With decay disabled, a run and its neutral shadow must become statistically
+With decay disabled, a run and its shadow must become statistically
 indistinguishable — the direct experimental test of "no death, no life"
 (§9.4). It runs in seconds and catches decay being nominally implemented but
 not actually biting.
+
+**This is a different experiment from the §15.3 neutral shadow**, which
+*equalises* decay rather than removing it. Both are needed and conflating them
+produces plausible output from the wrong control. Run both: decay-off for
+criterion 7, equalised-decay for every "look what evolved" claim.
+
+- [ ] **Step 5b: Metrics and shadow machinery (exit criterion 9)**
+
+Confirm Task 20b's deliverables: the Bedau–Packard statistics compute, the
+shape-novelty metric reads ~0 on a null trajectory, a shadow forks from a
+beaker run and compares, and the plateau fitter distinguishes a saturating
+series from a power-law one on synthetic data before it is trusted on real.
 
 - [ ] **Step 6: Portable transcendentals, then the cross-platform matrix**
 

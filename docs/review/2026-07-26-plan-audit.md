@@ -1,10 +1,27 @@
 # V0 Plan Audit — 2026-07-26
 
 Four specialist agents reviewed the spec and both plan files **before any code
-was written**. This is the consolidated finding list. Nothing here has been
-fixed yet.
+was written**, and a fifth reviewed dependencies. This is the consolidated
+finding list.
 
 Severity is "how expensive is this to discover late", not "how wrong is it".
+
+## Status: all findings applied
+
+Fixed across commits `62afa68`..`HEAD`. Every severe and medium finding below
+has been addressed in the spec, both plan files, or `CLAUDE.md`. The two that
+changed scope rather than fixing a defect:
+
+- **S12** added exit criterion 9 and Task 20b, because the plan could not
+  otherwise reach criterion 7.
+- The dependency review found the stated reason for hand-rolling vector maths
+  was **factually wrong** — `glam` and `nalgebra` would be bit-identical here,
+  verified in their source. The hand-roll stays, but on a size argument. A
+  false determinism doctrine would have been used later to reject a dependency
+  that is genuinely correct.
+
+Kept as the record of *why* each change was made; the reasoning is not
+reconstructable from the diffs alone.
 
 ---
 
