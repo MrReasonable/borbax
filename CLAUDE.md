@@ -180,6 +180,17 @@ metric against a neutral shadow run.
 
 ## Agents
 
-`.claude/agents/rust-performance-expert.md` — invoke before committing to a data
-structure in a hot path, when a task specifies performance targets, and to audit
-that determinism constraints survived an optimisation.
+Five project agents in `.claude/agents/`, each mapped to a named risk in §20
+rather than to a generic role. They review; none of them writes code.
+
+| Agent | Invoke when |
+|---|---|
+| `rust-performance-expert` | Before committing to a data structure in a hot path; when a task specifies performance targets; to audit that an optimisation preserved determinism. |
+| `determinism-auditor` | Before adding parallelism or a dependency that touches results; when a golden hash moves; on any diff touching float arithmetic, collection iteration, sorting or RNG. Every hazard here is invisible on one machine. |
+| `emergence-auditor` | Before adding a threshold, special case or per-molecule field; when a behaviour is not emerging and there is a temptation to help it along; on any chemistry or simulation diff. |
+| `geometry-numerics-reviewer` | On canonicalisation, geodesic construction, the rotation table, stress majorization, signatures, binding, FCC folding, cavity detection — code that is either correct or silently wrong forever. |
+| `alife-researcher` | When implementing an algorithm or metric from the literature (RAF, Gillespie, Bedau activity statistics, neutral networks, plateau fitting), or when a design decision rests on a cited result. Constrained never to return real chemistry (§5). |
+
+The three auditors are independent lenses on the same diff and can run in
+parallel. Run the emergence and determinism auditors before any commit that
+touches physics — those are the two invariants no test suite fully protects.
