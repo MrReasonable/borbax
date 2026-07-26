@@ -1084,13 +1084,24 @@ mod tests {
         assert_eq!(cavities(&f, &p, &g, &u), cavities(&f, &p, &g, &u));
     }
 
+    /// **A real enclosure test.** The previous version asserted that reported
+    /// cavities have `enclosure >= MIN_ENCLOSURE` — which cannot fail, since
+    /// candidates are admitted only if they already pass that threshold. It
+    /// read as a defence of the selectivity claim and defended nothing.
+    ///
+    /// This builds a hollow shell (a genuine cavity) and the same shell with
+    /// one monomer removed (open to solvent). The second must yield nothing.
     #[test]
-    fn cavities_are_enclosed_by_construction() {
+    fn an_open_groove_is_not_reported_as_a_cavity() {
         let (u, g) = (Universe::generate(12), Geodesic::<42>::build().unwrap());
-        let (p, f) = folded(4, 70, &u);
-        for c in cavities(&f, &p, &g, &u) {
-            assert!(c.enclosure >= MIN_ENCLOSURE, "reported an unenclosed cavity");
-        }
+        let (p, sealed) = hollow_shell(&u);
+        assert!(!cavities(&sealed, &p, &g, &u).is_empty(), "sealed shell had no cavity");
+
+        let breached = remove_one_monomer(&sealed);
+        assert!(
+            cavities(&breached, &p, &g, &u).is_empty(),
+            "a groove open to solvent was reported as a cavity"
+        );
     }
 
     #[test]
@@ -1161,6 +1172,17 @@ pub const MIN_ENCLOSURE: u8 = 8;
 /// Largest cavity worth reporting. Anything bigger is the outside world.
 const MAX_CAVITY_CELLS: usize = 24;
 
+/// Lattice spacing in `Span`, so cavity distances share units with molecule
+/// signatures (§8.2). Without this, `affinity(cavity, molecule)` adds raw grid
+/// integers to atom radii and compares the result against `ideal_gap` — two
+/// incommensurable numbers, and the resulting recognition scores are arbitrary.
+///
+/// FCC nearest-neighbour distance is sqrt(2) in flat-index units.
+const LATTICE_SPAN: f64 = std::f64::consts::SQRT_2;
+
+/// Shell width for cavity surface character, mirroring §8.2's `SHELL`.
+const SHELL: f64 = 0.75;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cavity<const D: usize> {
     /// Empty lattice cells forming the cavity, sorted — determinism (§13.1).
@@ -1187,30 +1209,62 @@ pub fn cavities<const D: usize>(
     let occupied: BTreeMap<i32, usize> =
         f.coords.iter().enumerate().map(|(i, &c)| (c, i)).collect();
 
-    // Candidate cells: empty, in bounds, and enclosed enough to matter.
-    let mut candidates: BTreeSet<i32> = BTreeSet::new();
-    for &c in &f.coords {
+    // ---- Step 1: what is *outside*? ----
+    //
+    // This is the enclosure test, and an earlier draft had none. Selecting
+    // cells by "≥ 8 of 12 neighbours occupied" is a local *density* test: a
+    // deep groove on a compact globule, freely open to solvent, is
+    // indistinguishable from a sealed void by that measure. Sticky surface
+    // patches would then be counted as catalytic sites and §23's criterion 6
+    // would read positive on geometry that is not a cavity.
+    //
+    // What actually distinguishes a cavity from a dimple is reachability:
+    // everything empty and reachable from beyond the chain's bounding box is
+    // solvent. Interior = empty and unreached.
+    let (lo, hi) = bounding_box(&f.coords);
+    let mut outside: BTreeSet<i32> = BTreeSet::new();
+    let mut q: VecDeque<i32> = VecDeque::new();
+    for cell in boundary_cells(lo, hi) {
+        if !occupied.contains_key(&cell) && outside.insert(cell) {
+            q.push_back(cell);
+        }
+    }
+    while let Some(x) = q.pop_front() {
         for &d in &fcc::NEIGHBOURS {
-            let cell = c + d;
-            if occupied.contains_key(&cell) || !fcc::in_bounds(cell) {
-                continue;
-            }
-            let filled =
-                fcc::NEIGHBOURS.iter().filter(|&&e| occupied.contains_key(&(cell + e))).count() as u8;
-            if filled >= MIN_ENCLOSURE {
-                candidates.insert(cell);
+            let nb = x + d;
+            if in_box(nb, lo, hi) && !occupied.contains_key(&nb) && outside.insert(nb) {
+                q.push_back(nb);
             }
         }
     }
 
-    // Flood-fill candidates into connected groups. BTreeSet iteration is
-    // ordered, so group discovery order is fixed.
+    // ---- Step 2: interior cells, filtered by enclosure ----
+    let mut candidates: BTreeSet<i32> = BTreeSet::new();
+    for cell in box_cells(lo, hi) {
+        if occupied.contains_key(&cell) || outside.contains(&cell) || !fcc::in_bounds(cell) {
+            continue;
+        }
+        let filled =
+            fcc::NEIGHBOURS.iter().filter(|&&e| occupied.contains_key(&(cell + e))).count() as u8;
+        if filled >= MIN_ENCLOSURE {
+            candidates.insert(cell);
+        }
+    }
+
+    // ---- Step 3: group into connected cavities ----
+    //
+    // BTreeSet iteration is ordered, so discovery order is fixed.
     let mut seen: BTreeSet<i32> = BTreeSet::new();
     let mut out = Vec::new();
     for &start in &candidates {
         if seen.contains(&start) {
             continue;
         }
+        // The flood always runs to completion before any size filter is
+        // applied. Breaking out mid-fill leaves the component half-marked in
+        // `seen`, so a later start inside the same component floods only the
+        // remainder — with the already-seen cells acting as walls — and
+        // produces a spurious fragment that may not even be connected.
         let mut cells = Vec::new();
         let mut q = VecDeque::from([start]);
         while let Some(x) = q.pop_front() {
@@ -1218,9 +1272,6 @@ pub fn cavities<const D: usize>(
                 continue;
             }
             cells.push(x);
-            if cells.len() > MAX_CAVITY_CELLS {
-                break;
-            }
             for &d in &fcc::NEIGHBOURS {
                 if candidates.contains(&(x + d)) && !seen.contains(&(x + d)) {
                     q.push_back(x + d);
@@ -1273,36 +1324,103 @@ fn lining_signature<const D: usize>(
         }
     }
 
+    // Monomer positions, resolved once. Looking each up by scanning the
+    // occupancy map per direction would be O(D · lining · |occupied|).
+    let mut pos_of: Vec<(i32, i32, i32)> = vec![(0, 0, 0); p.len()];
+    for (&cell, &m) in occupied {
+        if m < pos_of.len() {
+            pos_of[m] = fcc::from_flat(cell);
+        }
+    }
+
     for dir_idx in 0..D {
         let dir = g.dirs[dir_idx];
-        let mut extent = f64::NEG_INFINITY;
-        let mut num = 0.0;
-        let mut den = 0.0;
+
+        // **Nearest wall, not furthest.** An earlier draft took `max`, which
+        // is the support function of the *far* side of the cavity — the wall
+        // a substrate never touches. What a substrate needs to complement is
+        // the free space to the nearest wall in each direction, which is a
+        // min over the lining monomers that actually lie that way.
+        //
+        // Distances are in `Span`, converted from lattice units. Leaving them
+        // as raw grid integers made `affinity(cavity, molecule)` add two
+        // incommensurable numbers and compare the result to `ideal_gap`.
+        // Two passes, because the weights in the second depend on `nearest`
+        // from the first. Merging them is not an optimisation, it is a
+        // semantic change — the same structure as §8.2's `signature()`.
+        let reach_of = |m: usize| -> f64 {
+            let (mx, my, mz) = pos_of[m];
+            let rel = [
+                (f64::from(mx) - centre[0]) * LATTICE_SPAN,
+                (f64::from(my) - centre[1]) * LATTICE_SPAN,
+                (f64::from(mz) - centre[2]) * LATTICE_SPAN,
+            ];
+            rel[0] * dir[0] + rel[1] * dir[1] + rel[2] * dir[2]
+        };
+
+        let mut nearest = f64::INFINITY;
         for &m in &lining {
-            let (mx, my, mz) = fcc::from_flat_of(m, occupied);
-            let rel = [f64::from(mx) - centre[0], f64::from(my) - centre[1], f64::from(mz) - centre[2]];
-            let reach = rel[0] * dir[0] + rel[1] * dir[1] + rel[2] * dir[2];
-            if reach > extent {
-                extent = reach;
+            let reach = reach_of(m);
+            // Behind this direction: not a wall a substrate can reach that way.
+            if reach > 0.0 && reach < nearest {
+                nearest = reach;
             }
-            let w = reach.max(0.0);
-            num += w * u.element(p.unit(m)).affinity;
-            den += w;
         }
-        sig.r[dir_idx] = if extent.is_finite() { extent } else { 0.0 };
+
+        // Weight by *proximity* to the near wall, matching how §8.2 weights
+        // its surface shell. The far wall must not dominate the character a
+        // substrate would actually feel.
+        let (mut num, mut den) = (0.0f64, 0.0f64);
+        if nearest.is_finite() {
+            for &m in &lining {
+                let reach = reach_of(m);
+                if reach <= 0.0 {
+                    continue;
+                }
+                let w = (nearest + SHELL - reach).max(0.0);
+                num += w * u.element(p.unit(m)).affinity;
+                den += w;
+            }
+        }
+
+        // Always non-negative, matching the positivity the molecule-signature
+        // test asserts.
+        sig.r[dir_idx] = if nearest.is_finite() { nearest } else { 0.0 };
         sig.a[dir_idx] = if den > 0.0 { (num / den).clamp(-1.0, 1.0) } else { 0.0 };
     }
     sig
 }
 
-/// Look up a monomer's lattice coordinates via the occupancy map.
-fn from_flat_of(monomer: usize, occupied: &BTreeMap<i32, usize>) -> (i32, i32, i32) {
-    for (&cell, &m) in occupied {
-        if m == monomer {
-            return fcc::from_flat(cell);
-        }
+/// Bounding box of the chain, expanded by two cells so the outside flood has
+/// somewhere to start.
+fn bounding_box(coords: &[i32]) -> ((i32, i32, i32), (i32, i32, i32)) {
+    let mut lo = (i32::MAX, i32::MAX, i32::MAX);
+    let mut hi = (i32::MIN, i32::MIN, i32::MIN);
+    for &c in coords {
+        let (x, y, z) = fcc::from_flat(c);
+        lo = (lo.0.min(x), lo.1.min(y), lo.2.min(z));
+        hi = (hi.0.max(x), hi.1.max(y), hi.2.max(z));
     }
-    (0, 0, 0)
+    ((lo.0 - 2, lo.1 - 2, lo.2 - 2), (hi.0 + 2, hi.1 + 2, hi.2 + 2))
+}
+
+fn in_box(cell: i32, lo: (i32, i32, i32), hi: (i32, i32, i32)) -> bool {
+    let (x, y, z) = fcc::from_flat(cell);
+    (lo.0..=hi.0).contains(&x) && (lo.1..=hi.1).contains(&y) && (lo.2..=hi.2).contains(&z)
+}
+
+/// All cells in the box, in a fixed order.
+fn box_cells(lo: (i32, i32, i32), hi: (i32, i32, i32)) -> impl Iterator<Item = i32> {
+    (lo.2..=hi.2)
+        .flat_map(move |z| (lo.1..=hi.1).flat_map(move |y| (lo.0..=hi.0).map(move |x| fcc::to_flat(x, y, z))))
+}
+
+/// Cells on the box's faces — the seeds for the outside flood.
+fn boundary_cells(lo: (i32, i32, i32), hi: (i32, i32, i32)) -> impl Iterator<Item = i32> {
+    box_cells(lo, hi).filter(move |&c| {
+        let (x, y, z) = fcc::from_flat(c);
+        x == lo.0 || x == hi.0 || y == lo.1 || y == hi.1 || z == lo.2 || z == hi.2
+    })
 }
 ```
 
