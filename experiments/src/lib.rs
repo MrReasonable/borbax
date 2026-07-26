@@ -25,5 +25,6 @@ pub mod embed;
 pub mod g2;
 pub mod geodesic;
 pub mod molecule;
+pub mod openended;
 pub mod rng;
 pub mod signature;
