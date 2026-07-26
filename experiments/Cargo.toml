@@ -1,0 +1,21 @@
+[package]
+name = "borbax-experiments"
+edition.workspace = true
+# See the note in xtask/Cargo.toml: `[workspace.package] rust-version` is not
+# applied to a member unless the member asks for it. Omitting this line does
+# not fall back to the workspace value — it means no MSRV at all.
+rust-version.workspace = true
+license.workspace = true
+version = "0.1.0"
+publish = false
+
+# Without this line the whole `[workspace.lints]` block is inert for this
+# crate — `unsafe_code = "forbid"` forbids nothing and `unwrap_used = "deny"`
+# denies nothing. Cargo requires every member to opt in explicitly, exactly as
+# it does for `rust-version`. The failure mode is identical and equally quiet:
+# the lints are declared, believed, and never applied.
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true

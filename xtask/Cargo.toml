@@ -9,6 +9,17 @@ edition.workspace = true
 # stale toolchain failing loudly and silently producing different floats.
 # Every crate added from Task 2 onward needs this line.
 rust-version.workspace = true
+license.workspace = true
 version = "0.1.0"
+publish = false
+
+# Same trap as `rust-version` above, one line further down. `[workspace.lints]`
+# is not applied to a member that omits this — the crate simply has no lints,
+# so `unsafe_code = "forbid"` forbids nothing and `unwrap_used = "deny"` denies
+# nothing. Verified by planting an `.unwrap()` here: before this line it drew a
+# plain warning from a different lint entirely; `clippy::unwrap_used` never
+# fired at all. Every crate added from Task 2 onward needs this line too.
+[lints]
+workspace = true
 
 [dependencies]

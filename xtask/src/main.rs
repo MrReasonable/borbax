@@ -17,10 +17,17 @@ use std::process::{Command, Stdio};
 const DATA_EXTENSIONS: &[&str] = &["csv", "tsv", "json", "yaml", "yml", "parquet", "bin", "dat"];
 
 /// Crates that must contain no data files at all (G1).
+///
+/// `experiments` is on the list even though it is not part of the simulation:
+/// it implements a working version of Tasks 8-9, so a molecule set or a
+/// signature table smuggled in there is the same breach by the same route.
+/// Measurement *output* is not exempt either — it belongs in `docs/` or gets
+/// regenerated, exactly as it would for the crates below.
 const CHEMISTRY_CRATES: &[&str] = &[
     "crates/borbax-universe",
     "crates/borbax-molecule",
     "crates/borbax-reaction",
+    "experiments",
 ];
 
 /// Real chemical-format tokens that must never appear anywhere (G5).

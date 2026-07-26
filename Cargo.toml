@@ -3,7 +3,7 @@ resolver = "3"
 # `crates/*` joins this list in Task 2, with the first crate. Cargo falls back
 # to treating a glob that matches nothing as a literal path, so listing
 # `crates/*` before `crates/` has a package in it fails the workspace outright.
-members = ["xtask"]
+members = ["experiments", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -64,6 +64,32 @@ as_conversions = "warn"
 cast_possible_truncation = "warn"
 cast_precision_loss = "warn"
 cast_sign_loss = "warn"
+
+# Rewrites `a * b + c` into `a.mul_add(b, c)`, and it is a determinism trap
+# in this repository specifically. Measured on the pinned toolchain rather
+# than assumed:
+#
+#   x86-64 baseline   jmpq *fma@GOTPCREL(%rip)   <- the platform's libm
+#   x86-64 +fma       vfmadd213sd
+#   aarch64           fmadd
+#
+# The Linux and Windows CI legs compile for the baseline, so taking this
+# lint's advice would put a dynamic call into three different libm
+# implementations on the critical path — the same hazard as `exp` and `cos`
+# in §13.4, which is why `f64::mul_add` lives in `std` and not `core`. It
+# also changes the answer even where it is a single instruction: one rounding
+# instead of two. The suggestion arrives in a diff looking like a free
+# accuracy win, which is exactly what makes it worth denying by policy rather
+# than catching in review.
+#
+# If a hot loop ever genuinely wants FMA, that is a deliberate per-site
+# `#[allow]` accompanied by golden regeneration, not a global default.
+suboptimal_flops = "allow"
+
+# Wants `description`, `keywords`, `categories`, `readme` and `repository` on
+# every package. Every member here sets `publish = false` — there is no
+# registry listing for that metadata to appear in.
+cargo_common_metadata = "allow"
 
 # Allowed, with reasons — a bare allow is not acceptable anywhere else.
 # `borbax_molecule::MoleculeGraph` reads better than the alternative.
