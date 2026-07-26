@@ -608,3 +608,583 @@ EOF
 ```
 
 ---
+
+### Task 12: The fold cache
+
+**Files:**
+- Create: `crates/borbax-molecule/src/foldcache.rs`
+- Test: same file
+
+**Interfaces:**
+- Consumes: `Polymer`, `Fold`, `FoldWorkspace`, `Universe`, `Stream`
+- Produces: `FoldCache::{with_budget, get_or_fold, stats}`, `CacheStats { hits, misses, evictions, bytes }`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use borbax_rng::{Domain, Stream};
+    use borbax_universe::{ElementId, Universe};
+
+    fn poly(seed: u64, n: usize) -> Polymer {
+        let mut p = Polymer::new();
+        let mut r = Stream::new(seed, Domain::Fold, 99);
+        for _ in 0..n {
+            p.push(ElementId(r.next_range(20) as u8));
+        }
+        p
+    }
+
+    #[test]
+    fn a_hit_returns_exactly_what_a_miss_computed() {
+        let u = Universe::generate(2);
+        let mut c = FoldCache::with_budget(8 << 20);
+        let p = poly(1, 30);
+        let first = c.get_or_fold(&p, &u).clone();
+        let second = c.get_or_fold(&p, &u).clone();
+        assert_eq!(first, second);
+        assert_eq!(c.stats().hits, 1);
+        assert_eq!(c.stats().misses, 1);
+    }
+
+    #[test]
+    fn distinct_sequences_do_not_collide() {
+        let u = Universe::generate(2);
+        let mut c = FoldCache::with_budget(64 << 20);
+        for i in 0..500u64 {
+            let _ = c.get_or_fold(&poly(i, 24), &u);
+        }
+        assert_eq!(c.stats().misses, 500, "two distinct sequences shared an entry");
+    }
+
+    /// Eviction must be driven by the entries' own measured sizes at fixed
+    /// step boundaries — never by available system memory, which would make
+    /// results depend on what else the machine was doing (spec §13.1).
+    #[test]
+    fn eviction_respects_the_declared_budget() {
+        let u = Universe::generate(2);
+        let mut c = FoldCache::with_budget(64 << 10); // deliberately tiny
+        for i in 0..400u64 {
+            let _ = c.get_or_fold(&poly(i, 40), &u);
+        }
+        assert!(c.stats().bytes <= 64 << 10, "budget exceeded: {}", c.stats().bytes);
+        assert!(c.stats().evictions > 0, "budget never bit");
+    }
+
+    #[test]
+    fn eviction_is_deterministic() {
+        let u = Universe::generate(2);
+        let run = || {
+            let mut c = FoldCache::with_budget(64 << 10);
+            for i in 0..300u64 {
+                let _ = c.get_or_fold(&poly(i, 40), &u);
+            }
+            (c.stats().hits, c.stats().misses, c.stats().evictions)
+        };
+        assert_eq!(run(), run());
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure** — `cargo test -p borbax-molecule foldcache`, expect `cannot find type FoldCache`
+
+- [ ] **Step 3: Implement**
+
+```rust
+//! Cache of folded conformations (spec §17).
+//!
+//! A fold is a pure function of the sequence, so caching cannot change any
+//! result — unlike a lossy cache, this is safe under §13.1 no matter what it
+//! evicts. What *would* be unsafe is letting eviction depend on anything
+//! outside the simulation, so the budget is evaluated from the entries' own
+//! measured sizes and never from available system memory.
+
+use crate::fold::{Fold, FoldWorkspace};
+use crate::polymer::Polymer;
+use borbax_rng::{Domain, Stream};
+use borbax_universe::Universe;
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// Pass-through hasher: keys are already a strong 128-bit hash, so hashing
+/// them again would be pure cost. `RandomState` is banned outright — it is
+/// seeded nondeterministically.
+#[derive(Default)]
+pub struct PassThrough(u64);
+
+impl Hasher for PassThrough {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..chunk.len()].copy_from_slice(chunk);
+            self.0 ^= u64::from_le_bytes(b);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub bytes: usize,
+}
+
+struct Entry {
+    fold: Fold,
+    bytes: usize,
+    /// CLOCK reference bit. A single hand index serialises trivially into a
+    /// keyframe, which an LRU linked list would not — and CLOCK avoids an
+    /// allocation and a pointer chase per access.
+    referenced: bool,
+}
+
+pub struct FoldCache {
+    map: HashMap<u128, usize, BuildHasherDefault<PassThrough>>,
+    slots: Vec<Option<(u128, Entry)>>,
+    free: Vec<usize>,
+    hand: usize,
+    budget: usize,
+    stats: CacheStats,
+    ws: FoldWorkspace,
+}
+
+/// 128-bit key from two independent passes of the RNG mixer over the
+/// sequence. At a few million entries the birthday probability is ~1e-27, so
+/// storing the sequence itself would be paying for a guarantee we already have.
+fn key_of(p: &Polymer) -> u128 {
+    let mut a = Stream::new(0xB0_1BAA_5EED, Domain::Fold, 1);
+    let mut b = Stream::new(0x5EED_B0_1BAA, Domain::Fold, 2);
+    let (mut ha, mut hb) = (a.next_u64(), b.next_u64());
+    for (i, &u) in p.units().iter().enumerate() {
+        ha ^= u64::from(u).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left((i % 61) as u32);
+        ha = ha.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        hb ^= u64::from(u).wrapping_add(i as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93);
+        hb = hb.rotate_left(29).wrapping_mul(0x94D0_49BB_1331_11EB);
+    }
+    (u128::from(ha) << 64) | u128::from(hb)
+}
+
+impl FoldCache {
+    #[must_use]
+    pub fn with_budget(bytes: usize) -> Self {
+        Self {
+            map: HashMap::default(),
+            slots: Vec::new(),
+            free: Vec::new(),
+            hand: 0,
+            budget: bytes,
+            stats: CacheStats::default(),
+            ws: FoldWorkspace::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> CacheStats {
+        self.stats
+    }
+
+    pub fn get_or_fold(&mut self, p: &Polymer, u: &Universe) -> &Fold {
+        let k = key_of(p);
+        if let Some(&slot) = self.map.get(&k) {
+            self.stats.hits += 1;
+            if let Some((_, e)) = &mut self.slots[slot] {
+                e.referenced = true;
+            }
+            // Re-borrow immutably for the return.
+            return &self.slots[slot].as_ref().map(|(_, e)| &e.fold).unwrap_or_else(|| unreachable!());
+        }
+
+        self.stats.misses += 1;
+        // Fold seed derives from the key, so the same sequence anneals
+        // identically regardless of when it is first encountered.
+        let mut rng = Stream::new(k as u64, Domain::Fold, 0);
+        let fold = self.ws.fold(p, u, &mut rng);
+        let bytes = std::mem::size_of::<Fold>()
+            + fold.coords.len() * std::mem::size_of::<i32>()
+            + fold.exposure.len();
+
+        while self.stats.bytes + bytes > self.budget && !self.map.is_empty() {
+            self.evict_one();
+        }
+
+        let slot = self.free.pop().unwrap_or_else(|| {
+            self.slots.push(None);
+            self.slots.len() - 1
+        });
+        self.stats.bytes += bytes;
+        self.slots[slot] = Some((k, Entry { fold, bytes, referenced: false }));
+        self.map.insert(k, slot);
+        &self.slots[slot].as_ref().map(|(_, e)| &e.fold).unwrap_or_else(|| unreachable!())
+    }
+
+    /// CLOCK: sweep, clearing reference bits, evict the first unreferenced
+    /// entry. Deterministic given a deterministic access sequence, and the
+    /// entire eviction state is one integer.
+    fn evict_one(&mut self) {
+        loop {
+            if self.slots.is_empty() {
+                return;
+            }
+            self.hand = (self.hand + 1) % self.slots.len();
+            let idx = self.hand;
+            let Some((k, e)) = &mut self.slots[idx] else { continue };
+            if e.referenced {
+                e.referenced = false;
+                continue;
+            }
+            let (k, e) = (*k, self.slots[idx].take().map(|(_, e)| e).unwrap_or_else(|| unreachable!()));
+            self.map.remove(&k);
+            self.stats.bytes -= e.bytes;
+            self.stats.evictions += 1;
+            self.free.push(idx);
+            return;
+        }
+    }
+}
+```
+
+> **Implementer note:** the `unwrap_or_else(|| unreachable!())` forms above are
+> placeholders for the borrow shape only — restructure with an index-then-index
+> pattern or `split_at_mut` so no `unreachable!` survives into the committed
+> code. The Global Constraints ban `unwrap`/`expect` in library code and this
+> is the same class of thing.
+
+- [ ] **Step 4: Run** — `cargo test -p borbax-molecule foldcache`, expect 4 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/borbax-molecule/src/foldcache.rs
+git commit -m "$(cat <<'EOF'
+feat(molecule): fold cache with CLOCK eviction
+
+A fold is a pure function of its sequence, so caching cannot change a
+result no matter what it evicts — unlike a lossy cache, this is safe under
+§13.1 unconditionally. What would be unsafe is eviction depending on
+anything outside the simulation, so the budget is measured from the
+entries' own sizes and never from available system memory.
+
+Keys are 128-bit hashes of the sequence rather than the sequence itself:
+at a few million entries the birthday probability is around 1e-27, so
+storing the sequence buys a guarantee we already have. RandomState is
+banned outright since it is seeded nondeterministically.
+
+CLOCK rather than LRU: the whole eviction state is one hand index, which
+serialises into a keyframe trivially where a linked list would not, and it
+avoids an allocation and a pointer chase per access.
+
+MrReasonable <4990954+MrReasonable@users.noreply.github.com>
+EOF
+)"
+```
+
+---
+
+### Task 13: Cavity detection
+
+**Files:**
+- Create: `crates/borbax-molecule/src/cavity.rs`
+- Test: same file
+
+**Interfaces:**
+- Consumes: `Fold`, `Polymer`, `Geodesic<D>`, `Universe`, `fcc`
+- Produces: `Cavity { cells, centre, enclosure, signature }`, `cavities<D>(&Fold, &Polymer, &Geodesic<D>, &Universe) -> Vec<Cavity<D>>`, `MIN_ENCLOSURE`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{fold::FoldWorkspace, geodesic::Geodesic, polymer::Polymer};
+    use borbax_rng::{Domain, Stream};
+    use borbax_universe::{ElementId, Universe};
+
+    fn folded(seed: u64, n: usize, u: &Universe) -> (Polymer, crate::fold::Fold) {
+        let mut p = Polymer::new();
+        let mut r = Stream::new(seed, Domain::Fold, 7);
+        for _ in 0..n {
+            p.push(ElementId(r.next_range(20) as u8));
+        }
+        let f = FoldWorkspace::new().fold(&p, u, &mut Stream::new(seed, Domain::Fold, 0));
+        (p, f)
+    }
+
+    #[test]
+    fn detection_is_deterministic() {
+        let (u, g) = (Universe::generate(12), Geodesic::<42>::build().unwrap());
+        let (p, f) = folded(3, 60, &u);
+        assert_eq!(cavities(&f, &p, &g, &u), cavities(&f, &p, &g, &u));
+    }
+
+    #[test]
+    fn cavities_are_enclosed_by_construction() {
+        let (u, g) = (Universe::generate(12), Geodesic::<42>::build().unwrap());
+        let (p, f) = folded(4, 70, &u);
+        for c in cavities(&f, &p, &g, &u) {
+            assert!(c.enclosure >= MIN_ENCLOSURE, "reported an unenclosed cavity");
+        }
+    }
+
+    #[test]
+    fn cavity_cells_are_empty_and_connected() {
+        let (u, g) = (Universe::generate(12), Geodesic::<42>::build().unwrap());
+        let (p, f) = folded(5, 70, &u);
+        let occupied: std::collections::BTreeSet<i32> = f.coords.iter().copied().collect();
+        for c in cavities(&f, &p, &g, &u) {
+            assert!(c.cells.iter().all(|x| !occupied.contains(x)), "cavity overlaps the chain");
+            // Connectivity: every cell reachable from the first.
+            let set: std::collections::BTreeSet<i32> = c.cells.iter().copied().collect();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut stack = vec![c.cells[0]];
+            while let Some(x) = stack.pop() {
+                if !seen.insert(x) {
+                    continue;
+                }
+                for &d in &crate::fold::fcc::NEIGHBOURS {
+                    if set.contains(&(x + d)) {
+                        stack.push(x + d);
+                    }
+                }
+            }
+            assert_eq!(seen.len(), c.cells.len(), "cavity is not connected");
+        }
+    }
+
+    /// Longer chains fold more compactly and should produce more cavities.
+    /// If they do not, either folding is not compacting or the enclosure
+    /// threshold is wrong — and §8.5's catalysis has nothing to work with.
+    #[test]
+    fn longer_chains_produce_more_cavities() {
+        let (u, g) = (Universe::generate(12), Geodesic::<42>::build().unwrap());
+        let short: usize = (0..12).map(|s| { let (p, f) = folded(s, 25, &u); cavities(&f, &p, &g, &u).len() }).sum();
+        let long: usize = (0..12).map(|s| { let (p, f) = folded(s, 80, &u); cavities(&f, &p, &g, &u).len() }).sum();
+        assert!(long > short, "80-mers ({long}) gave no more cavities than 25-mers ({short})");
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure** — expect `cannot find function cavities`
+
+- [ ] **Step 3: Implement**
+
+```rust
+//! Cavity detection on a folded chain (spec §8.4, §8.5).
+//!
+//! A cavity is a connected pocket of empty lattice cells substantially
+//! enclosed by the chain. This is the three-dimensional payoff: in 2D the
+//! equivalent is a notch on a perimeter, open on two sides and unselective.
+//! Here a cavity can be surrounded on many sides at once, which is what makes
+//! a binding site *specific* rather than merely sticky — and specificity is
+//! the difference between a catalyst and a patch of glue.
+
+use crate::fold::{fcc, Fold};
+use crate::geodesic::Geodesic;
+use crate::polymer::Polymer;
+use crate::signature::Signature;
+use borbax_universe::Universe;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+/// Minimum occupied-neighbour count for an empty cell to count as enclosed.
+/// Out of twelve FCC neighbours, eight means surrounded on two-thirds of its
+/// faces. Below this a "cavity" is a surface dimple, and §8.5's selectivity
+/// argument does not hold for it.
+pub const MIN_ENCLOSURE: u8 = 8;
+
+/// Largest cavity worth reporting. Anything bigger is the outside world.
+const MAX_CAVITY_CELLS: usize = 24;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cavity<const D: usize> {
+    /// Empty lattice cells forming the cavity, sorted — determinism (§13.1).
+    pub cells: Vec<i32>,
+    /// Flat index of the cell nearest the cavity's centre of mass.
+    pub centre: i32,
+    /// Mean occupied-neighbour count across the cavity's cells.
+    pub enclosure: u8,
+    /// Local signature, built from the monomers lining the cavity. This is
+    /// what a substrate's signature is compared against (§8.3).
+    pub signature: Signature<D>,
+}
+
+#[must_use]
+pub fn cavities<const D: usize>(
+    f: &Fold,
+    p: &Polymer,
+    g: &Geodesic<D>,
+    u: &Universe,
+) -> Vec<Cavity<D>> {
+    if f.n == 0 {
+        return Vec::new();
+    }
+    let occupied: BTreeMap<i32, usize> =
+        f.coords.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+
+    // Candidate cells: empty, in bounds, and enclosed enough to matter.
+    let mut candidates: BTreeSet<i32> = BTreeSet::new();
+    for &c in &f.coords {
+        for &d in &fcc::NEIGHBOURS {
+            let cell = c + d;
+            if occupied.contains_key(&cell) || !fcc::in_bounds(cell) {
+                continue;
+            }
+            let filled =
+                fcc::NEIGHBOURS.iter().filter(|&&e| occupied.contains_key(&(cell + e))).count() as u8;
+            if filled >= MIN_ENCLOSURE {
+                candidates.insert(cell);
+            }
+        }
+    }
+
+    // Flood-fill candidates into connected groups. BTreeSet iteration is
+    // ordered, so group discovery order is fixed.
+    let mut seen: BTreeSet<i32> = BTreeSet::new();
+    let mut out = Vec::new();
+    for &start in &candidates {
+        if seen.contains(&start) {
+            continue;
+        }
+        let mut cells = Vec::new();
+        let mut q = VecDeque::from([start]);
+        while let Some(x) = q.pop_front() {
+            if !seen.insert(x) {
+                continue;
+            }
+            cells.push(x);
+            if cells.len() > MAX_CAVITY_CELLS {
+                break;
+            }
+            for &d in &fcc::NEIGHBOURS {
+                if candidates.contains(&(x + d)) && !seen.contains(&(x + d)) {
+                    q.push_back(x + d);
+                }
+            }
+        }
+        if cells.is_empty() || cells.len() > MAX_CAVITY_CELLS {
+            continue;
+        }
+        cells.sort_unstable();
+
+        let enclosure = (cells
+            .iter()
+            .map(|&c| fcc::NEIGHBOURS.iter().filter(|&&e| occupied.contains_key(&(c + e))).count())
+            .sum::<usize>()
+            / cells.len()) as u8;
+
+        let centre = cells[cells.len() / 2];
+        let signature = lining_signature(&cells, &occupied, p, g, u);
+        out.push(Cavity { cells, centre, enclosure, signature });
+    }
+    out
+}
+
+/// Signature of a cavity, built from the monomers lining it.
+///
+/// Directions point *inward* from the lining monomers toward the cavity
+/// centre, so the resulting signature is what a substrate sitting in the
+/// cavity would have to complement — the same comparison as §8.3, applied to
+/// a hole instead of a molecule.
+fn lining_signature<const D: usize>(
+    cells: &[i32],
+    occupied: &BTreeMap<i32, usize>,
+    p: &Polymer,
+    g: &Geodesic<D>,
+    u: &Universe,
+) -> Signature<D> {
+    let mut sig = Signature::<D>::zeroed();
+    let (cx, cy, cz) = fcc::from_flat(cells[cells.len() / 2]);
+    let centre = [f64::from(cx), f64::from(cy), f64::from(cz)];
+
+    // Lining monomers: those adjacent to any cavity cell. BTreeSet keeps the
+    // set ordered so the summation order below is fixed.
+    let mut lining: BTreeSet<usize> = BTreeSet::new();
+    for &c in cells {
+        for &d in &fcc::NEIGHBOURS {
+            if let Some(&m) = occupied.get(&(c + d)) {
+                lining.insert(m);
+            }
+        }
+    }
+
+    for dir_idx in 0..D {
+        let dir = g.dirs[dir_idx];
+        let mut extent = f64::NEG_INFINITY;
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for &m in &lining {
+            let (mx, my, mz) = fcc::from_flat_of(m, occupied);
+            let rel = [f64::from(mx) - centre[0], f64::from(my) - centre[1], f64::from(mz) - centre[2]];
+            let reach = rel[0] * dir[0] + rel[1] * dir[1] + rel[2] * dir[2];
+            if reach > extent {
+                extent = reach;
+            }
+            let w = reach.max(0.0);
+            num += w * u.element(p.unit(m)).affinity;
+            den += w;
+        }
+        sig.r[dir_idx] = if extent.is_finite() { extent } else { 0.0 };
+        sig.a[dir_idx] = if den > 0.0 { (num / den).clamp(-1.0, 1.0) } else { 0.0 };
+    }
+    sig
+}
+
+/// Look up a monomer's lattice coordinates via the occupancy map.
+fn from_flat_of(monomer: usize, occupied: &BTreeMap<i32, usize>) -> (i32, i32, i32) {
+    for (&cell, &m) in occupied {
+        if m == monomer {
+            return fcc::from_flat(cell);
+        }
+    }
+    (0, 0, 0)
+}
+```
+
+> **Implementer note:** `from_flat_of` as written is a linear scan per
+> direction per monomer, which is fine for correctness but wasteful. Build a
+> `Vec<(i32,i32,i32)>` indexed by monomer once at the top of
+> `lining_signature` and index into it. Kept explicit here so the intent is
+> visible rather than hidden in a setup line.
+
+- [ ] **Step 4: Run** — `cargo test -p borbax-molecule cavity`, expect 4 passed
+
+`longer_chains_produce_more_cavities` is the one to watch. If it fails,
+folding is not compacting enough and Task 11's move set needs pull moves —
+adjusting `MIN_ENCLOSURE` downward would "fix" the test while destroying the
+selectivity that makes catalysis possible.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/borbax-molecule/src/cavity.rs
+git commit -m "$(cat <<'EOF'
+feat(molecule): cavity detection on folded chains
+
+A cavity is a connected pocket of empty lattice cells enclosed on at least
+eight of twelve faces. That threshold is the 3D payoff: in 2D the
+equivalent is a notch open on two sides, and §8.5's selectivity argument
+does not hold for it. Specificity is the difference between a catalyst and
+a patch of glue.
+
+Cavity signatures are built from the lining monomers with directions
+pointing inward, so the result is what a substrate would have to
+complement — the same comparison as §8.3, applied to a hole.
+
+BTreeSet and BTreeMap throughout rather than hash containers: group
+discovery order and summation order both affect results, so they are fixed
+(§13.1).
+
+MIN_ENCLOSURE is not a tuning knob. If longer chains stop producing more
+cavities, the fix is pull moves in folding, not a lower threshold.
+
+MrReasonable <4990954+MrReasonable@users.noreply.github.com>
+EOF
+)"
+```
+
+---
