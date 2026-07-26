@@ -1,0 +1,12 @@
+# Local tooling artifacts
+.memsearch/
+.DS_Store
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+.vite/
