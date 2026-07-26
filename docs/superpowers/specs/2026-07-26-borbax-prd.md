@@ -150,6 +150,9 @@ These were settled before drafting and the rest of the document assumes them.
 | **V1 playfield** | One focused region (~256 km²) at high fidelity. The 1,000,000 km² planetary field arrives in V3 when complex life needs the room. |
 | **Interface depth** | Scales with the reader — one interface, switchable between storybook, explorer, and scientist registers. |
 | **Visual treatment** | Schematic scientific renderer first; naturalistic presentation layered over the same data later. |
+| **Decay model** | Global cleavage rate to locate the band, then per-bond rates derived from the generated energy matrix (§22.6). |
+| **Damage representation** | Implicit — a damaged molecule is simply a different molecule. Damage load measured as divergence from RAF-implied composition (§22.7). |
+| **Neutral shadow** | Spawned on demand from a keyframe, not run continuously (§22.3). |
 
 ---
 
@@ -809,7 +812,7 @@ The crate split follows principle: each has one clear purpose, a defined interfa
 
 | Version | Delivers | Rough shape |
 |---|---|---|
-| **V0** | Universe generation, molecule model, shape and binding, folding, beaker harness, folding-map property tests. No world, no viewer. Proves interesting chemistry happens in a test tube. | Foundation |
+| **V0** | Universe generation, molecule model, shape and binding, folding, decay, beaker harness, folding-map property tests. No world, no viewer. Proves interesting chemistry happens in a test tube. **Exit criteria in §23.** | Foundation |
 | **V1** | Focused region, multi-scale engine, determinism and keyframes, neutral shadow, Lab viewer, the Chronicle. **Target: protocells.** ← *this document* | The hard, novel part |
 | **V2** | Template-copying polymers, mutation, true heredity. Darwinian evolution proper. | Life gets a genome |
 | **V3** | Cells, ecology, and the expansion to the 1,000,000 km² planetary field with real biomes. | The world gets big |
@@ -855,18 +858,66 @@ Not in V1, and in several cases not ever:
 
 ---
 
-## 22. Open questions for review
+## 22. Resolved design questions
 
-1. **Region choice.** Volcanic coastal shelf is proposed as the richest single environment. Worth considering whether a run should instead span two or three distinct environments so that migration between them becomes a factor — at meaningful cost to per-patch fidelity.
+These were open at first draft and are now settled. The reasoning is preserved because several will want revisiting once there is evidence.
 
-2. **Signature dimensionality.** 8 sectors is proposed as the balance point between expressiveness and cost. This is a parameter the beaker harness can settle empirically in V0, and it should be, before anything is built on top of it.
+### 22.1 Region choice — single volcanic coastal shelf
 
-3. **Shadow run cost.** A neutral shadow doubles compute for any run it accompanies. Should shadows run continuously alongside every run, or be spawned on demand from a keyframe when a claim actually needs testing? The latter is far cheaper and probably sufficient.
+The shelf already contains several distinct micro-environments with real gradients between them: a vent field, a tidal flat that wets and dries, porous mineral rock, and shallow photic water. Migration between conditions is therefore already a factor without paying for multiple regions, and the boundaries between them are where the most interesting chemistry should sit.
 
-4. **Failed-run policy.** If an overnight run produces no protocell, does it automatically retry with a new world seed under the same universe, or stop and wait for a human to look at what happened? The former is friendlier; the latter is far more informative early on.
+Multi-region ecology is a V3 concern, when there is something alive to migrate. Revisit before then only if runs show chemistry saturating in a way that looks environment-limited rather than parameter-limited — and note that per §2.7 the more likely cause of saturation is total space-time volume, not variety.
 
-5. **Chronicle voice.** Storybook register needs an actual voice, and getting it right matters more than most of the engineering here. Worth drafting a handful of sample entries early and reading them aloud to the intended audience.
+### 22.2 Signature dimensionality — 8 sectors, confirmed empirically in V0
 
-6. **Decay granularity.** Should spontaneous cleavage use a single global rate, or should every bond type derive its own from the generated bond-energy matrix? The latter is far more in keeping with principle 1 and produces much richer behaviour — some linkages become genuinely durable and others fragile, which is exactly the kind of structure evolution can exploit. But it hands the beaker battery a much larger space to search when tuning the decay band. Recommend starting global to get the band located, then refining per-bond once the range is known.
+8 is a reasonable prior: cheap at 64 multiply-adds per pair, and enough to express both interlock and polarity. But it is an empirical question the beaker harness can answer in minutes, so it gets answered rather than assumed.
 
-7. **How damage is represented.** In a shape-based system a damaged molecule is not a molecule with a damage flag — it is simply a *different molecule*, with a different shape and a different identity. That is elegant and requires no new machinery, but it means "damage load" (§15.2) has to be measured indirectly, as divergence between a compartment's actual composition and the composition its RAF set implies it should have. This is worth prototyping in the beaker harness before committing, because if the measurement turns out to be too noisy to act on, the aging story in §9.6 becomes unobservable even though it is happening.
+V0 sweeps 4, 6, 8, 12 and 16 sectors against the folding-map property tests (§16) and the chemistry-diversity criteria (§7.2), and picks the smallest value that passes all of them. **Locking this value is a V0 exit criterion** — changing it later invalidates every golden hash and every tuned parameter downstream, so it must not be left drifting.
+
+### 22.3 Neutral shadow — spawned on demand, not run continuously
+
+A continuous shadow doubles compute for a control we only actually consult when making a claim. Since branching (§13.3) already provides fork-from-keyframe, a shadow can be spawned *retroactively* over exactly the interval a claim covers.
+
+Cheaper, and strictly more flexible — a single run can be interrogated at several different points rather than carrying one fixed control. The accepted trade-off is that shadow intervals are quantised to the keyframe spacing, so a claim finer-grained than that spacing cannot be tested without re-running from the previous keyframe.
+
+### 22.4 Failed-run policy — stop and report, for now
+
+While the engine is under development, a run that produces nothing is the single most informative event available, and discarding it to try another seed would be throwing away the best diagnostic we have.
+
+So a null run halts and writes a full report: the metrics trajectory, which battery criteria the universe passed and by how much, the last milestone reached, and the state at the point progress stopped. Automatic retry becomes appropriate only once null runs are understood well enough to be boring — a V2 concern at the earliest.
+
+### 22.5 Chronicle voice — sample entries written before the Chronicle is built
+
+The voice is harder than the plumbing, and it constrains the event schema: what an entry needs to *say* determines what each event has to carry.
+
+So roughly ten sample entries get drafted across all three depth registers, covering the milestone list in §14.4 including the deaths, and read aloud to the intended audience during V1 planning. Whatever survives that reading defines the event schema. Doing this after the Chronicle exists would mean discovering the schema is wrong at the point it is most expensive to change.
+
+### 22.6 Decay granularity — global rate first, per-bond refinement second
+
+The decay band is the most sensitive parameter in the system (§20), and searching for it in one dimension is dramatically easier than searching the full space of the bond-energy matrix.
+
+So V0 locates the band with a single global cleavage rate. Once found, per-bond rates derived from the generated matrix — which is what principle 1 actually wants, and which produces the far richer outcome where some linkages are durable and others fragile — are introduced *with the global rate as their mean*, so the band established in the first phase stays valid and the refinement is a redistribution rather than a fresh search.
+
+### 22.7 Damage representation — implicit, with a measurability gate
+
+A damaged molecule is simply a different molecule. No damage flag, no parallel bookkeeping, consistent with principle 2 — the shape changed, so the identity changed, and that is the whole story.
+
+Damage load (§15.2) is therefore measured as divergence between a compartment's actual composition and the composition its RAF set implies it should have. The risk is that this measurement is too noisy to act on, which would make the aging account in §9.6 unobservable even while it is happening.
+
+So it gets a **V0 exit criterion**: inject a known quantity of damage into a beaker and confirm the metric recovers it above noise. If it fails, the fallback is lightweight provenance — tag each molecule with the reaction that produced it, so damage is identified by origin rather than inferred from composition. That costs extra per-molecule state and some determinism care, which is exactly why it is a fallback rather than the plan.
+
+---
+
+## 23. V0 exit criteria
+
+V0 has no world and no viewer. It exists to establish that the chemistry is worth building a world around, and to lock the parameters everything downstream depends on. It is complete when:
+
+1. `universe_gen` produces universes passing the full beaker battery (§7.2), including the decay band
+2. The folding map demonstrably exhibits neutral networks and approximate shape-space covering (§2.5, §16)
+3. Signature dimensionality is swept and **locked** (§22.2)
+4. The decay band is located with a global rate (§22.6)
+5. Damage load is shown to be measurable above noise, or the provenance fallback is adopted (§22.7)
+6. Catalysis is observed emerging — a folded polymer with two pockets measurably accelerating a reaction, with nothing in the code that knows what an enzyme is (§8.5)
+7. With decay disabled, a run and its shadow become statistically indistinguishable (§16)
+
+Criterion 6 is the one that matters. If shape-derived catalysis does not emerge in a beaker, no amount of world-building above it will help, and the design needs rethinking before another line is written.
