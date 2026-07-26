@@ -33,7 +33,7 @@
 
 use crate::embed::{self, Point};
 use crate::geodesic::{Geodesic, Mat3, N_ROTATIONS, apply_mat};
-use crate::molecule::{ELEMENT_RADII, Molecule};
+use crate::molecule::{ELEMENT_RADII, Molecule, N_ELEMENTS};
 
 /// Sampling resolution. 42 is the spec's prior (§22.2); the ladder is
 /// {12, 42, 162} and nothing between them preserves the exact permutation.
@@ -125,7 +125,9 @@ pub struct Profile {
     pub framed: Vec<f64>,
     /// `raw`, sorted ascending — orientation discarded entirely.
     pub sorted: Vec<f64>,
-    /// Atom count, for the positive control.
+    /// How many atoms of each element, for the positive control.
+    pub composition: [f64; N_ELEMENTS],
+    /// Atom count.
     pub atoms: f64,
     /// Digest of the canonical form, for the negative control.
     pub form_hash: u64,
@@ -150,10 +152,17 @@ pub fn profile<const N: usize>(g: &Geodesic<N>, m: &Molecule) -> Profile {
         reason = "an atom count, far below 2^53 — exact"
     )]
     let atoms = m.len() as f64;
+    let mut composition = [0.0; N_ELEMENTS];
+    for &e in &m.elements {
+        if let Some(slot) = composition.get_mut(usize::from(e)) {
+            *slot += 1.0;
+        }
+    }
     Profile {
         raw,
         framed,
         sorted,
+        composition,
         atoms,
         form_hash: m.form_hash(),
     }
@@ -214,11 +223,19 @@ pub enum Descriptor {
     Group,
     /// Sorted extents: invariant under all of SO(3), not just the 60.
     Sorted,
-    /// **Positive control.** Difference in atom count. It is not a shape
-    /// descriptor and is not proposed as one; it is a quantity that *must*
-    /// show locality, because a one-atom edit changes it by at most one while
-    /// two unrelated molecules differ by however much their sizes differ. A
-    /// harness that cannot see locality here cannot see locality at all.
+    /// **Positive control.** L1 distance between per-element atom counts.
+    ///
+    /// Not a shape descriptor and not proposed as one — it uses no geometry
+    /// whatsoever. It is a quantity that *must* show locality: a one-atom edit
+    /// changes it by at most two, while two independently drawn molecules
+    /// differ by far more. A harness that cannot see locality here cannot see
+    /// locality at all, and its other numbers mean nothing.
+    ///
+    /// Composition rather than bare atom count, which is the obvious choice
+    /// and is wrong: under the size-matched regime every molecule has the same
+    /// atom count, so that control would read a flat zero and certify a broken
+    /// instrument as working. Composition still discriminates when sizes are
+    /// held equal.
     PositiveControl,
     /// **Negative control.** Hamming distance between digests of the canonical
     /// form. It identifies the species exactly, so it holds strictly more
@@ -248,7 +265,7 @@ impl Descriptor {
             Self::Raw => "D_raw",
             Self::Group => "D_group",
             Self::Sorted => "D_sorted",
-            Self::PositiveControl => "control+ (atom count)",
+            Self::PositiveControl => "control+ (composition)",
             Self::NegativeControl => "control- (form hash)",
         }
     }
@@ -267,7 +284,13 @@ impl Descriptor {
             Self::Raw => d_raw(&a.raw, &b.raw),
             Self::Group => d_group(g, &a.raw, &b.raw),
             Self::Sorted => d_sorted(&a.sorted, &b.sorted),
-            Self::PositiveControl => (a.atoms - b.atoms).abs(),
+            Self::PositiveControl => {
+                let mut total = 0.0;
+                for i in 0..N_ELEMENTS {
+                    total += (a.composition[i] - b.composition[i]).abs();
+                }
+                total
+            }
             #[allow(
                 clippy::cast_precision_loss,
                 reason = "a popcount of a u64: at most 64"
@@ -464,14 +487,18 @@ mod tests {
     }
 
     #[test]
-    fn the_positive_control_tracks_atom_count_and_the_negative_control_does_not() {
+    fn the_positive_control_tracks_composition_and_the_negative_control_does_not() {
         let g = geo();
         let mut rng = Stream::new(37);
         let m = Molecule::random_tree(&mut rng, 10);
         let bigger = m.add_leaf(&mut rng);
         let a = profile(&g, &m);
         let b = profile(&g, &bigger);
+        // One added atom moves exactly one element's count by one.
         assert!((Descriptor::PositiveControl.distance(&g, &a, &b) - 1.0).abs() < 1e-12);
+        // A retype moves two counts by one each.
+        let retyped = profile(&g, &m.retype_one(&mut rng));
+        assert!((Descriptor::PositiveControl.distance(&g, &a, &retyped) - 2.0).abs() < 1e-12);
         // The negative control must react to *any* change, without its
         // magnitude meaning anything — that is what makes it a null.
         assert!(Descriptor::NegativeControl.distance(&g, &a, &b) > 0.0);

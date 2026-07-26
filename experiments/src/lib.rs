@@ -22,6 +22,7 @@
 //! it lifts into `borbax-molecule` unchanged whatever G2 returns.
 
 pub mod embed;
+pub mod g2;
 pub mod geodesic;
 pub mod molecule;
 pub mod rng;
