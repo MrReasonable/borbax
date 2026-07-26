@@ -41,8 +41,12 @@ is "RAF-like" rather than RAF gives up the rigour that made it worth choosing.
 **AlChemy, and the 2024 correction.** Fontana & Buss's original result, and
 "Return to AlChemy" (Mathis, Patel, Weimer & Forrest, *Chaos* 34:093142, 2024),
 which found level-1 organisations *more* robust than reported but failed to
-replicate level 2 — organisations coexist only ~16% of the time and mutually
-destroy each other ~60%. The consequence for Borbax is that composition of
+replicate level 2 — across 455 trials combining organisations from *different*
+runs, mutual destruction ~68%, one dominating the other ~27%, coexistence ~5%
+(Figure 4B, read from the figure raster; text extraction drops that table).
+Note the robustness result is about level **0**, not level 1, and that the
+within-run route Fontana & Buss also used was not attempted — so this is a
+non-replication of one route out of two. The consequence for Borbax is that composition of
 self-maintaining units into higher-order ones must never be assumed (§2.1, §19).
 
 **Bedau's evolutionary activity statistics**, and specifically class 2 —

@@ -56,7 +56,11 @@ The pattern is clear: nearly all of these are **symbolic rewriting systems** —
 
 None of them derives reactivity from **generated geometry**. That is the gap Borbax occupies.
 
-> **A warning from this literature.** "Return to AlChemy" (Mathis, Patel, Weimer & Forrest, *Chaos* 34:093142, 2024) re-ran the founding experiment of the field and partially falsified it. Level-1 self-maintaining organisations turn out to be *more* frequent and robust than originally reported — encouraging. But level 2 does not replicate: organisations rarely combine, coexisting only about 16% of the time and mutually destroying each other around 60% of the time.
+> **A warning from this literature.** "Self-organization in computation and chemistry: Return to AlChemy" (Mathis, Patel, Weimer & Forrest, *Chaos* 34(9):093142, 2024) re-ran the founding experiment of the field and partially falsified it. Level-**0** organisations turn out to be more robust than reported — they resist collapse to the trivial fixed point. Level 1 is weaker than that summary suggests: the paper says stability "varies widely", and that one organisation "was not truly stable".
+>
+> Level 2 does not replicate. Combining organisations drawn from *different* runs across 455 trials: **mutual destruction ~68%, one dominating the other ~27%, coexistence ~5%** (Figure 4B, read from the figure itself — the table is a raster that text extraction drops).
+>
+> Three conditions travel with that result and are easy to lose. It combined organisations from *different* runs; the other route Fontana & Buss used — two separable organisations within a single run — was **not attempted**, so this is a non-replication of one route out of two. And the categories are a Jaccard-similarity cut at 0.1.
 >
 > The implication for Borbax is direct and important. **We must not assume protocells will spontaneously compose into higher-order structures.** The single most-cited claim in artificial chemistry — that self-maintaining systems stack into hierarchies — is the field's weakest result. V2 onward must treat composition as an open research question, not as something that will fall out.
 
