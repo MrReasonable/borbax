@@ -32,8 +32,7 @@ These exist once Task 1 lands; none of them work before that.
 
 ```bash
 proto install                                          # toolchain from .prototools (Rust only)
-cargo install prek --locked                            # git-hook runner (once per machine)
-prek install --hook-type pre-commit --hook-type pre-push
+cargo run -p xtask -- setup                            # prek + git hooks (once per clone)
 cargo test --workspace                                 # full suite
 cargo test -p borbax-molecule signature                # one crate, one filter
 cargo test -p borbax-units --doc                       # doc tests (compile_fail unit-mixing tests live here)

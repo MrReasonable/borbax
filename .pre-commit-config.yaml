@@ -1,7 +1,12 @@
 # Git hooks, run by prek — https://prek.j178.dev
 #
-#   cargo install prek --locked
-#   prek install --hook-type pre-commit --hook-type pre-push
+#   cargo run -p xtask -- setup      # installs prek if absent, then the hooks
+#
+# `default_install_hook_types` below is why that is one command rather than
+# three: a bare `prek install` picks up both stages instead of needing them
+# named. prek only installs pre-commit by default, so without this a fresh
+# clone would silently get half the gate — the pre-push half, holding clippy
+# and the test suite, is the half you would not notice missing.
 #
 # prek is a single Rust binary with no runtime dependency, which keeps the
 # "one language, one build" property the native-viewer decision bought
@@ -16,6 +21,8 @@
 # enforced by `rust-version.workspace = true` in every crate — cargo refuses
 # to build with anything older, so a hook cannot quietly check your work with
 # the wrong rustc.
+
+default_install_hook_types: [pre-commit, pre-push]
 
 repos:
   - repo: local

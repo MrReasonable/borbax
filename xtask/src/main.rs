@@ -6,8 +6,10 @@
 //!
 //! Git hooks are not this binary's job — `prek` installs and runs them from
 //! `.pre-commit-config.yaml`, which calls back into `cargo run -p xtask`.
+//! `setup` only *invokes* prek; it does not reimplement it.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 /// Extensions that would indicate bulk data smuggled into a chemistry crate.
 /// The entire chemistry is generated from a seed; there is nothing legitimate
@@ -36,9 +38,63 @@ fn main() -> Result<(), String> {
     // subcommand that never ran gets believed.
     match std::env::args().nth(1).as_deref() {
         None | Some("check-guarantees") => check_guarantees(&root),
+        Some("setup") => setup(&root),
         Some(other) => Err(format!(
-            "unknown subcommand {other:?} — expected `check-guarantees` or no argument"
+            "unknown subcommand {other:?} — expected `check-guarantees` or `setup`"
         )),
+    }
+}
+
+/// Bring a fresh clone or worktree up to working order.
+///
+/// This exists because of the one real cost of choosing `prek` over a
+/// build-script installer like `husky-rs`: hooks are installed by an explicit
+/// command, so a fresh clone has none and nothing says so. Rather than accept
+/// "remember to run prek install", this is the one command to run after
+/// cloning, and it is idempotent — running it again costs nothing.
+///
+/// It orchestrates rather than duplicates. Hook installation is still prek's
+/// job; this only makes sure prek exists and then asks it.
+fn setup(root: &Path) -> Result<(), String> {
+    if tool_present("prek") {
+        println!("prek: already installed");
+    } else {
+        println!("prek: not found — installing with `cargo install prek --locked`");
+        run(root, "cargo", &["install", "prek", "--locked"])?;
+    }
+
+    // Bare `install`: the stages come from `default_install_hook_types` in
+    // .pre-commit-config.yaml, so the config stays the single source of truth
+    // for which hooks exist rather than being restated in an argument here.
+    run(root, "prek", &["install"])?;
+
+    println!("setup complete — pre-commit and pre-push hooks active");
+    Ok(())
+}
+
+/// Whether `bin` can be executed at all.
+///
+/// Runs `--version` rather than searching PATH by hand, so it works the same
+/// on Windows and does not have to know about extensions or shims.
+fn tool_present(bin: &str) -> bool {
+    Command::new(bin)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn run(root: &Path, bin: &str, args: &[&str]) -> Result<(), String> {
+    let status = Command::new(bin)
+        .args(args)
+        .current_dir(root)
+        .status()
+        .map_err(|e| format!("could not run `{bin}`: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`{bin} {}` failed", args.join(" ")))
     }
 }
 
