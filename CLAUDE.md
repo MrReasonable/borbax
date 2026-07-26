@@ -39,9 +39,16 @@ cargo run -p xtask                                     # fiction-guarantee check
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p borbax-cli --release -- goldens --emit    # golden state hashes (cross-platform matrix)
+UPDATE_GOLDENS=1 cargo test -p borbax-render           # regenerate SVG goldens after a deliberate render change
 ```
 
-`borbax-cli` subcommands: `beaker`, `sweep`, `battery`, `render`, `goldens`.
+`borbax-cli` subcommands: `beaker`, `sweep`, `band`, `battery`, `render`, `goldens`.
+
+Transcendentals are vendored in `crates/borbax-molecule/src/det_math.rs`. Until
+Task 21 Step 6 replaces the stub bodies, goldens generated locally **will not**
+reproduce on CI runners — Apple's libm and glibc disagree in the last bits. The
+`determinism-matrix` CI job is deliberately left inert until then, so it fails
+loudly if that work is skipped.
 
 The dev profile is deliberately `opt-level = 1` (deps at 2): the unit newtypes are
 zero-cost only after inlining, and the beaker harness's value is that a
