@@ -5,6 +5,23 @@ description: Review a Borbax branch or pull request with the six specialist agen
 
 # Review Pull Request
 
+## Step 0 — The suite must be green before anyone is dispatched
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo run -p xtask                       # §5 fiction gate
+```
+
+**Red suite, no review.** Specialists are for logic, architecture and approach;
+a compiler is better than all six at compilation and runs in seconds. Sending
+them at a broken build spends their attention on what a tool would have told
+you, and buries the findings only they can produce.
+
+The one exception is a build broken in a way you do not understand — then a
+reviewer is diagnosing, not reviewing, and should be told which it is.
+
 **Announce:** "Using review-pr to review `<target>` with the specialist fleet."
 
 ## Step 1 — Resolve scope
@@ -73,20 +90,18 @@ have reviewed it, or it is a bug.
 
 As `review-plan` Step 4.
 
-## Step 5 — Verify before reporting
+## Step 5 — Verify findings against the suite
 
-Findings on real code can be checked, unlike findings on a plan. Before
-reporting, run:
+The suite was green at Step 0, which makes it a tool for *testing findings*
+rather than a source of them. For each finding, ask whether an existing test
+already covers it:
 
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run -p xtask                        # fiction guarantees, spec §5
-```
-
-Any finding contradicted by a passing test is downgraded and the contradiction
-stated. Any finding confirmed by a failing test is promoted to Critical.
+- **Contradicted by a passing test** → downgrade, and state the contradiction.
+  Either the finding is wrong or the test is, and which one matters.
+- **Not covered by any test** → that gap is itself worth reporting. A defect
+  nothing would have caught is more valuable than the defect.
+- **Reproducible by a new test** → write it. A finding with a failing test
+  attached is not an opinion.
 
 ## Step 6 — Report
 
