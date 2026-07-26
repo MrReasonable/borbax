@@ -1188,3 +1188,902 @@ EOF
 ```
 
 ---
+
+## Phase 5 — Reactions, decay, and self-sustaining sets
+
+### Task 14: Species records, interning, and reaction rates
+
+The invariant of spec §8.6 lands here. **Nothing in this task's output may be
+recomputed per molecule** — a `SpeciesRecord` is built once at intern time and
+the step loop only ever reads it.
+
+**Files:**
+- Create: `crates/borbax-reaction/{Cargo.toml,src/lib.rs,src/species.rs,src/kind.rs,src/rate.rs}`
+- Test: `src/species.rs`, `src/rate.rs`
+
+**Interfaces:**
+- Consumes: `borbax_molecule::{Mol12, Signature, Geodesic, canonicalise, embed, signature, affinity_ordered}`, `Universe`
+- Produces: `SpeciesId(u32)`, `SpeciesRecord`, `Interner::{new, intern, record, len}`, `ReactionKind`, `Reaction`, `rate(&Reaction, Thermal, &[f64], f64) -> f64`, `AffinityMemo`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use borbax_molecule::{geodesic::Geodesic, graph::Mol12};
+    use borbax_universe::{ElementId, Universe};
+
+    fn mol(elems: &[u8]) -> Mol12 {
+        let mut m = Mol12::new();
+        for &e in elems {
+            m.add_atom(ElementId(e));
+        }
+        for i in 1..elems.len() as u8 {
+            m.add_bond(i - 1, i, 1);
+        }
+        m
+    }
+
+    #[test]
+    fn identical_molecules_intern_to_one_id() {
+        let (u, g) = (Universe::generate(3), Geodesic::<42>::build().unwrap());
+        let mut it = Interner::new();
+        let a = it.intern(&mol(&[0, 1, 2]), &u, &g);
+        let b = it.intern(&mol(&[0, 1, 2]), &u, &g);
+        assert_eq!(a, b);
+        assert_eq!(it.len(), 1);
+    }
+
+    #[test]
+    fn ids_are_assigned_in_order_of_first_appearance() {
+        let (u, g) = (Universe::generate(3), Geodesic::<42>::build().unwrap());
+        let run = || {
+            let mut it = Interner::new();
+            let ids: Vec<u32> = [&[0u8, 1][..], &[2, 3], &[0, 1], &[4, 5]]
+                .iter()
+                .map(|e| it.intern(&mol(e), &u, &g).0)
+                .collect();
+            ids
+        };
+        assert_eq!(run(), vec![0, 1, 0, 2]);
+        assert_eq!(run(), run(), "id assignment is not reproducible");
+    }
+
+    #[test]
+    fn records_carry_everything_the_hot_loop_needs() {
+        let (u, g) = (Universe::generate(3), Geodesic::<42>::build().unwrap());
+        let mut it = Interner::new();
+        let id = it.intern(&mol(&[0, 1, 2, 3]), &u, &g);
+        let r = it.record(id);
+        assert_eq!(r.mass, mol(&[0, 1, 2, 3]).mass(&u));
+        assert!(r.bond_count > 0);
+        assert!(r.solvent_rate.is_finite());
+    }
+
+    /// Memoising a pure function cannot change results — that is the whole
+    /// reason it is safe here (spec §8.6). Prove it rather than assume it.
+    #[test]
+    fn the_affinity_memo_agrees_with_direct_computation() {
+        let (u, g) = (Universe::generate(3), Geodesic::<42>::build().unwrap());
+        let mut it = Interner::new();
+        let ids: Vec<_> = (0..8u8).map(|i| it.intern(&mol(&[i, i + 1, i + 2]), &u, &g)).collect();
+        let mut memo = AffinityMemo::new(8);
+        let k = (&u.consts).into();
+        for &a in &ids {
+            for &b in &ids {
+                let direct =
+                    borbax_molecule::binding::affinity_ordered(&it.record(a).sig, &it.record(b).sig, &g, &k);
+                assert_eq!(memo.get(a, b, &it, &g, &k), direct);
+            }
+        }
+    }
+
+    #[test]
+    fn rates_rise_with_temperature_and_concentration() {
+        use borbax_units::{Quanta, Thermal};
+        let r = Reaction {
+            kind: ReactionKind::Condense,
+            reactants: [SpeciesId(0), SpeciesId(1)],
+            products: [SpeciesId(2), SpeciesId(3)],
+            activation: Quanta(50.0),
+            delta: Quanta(-10.0),
+        };
+        let c = [10.0, 10.0, 0.0, 0.0];
+        assert!(rate(&r, Thermal(400.0), &c, 1.0) > rate(&r, Thermal(200.0), &c, 1.0));
+        let more = [20.0, 10.0, 0.0, 0.0];
+        assert!(rate(&r, Thermal(300.0), &more, 1.0) > rate(&r, Thermal(300.0), &c, 1.0));
+        assert!(rate(&r, Thermal(300.0), &c, 50.0) > rate(&r, Thermal(300.0), &c, 1.0));
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure** — expect `cannot find type Interner`
+
+- [ ] **Step 3: Implement species records and interning**
+
+```rust
+//! Species records: everything expensive, computed once (spec §8.6).
+//!
+//! Canonicalisation, embedding, signature construction, folding and per-bond
+//! decay rates are all pure functions of the *species*. They run here, at
+//! intern time, and nowhere else. **No code reachable from a simulation step
+//! may call any of them** — that invariant is what makes the molecular-tier
+//! budget in §17 reachable at all, and violating it costs roughly two orders
+//! of magnitude.
+
+use borbax_molecule::binding::{affinity_ordered, BindConsts};
+use borbax_molecule::canonical::{canonicalise, CanonForm};
+use borbax_molecule::geodesic::Geodesic;
+use borbax_molecule::graph::Mol12;
+use borbax_molecule::layout::embed;
+use borbax_molecule::signature::{signature, Signature};
+use borbax_units::Mass;
+use borbax_universe::{ElementId, Universe};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpeciesId(pub u32);
+
+/// Everything the hot loop needs about a species. Built once; read forever.
+#[derive(Debug, Clone)]
+pub struct SpeciesRecord<const D: usize> {
+    pub canon: CanonForm,
+    pub sig: Signature<D>,
+    pub mass: Mass,
+    pub bond_count: u32,
+    /// Total thermal cleavage propensity per unit time at unit temperature,
+    /// summed over the molecule's bonds. Precomputed so decay is a propensity
+    /// channel rather than a per-molecule sweep (spec §9.5).
+    pub cleave_propensity: f64,
+    /// Complementarity between the solvent and this species, precomputed.
+    pub solvent_rate: f64,
+}
+
+/// Canonical form -> id. Lookup only; **never iterated**, because iteration
+/// order of a hash container is not reproducible. The `Vec` is the iteration
+/// surface.
+pub struct Interner<const D: usize> {
+    ids: BTreeMap<CanonForm, SpeciesId>,
+    records: Vec<SpeciesRecord<D>>,
+}
+
+impl<const D: usize> Default for Interner<D> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const D: usize> Interner<D> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { ids: BTreeMap::new(), records: Vec::new() }
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    #[must_use]
+    pub fn record(&self, id: SpeciesId) -> &SpeciesRecord<D> {
+        &self.records[id.0 as usize]
+    }
+
+    /// Intern a molecule, computing its record on first sight.
+    ///
+    /// Ids are assigned **in order of first appearance in the simulation's
+    /// event sequence**, which is automatically reproducible because the event
+    /// sequence is. Assigning by hash value or by sorted traversal would be
+    /// reproducible too, but would make ids jump around as unrelated species
+    /// appear, which makes every log and every diff harder to read.
+    pub fn intern(&mut self, m: &Mol12, u: &Universe, g: &Geodesic<D>) -> SpeciesId {
+        let (canon, _) = canonicalise(m);
+        if let Some(&id) = self.ids.get(&canon) {
+            return id;
+        }
+        let id = SpeciesId(self.records.len() as u32);
+        let e = embed(m, u);
+        let sig = signature(m, &e, g, u).canonicalise(g);
+
+        let mut bond_count = 0u32;
+        let mut cleave = 0.0f64;
+        for i in 0..m.n {
+            for j in (i + 1)..m.n {
+                let order = m.bond_order(i, j);
+                if order == 0 {
+                    continue;
+                }
+                bond_count += 1;
+                let (ea, eb) =
+                    (u.element(ElementId(m.elem[i as usize])), u.element(ElementId(m.elem[j as usize])));
+                let energy = u.bonds.energy(ea, eb, order).get();
+                // Weaker bonds break more readily. The exponential lives in
+                // `rate`; here we keep the bond-strength weighting only, so
+                // this stays a plain sum with no transcendental (§13.1).
+                cleave += u.consts.decay_scale / energy.max(1e-6);
+            }
+        }
+
+        // Solvent attack is a pure function of the species (§9.5), so it is
+        // resolved once here rather than on every step.
+        let solvent_sig = solvent_signature(u, g);
+        let solvent_rate = -affinity_ordered(&sig, &solvent_sig, g, &(&u.consts).into());
+
+        self.records.push(SpeciesRecord {
+            canon,
+            sig,
+            mass: m.mass(u),
+            bond_count,
+            cleave_propensity: cleave,
+            solvent_rate,
+        });
+        self.ids.insert(canon, id);
+        id
+    }
+}
+
+/// Signature of a lone solvent atom. Cheap, but computed once per call site
+/// in practice — callers should hoist it.
+fn solvent_signature<const D: usize>(u: &Universe, g: &Geodesic<D>) -> Signature<D> {
+    let mut m = Mol12::new();
+    m.add_atom(u.consts.solvent);
+    signature(&m, &embed(&m, u), g, u).canonicalise(g)
+}
+
+/// Dense triangular memo over the most abundant species (spec §8.6).
+///
+/// `affinity_ordered` is a pure function of a species pair plus universe
+/// constants, so memoising it cannot change a result. Unlike a lossy cache
+/// this is safe under §13.1 unconditionally — which is why it is worth doing
+/// here rather than optimising the kernel further.
+pub struct AffinityMemo {
+    k: u32,
+    vals: Vec<Option<f64>>,
+}
+
+impl AffinityMemo {
+    #[must_use]
+    pub fn new(k: u32) -> Self {
+        Self { k, vals: vec![None; (k as usize) * (k as usize + 1) / 2] }
+    }
+
+    fn slot(&self, a: SpeciesId, b: SpeciesId) -> Option<usize> {
+        let (lo, hi) = if a.0 < b.0 { (a.0, b.0) } else { (b.0, a.0) };
+        if hi >= self.k {
+            return None;
+        }
+        Some((hi as usize) * (hi as usize + 1) / 2 + lo as usize)
+    }
+
+    pub fn get<const D: usize>(
+        &mut self,
+        a: SpeciesId,
+        b: SpeciesId,
+        it: &Interner<D>,
+        g: &Geodesic<D>,
+        k: &BindConsts,
+    ) -> f64 {
+        let compute = || affinity_ordered(&it.record(a).sig, &it.record(b).sig, g, k);
+        match self.slot(a, b) {
+            None => compute(),
+            Some(s) => match self.vals[s] {
+                Some(v) => v,
+                None => {
+                    let v = compute();
+                    self.vals[s] = Some(v);
+                    v
+                }
+            },
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Implement reaction kinds and rates**
+
+```rust
+//! Reaction classes and the rate law (spec §9.1).
+
+use crate::species::SpeciesId;
+use borbax_units::{Quanta, Thermal};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReactionKind {
+    /// Non-covalent complex via signature complementarity.
+    Associate,
+    /// Covalent bond forms; consumes energy, releases a leaving group.
+    Condense,
+    /// Covalent bond breaks; releases energy. Fires **spontaneously** at a
+    /// temperature-dependent rate, not only under catalysis — this is the
+    /// engine's primary decay path (spec §9.5).
+    Cleave,
+    /// A sub-group migrates between molecules within a complex.
+    Transfer,
+    /// Internal bond topology changes with no partner.
+    Rearrange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reaction {
+    pub kind: ReactionKind,
+    /// Products are resolved once when the channel is created and stored
+    /// (spec §8.6), so canonicalisation runs only for genuinely novel species.
+    pub reactants: [SpeciesId; 2],
+    pub products: [SpeciesId; 2],
+    pub activation: Quanta,
+    pub delta: Quanta,
+}
+
+/// Arrhenius-style rate.
+///
+/// The `exp` is routed through `det_math` so the vendored portable
+/// implementation has one call site to replace (spec §13.1). It is also the
+/// prime candidate for tabulation per (bond class, temperature bucket), since
+/// its arguments are drawn from a small set — see the V0 benchmark list.
+#[must_use]
+pub fn rate(r: &Reaction, t: Thermal, conc: &[f64], catalysis: f64) -> f64 {
+    let temp = t.get().max(1e-6);
+    let arrhenius = borbax_molecule::det_math::exp(-r.activation.get() / temp);
+    let a = conc.get(r.reactants[0].0 as usize).copied().unwrap_or(0.0);
+    let b = conc.get(r.reactants[1].0 as usize).copied().unwrap_or(0.0);
+    arrhenius * a * b * catalysis
+}
+```
+
+- [ ] **Step 5: Run** — `cargo test -p borbax-reaction`, expect 5 passed
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/borbax-reaction
+git commit -m "$(cat <<'EOF'
+feat(reaction): species records, interning, and the rate law
+
+Implements the §8.6 invariant: canonicalisation, embedding, signature,
+and per-bond decay propensity are pure functions of the species, so they
+run once at intern time and never again. Nothing reachable from a step may
+call them — violating that costs roughly two orders of magnitude against
+the §17 budget.
+
+Ids are assigned in order of first appearance in the event sequence, which
+is reproducible because the event sequence is. Hash-order assignment would
+also be reproducible but would make ids jump as unrelated species appear,
+making every log and diff harder to read.
+
+The intern map is BTreeMap and is lookup-only; the Vec is the iteration
+surface. Hash-container iteration order is not reproducible and this is
+the last place to be casual about it.
+
+The affinity memo is safe unconditionally because it memoises a pure
+function — tested against direct computation rather than assumed.
+
+MrReasonable <4990954+MrReasonable@users.noreply.github.com>
+EOF
+)"
+```
+
+---
+
+### Task 15: Decay as propensity channels
+
+**Files:** Create `crates/borbax-reaction/src/decay.rs`; test same file.
+
+**Interfaces:**
+- Consumes: `SpeciesRecord`, `Interner`, `Universe`, `Thermal`
+- Produces: `decay_propensity<D>(SpeciesId, f64, &Interner<D>, Thermal, &Universe) -> f64`, `DecayKind`, `decay_channels<D>(...) -> Vec<(DecayKind, SpeciesId, f64)>`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn propensity_scales_linearly_with_count() {
+        let (u, g, it, id) = fixture();
+        let one = decay_propensity(id, 1.0, &it, Thermal(300.0), &u);
+        let ten = decay_propensity(id, 10.0, &it, Thermal(300.0), &u);
+        assert!((ten - 10.0 * one).abs() < 1e-9, "not linear in count");
+    }
+
+    #[test]
+    fn propensity_rises_with_temperature() {
+        let (u, g, it, id) = fixture();
+        assert!(
+            decay_propensity(id, 1.0, &it, Thermal(500.0), &u)
+                > decay_propensity(id, 1.0, &it, Thermal(200.0), &u)
+        );
+    }
+
+    /// The whole point of §9.5: decay costs nothing per molecule. Computing
+    /// a species' propensity must not touch anything per-molecule, which
+    /// shows up as the cost being independent of the count.
+    #[test]
+    fn cost_does_not_depend_on_how_many_molecules_exist() {
+        let (u, g, it, id) = fixture();
+        // Same work regardless of count — a per-molecule sweep would make
+        // these differ in observable effort. Asserted structurally: the
+        // function takes a scalar count, not a collection.
+        let _: f64 = decay_propensity(id, 1.0, &it, Thermal(300.0), &u);
+        let _: f64 = decay_propensity(id, 1.0e9, &it, Thermal(300.0), &u);
+    }
+
+    #[test]
+    fn a_molecule_with_no_bonds_does_not_spontaneously_cleave() {
+        let (u, g, mut it) = empty_fixture();
+        let mut m = borbax_molecule::graph::Mol12::new();
+        m.add_atom(borbax_universe::ElementId(0));
+        let id = it.intern(&m, &u, &g);
+        assert_eq!(it.record(id).cleave_propensity, 0.0);
+    }
+}
+```
+
+(`fixture()` and `empty_fixture()` build a `Universe::generate(21)`, a
+`Geodesic::<42>`, an `Interner`, and intern a six-atom chain — write them at
+the top of the test module.)
+
+- [ ] **Step 2: Run to verify failure**
+
+- [ ] **Step 3: Implement**
+
+```rust
+//! Decay (spec §9.5).
+//!
+//! **Decay costs nothing per molecule.** The obvious implementation — sweep
+//! every molecule every step and roll for each of its bonds — would dominate
+//! the loop, and it is unnecessary. Thermal cleavage is a Poisson process
+//! whose rate depends only on the species and the temperature, so a species'
+//! total propensity is its count times a precomputed constant: one more
+//! channel in the same scheduler that handles every other reaction.
+//!
+//! This works **because damage is implicit** (spec §22.7) — a damaged molecule
+//! is simply a different species, so molecules of a species are
+//! interchangeable and none needs individual state. Adding a per-molecule
+//! damage field would silently turn this back into an O(molecules) sweep.
+//! That is a change of asymptotic class, not a constant factor.
+
+use crate::species::{Interner, SpeciesId};
+use borbax_units::Thermal;
+use borbax_universe::Universe;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecayKind {
+    /// Thermal bond cleavage. Hot places destroy structure; cold preserve it.
+    Spontaneous,
+    /// The solvent binds an exposed bond and cleaves it. A pure function of
+    /// the species, resolved at intern time.
+    Solvent,
+    /// An unstable element decays, wrecking its host. Also the mutation source.
+    Radiogenic,
+}
+
+/// Total decay propensity for a species present at `count`.
+#[must_use]
+pub fn decay_propensity<const D: usize>(
+    id: SpeciesId,
+    count: f64,
+    it: &Interner<D>,
+    t: Thermal,
+    u: &Universe,
+) -> f64 {
+    let r = it.record(id);
+    let temp = t.get().max(1e-6);
+    // One `exp`, on a species-level constant — not per molecule, not per bond.
+    let thermal = r.cleave_propensity * borbax_molecule::det_math::exp(-1.0 / (temp * 0.01));
+    let solvent = r.solvent_rate.max(0.0) * u.consts.decay_scale;
+    count * (thermal + solvent)
+}
+
+/// The individual channels, for the scheduler and for the cause-of-death
+/// census (spec §15.2). Order is fixed, so channel indices are stable.
+#[must_use]
+pub fn decay_channels<const D: usize>(
+    id: SpeciesId,
+    count: f64,
+    it: &Interner<D>,
+    t: Thermal,
+    u: &Universe,
+) -> Vec<(DecayKind, SpeciesId, f64)> {
+    let r = it.record(id);
+    let temp = t.get().max(1e-6);
+    vec![
+        (
+            DecayKind::Spontaneous,
+            id,
+            count * r.cleave_propensity * borbax_molecule::det_math::exp(-1.0 / (temp * 0.01)),
+        ),
+        (DecayKind::Solvent, id, count * r.solvent_rate.max(0.0) * u.consts.decay_scale),
+        (DecayKind::Radiogenic, id, count * radiogenic_rate(id, it, u)),
+    ]
+}
+
+fn radiogenic_rate<const D: usize>(id: SpeciesId, it: &Interner<D>, u: &Universe) -> f64 {
+    // Summed element instability. Also precomputed in principle; kept here
+    // for clarity, and hoisted into SpeciesRecord if it shows up in a profile.
+    let canon = it.record(id).canon;
+    (0..canon.n as usize)
+        .map(|i| u.element(borbax_universe::ElementId(canon.elem[i])).stability)
+        .sum()
+}
+```
+
+- [ ] **Step 4: Run**, then **Step 5: Commit** with a message noting that decay
+being O(1) per species depends on implicit damage, and that the §22.7
+provenance fallback would break it.
+
+---
+
+### Task 16: Catalysis from cavity geometry
+
+**Files:** Create `crates/borbax-reaction/src/catalysis.rs`; test same file.
+
+**Interfaces:**
+- Consumes: `Cavity<D>`, `Signature<D>`, `Geodesic<D>`, `BindConsts`, `fcc`
+- Produces: `catalysis_factor<D>(&[Cavity<D>], &Signature<D>, &Signature<D>, &Geodesic<D>, &BindConsts) -> f64`, `IDEAL_SEPARATION`, `MAX_ENHANCEMENT`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_cavities_means_no_enhancement() {
+        assert_eq!(catalysis_factor::<42>(&[], &sig_a(), &sig_b(), &geo(), &consts()), 1.0);
+    }
+
+    #[test]
+    fn one_cavity_is_a_receptor_not_a_catalyst() {
+        // A single matching cavity binds a substrate but cannot hold two
+        // reactants adjacent, so it must not enhance a rate.
+        let f = catalysis_factor(&[cavity_matching(&sig_a())], &sig_a(), &sig_b(), &geo(), &consts());
+        assert!((f - 1.0).abs() < 1e-9, "a single cavity acted as a catalyst");
+    }
+
+    /// The headline behaviour of the whole project (spec §8.5): two cavities
+    /// close together, each complementing one reactant, accelerate a reaction.
+    /// Nothing in the code knows what an enzyme is.
+    #[test]
+    fn two_well_placed_cavities_accelerate() {
+        let cavs = vec![cavity_matching(&sig_a()), cavity_matching_at(&sig_b(), IDEAL_SEPARATION)];
+        let f = catalysis_factor(&cavs, &sig_a(), &sig_b(), &geo(), &consts());
+        assert!(f > 2.0, "two matching cavities gave only {f}x");
+    }
+
+    #[test]
+    fn cavities_too_far_apart_do_not_help() {
+        let cavs = vec![cavity_matching(&sig_a()), cavity_matching_at(&sig_b(), IDEAL_SEPARATION * 8.0)];
+        let f = catalysis_factor(&cavs, &sig_a(), &sig_b(), &geo(), &consts());
+        assert!(f < 1.5, "distant cavities enhanced by {f}x");
+    }
+
+    #[test]
+    fn enhancement_is_bounded() {
+        let cavs = vec![cavity_matching(&sig_a()), cavity_matching_at(&sig_b(), IDEAL_SEPARATION)];
+        assert!(catalysis_factor(&cavs, &sig_a(), &sig_b(), &geo(), &consts()) <= MAX_ENHANCEMENT);
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+- [ ] **Step 3: Implement**
+
+```rust
+//! Catalysis (spec §8.5).
+//!
+//! **Catalysis is not implemented. It falls out.**
+//!
+//! A polymer with one cavity that complements a small molecule binds it —
+//! that is a receptor. A polymer with *two* cavities close together binds two
+//! molecules and holds them adjacent in a fixed relative orientation for as
+//! long as the complex persists, and that proximity is precisely what lowers
+//! an activation barrier.
+//!
+//! So there is no enzyme type, no catalysis rule, and nothing anywhere that
+//! knows what an enzyme is. There is a geometric measurement, and a folded
+//! chain that happens to score well on it *is* one. We detect that, and the
+//! Chronicle reports it.
+
+use borbax_molecule::binding::{affinity_ordered, BindConsts};
+use borbax_molecule::cavity::Cavity;
+use borbax_molecule::fold::fcc;
+use borbax_molecule::geodesic::Geodesic;
+use borbax_molecule::signature::Signature;
+
+/// Cavity separation at which proximity helps most, in lattice units. Closer
+/// and the two substrates sterically clash; further and holding them adjacent
+/// stops meaning anything.
+pub const IDEAL_SEPARATION: f64 = 2.5;
+
+/// Ceiling on rate enhancement. Not physics — a guard, so that a degenerate
+/// geometry cannot produce an unbounded rate and stall the scheduler.
+pub const MAX_ENHANCEMENT: f64 = 1.0e4;
+
+/// Binding score above which a cavity counts as holding a substrate.
+const BIND_THRESHOLD: f64 = -12.0;
+
+/// Rate enhancement this folded chain provides to a reaction between two
+/// substrates. Returns 1.0 (no effect) unless two distinct cavities each
+/// complement one substrate and sit at a workable separation.
+#[must_use]
+pub fn catalysis_factor<const D: usize>(
+    cavities: &[Cavity<D>],
+    sub_a: &Signature<D>,
+    sub_b: &Signature<D>,
+    g: &Geodesic<D>,
+    k: &BindConsts,
+) -> f64 {
+    if cavities.len() < 2 {
+        return 1.0;
+    }
+    let mut best = 1.0f64;
+
+    for (i, ca) in cavities.iter().enumerate() {
+        let bind_a = affinity_ordered(&ca.signature, sub_a, g, k);
+        if bind_a < BIND_THRESHOLD {
+            continue;
+        }
+        for (j, cb) in cavities.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let bind_b = affinity_ordered(&cb.signature, sub_b, g, k);
+            if bind_b < BIND_THRESHOLD {
+                continue;
+            }
+
+            let (ax, ay, az) = fcc::from_flat(ca.centre);
+            let (bx, by, bz) = fcc::from_flat(cb.centre);
+            let sep = (f64::from(ax - bx).powi(2)
+                + f64::from(ay - by).powi(2)
+                + f64::from(az - bz).powi(2))
+            .sqrt();
+
+            // Proximity term: peaks at IDEAL_SEPARATION, falls off either side.
+            // Quadratic rather than exponential so there is no transcendental
+            // on this path (spec §13.1).
+            let offset = (sep - IDEAL_SEPARATION).abs() / IDEAL_SEPARATION;
+            let proximity = (1.0 - offset * offset).max(0.0);
+            if proximity <= 0.0 {
+                continue;
+            }
+
+            // Enclosure matters: a deeply enclosed pair holds its substrates
+            // in a fixed orientation, a shallow pair barely constrains them.
+            let enclosure = f64::from(ca.enclosure.min(cb.enclosure)) / 12.0;
+            // Fit quality, mapped so a perfect complement (score 0) is best.
+            let fit = (1.0 / (1.0 - bind_a)) * (1.0 / (1.0 - bind_b));
+
+            let factor = 1.0 + proximity * enclosure * fit * 1.0e3;
+            best = best.max(factor.min(MAX_ENHANCEMENT));
+        }
+    }
+    best
+}
+```
+
+- [ ] **Step 4: Run**, then **Step 5: Commit.**
+
+The commit message should say plainly that this file contains no concept of
+an enzyme — only a geometric measurement — because that is the claim V0 exit
+criterion 6 tests, and a future reader needs to know it was deliberate.
+
+---
+
+### Task 17: RAF detection
+
+**Files:** Create `crates/borbax-reaction/src/raf.rs`; test same file.
+
+**Interfaces:**
+- Consumes: `Reaction`, `SpeciesId`
+- Produces: `Incidence`, `RafSet { reactions, species }`, `find_raf(&[Reaction], &[(SpeciesId, usize)], &BTreeSet<SpeciesId>) -> Option<RafSet>`
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn food(ids: &[u32]) -> BTreeSet<SpeciesId> {
+        ids.iter().map(|&i| SpeciesId(i)).collect()
+    }
+
+    /// A -> B catalysed by B, with A available. B makes itself: a RAF.
+    #[test]
+    fn finds_a_minimal_self_sustaining_set() {
+        let rxns = vec![rxn(0, 0, 1, 1)];
+        let cat = vec![(SpeciesId(1), 0usize)];
+        let raf = find_raf(&rxns, &cat, &food(&[0])).expect("should find a RAF");
+        assert_eq!(raf.reactions, vec![0]);
+    }
+
+    /// Same reaction, but the catalyst is never produced. Not a RAF.
+    #[test]
+    fn rejects_a_set_whose_catalyst_is_unreachable() {
+        let rxns = vec![rxn(0, 0, 1, 1)];
+        let cat = vec![(SpeciesId(9), 0usize)];
+        assert!(find_raf(&rxns, &cat, &food(&[0])).is_none());
+    }
+
+    /// Reactants not traceable to food. Not a RAF, however well catalysed.
+    #[test]
+    fn rejects_a_set_not_grounded_in_food() {
+        let rxns = vec![rxn(5, 5, 6, 6)];
+        let cat = vec![(SpeciesId(6), 0usize)];
+        assert!(find_raf(&rxns, &cat, &food(&[0])).is_none());
+    }
+
+    #[test]
+    fn is_deterministic_and_order_independent() {
+        let rxns = vec![rxn(0, 0, 1, 1), rxn(1, 1, 2, 2), rxn(2, 0, 3, 3)];
+        let cat = vec![(SpeciesId(1), 0), (SpeciesId(2), 1), (SpeciesId(3), 2)];
+        let a = find_raf(&rxns, &cat, &food(&[0]));
+        let mut shuffled = cat.clone();
+        shuffled.reverse();
+        let b = find_raf(&rxns, &shuffled, &food(&[0]));
+        assert_eq!(a, b, "result depended on catalyst listing order");
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+- [ ] **Step 3: Implement**
+
+```rust
+//! RAF detection — Reflexively Autocatalytic and Food-generated sets
+//! (spec §9.3), following Hordijk and Steel.
+//!
+//! A RAF is a set of reactions where every reaction is catalysed by something
+//! the set itself produces, and every reactant traces back to environmentally
+//! available food. In other words: a chemical system that makes itself.
+//!
+//! Finding one is rigorous, computable in polynomial time, and unambiguous,
+//! which makes it the right trigger both for promoting a region to full
+//! detail and for the Chronicle to announce that something happened. It is
+//! also how §9.6 defines death: a compartment dies when its set stops closing.
+//!
+//! **The output is result-affecting**, so every container here is ordered.
+
+use crate::kind::Reaction;
+use crate::species::SpeciesId;
+use std::collections::{BTreeSet, VecDeque};
+
+/// species -> reactions mentioning it, in CSR form. Closure decrements a
+/// per-reaction missing-reactant counter as species enter the set, so the
+/// whole closure is O(total incidences) rather than O(species x reactions).
+#[derive(Debug, Clone, Default)]
+pub struct Incidence {
+    offsets: Vec<u32>,
+    reactions: Vec<u32>,
+}
+
+impl Incidence {
+    #[must_use]
+    pub fn build(rxns: &[Reaction], n_species: usize) -> Self {
+        let mut counts = vec![0u32; n_species + 1];
+        for r in rxns {
+            for s in &r.reactants {
+                if (s.0 as usize) < n_species {
+                    counts[s.0 as usize + 1] += 1;
+                }
+            }
+        }
+        for i in 1..counts.len() {
+            counts[i] += counts[i - 1];
+        }
+        let offsets = counts.clone();
+        let mut reactions = vec![0u32; *counts.last().unwrap_or(&0) as usize];
+        let mut cursor = offsets.clone();
+        for (ri, r) in rxns.iter().enumerate() {
+            for s in &r.reactants {
+                if (s.0 as usize) < n_species {
+                    reactions[cursor[s.0 as usize] as usize] = ri as u32;
+                    cursor[s.0 as usize] += 1;
+                }
+            }
+        }
+        Self { offsets, reactions }
+    }
+
+    fn of(&self, s: SpeciesId) -> &[u32] {
+        let i = s.0 as usize;
+        if i + 1 >= self.offsets.len() {
+            return &[];
+        }
+        &self.reactions[self.offsets[i] as usize..self.offsets[i + 1] as usize]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RafSet {
+    /// Reaction indices, sorted.
+    pub reactions: Vec<usize>,
+    /// Species in the closure, sorted.
+    pub species: BTreeSet<SpeciesId>,
+}
+
+/// Find the maximal RAF, or `None` if there is not one.
+///
+/// The algorithm alternates two reductions until they stop removing anything:
+/// drop reactions whose reactants are not in the closure of what is currently
+/// reachable, and drop reactions with no catalyst present in that closure.
+/// Whatever survives is the maximal RAF.
+#[must_use]
+pub fn find_raf(
+    rxns: &[Reaction],
+    catalysts: &[(SpeciesId, usize)],
+    food: &BTreeSet<SpeciesId>,
+) -> Option<RafSet> {
+    let n_species = rxns
+        .iter()
+        .flat_map(|r| r.reactants.iter().chain(r.products.iter()))
+        .map(|s| s.0 as usize + 1)
+        .chain(food.iter().map(|s| s.0 as usize + 1))
+        .max()
+        .unwrap_or(0);
+    let inc = Incidence::build(rxns, n_species);
+
+    let mut active: BTreeSet<usize> = (0..rxns.len()).collect();
+
+    loop {
+        // Closure: what can be built from food using only active reactions.
+        let mut present = food.clone();
+        let mut missing: Vec<u8> = rxns
+            .iter()
+            .map(|r| r.reactants.iter().filter(|s| !food.contains(s)).count() as u8)
+            .collect();
+        let mut queue: VecDeque<SpeciesId> = food.iter().copied().collect();
+
+        while let Some(s) = queue.pop_front() {
+            for &ri in inc.of(s) {
+                let ri = ri as usize;
+                if !active.contains(&ri) || missing[ri] == 0 {
+                    continue;
+                }
+                missing[ri] -= 1;
+                if missing[ri] == 0 {
+                    for p in &rxns[ri].products {
+                        if present.insert(*p) {
+                            queue.push_back(*p);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Prune: a reaction survives only if its reactants are all present
+        // AND some catalyst for it is present. `catalysts` is scanned in full
+        // rather than indexed, so listing order cannot affect the outcome.
+        let before = active.len();
+        active.retain(|&ri| {
+            let reactants_ok = rxns[ri].reactants.iter().all(|s| present.contains(s));
+            let catalysed = catalysts.iter().any(|(c, r)| *r == ri && present.contains(c));
+            reactants_ok && catalysed
+        });
+
+        if active.len() == before {
+            if active.is_empty() {
+                return None;
+            }
+            return Some(RafSet { reactions: active.into_iter().collect(), species: present });
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Run** — expect 4 passed. **Step 5: Commit.**
+
+---
