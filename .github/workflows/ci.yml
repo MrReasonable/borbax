@@ -17,9 +17,22 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: moonrepo/setup-toolchain@261c62cb5b0f580c7be7c8cd0f023a2e96756095 # v0
-        with:
-          auto-install: true
+
+      # No proto here, deliberately. rust-toolchain.toml is the selection
+      # mechanism everywhere (see that file), and the runners all ship rustup,
+      # which reads it and installs the pinned toolchain with the components it
+      # names. Running proto as well made two installers fight over the same
+      # rustup toolchain: proto's rust plugin laid one down that rustup did not
+      # consider to have `cargo`, and every leg failed with "'cargo' is not
+      # installed for the toolchain '1.97.1-...'".
+      #
+      # .prototools remains the local-dev installer and xtask fails if the two
+      # pins drift. If a non-Rust tool is ever added to .prototools, CI needs a
+      # proto setup step back — nothing here would notice on its own, because
+      # this project is Rust-only by construction (spec §14.0).
+      - name: Show toolchain
+        run: rustup show active-toolchain
+
       - name: Fiction guarantees (spec §5)
         run: cargo run -p xtask
       - name: Format

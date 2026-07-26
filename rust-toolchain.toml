@@ -1,12 +1,16 @@
 # Toolchain selection, as opposed to installation.
 #
-# proto (.prototools) installs the pinned Rust; this file is what makes every
-# cargo invocation actually *use* it. The two are not redundant, and this file
-# exists because the distinction was demonstrated rather than theorised: on the
-# first CI run, proto installed 1.97.1 on all three platforms, and the Windows
-# leg then compiled with the runner's preinstalled 1.97.0 anyway. proto
-# activates Rust by exporting RUSTUP_TOOLCHAIN and ordering PATH, and neither
-# survived into the step's shell there.
+# This file selects the toolchain. It exists because the distinction between
+# installing and selecting was demonstrated rather than theorised: on the first
+# CI run, proto installed 1.97.1 on all three platforms, and the Windows leg
+# then compiled with the runner's preinstalled 1.97.0 anyway. proto activates
+# Rust by exporting RUSTUP_TOOLCHAIN and ordering PATH, and neither survived
+# into the step's shell there.
+#
+# CI uses rustup alone — it reads this file and installs what it names, and
+# running proto alongside made two installers fight over the same rustup
+# toolchain. Locally, proto (.prototools) still installs; this file still
+# selects. Either way selection happens here.
 #
 # rustup reads this file from the directory itself, so it needs no environment
 # variable, no shell activation and no PATH ordering. It works the same in CI,
