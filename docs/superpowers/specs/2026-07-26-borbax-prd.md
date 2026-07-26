@@ -153,6 +153,9 @@ These were settled before drafting and the rest of the document assumes them.
 | **Decay model** | Global cleavage rate to locate the band, then per-bond rates derived from the generated energy matrix (§22.6). |
 | **Damage representation** | Implicit — a damaged molecule is simply a different molecule. Damage load measured as divergence from RAF-implied composition (§22.7). |
 | **Neutral shadow** | Spawned on demand from a keyframe, not run continuously (§22.3). |
+| **Platforms** | macOS, Windows and Linux, on aarch64 and x86-64, with bit-identical results everywhere (§13.4). Enforced by a CI golden matrix (§13.6). |
+| **GPU** | wgpu when it lands, as a *screening* accelerator only — never a canonical result path (§13.5). |
+| **Chirality** | The binding search covers rotations but **not** reflections, so Borbax chemistry is handed from the start (§22.8). |
 
 ---
 
@@ -293,7 +296,9 @@ Identical molecules must be recognised as identical, so every molecule is reduce
 
 This is the heart of the engine and everything else depends on it.
 
-A molecule's graph is embedded in 2D via the eigenvectors of its graph Laplacian — deterministic, cheap, and stable under small graph changes, which matters enormously because it means a small mutation produces a small shape change. That property is what makes the chemistry *evolvable*.
+A molecule's graph is embedded in 2D by **stress majorization over graph-theoretic distances**, initialised deterministically from the canonical atom order. This is stable under small graph changes — a small mutation produces a small shape change — and that property is what makes the chemistry *evolvable* rather than merely complicated.
+
+Laplacian eigenvectors were the obvious first choice and are the wrong one. Eigenvectors have arbitrary sign, and degenerate eigenvalues — extremely common in the symmetric graphs that small molecules actually are — leave the eigenspace basis arbitrary. Since the signature keys species identity, the fold cache, and the shape-space novelty histogram, that arbitrariness would propagate straight into the parts of the system that most need to be well-defined. Stress majorization from a canonical starting order sidesteps the problem rather than managing it.
 
 The embedded molecule is then sampled around its perimeter into **8 angular sectors**. Each sector records two numbers:
 
@@ -311,6 +316,8 @@ The embedded molecule is then sampled around its perimeter into **8 angular sect
            │
         sector 6
 ```
+
+**The signature is then rotation-canonicalised**: of its N possible rotations, the lexicographically smallest is stored, with the mirror image resolved the same way. Without this, the same molecule could produce different signatures depending on how it happened to be embedded, and species identity would stop being well-defined. Binding is unaffected, because only *relative* orientation matters there — it searches rotations regardless.
 
 ### 8.3 Binding — one operation, used everywhere
 
@@ -369,6 +376,22 @@ A polymer with a single pocket that complements some small molecule will bind it
 So the rate enhancement is computed geometrically from pocket separation and alignment, and an enzyme is simply a folded chain that happened to end up with two well-placed pockets. Nothing declares it an enzyme. We detect that it is one, and the Chronicle reports it.
 
 This is the moment the whole design pays off, and it is the first headline event of a run.
+
+### 8.6 Everything expensive is per-species, not per-molecule
+
+This invariant is what makes the performance budget in §17 reachable at all, and it is easy to violate by accident, so it is stated here rather than left implicit.
+
+Canonicalisation, the 2D embedding, signature construction, folding, pocket extraction, and per-bond decay rates are **all pure functions of the species**. None depends on which particular copy of a molecule is under consideration, or on when. So each runs exactly once, when a species is first interned, and never again.
+
+Concretely: **no code reachable from a simulation step may call any of them.** A species record computed at intern time carries everything the hot loop needs — signature, pre-rotated binding view, mass, bond inventory, precomputed solvent-attack rate, fold reference. The step loop reads that record and does arithmetic on it.
+
+Two consequences worth stating because they are not obvious:
+
+**Reaction products are memoisable.** The products of a given (species, species, reaction class) triple are deterministic, so they are resolved once when the reaction channel is created. Canonicalisation therefore runs only when a genuinely *novel* species appears — a rare event, and one we already want to count as the novelty metric of §15.2.
+
+**Binding affinity is memoisable, and safely so.** `affinity(A, B)` is a pure function of two species plus universe constants; temperature enters only afterwards, at the sigmoid. Memoising a pure function cannot change results, unlike a lossy cache, so this is safe under §13.1. Because concentrations are heavily skewed, a dense table over the most abundant species captures the overwhelming majority of queries.
+
+If a later change makes any of this per-molecule, the molecular tier's budget becomes unreachable by roughly two orders of magnitude — and that kind of regression usually arrives disguised as a small feature.
 
 ---
 
@@ -441,6 +464,10 @@ Consistent with principle 1, there is no decay timer and there are no hitpoints.
 | **Burial and dilution** | Sedimentation and diffusion physically remove material from the active volume. | Not destruction, but functionally identical — it leaves the system. |
 
 Note how little of this is new machinery. Solvent attack is the binding function from §8.3. Radiogenic damage is the `stability` property from §7.1. Reactive by-products are simply molecules whose signatures happen to be broad. Only burial is genuinely new, and it belongs to the world layer regardless.
+
+**Decay also costs nothing per molecule**, which is worth spelling out because the obvious implementation — sweep every molecule every step and roll for each of its bonds — would dominate the loop entirely. It is unnecessary. Thermal cleavage is a Poisson process whose rate depends only on the species and the temperature, so the total propensity for a species is just its count multiplied by a precomputed per-species constant: one more channel in the same scheduler that handles every other reaction. Solvent attack is likewise a pure function of the species, resolved once at intern time (§8.6).
+
+This works *because* damage is implicit (§22.7) — a damaged molecule is simply a different species, so all molecules of a species are interchangeable and none needs individual state. The design is already consistent; the point of saying so is that a well-meant later addition of a per-molecule damage field would quietly turn decay back into a sweep over every molecule in the simulation.
 
 ### 9.6 Aging and death, without an aging mechanism
 
@@ -579,10 +606,13 @@ Bit-for-bit reproducibility given `(universe_seed, world_seed, config_hash)`.
 
 This requires discipline the engine must enforce structurally:
 
-- **Counter-based RNG** (Philox or PCG), with an independent stream derived per subsystem, per patch, per simulated time index. No shared mutable RNG state, so results never depend on thread scheduling.
-- **No wall-clock, no address-dependent iteration.** Hash maps iterated in insertion or sorted order only.
-- **Deterministic parallel reduction.** Fixed-order combination of per-thread partial results, never scheduler-order.
-- **Floating point discipline.** Single canonical CPU code path. If GPU acceleration lands later it is an *optional* fast path, validated against the CPU path, and never the reference.
+- **Counter-based RNG**, with an independent stream derived per subsystem, per patch, per simulated time index. No shared mutable RNG state, so results never depend on thread scheduling. Streams are deliberately not `Copy`, so an accidental duplication — which would silently replay the same sequence twice — has to be written explicitly.
+- **No wall-clock, no address-dependent iteration.** Hash maps are never iterated in a result-affecting path; sort into a `Vec` first. Every sort on a float key carries an ID tie-break, or equal keys reorder under a different input permutation.
+- **Deterministic parallel reduction.** Fold into per-chunk partials indexed by chunk ID, then combine in index order. Never a scheduler-ordered `.sum()` or `.reduce()`.
+- **No platform transcendentals.** `exp`, `ln`, `sin`, `cos` and `powf` are *not* specified by IEEE-754 to be correctly rounded, and implementations genuinely differ between Apple's libm, glibc, and glibc versions. Every transcendental routes through a single vendored pure-Rust implementation, or through a precomputed table. The four arithmetic operations and `sqrt` *are* exactly specified by IEEE-754 and can stay native.
+- **Fixed summation order is physics.** `-(w₁·Σa + w₂·Σb)` and `Σ(-w₁·a − w₂·b)` are different values in floating point. Whichever shape is chosen is pinned before any golden exists, and commented as load-bearing so nobody later "tidies" it.
+- **Conserved quantities are integers.** Mass is fixed-point, not `f64`, so conservation is exact by construction rather than true within a tolerance. §9's requirement that products' mass equals reactants' mass *exactly* is otherwise not satisfiable by naive floating-point summation.
+- **Single canonical CPU code path.** GPU acceleration, when it lands, is an optional non-canonical path — see §13.5.
 
 ### 13.2 Keyframes and scrubbing
 
@@ -595,6 +625,54 @@ Scrubbing to time T loads the nearest keyframe at or before T and deterministica
 Any keyframe can be forked with a new sub-seed, producing a divergent timeline sharing history up to the fork. This is the substrate that later makes intervention possible: "what if the vent had never cooled?" is a branch, and the two timelines can be compared side by side. V1 builds the mechanism; V5 builds the controls.
 
 It is also the mechanism behind neutral shadow runs (§15.3), which is a second reason to get it right early.
+
+### 13.4 What "deterministic" means across machines
+
+Borbax commits to the strong version: **the same seed pair produces a bit-identical world on macOS, Windows and Linux, on both aarch64 and x86-64.** Sharing `U-7F3A21C9 / W-0004` has to mean something, and it only does if the recipient gets the same planet.
+
+This is achievable, but only because of a distinction that is easy to miss: **cross-platform APIs make code *run* everywhere; they do not make it produce *identical results* everywhere.** Those are different problems with different solutions, and conflating them is the standard way projects discover the issue too late.
+
+The good news is that most of the arithmetic is already portable. IEEE-754 specifies addition, subtraction, multiplication, division and square root *exactly* — a conforming implementation must return the correctly rounded result, so those operations are bit-identical on every platform we care about. Rust also does not perform floating-point contraction by default, so `a*b + c` will not silently become a fused multiply-add on one architecture and not another. That is a significant hazard we simply do not have.
+
+What is left is a short, closed list:
+
+| Hazard | Resolution |
+|---|---|
+| Transcendentals differ between libm implementations | Vendored pure-Rust implementations, or precomputed tables (§13.1) |
+| Parallel reduction order varies with scheduling | Indexed partials, combined in fixed order |
+| Hash map iteration order | Never iterated in a result-affecting path |
+| Float accumulation order | Pinned and commented before goldens exist |
+| Exact mass conservation | Fixed-point, not floating-point |
+
+The games industry solved this problem decades ago and its answer is worth borrowing wholesale. Lockstep real-time strategy games, rollback-netcode fighting games, and replay-driven simulations like Factorio all require every machine to reach an identical state from identical input — and they achieve it by keeping simulation state in **fixed-point integer arithmetic on the CPU**, with the GPU confined to rendering. Integer arithmetic is exact on every processor ever made, which makes the problem disappear rather than requiring it to be managed.
+
+Borbax takes the hybrid: **fixed-point for conserved and counted quantities** where exactness is a stated requirement, and **strict IEEE-754 `f64` for the geometry**, where the operations involved are already exactly specified. That keeps the shape mathematics readable — and readability matters a great deal in the one part of the codebase that carries the project's central idea — without giving up exactness where exactness was promised.
+
+### 13.5 GPU: what it can and cannot do
+
+**The right tool is [wgpu](https://wgpu.rs).** It implements the WebGPU standard and compiles one WGSL compute-shader source to Metal on macOS, and DirectX 12 or Vulkan on Windows — plus a browser path we may want later for the viewer. It is mature, it is the established choice in the Rust ecosystem, and it means one shader codebase rather than a Metal backend and a DirectX backend maintained in parallel.
+
+What it explicitly does *not* provide is bit-identical results. WebGPU permits implementations latitude in the precision of many operations, drivers differ between vendors and between driver versions, and reduction order inside a GPU dispatch is not something the API lets us pin. **A GPU result is therefore never canonical**, and no amount of care changes that.
+
+Rather than fight this, the architecture makes it irrelevant by giving the GPU a job where it does not matter:
+
+> **The GPU is a search accelerator, not a result generator.**
+>
+> It screens — running many universes and worlds at low fidelity to find the ones worth looking at. Screening does not need reproducibility; it needs throughput, and a large discrete GPU has an enormous amount of it.
+>
+> When screening finds something interesting, **that seed is re-run on the canonical CPU path**, which produces the real, shareable, reproducible result.
+
+So a powerful Windows machine genuinely earns its keep — it explores the space of universes far faster than an M1 Pro can — without any of its output entering the reproducibility story. The two paths have different jobs and neither is a degraded version of the other.
+
+Within a run, the GPU-suitable work is the bulk-tier reaction-diffusion stencil (embarrassingly parallel over ~10⁶ patches) and batch folding (thousands of independent anneals). Canonicalisation, RAF detection, and the event scheduler are branchy and serial, and stay on the CPU regardless of hardware.
+
+### 13.6 Enforcement — the cross-platform golden matrix
+
+None of the above is worth anything as an intention. It is worth something as a test.
+
+CI runs the golden suite (§16) on **macOS/aarch64, Windows/x86-64 and Linux/x86-64**, and asserts the state hashes are identical across all three. A portability regression then fails the build on the commit that introduced it, rather than being discovered months later by the first person who tries to open a shared seed.
+
+This matters more than it might appear. Every hazard in §13.4 is invisible locally — the code runs, the tests pass, the numbers look reasonable — and only manifests on a different machine. The matrix is the only mechanism that makes those failures visible at the moment they are cheap to fix.
 
 ---
 
@@ -726,7 +804,7 @@ A simulation this stochastic is untestable by conventional means unless the stra
 
 **Determinism tests.** Same seeds produce identical state hashes at fixed checkpoints. Run under varying thread counts to catch scheduler-order dependence, which is the bug class most likely to appear and least likely to be noticed.
 
-**Golden runs.** A handful of seeds with recorded state hashes at checkpoints, executed in CI. Any unintended change to physics fails the build loudly.
+**Golden runs, on every platform.** A handful of seeds with recorded state hashes at checkpoints, executed in CI on **macOS/aarch64, Windows/x86-64 and Linux/x86-64**, asserting the hashes are identical across all three (§13.6). Any unintended change to physics fails the build loudly; any *portability* regression fails it on the commit that caused it, rather than months later when someone opens a shared seed. Running the goldens on a single platform would pass happily while the cross-platform promise quietly rotted.
 
 **Cross-tier agreement.** The critical validation of the whole multi-scale approach: run an identical scenario at bulk, stochastic, and molecular fidelity, and confirm the statistics agree within tolerance in the overlap regime. If they diverge, the promotion and demotion mapping is wrong and every result above it is suspect.
 
@@ -758,7 +836,11 @@ Target machine: Apple M1 Pro — 8 performance cores, 2 efficiency cores, 16-cor
 | Total working set | < 8 GB, leaving headroom for viewer and keyframe buffers |
 | Keyframe storage | < 20 GB per 8-hour run, compressed |
 
-**GPU is explicitly out of scope for V1.** Metal compute for reaction-diffusion and batch folding is attractive and probably worth 5–10× on the bulk tier, but it complicates determinism and it is an optimisation of a system that must first be correct. Revisit once V1 success criteria are met; when it lands, the CPU path stays canonical.
+**GPU is explicitly out of scope for V1**, and when it arrives it arrives as a *screening* path rather than an acceleration of the canonical one — see §13.5 for why that distinction is the whole architecture rather than a caveat. The tool will be [wgpu](https://wgpu.rs), giving one WGSL source across Metal, DirectX 12 and Vulkan.
+
+The reason to defer it is not difficulty. It is that a GPU screening path is an optimisation of a system that must first be correct and reproducible, and building it earlier would mean tuning chemistry against results we cannot reproduce.
+
+**Borbax runs on macOS, Windows and Linux from V0**, on both aarch64 and x86-64, with identical results everywhere (§13.4). This is a portability requirement on the CPU path, enforced by the CI matrix in §13.6 — not a GPU concern.
 
 ---
 
@@ -876,7 +958,7 @@ Not in V1, and in several cases not ever:
 - The 1,000,000 km² planetary field — V3
 - Intervention and God-mode tools — V5
 - Multiplayer, cloud execution, or any hosted service
-- GPU acceleration — revisit after V1 succeeds
+- GPU screening via wgpu (§13.5) — revisit after V1 succeeds. Cross-platform *CPU* support is in from V0 and is not deferred.
 - Any claim, anywhere in the product or its documentation, that Borbax results say something about real biology
 
 ---
@@ -927,7 +1009,21 @@ A damaged molecule is simply a different molecule. No damage flag, no parallel b
 
 Damage load (§15.2) is therefore measured as divergence between a compartment's actual composition and the composition its RAF set implies it should have. The risk is that this measurement is too noisy to act on, which would make the aging account in §9.6 unobservable even while it is happening.
 
-So it gets a **V0 exit criterion**: inject a known quantity of damage into a beaker and confirm the metric recovers it above noise. If it fails, the fallback is lightweight provenance — tag each molecule with the reaction that produced it, so damage is identified by origin rather than inferred from composition. That costs extra per-molecule state and some determinism care, which is exactly why it is a fallback rather than the plan.
+So it gets a **V0 exit criterion**: inject a known quantity of damage into a beaker and confirm the metric recovers it above noise. If it fails, the fallback is lightweight provenance — tag each molecule with the reaction that produced it, so damage is identified by origin rather than inferred from composition.
+
+The fallback is more expensive than it looks, and the cost should be weighed before taking it. Per-molecule provenance breaks the interchangeability that §9.5 depends on, which turns decay from a single propensity channel back into a sweep over every molecule in the simulation — a change of asymptotic class, not a constant factor. If the measurability gate fails, reworking the *measurement* is worth attempting before accepting that.
+
+### 22.8 The binding search covers rotations but not reflections
+
+A two-dimensional shape can be matched against a partner in N rotations — or in 2N, if the partner is also allowed to present its mirror image. This has to be decided before the sector sweep in §22.2, because it doubles the cost of what is being swept.
+
+**Reflections are excluded.** Two reasons, and the second is the interesting one.
+
+The cheap reason is that it halves the hottest kernel in the engine.
+
+The real reason is that excluding reflections means **Borbax chemistry is handed**. A molecule and its mirror image are genuinely different species, binding different partners, and neither can substitute for the other. That is a real physical property with real consequences — and it makes homochirality, where a chemistry comes to use predominantly one handedness, an *emergent result the simulation could produce* rather than something ruled out by construction. Given that homochirality is one of the genuinely open questions about the origin of life, having it available as a possible headline event is worth more than the modelling convenience of ignoring it.
+
+The honest caveat is that this treats molecules as constrained to a plane, whereas a molecule tumbling freely in solution could present either face. That is defensible — the whole 2D geometry is an abstraction — but it points at something better for later: molecules bound to a **mineral surface** genuinely cannot flip, while those in free solution can. Making reflections permitted in solution and forbidden on surfaces would turn mineral surfaces into chirality-selecting environments, which is one of the actual proposed mechanisms for how homochirality arose. That is a V1+ opportunity, deliberately not taken now.
 
 ---
 
