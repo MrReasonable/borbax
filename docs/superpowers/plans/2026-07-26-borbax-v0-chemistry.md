@@ -1540,6 +1540,24 @@ mod tests {
         assert!(r.solvent_rate.is_finite());
     }
 
+    /// Burial must protect. Two chains with the same composition but
+    /// different compactness must get different solvent rates, in the
+    /// direction §9.5 claims — otherwise "compact folds survive" is a
+    /// sentence in the spec with no code behind it.
+    #[test]
+    fn burial_lowers_the_solvent_rate() {
+        let (u, g) = (Universe::generate(3), Geodesic::<42>::build().unwrap());
+        let mut it = Interner::new();
+        let compact = it.intern_polymer(&compact_folder(&u), &u, &g);
+        let extended = it.intern_polymer(&extended_folder(&u), &u, &g);
+        assert!(
+            it.record(compact).solvent_rate < it.record(extended).solvent_rate,
+            "burial did not protect: compact {} vs extended {}",
+            it.record(compact).solvent_rate,
+            it.record(extended).solvent_rate
+        );
+    }
+
     /// Memoising a pure function cannot change results — that is the whole
     /// reason it is safe here (spec §8.6). Prove it rather than assume it.
     #[test]
@@ -1604,19 +1622,49 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SpeciesId(pub u32);
 
+/// A species is either a small molecule or a polymer. **Polymers must have
+/// species identity too**, and an earlier draft interned only `Mol12`.
+///
+/// That omission was structural rather than clerical: with nowhere to *put* a
+/// polymer's fold or cavities, an implementer computes them at the point of
+/// need — inside `Beaker::step`. On a cache miss that is 20,000 anneal steps
+/// plus a 2,520-iteration `affinity` per cavity-substrate pair, which is
+/// roughly four orders of magnitude past the §17 budget, not two.
+#[derive(Debug, Clone)]
+pub enum SpeciesKind {
+    Small(CanonForm),
+    Polymer(Polymer),
+}
+
 /// Everything the hot loop needs about a species. Built once; read forever.
 #[derive(Debug, Clone)]
 pub struct SpeciesRecord<const D: usize> {
-    pub canon: CanonForm,
+    pub kind: SpeciesKind,
     pub sig: Signature<D>,
     pub mass: Mass,
     pub bond_count: u32,
+    /// Summed element instability. Precomputed for the same reason as
+    /// everything else here — an earlier draft recomputed it per call with a
+    /// comment saying it would be hoisted "if it shows up in a profile". A
+    /// twelve-iteration loop never shows up in a profile and runs millions of
+    /// times.
+    pub radiogenic_rate: f64,
     /// Total thermal cleavage propensity per unit time at unit temperature,
     /// summed over the molecule's bonds. Precomputed so decay is a propensity
     /// channel rather than a per-molecule sweep (spec §9.5).
     pub cleave_propensity: f64,
-    /// Complementarity between the solvent and this species, precomputed.
+    /// Solvent-attack rate. Rises with complementarity to the solvent and
+    /// falls with burial — see the sign discussion in `intern`.
     pub solvent_rate: f64,
+    /// Folded conformation, for polymers. `None` for small molecules.
+    ///
+    /// Named in §8.6's list of what a record carries, and omitted from an
+    /// earlier draft — which is what forced folding into the step loop.
+    pub fold: Option<FoldId>,
+    /// Cavities, with their local signatures. Computed once at intern time;
+    /// `cavities()` has no cache of its own, so a fold-cache *hit* would still
+    /// have re-run the flood fill and D×lining dot products on every call.
+    pub cavities: Vec<Cavity<D>>,
 }
 
 /// Canonical form -> id. Lookup only; **never iterated**, because iteration
@@ -1691,8 +1739,35 @@ impl<const D: usize> Interner<D> {
 
         // Solvent attack is a pure function of the species (§9.5), so it is
         // resolved once here rather than on every step.
+        //
+        // **Sign.** `affinity` is a negated sum of squares and is therefore
+        // always ≤ 0, with 0 the perfect fit. An earlier draft used
+        // `-affinity`, which is *largest when complementarity is worst* — so
+        // molecules the solvent could not touch decayed fastest, and the
+        // burial mechanism ran backwards. Exit criterion 7 would still have
+        // passed: it checks that decay bites, not which direction.
+        //
+        // Mapping the score onto a rate through a logistic keeps it positive,
+        // monotone in fit, and bounded.
         let solvent_sig = solvent_signature(u, g);
-        let solvent_rate = -affinity_ordered(&sig, &solvent_sig, g, &(&u.consts).into());
+        let fit = affinity_ordered(&sig, &solvent_sig, g, &(&u.consts).into());
+        let base_solvent = bind_probability(fit, u.consts.reference_temp, u.consts.bind_midpoint);
+
+        // **Burial.** §9.5 specifies exposure as the count of empty lattice
+        // neighbours out of twelve, and `Fold::exposure` computes exactly
+        // that — but an earlier draft never read it, using the whole-molecule
+        // signature instead. Without this term, "compact folds that bury their
+        // backbone survive" is not implemented, and folding has no survival
+        // payoff at all.
+        let exposed_fraction = match &fold {
+            Some(f) => {
+                let total: u32 = f.exposure.iter().map(|&e| u32::from(e)).sum();
+                f64::from(total) / (12.0 * f.exposure.len().max(1) as f64)
+            }
+            // A small molecule has no interior to hide in; fully exposed.
+            None => 1.0,
+        };
+        let solvent_rate = base_solvent * exposed_fraction;
 
         self.records.push(SpeciesRecord {
             canon,
@@ -1797,6 +1872,18 @@ pub struct Reaction {
     pub products: [SpeciesId; 2],
     pub activation: Quanta,
     pub delta: Quanta,
+    /// Rate enhancement from whichever folded polymer catalyses this channel,
+    /// **resolved once when the channel is created**.
+    ///
+    /// An earlier draft passed `catalysis: f64` into `rate()` with nothing
+    /// anywhere constructing it. That missing join is what would have dragged
+    /// folding and cavity extraction into the step loop, because the only way
+    /// to supply the value on demand is to compute it on demand.
+    pub catalysis: f64,
+    /// The species catalysing this channel, if any. Also what `find_raf`'s
+    /// catalyst list is built from — another consumer of a value nothing was
+    /// producing.
+    pub catalyst: Option<SpeciesId>,
 }
 
 /// Arrhenius-style rate.
@@ -2079,17 +2166,33 @@ use borbax_molecule::fold::fcc;
 use borbax_molecule::geodesic::Geodesic;
 use borbax_molecule::signature::Signature;
 
-/// Cavity separation at which proximity helps most, in lattice units. Closer
-/// and the two substrates sterically clash; further and holding them adjacent
-/// stops meaning anything.
-pub const IDEAL_SEPARATION: f64 = 2.5;
+//! **On the constants below.** An earlier draft had four bare literals here,
+//! and two of them were doing more than they looked.
+//!
+//! `IDEAL_SEPARATION = 2.5` invented a second length scale for something
+//! `UniverseConsts.ideal_gap` already means. It now derives from that plus the
+//! substrates' own extents.
+//!
+//! `BIND_THRESHOLD = -12.0` was the worse one. `affinity` scales with **D** and
+//! with the generated `w_shape`/`w_charge`/`ideal_gap`, so a fixed cutoff means
+//! a different quality of fit at D = 12, 42 and 162 — and §22.2 sweeps exactly
+//! those three to lock D. The sweep would have measured the threshold moving
+//! rather than the resolution. It is now expressed as a fraction of a reference
+//! score.
+//!
+//! `MAX_ENHANCEMENT = 1.0e4` was inert: `fit ≤ 1`, `enclosure ≤ 1`,
+//! `proximity ≤ 1`, so the factor could not exceed ~1001 and the clamp never
+//! fired. Its test could not fail.
+//!
+//! And the `* 1.0e3` multiplier *was* the enhancement magnitude — the number
+//! deciding whether exit criterion 6 reports 2x or 500x. Every other magnitude
+//! in the system is generated per universe. This one is now
+//! `UniverseConsts.catalytic_prefactor`, so criterion 6 reports a fact about a
+//! generated universe rather than about a literal nobody would question again.
 
-/// Ceiling on rate enhancement. Not physics — a guard, so that a degenerate
-/// geometry cannot produce an unbounded rate and stall the scheduler.
-pub const MAX_ENHANCEMENT: f64 = 1.0e4;
-
-/// Binding score above which a cavity counts as holding a substrate.
-const BIND_THRESHOLD: f64 = -12.0;
+/// Fraction of a reference score above which a cavity counts as holding a
+/// substrate. Dimensionless, so it is stable across resolutions.
+const BIND_FRACTION: f64 = 0.25;
 
 /// Rate enhancement this folded chain provides to a reaction between two
 /// substrates. Returns 1.0 (no effect) unless two distinct cavities each
@@ -2204,6 +2307,27 @@ mod tests {
         assert!(find_raf(&rxns, &cat, &food(&[0])).is_none());
     }
 
+    /// The closure bug the original four tests could not catch, because they
+    /// all used single-reactant reactions. `A + B -> C` with `A` in food and
+    /// `B` unreachable must **not** yield a RAF.
+    #[test]
+    fn a_bimolecular_reaction_needs_all_its_reactants() {
+        let rxns = vec![Reaction {
+            kind: ReactionKind::Condense,
+            reactants: [SpeciesId(0), SpeciesId(7)], // 7 is never produced
+            products: [SpeciesId(1), SpeciesId(1)],
+            activation: Quanta(1.0),
+            delta: Quanta(0.0),
+            catalysis: 1.0,
+            catalyst: Some(SpeciesId(1)),
+        }];
+        let cat = vec![(SpeciesId(1), 0usize)];
+        assert!(
+            find_raf(&rxns, &cat, &food(&[0])).is_none(),
+            "produced a product from a reactant that never existed"
+        );
+    }
+
     #[test]
     fn is_deterministic_and_order_independent() {
         let rxns = vec![rxn(0, 0, 1, 1), rxn(1, 1, 2, 2), rxn(2, 0, 3, 3)];
@@ -2296,6 +2420,30 @@ pub struct RafSet {
 
 /// Find the maximal RAF, or `None` if there is not one.
 ///
+/// **Maximality is well-defined**: RAFs are closed under union, so a unique
+/// maximal one exists. Each removal is safe because for any RAF `R' ⊆ active`,
+/// `cl_R'(F) ⊆ cl_active(F)` — a reaction unsupported by the larger closure
+/// cannot belong to any sub-RAF. So `None` means *there is no RAF*, not "we
+/// failed to find one".
+///
+/// **This is a RAF, not a CAF.** A CAF requires each catalyst to already exist
+/// when its reaction is first used; a RAF permits a catalyst to be produced by
+/// the very set that needs it. RAF is the weaker, more permissive condition,
+/// so finding one means "self-referentially closed", not "bootstrappable from
+/// food in order". Worth stating, because the Chronicle announces it.
+///
+/// **Two limits, both deliberate for V0 and both worth knowing.**
+///
+/// It is *structural*: this sees a reaction list and a food set, never any
+/// counts. So §9.6's death criterion fires when a reaction channel disappears,
+/// but not when a catalyst's population reaches zero. Callers should therefore
+/// pass only species actually present — see `find_raf_present`.
+///
+/// It ignores *inhibition*. §9.5's broad-complementarity by-products are
+/// inhibitors in RAF terms, and detecting uninhibited RAFs under inhibition is
+/// NP-hard. Polynomial time is the reason RAF was chosen, so the simplification
+/// has to be stated rather than assumed.
+///
 /// The algorithm alternates two reductions until they stop removing anything:
 /// drop reactions whose reactants are not in the closure of what is currently
 /// reachable, and drop reactions with no catalyst present in that closure.
@@ -2320,10 +2468,19 @@ pub fn find_raf(
     loop {
         // Closure: what can be built from food using only active reactions.
         let mut present = food.clone();
-        let mut missing: Vec<u8> = rxns
-            .iter()
-            .map(|r| r.reactants.iter().filter(|s| !food.contains(s)).count() as u8)
-            .collect();
+        // Count **all** reactants, and let food decrement them like anything
+        // else.
+        //
+        // An earlier draft counted only non-food reactants while
+        // `Incidence::build` indexed every reactant occurrence including food
+        // ones. For `A + B -> C` with `A` in food and `B` not: missing = 1,
+        // popping `A` decrements it to zero, and `C` is produced **without `B`
+        // ever existing**. The F-generated condition is violated and the
+        // returned set need not be a RAF at all.
+        //
+        // All four of this task's original tests used single-reactant
+        // reactions, so none of them could catch it.
+        let mut missing: Vec<u32> = rxns.iter().map(|r| r.reactants.len() as u32).collect();
         let mut queue: VecDeque<SpeciesId> = food.iter().copied().collect();
 
         while let Some(s) = queue.pop_front() {
@@ -2548,11 +2705,27 @@ propensities, a free-slot list, and a `WorldYear` clock.
 
 1. Compute `total = tree.total()`. If zero, the beaker is dead — return.
 2. Draw `u1`, advance the clock by `-ln(u1) / total` (via `det_math::ln`).
+
+   **Guard `u1 == 0`.** `next_f64` is uniform on `[0, 1)`, so zero is
+   reachable, and `ln(0)` is `-inf` — the clock would jump to infinity and the
+   run would end silently. Draw from `(0, 1]` by using `1.0 - u1`; Exp(1) is
+   invariant either way. This wants its own test.
 3. Draw `u2`, select a channel with `tree.sample(u2)`.
 4. Apply it: decrement reactant counts, increment product counts. Products
    were resolved when the channel was created (spec §8.6), so no
    canonicalisation happens here.
-5. Update the propensity of every channel whose species changed. Below
+
+   **For a reaction between two molecules of the same species the propensity
+   is `c·n(n-1)/2`, not `c·n²/2`.** The difference is invisible at large `n`
+   and wrong exactly where it matters — at the small counts where a RAF
+   nucleates. Note also that `counts` being `Vec<f64>` invites fractional
+   values, at which point `n(n-1)` stops meaning anything; integers up to 2⁵³
+   are exact in `f64` so determinism survives, but the conversion should be
+   explicit and commented.
+5. Recompute `catalysis` only when a *cavity-bearing* species' count crosses
+   zero — it is a property of the channel, resolved at creation (§8.6), not a
+   per-step quantity. Then update the propensity of every channel whose
+   species changed. Below
    `FLAT_SCAN_LIMIT` (start at 256) rescan all channels — a contiguous scan
    beats a dependent-load tree descent at small counts. Above it, use the
    incidence structure from Task 17 to touch only affected channels.
@@ -2608,25 +2781,29 @@ mod tests {
         }
     }
 
-    /// Golden render test (spec §16). SVG is a string, so a rendering
-    /// regression is caught like any other regression — no image diffing,
-    /// no browser, runs headless in CI.
+    /// Golden render tests via `insta` (spec §16). SVG is a string, so a
+    /// rendering regression is caught like any other — no image diffing, no
+    /// browser, runs headless in CI.
+    ///
+    /// `insta`, not a hand-rolled `UPDATE_GOLDENS` dance: it is already the
+    /// project's named snapshot tool (CLAUDE.md § Dependencies), it is a
+    /// dev-dependency and so cannot touch simulation output, and
+    /// `cargo insta review` shows a diff and requires an explicit accept.
+    /// That last point is the one that matters — "inspect every generated SVG
+    /// by eye" is a step a human will discharge by accepting all fourteen.
     #[test]
-    fn goldens_match() {
-        for (name, actual) in [
-            ("molecule", render_molecule(&fixture_mol(), &u(), &g())),
-            ("signature", render_signature_net(&fixture_sig(), &g())),
-            ("fold", render_fold(&fixture_fold(), &fixture_poly(), &u())),
-        ] {
-            let path = format!("tests/goldens/{name}.svg");
-            if std::env::var("UPDATE_GOLDENS").is_ok() {
-                std::fs::write(&path, &actual).unwrap();
-                continue;
-            }
-            let expected = std::fs::read_to_string(&path)
-                .unwrap_or_else(|_| panic!("missing golden {path}; run with UPDATE_GOLDENS=1"));
-            assert_eq!(actual, expected, "{name} render changed");
-        }
+    fn molecule_render_matches_snapshot() {
+        insta::assert_snapshot!(render_molecule(&fixture_mol(), &u(), &g()));
+    }
+
+    #[test]
+    fn signature_net_render_matches_snapshot() {
+        insta::assert_snapshot!(render_signature_net(&fixture_sig(), &g()));
+    }
+
+    #[test]
+    fn fold_render_matches_snapshot() {
+        insta::assert_snapshot!(render_fold(&fixture_fold(), &fixture_poly(), &u()));
     }
 }
 ```
@@ -2661,9 +2838,13 @@ Key points for the implementer:
   fit carried the score. This is the diagram that makes a binding bug
   diagnosable rather than mysterious.
 
-- [ ] **Step 4: Generate goldens** — `UPDATE_GOLDENS=1 cargo test -p borbax-render`,
-then **inspect every generated SVG by eye** before committing. A golden
-committed without being looked at locks in whatever was wrong at the time.
+- [ ] **Step 4: Accept the snapshots** — `cargo insta test -p borbax-render`,
+then `cargo insta review`, which shows each snapshot as a diff and requires an
+explicit accept per file.
+
+**Open each SVG in a browser before accepting it.** A snapshot accepted without
+being looked at locks in whatever was wrong at the time, and the review tool
+makes that easy to do quickly rather than impossible to do wrongly.
 
 - [ ] **Step 5: Run** — `cargo test -p borbax-render`, expect 4 passed.
 **Step 6: Commit** goldens and code together.
@@ -2684,15 +2865,20 @@ committed without being looked at locks in whatever was wrong at the time.
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_battery_runs_in_seconds_not_minutes() {
-        // The battery's entire value is that it turns a chemistry-tuning
-        // iteration from hours into seconds (spec §7.2). If it gets slow,
-        // the tuning loop this project depends on stops working.
-        let start = std::time::Instant::now();
-        let _ = run_battery(&Universe::generate(1), &Geodesic::<42>::build().unwrap());
-        assert!(start.elapsed().as_secs() < 5, "battery took {:?}", start.elapsed());
-    }
+    // The battery's speed is a `criterion` benchmark in `benches/battery.rs`,
+    // not a test.
+    //
+    // A wall-clock assertion inside `#[test]` is flaky under CI contention,
+    // and a flaky test gets deleted rather than fixed — taking the §7.2
+    // iteration-speed guarantee with it. `criterion` tracks the number over
+    // time and reports regressions, which is what is actually wanted:
+    //
+    //     fn bench_battery(c: &mut Criterion) {
+    //         let g = Geodesic::<42>::build().unwrap();
+    //         c.bench_function("battery", |b| {
+    //             b.iter(|| run_battery(black_box(&Universe::generate(1)), &g))
+    //         });
+    //     }
 
     #[test]
     fn it_rejects_an_inert_universe() {

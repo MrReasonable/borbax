@@ -259,10 +259,23 @@ The asymmetry that governs the decision:
   golden regeneration — exactly like a compiler bump (§18.1). Run the
   determinism auditor on any such addition.
 
-Deliberately hand-rolled, with reasons that should be re-checked rather than
-assumed: three-component vector maths and small dense linear algebra (thirty
-lines, total control over operation order, and `nalgebra` is heavy for the
-use). Deliberately *not* hand-rolled: transcendentals — `libm` is rust-lang's
-pure-Rust MUSL port with no platform dispatch, which is precisely what §13.1
-requires, and writing a correctly-rounded `exp` is hard to get right and easy
-to get subtly wrong.
+Hand-rolled, and the reason matters: three-component vector maths is ~20 lines
+using none of what `glam` or `nalgebra` sell. **Not** for determinism — both
+would be bit-identical (`glam`'s f64 module has no arch dispatch and documents
+cross-platform bit-identity; `nalgebra` special-cases dim 3 to `a + b + c`).
+Claiming otherwise was a doctrine error worth naming, because a false
+determinism argument gets used later to reject a dependency that is correct.
+
+SMACOF stays hand-rolled on firmer ground: its fixed 240-iteration count is a
+determinism requirement, and no solver crate offers "stop after exactly n
+iterations regardless of convergence".
+
+*Not* hand-rolled: transcendentals (`libm`), plateau model fitting
+(`levenberg-marquardt`), snapshot tests (`insta` — do not hand-roll
+`UPDATE_GOLDENS`), benchmarks (`criterion` — a timing assertion inside
+`#[test]` is a flaky test that will get deleted, taking the guarantee with it).
+
+Held in reserve: `nauty-Traces-sys` for canonicalisation if the hand-rolled
+search ever becomes a bottleneck. It would be a result-affecting runtime
+dependency *and* C FFI against a `forbid(unsafe_code)` workspace, so it stays
+an escape hatch rather than a plan.
