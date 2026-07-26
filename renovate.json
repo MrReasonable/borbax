@@ -18,10 +18,11 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "The rustc pin in .prototools. No packaged manager can see this file, which is why it is the one dependency most likely to silently rot.",
-      "managerFilePatterns": ["/^\\.prototools$/"],
+      "description": "The rustc pin, which lives in two files: .prototools installs the toolchain and rust-toolchain.toml selects it. Both must move together — xtask fails the build if they drift — so both are matched here rather than leaving one to be updated by hand.",
+      "managerFilePatterns": ["/^\\.prototools$/", "/^rust-toolchain\\.toml$/"],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\s+rust\\s*=\\s*\"(?<currentValue>[^\"]+)\""
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\s+rust\\s*=\\s*\"(?<currentValue>[^\"]+)\"",
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\s+\\[toolchain\\]\\s+channel\\s*=\\s*\"(?<currentValue>[^\"]+)\""
       ],
       "versioningTemplate": "semver"
     }

@@ -102,19 +102,71 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     let mut failures = Vec::new();
     check_no_data_files(root, &mut failures)?;
     check_blocklist_present(root, &mut failures)?;
+    check_toolchain_pins_agree(root, &mut failures)?;
 
     if failures.is_empty() {
-        println!("fiction guarantees: all checks passed");
+        println!("repository invariants: all checks passed");
         Ok(())
     } else {
         for f in &failures {
             eprintln!("FAIL: {f}");
         }
-        Err(format!(
-            "{} fiction-guarantee check(s) failed",
-            failures.len()
-        ))
+        Err(format!("{} invariant check(s) failed", failures.len()))
     }
+}
+
+/// §18.1 — the toolchain is pinned in two files, which must agree.
+///
+/// `.prototools` installs the toolchain and `rust-toolchain.toml` selects it;
+/// both are needed, for the reason documented in `rust-toolchain.toml`. Two
+/// sources of truth is a hazard unless something checks them, so this is that
+/// something. Drift here means CI silently compiles with a different rustc
+/// than the one the goldens were generated under.
+fn check_toolchain_pins_agree(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    let proto = read_pin(&root.join(".prototools"), "rust")?;
+    let rustup = read_pin(&root.join("rust-toolchain.toml"), "channel")?;
+
+    match (proto, rustup) {
+        (Some(a), Some(b)) if a == b => Ok(()),
+        (Some(a), Some(b)) => {
+            failures.push(format!(
+                "§18.1: toolchain pins disagree — .prototools has {a:?}, rust-toolchain.toml has {b:?}"
+            ));
+            Ok(())
+        }
+        (None, _) => {
+            failures.push("§18.1: no `rust` pin found in .prototools".into());
+            Ok(())
+        }
+        (_, None) => {
+            failures.push("§18.1: no `channel` pin found in rust-toolchain.toml".into());
+            Ok(())
+        }
+    }
+}
+
+/// The value of the first `<key> = "<value>"` line in a simple TOML file.
+///
+/// Deliberately not a TOML parser: xtask has no dependencies, and both pins are
+/// a bare key at the top level of a file this repository owns. A real parser
+/// would be the right call the moment either file grows a `[table]` whose keys
+/// could collide with these.
+fn read_pin(path: &Path, key: &str) -> Result<Option<String>, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    for line in src.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((lhs, rhs)) = line.split_once('=') else {
+            continue;
+        };
+        if lhs.trim() != key {
+            continue;
+        }
+        return Ok(rhs.trim().trim_matches('"').to_owned().into());
+    }
+    Ok(None)
 }
 
 /// G1 — no real chemistry data enters the repository.

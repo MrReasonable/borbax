@@ -1,0 +1,29 @@
+# Toolchain selection, as opposed to installation.
+#
+# proto (.prototools) installs the pinned Rust; this file is what makes every
+# cargo invocation actually *use* it. The two are not redundant, and this file
+# exists because the distinction was demonstrated rather than theorised: on the
+# first CI run, proto installed 1.97.1 on all three platforms, and the Windows
+# leg then compiled with the runner's preinstalled 1.97.0 anyway. proto
+# activates Rust by exporting RUSTUP_TOOLCHAIN and ordering PATH, and neither
+# survived into the step's shell there.
+#
+# rustup reads this file from the directory itself, so it needs no environment
+# variable, no shell activation and no PATH ordering. It works the same in CI,
+# in a git hook, in a GUI client and in an editor's integrated terminal.
+#
+# Spec §18.1 makes the pin part of the determinism contract: a rustc bump can
+# change float codegen and silently invalidate every golden hash. A toolchain
+# that is pinned in one file and ignored in practice is worse than no pin,
+# because it is believed.
+#
+# This value MUST match the `rust` pin in .prototools. `cargo run -p xtask`
+# fails if they drift, so the duplication is a checked invariant rather than a
+# hazard.
+#
+# renovate: datasource=github-releases depName=rust-lang/rust
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+# CI runs both, so neither can be left to chance on a minimal profile.
+components = ["clippy", "rustfmt"]
