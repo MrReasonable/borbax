@@ -645,6 +645,19 @@ Deaths are milestones too, and are reported with their computed cause (§9.6): t
 
 The Chronicle turns "I left it running overnight" into "come and read what happened while we were asleep, and then let's go and watch the good bits."
 
+### 14.5 The V0 shape inspector
+
+The viewer proper is a V1 deliverable, but a shape-based chemistry cannot be developed blind. If you cannot see that two molecules interlock, you cannot distinguish a binding bug from a chemistry that is simply not very interesting — and those two failures look identical from the outside. So V0 ships a deliberately minimal precursor.
+
+The Rust core emits **static SVG** directly: a molecule as a graph diagram, its signature as a radial plot, a folded polymer on its lattice with pockets marked, and a binding pair drawn in the winning orientation with the per-sector contributions annotated. A single self-contained HTML page collects these and adds a species-population timeline for a beaker run.
+
+Two reasons it is SVG-from-Rust rather than a JavaScript renderer:
+
+- **It is testable.** Deterministic string output means renders can be golden-tested in CI, so a rendering regression is caught like any other regression. A canvas renderer would need image diffing and a headless browser to achieve the same thing.
+- **It has no build step.** An SVG opens in a browser, an editor, or a diff. During V0 the render loop needs to be as short as the simulation loop, and anything requiring a bundler run breaks that.
+
+The Lab skin (§14.2) grows out of this rather than replacing it — the same diagrams, moved behind a live socket.
+
 ---
 
 ## 15. Success criteria
@@ -725,6 +738,8 @@ A simulation this stochastic is untestable by conventional means unless the stra
 
 **Emergence regression suite.** Nightly: does universe X still reach autocatalysis by year Y? Guards against a well-meaning tuning change quietly destroying the emergent behaviour that is the entire point. Slow, allowed to be flaky in timing, judged on distributions rather than exact outcomes.
 
+**Golden render tests.** SVG output (§14.5) is a deterministic string, so renders are golden-tested like any other output. This is cheap, it catches rendering regressions that would otherwise be discovered by a human noticing a diagram looks odd, and it means the diagrams stay trustworthy as the thing we debug the chemistry *with*.
+
 **Fiction-guarantee checks.** CI enforcement of §5: no data files under chemistry crates, blocklist coverage verified, unit types enforced.
 
 ---
@@ -761,12 +776,17 @@ There is also a reason specific to this project, and it is a strong one. **The t
 # of them invalidates the golden-run hashes in §16 and requires
 # deliberate regeneration.
 
+# Current stable, released 2026-07-14.
 # renovate: datasource=github-releases depName=rust-lang/rust
 rust = "1.97.1"
+# Node 24 LTS ("Krypton"), not the newer 26.x. A simulation that runs
+# unattended overnight wants the boring, long-supported line — and the
+# viewer is not where this project's difficulty lives, so there is
+# nothing to gain from tracking current.
 # renovate: datasource=node-version depName=nodejs/node
 node = "24.18.0"
 # renovate: datasource=npm depName=pnpm
-pnpm = "11.15.1"
+pnpm = "11.17.0"
 
 [settings]
 # Auto-install a pinned version when it isn't present yet, so a
@@ -775,7 +795,9 @@ pnpm = "11.15.1"
 auto-install = true
 ```
 
-Versions shown match the pins currently in use in `narrative-craft`; Renovate keeps them moving, subject to the golden-regeneration rule above.
+Rust and pnpm track current stable; Node stays on the LTS line for the reason given in the comment. Renovate keeps all three moving, subject to the golden-regeneration rule above.
+
+**TypeScript is deliberately not in `.prototools`.** It is an npm package rather than a standalone toolchain binary, so it belongs in `viewer/package.json` as an exactly-pinned `devDependency` (currently `7.0.2`) where it sits alongside the code that consumes it. Putting it in the toolchain manager would split the viewer's dependency story across two files for no benefit.
 
 ### 18.2 Language choice
 
@@ -798,6 +820,7 @@ borbax/
 │   ├── borbax-sim/          Multi-scale engine, scheduler, governor, LOD
 │   ├── borbax-metrics/      Activity/novelty metrics, shadow comparison, model fitting
 │   ├── borbax-record/       Keyframes, event journal, branching
+│   ├── borbax-render/       Static SVG emitters — molecules, signatures, folds, binding (§14.5)
 │   ├── borbax-server/       WebSocket server, state streaming
 │   └── borbax-cli/          Headless runner, beaker harness, tooling
 ├── viewer/                  TypeScript + Vite browser application
@@ -812,7 +835,7 @@ The crate split follows principle: each has one clear purpose, a defined interfa
 
 | Version | Delivers | Rough shape |
 |---|---|---|
-| **V0** | Universe generation, molecule model, shape and binding, folding, decay, beaker harness, folding-map property tests. No world, no viewer. Proves interesting chemistry happens in a test tube. **Exit criteria in §23.** | Foundation |
+| **V0** | Universe generation, molecule model, shape and binding, folding, decay, beaker harness, folding-map property tests, and a static shape inspector (§14.5). No world, no live viewer. Proves interesting chemistry happens in a test tube — and lets us *see* that it does. **Exit criteria in §23.** | Foundation |
 | **V1** | Focused region, multi-scale engine, determinism and keyframes, neutral shadow, Lab viewer, the Chronicle. **Target: protocells.** ← *this document* | The hard, novel part |
 | **V2** | Template-copying polymers, mutation, true heredity. Darwinian evolution proper. | Life gets a genome |
 | **V3** | Cells, ecology, and the expansion to the 1,000,000 km² planetary field with real biomes. | The world gets big |
@@ -919,5 +942,8 @@ V0 has no world and no viewer. It exists to establish that the chemistry is wort
 5. Damage load is shown to be measurable above noise, or the provenance fallback is adopted (§22.7)
 6. Catalysis is observed emerging — a folded polymer with two pockets measurably accelerating a reaction, with nothing in the code that knows what an enzyme is (§8.5)
 7. With decay disabled, a run and its shadow become statistically indistinguishable (§16)
+8. Molecules, signatures, folds, pockets and binding pairs can be rendered and visually inspected, with the renderers under golden-image test (§14.5)
+
+Criterion 8 is listed last but should be built early — several of the criteria above it are far easier to evaluate, and far easier to *trust*, once the shapes can actually be seen.
 
 Criterion 6 is the one that matters. If shape-derived catalysis does not emerge in a beaker, no amount of world-building above it will help, and the design needs rethinking before another line is written.
