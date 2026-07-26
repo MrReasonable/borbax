@@ -1,0 +1,80 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  # The matrix is not for coverage — it is the enforcement mechanism for the
+  # cross-platform determinism promise in spec §13.4. Every portability
+  # hazard listed there is invisible on a single machine: the code runs, the
+  # tests pass, the numbers look fine, and the failure only appears when
+  # someone opens a shared seed on different hardware. Running goldens on
+  # one platform would pass happily while the promise quietly rotted.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: moonrepo/setup-toolchain@v0
+        with:
+          auto-install: true
+      - name: Fiction guarantees (spec §5)
+        run: cargo run -p xtask
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      # borbax-cli does not exist until Task 21. Without this guard the whole
+      # `test` job fails on all three platforms for twenty tasks — and because
+      # `determinism-matrix` is gated on `needs: test`, it would never run at
+      # all. Its inertness would be accidental rather than designed, which is
+      # the opposite of what §13.6 needs.
+      #
+      # `shell: bash` is load-bearing, not tidiness. The Windows leg would
+      # otherwise run under pwsh, whose redirection operator rewrites the
+      # stream with native CRLF line endings — so `diff -u` in
+      # `determinism-matrix` would report a divergence on the very first
+      # golden run, for a reason that has nothing to do with the simulation.
+      # A determinism gate that cries wolf once gets muted forever.
+      - name: Emit golden hashes
+        if: hashFiles('crates/borbax-cli/Cargo.toml') != ''
+        shell: bash
+        run: cargo run -p borbax-cli --release -- goldens --emit > goldens-${{ matrix.os }}.txt
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('crates/borbax-cli/Cargo.toml') != ''
+        with:
+          name: goldens-${{ matrix.os }}
+          path: goldens-${{ matrix.os }}.txt
+
+  # The actual cross-platform assertion. Task 1 creates the job with a
+  # placeholder step; it becomes real once borbax-cli exists (Task 20).
+  determinism-matrix:
+    name: goldens identical across platforms
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Compare golden hashes across platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(goldens-*/goldens-*.txt)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No golden artifacts yet (expected before Task 20)."
+            exit 0
+          fi
+          ref="${files[0]}"
+          fail=0
+          for f in "${files[@]:1}"; do
+            if ! diff -u "$ref" "$f"; then
+              echo "DETERMINISM FAILURE: $f differs from $ref"
+              fail=1
+            fi
+          done
+          [ $fail -eq 0 ] && echo "goldens identical across ${#files[@]} platforms"
+          exit $fail

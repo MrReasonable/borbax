@@ -3092,7 +3092,12 @@ that gets recorded in the spec. **Nothing here is complete until its result is
 written back into `docs/superpowers/specs/2026-07-26-borbax-prd.md`.**
 
 **Files:** Create `crates/borbax-cli/{Cargo.toml,src/main.rs}`; replace bodies in
-`crates/borbax-molecule/src/det_math.rs`; add `docs/v0-results.md`.
+`crates/borbax-units/src/det_math.rs`; add `docs/v0-results.md`.
+
+`det_math` lives in `borbax-units` and nowhere else (spec §18.3) — two crates
+below `borbax-molecule` call it, so anywhere higher is unreachable from them.
+The xtask check added in Task 2 Step 7 exempts that one path, so a copy in
+`borbax-molecule` fails CI rather than quietly becoming a second chokepoint.
 
 - [ ] **Step 1: Signature resolution sweep (spec §22.2, exit criterion 3)**
 

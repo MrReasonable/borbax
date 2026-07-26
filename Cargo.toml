@@ -1,0 +1,89 @@
+[workspace]
+resolver = "3"
+# `crates/*` joins this list in Task 2, with the first crate. Cargo falls back
+# to treating a glob that matches nothing as a literal path, so listing
+# `crates/*` before `crates/` has a package in it fails the workspace outright.
+members = ["xtask"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT"
+
+[workspace.dependencies]
+borbax-units = { path = "crates/borbax-units" }
+borbax-rng = { path = "crates/borbax-rng" }
+borbax-universe = { path = "crates/borbax-universe" }
+borbax-molecule = { path = "crates/borbax-molecule" }
+borbax-reaction = { path = "crates/borbax-reaction" }
+borbax-beaker = { path = "crates/borbax-beaker" }
+borbax-render = { path = "crates/borbax-render" }
+borbax-geometry = { path = "crates/borbax-geometry" }
+
+[workspace.dependencies.thiserror]
+version = "2"
+[workspace.dependencies.libm]
+version = "0.2"
+
+[workspace.lints.rust]
+# No unsafe anywhere. If a benchmark ever justifies it, lift this on the one
+# crate that needs it rather than the workspace — the exception should be
+# visible in a diff.
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+# Groups at priority -1 so the specific lints below can override them.
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Denied because in this codebase they are correctness, not style. A panic in
+# a library is a simulation that dies eight hours into an overnight run.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+# `a[i]` is an unwrap wearing a hat. Warn rather than deny because the
+# geometry code indexes fixed-size arrays with proven bounds constantly —
+# those take an #[allow] with a one-line reason, and a bare #[allow] is a
+# review finding.
+indexing_slicing = "warn"
+
+# Silent truncation is the gotcha most likely to produce a wrong number that
+# looks plausible. Prefer TryFrom.
+as_conversions = "warn"
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+
+# Allowed, with reasons — a bare allow is not acceptable anywhere else.
+# `borbax_molecule::MoleculeGraph` reads better than the alternative.
+module_name_repetitions = "allow"
+# r/a and x/y/z are this domain's actual vocabulary, not lazy naming.
+similar_names = "allow"
+# #[must_use] is applied deliberately where dropping the result is a bug,
+# not exhaustively on every getter.
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# The units newtypes (Task 2) scalarise to bare f64 in release, but in debug
+# every operator is a real function call — and the beaker harness's whole
+# value is that a chemistry-tuning iteration takes seconds. Without this,
+# that claim only holds under --release and the test suite is unpleasant.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

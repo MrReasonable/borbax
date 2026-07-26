@@ -1,0 +1,12 @@
+# .prototools — toolchain pins. These are part of the determinism
+# contract (spec §13.1, §18.1), not just developer convenience. A rustc
+# bump can change floating-point codegen and silently invalidate the
+# golden-run hashes; bumping any pin here requires deliberate golden
+# regeneration, reviewed like a change to physics.
+
+# Current stable, released 2026-07-14.
+# renovate: datasource=github-releases depName=rust-lang/rust
+rust = "1.97.1"
+
+[settings]
+auto-install = true

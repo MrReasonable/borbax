@@ -1,0 +1,21 @@
+# rustfmt.toml
+#
+# Deliberately close to defaults. rustfmt's defaults *are* the industry
+# standard, and every deviation is a thing every contributor has to learn.
+# `max_width = 100` is restated rather than changed — it is already rustfmt's
+# default, and it is written down here so that the sub-widths derived from it
+# (`array_width` and `fn_call_width` are 60% of it) are traceable to something
+# visible when they wrap a line shorter than 100.
+edition = "2024"
+max_width = 100
+
+# The one deviation that is not cosmetic. The default is `Auto`, which means
+# "whatever the file already uses" — so a file first written on Windows keeps
+# CRLF, `cargo fmt --check` stays green on the machine that wrote it, and the
+# Windows leg of the determinism matrix (spec §13.4) reads different bytes for
+# the same source. Pinning to Unix makes line endings one of the things that
+# cannot vary by platform.
+newline_style = "Unix"
+
+use_field_init_shorthand = true
+use_try_shorthand = true
