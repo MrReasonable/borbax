@@ -932,9 +932,32 @@ auto-install = true
 
 **Rust is the only entry, and that is a consequence worth noticing.** The native viewer decision in §14.0 removed Node, pnpm and TypeScript from the project entirely — one language, one toolchain, one dependency graph, one test command. A cross-language build was never going to be the hardest thing here, but it was pure overhead, and it is now simply absent.
 
-### 18.2 Language choice
+### 18.2 Language choice — Rust, and why not C++
 
-Rust for the core: the performance is necessary rather than aspirational, the type system is genuinely useful for enforcing unit safety (G4), and fearless concurrency matters a great deal when determinism under parallelism is a hard requirement rather than a preference.
+Rust for the core, and the honest comparison against C++ is worth recording because it is the kind of decision that gets re-argued later.
+
+**The decisive argument is determinism under parallelism.** The hardest requirement in this project is bit-for-bit reproducibility across machines while running on eight cores (§13.4). In C++ a data race is undefined behaviour: it can silently produce a divergence that appears on one platform and not another, intermittently. The CI matrix (§13.6) would catch *that* something diverged, but hunting a race that only manifests on one architecture is genuinely miserable work. Rust makes that entire bug class structurally impossible. For a project whose central promise is reproducibility, that is not a preference.
+
+Secondary but real: the invented-unit newtypes of G4 cost nothing at runtime and are enforced by the compiler; Cargo makes the toolchain pin — which is *part* of the determinism contract (§18.1) — a one-line fact rather than a CMake and package-manager project of its own; and `wgpu` (§13.5) gives one cross-platform GPU path where C++ would mean Vulkan and Metal maintained separately, or a translation layer.
+
+**The fair concern is reinventing wheels, and it deserves a straight answer.** The honest position is that for this project the wheel mostly does not exist in either language:
+
+| Need | C/C++ | Rust | Verdict |
+|---|---|---|---|
+| Graph canonicalisation | **nauty / Traces** — the gold standard | no mature equivalent | **C++ wins** — the one real gap |
+| Cross-platform GPU | Vulkan + Metal, or MoltenVK | `wgpu`, one source | Rust |
+| Immediate-mode UI | Dear ImGui, very mature | `egui` | roughly level |
+| Deterministic parallelism | OpenMP / TBB, races are UB | `rayon`, races rejected at compile time | Rust, decisively |
+| Build and dependencies | CMake + vcpkg/conan | Cargo | Rust, decisively |
+| Serialisation | protobuf / cereal | `serde` | Rust |
+| Generated periodic table | — | — | **nothing exists** |
+| Shape-signature binding | — | — | **nothing exists** |
+| Lattice folding on invented monomers | — | — | **nothing exists** |
+| RAF detection | — | — | **nothing exists** |
+
+The bottom four rows are most of the work, and they are novel *by construction* — inventing the chemistry is the premise (§1.1), so no library in any language implements it. What an ecosystem supplies here is the periphery: GPU, interface, parallelism, serialisation, build. Rust's periphery is at least as good as C++'s across that set and better in several places.
+
+**On the one genuine gap**: nauty is C with a stable ABI and can be called from Rust directly, so even that does not require choosing a language. It is also unlikely to be needed — molecules are capped at twelve atoms with element and bond-order labels, and colour refinement alone discretises the large majority of such graphs, leaving the expensive search a rarely-taken path. If canonicalisation later proves a bottleneck or a correctness headache, **binding to nauty is the fix, not a rewrite**. That keeps the decision bounded and reversible.
 
 `egui` and `wgpu` for the viewer (§14.0), which keeps the whole project in one language and lets the interface read simulation state directly. `wgpu` is needed regardless for GPU screening (§13.5), so the viewer's renderer and the screening path share a stack rather than duplicating one.
 
