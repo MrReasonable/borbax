@@ -44,11 +44,17 @@ UPDATE_GOLDENS=1 cargo test -p borbax-render           # regenerate SVG goldens 
 
 `borbax-cli` subcommands: `beaker`, `sweep`, `band`, `battery`, `render`, `goldens`.
 
-Transcendentals are vendored in `crates/borbax-molecule/src/det_math.rs`. Until
-Task 21 Step 6 replaces the stub bodies, goldens generated locally **will not**
-reproduce on CI runners — Apple's libm and glibc disagree in the last bits. The
-`determinism-matrix` CI job is deliberately left inert until then, so it fails
-loudly if that work is skipped.
+Transcendentals route through `crates/borbax-units/src/det_math.rs`, backed by
+the `libm` crate — rust-lang's pure-Rust MUSL port, no platform dispatch. It
+lives in `borbax-units` and nowhere else because `borbax-rng` and
+`borbax-universe` both call it and both sit below `borbax-molecule` in the crate
+order; anywhere higher and the one file guaranteeing portability is unreachable
+from two crates that need it.
+
+Every `exp`, `ln`, `sin`, `cos` and `powf` in the workspace goes through it.
+`sqrt` and the four arithmetic operations stay native — IEEE-754 specifies those
+exactly. A direct `.exp()` or `.cos()` on an `f64` in library code is a
+determinism bug, not a style choice.
 
 The dev profile is deliberately `opt-level = 1` (deps at 2): the unit newtypes are
 zero-cost only after inlining, and the beaker harness's value is that a
@@ -117,6 +123,12 @@ back into a sweep over every molecule.
   and **3D throughout**: in 2D a chain has ~√n interior against √n boundary, so
   burial protects nothing and a cavity is an open notch. The catalysis and
   solvent-attack mechanisms both depend on real burial (§8.4).
+- **Binding pairs each direction with its partner's *antipode*.** Two bodies in
+  contact touch along opposite directions, so the kernel indexes `b` through
+  `ANTI[PERM[R][i]]`, never `PERM[R][i]` directly. Dropping `ANTI` is not a
+  small error: because `−I` is not in the rotation group, it silently converts
+  the search into the 60 *improper* elements — reflections only — and nothing
+  fails. A complement built at the same index cannot test this.
 - **Binding searches rotations but not reflections** — 60 elements, not 120. This
   makes Borbax chemistry *handed*, so homochirality is an emergent result the
   simulation could produce rather than something excluded by construction (§22.8).
