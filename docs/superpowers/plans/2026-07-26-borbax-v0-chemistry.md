@@ -20,7 +20,7 @@ unchanged — read them first. Tasks 1–10 are there; this file has 11–21.
 
 **Interfaces:**
 - Consumes: `borbax_universe::{Universe, ElementId}`, `borbax_rng::{Stream, Domain}`
-- Produces: `MAX_POLYMER`, `Polymer`, `Fold`, `FoldWorkspace`, `FoldWorkspace::fold(&Polymer, &Universe, &mut Stream) -> Fold`, `Fold::{contacts, energy, exposure}`, `fcc::{GRID, NEIGHBOURS, to_flat, from_flat}`
+- Produces: `MAX_POLYMER`, `Polymer`, `Fold`, `FoldWorkspace`, `FoldWorkspace::{fold(&Polymer, &Universe) -> Fold, fold_with_seed(..)}`, `Fold::{contacts, energy, exposure}`, `fcc::{GRID, NEIGHBOURS, to_flat, from_flat}`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -46,8 +46,8 @@ mod tests {
         let u = Universe::generate(8);
         let p = poly(40, &u);
         let mut ws = FoldWorkspace::new();
-        let a = ws.fold(&p, &u, &mut Stream::new(1, Domain::Fold, 0));
-        let b = ws.fold(&p, &u, &mut Stream::new(1, Domain::Fold, 0));
+        let a = ws.fold(&p, &u);
+        let b = ws.fold(&p, &u);
         assert_eq!(a.coords, b.coords);
         assert_eq!(a.contacts, b.contacts);
     }
@@ -60,11 +60,11 @@ mod tests {
         let u = Universe::generate(8);
         let (p1, p2) = (poly(35, &u), poly(50, &u));
         let mut shared = FoldWorkspace::new();
-        let _ = shared.fold(&p1, &u, &mut Stream::new(2, Domain::Fold, 0));
-        let reused = shared.fold(&p2, &u, &mut Stream::new(3, Domain::Fold, 0));
+        let _ = shared.fold(&p1, &u);
+        let reused = shared.fold(&p2, &u);
 
         let mut fresh = FoldWorkspace::new();
-        let clean = fresh.fold(&p2, &u, &mut Stream::new(3, Domain::Fold, 0));
+        let clean = fresh.fold(&p2, &u);
         assert_eq!(reused.coords, clean.coords, "workspace reset leaked state");
     }
 
@@ -74,7 +74,7 @@ mod tests {
         let mut ws = FoldWorkspace::new();
         for seed in 0..30 {
             let p = poly(45, &u);
-            let f = ws.fold(&p, &u, &mut Stream::new(seed, Domain::Fold, 0));
+            let f = ws.fold(&p, &u);
             let mut seen = std::collections::BTreeSet::new();
             for (i, &c) in f.coords.iter().enumerate() {
                 assert!(seen.insert(c), "self-intersection at monomer {i}");
@@ -97,7 +97,7 @@ mod tests {
         let mut ws = FoldWorkspace::new();
         for seed in 0..20 {
             let p = poly(40, &u);
-            let f = ws.fold(&p, &u, &mut Stream::new(seed, Domain::Fold, 0));
+            let f = ws.fold(&p, &u);
             assert_eq!(f.contacts, recount_contacts(&p, &f), "seed {seed}");
         }
     }
@@ -110,9 +110,61 @@ mod tests {
         let u = Universe::generate(8);
         let mut ws = FoldWorkspace::new();
         let p = poly(50, &u);
-        let f = ws.fold(&p, &u, &mut Stream::new(9, Domain::Fold, 0));
+        let f = ws.fold(&p, &u);
         let folded: u32 = f.contacts.iter().sum();
         assert!(folded > 8, "only {folded} contacts — annealing is not compacting");
+    }
+
+    /// The grid-wrap check. A 200-mer must stay well inside the lattice at
+    /// every point, in *true* coordinates — `in_bounds` alone cannot catch a
+    /// wrap because it decodes the already-wrapped position.
+    #[test]
+    fn no_chain_length_wraps_the_grid() {
+        let u = Universe::generate(8);
+        let mut ws = FoldWorkspace::new();
+        for n in [45, 64, 80, 120, MAX_POLYMER] {
+            let p = poly(n, &u);
+            let f = ws.fold(&p, &u);
+            for (i, &c) in f.coords.iter().enumerate() {
+                let (x, y, z) = fcc::from_flat(c);
+                assert!(
+                    (2..fcc::GRID - 2).contains(&x)
+                        && (2..fcc::GRID - 2).contains(&y)
+                        && (2..fcc::GRID - 2).contains(&z),
+                    "n={n} monomer {i} at ({x},{y},{z}) is at or past the boundary"
+                );
+                assert_eq!(fcc::to_flat(x, y, z), c, "flat/coord round-trip failed");
+            }
+        }
+    }
+
+    /// Folding must be a function of the *sequence*, not of the anneal stream.
+    /// `folding_is_deterministic` compares two folds from the same stream,
+    /// which tests the RNG rather than the folder. If the same polymer reaches
+    /// materially different shapes under different streams then "the folding
+    /// map" is not a map, and every neutral-network and shape-space-covering
+    /// measurement downstream is measuring annealer noise.
+    #[test]
+    fn folds_are_reproducible_across_independent_streams() {
+        let u = Universe::generate(8);
+        let mut ws = FoldWorkspace::new();
+        let mut modal_agreement = 0;
+        let trials = 40;
+        for t in 0..trials {
+            let p = poly(40, &u);
+            let a = ws.fold_with_seed(&p, &u, t);
+            let b = ws.fold_with_seed(&p, &u, t + 1000);
+            if a.contacts == b.contacts {
+                modal_agreement += 1;
+            }
+        }
+        // Not equality — annealing is stochastic. But the modal shape must
+        // dominate, or the map is noise. Record the measured figure in the
+        // commit; this bound is a floor, not a target.
+        assert!(
+            modal_agreement * 2 > trials,
+            "only {modal_agreement}/{trials} folds agreed across streams — the folding map is annealer noise"
+        );
     }
 
     #[test]
@@ -120,7 +172,7 @@ mod tests {
         let u = Universe::generate(8);
         let mut ws = FoldWorkspace::new();
         let p = poly(40, &u);
-        let f = ws.fold(&p, &u, &mut Stream::new(4, Domain::Fold, 0));
+        let f = ws.fold(&p, &u);
         assert!(f.exposure.iter().take(p.len()).all(|&e| e <= 12));
         // A compact fold must bury something, or §9.5's burial argument fails.
         assert!(f.exposure.iter().take(p.len()).any(|&e| e < 8), "nothing is buried");
@@ -322,6 +374,22 @@ impl FoldWorkspace {
         Self { occ: vec![0u16; fcc::CELLS].into_boxed_slice(), trail: Vec::with_capacity(MAX_POLYMER) }
     }
 
+    /// Seed for a fold, derived from the sequence and the universe.
+    ///
+    /// Shares its construction with the fold cache key (Task 12) so the two
+    /// cannot drift apart — a cached fold and a fresh one must be the same
+    /// conformation.
+    #[must_use]
+    pub fn fold_seed(p: &Polymer, u: &Universe) -> u64 {
+        let mut h = Stream::new(0xF0_1D_5EED ^ u.seed, Domain::Hash, 3);
+        let mut acc = h.next_u64();
+        for (i, &m) in p.units().iter().enumerate() {
+            acc ^= u64::from(m).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left((i % 61) as u32);
+            acc = acc.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        }
+        acc
+    }
+
     fn clear(&mut self) {
         for &c in &self.trail {
             self.occ[c as usize] = 0;
@@ -338,7 +406,27 @@ impl FoldWorkspace {
         self.occ[cell as usize] == 0
     }
 
-    pub fn fold(&mut self, p: &Polymer, u: &Universe, rng: &mut Stream) -> Fold {
+    /// Fold a polymer. **The seed is derived from the sequence and universe**,
+    /// so a species has exactly one conformation regardless of when it is
+    /// first encountered (§8.6).
+    ///
+    /// An earlier draft took an external `Stream` here while the cache derived
+    /// its own — so a direct call and a cached call could disagree, and one
+    /// species would have two shapes. Production code calls this; only
+    /// `fold_with_seed` below can vary the stream, and only tests use it.
+    pub fn fold(&mut self, p: &Polymer, u: &Universe) -> Fold {
+        self.fold_with_seed(p, u, fold_seed(p, u))
+    }
+
+    /// Fold under an explicit seed. **Diagnostics only.**
+    ///
+    /// Exists so `folds_are_reproducible_across_independent_streams` can
+    /// measure whether the fold is a property of the sequence or of the
+    /// annealer. Calling this from production code would give one species two
+    /// shapes.
+    pub fn fold_with_seed(&mut self, p: &Polymer, u: &Universe, seed: u64) -> Fold {
+        let mut rng = Stream::new(seed, Domain::Fold, 0);
+        let rng = &mut rng;
         self.clear();
         let n = p.len();
         if n == 0 {
@@ -352,14 +440,31 @@ impl FoldWorkspace {
             (((a + 1.0) * 0.5 * (N_CLASSES as f64 - 1.0)).round() as usize).min(N_CLASSES - 1)
         };
 
-        // Extended start along one lattice direction, centred in the grid.
+        // Compact (boustrophedon) start, centred in the grid.
+        //
+        // An extended start along one diagonal runs `centre ± n/2`, which at
+        // GRID = 64 already **wraps** for a 64-mer — and wrapping is silent:
+        // the flat index stays inside 0..64³, so there is no panic, and
+        // `in_bounds` cannot detect it because it decodes the *wrapped*
+        // coordinates, which pass. A monomer at true (−8,−8,32) simply becomes
+        // (56,55,31), and self-avoidance and connectivity are then evaluated
+        // on a sheared torus. Task 13 folds 70- and 80-mers.
+        //
+        // A boustrophedon walk keeps the start inside a box of side ~n^(1/3)
+        // instead of n, so a 200-mer is nowhere near the boundary.
         let centre = fcc::to_flat(fcc::GRID / 2, fcc::GRID / 2, fcc::GRID / 2);
-        let step = fcc::NEIGHBOURS[0];
+        const RUN: usize = 6;
         let mut coords = Vec::with_capacity(n);
+        let mut c = centre;
+        let mut dir = 0usize;
         for i in 0..n {
-            let c = centre + step * (i as i32 - n as i32 / 2);
+            debug_assert!(fcc::in_bounds(c), "fold start left the grid at monomer {i}");
             coords.push(c);
             self.occupy(c, i);
+            if i % RUN == RUN - 1 {
+                dir = (dir + 1) % fcc::NEIGHBOURS.len();
+            }
+            c += fcc::NEIGHBOURS[dir];
         }
 
         let mut contacts = count_contacts(&coords, self, &class, n);
@@ -395,10 +500,23 @@ impl FoldWorkspace {
             }
             let trial_energy = contact_energy(&trial, &energy_table);
 
-            // Metropolis. Lower energy always accepted; uphill accepted with
-            // probability falling as the schedule cools.
-            let accept = trial_energy <= current
-                || rng.next_f64() < temp * 0.35;
+            // Metropolis proper: uphill acceptance falls off with ΔE.
+            //
+            // The earlier form — `trial <= current || rng.next_f64() < temp *
+            // 0.35` — was not Metropolis. Acceptance was independent of ΔE, so
+            // a catastrophic move was as likely as a marginal one, and because
+            // `<=` accepts every zero-ΔE move a chain of near-neutral monomers
+            // performed a pure random walk. The fold would then be an artefact
+            // of the RNG rather than a function of the sequence, which
+            // destroys the many-to-one folding map (§8.4) that the whole
+            // evolvability argument rests on.
+            //
+            // The draw is unconditional so stream position depends only on the
+            // step count, never on a float comparison (§13.1).
+            let roll = rng.next_f64();
+            let delta = trial_energy - current;
+            let accept = delta <= 0.0
+                || roll < borbax_units::det_math::exp(-delta / (temp * energy_scale).max(1e-9));
             if accept {
                 coords[i] = target;
                 // Keep the trail complete so `clear` reaches every touched cell.
@@ -467,9 +585,27 @@ fn class_energy_table(u: &Universe) -> [f64; N_PAIRS] {
             // Class index maps back to a representative affinity in [-1, 1].
             let fa = (a as f64) / (N_CLASSES as f64 - 1.0) * 2.0 - 1.0;
             let fb = (b as f64) / (N_CLASSES as f64 - 1.0) * 2.0 - 1.0;
-            // Opposite characters attract; like characters do not. Same
-            // principle as §8.3, applied between monomers instead of surfaces.
-            t[pair_index(a, b)] = -fa * fb * u.consts.w_charge;
+
+            // **This is §8.3's charge term, verbatim, at monomer scale.**
+            //
+            // The earlier form was `-fa * fb`, which had two problems. It
+            // favoured like-attracts-like — annealing minimises, and with
+            // fa = +1, fb = -1 that expression is *positive* — contradicting
+            // its own comment, §8.3, and Task 5's bond matrix. Three sites,
+            // two conventions.
+            //
+            // And even with the sign corrected it is not §8.3:
+            // -(fa+fb)² = -fa² - fb² - 2·fa·fb, and the self-terms are not
+            // constant across class pairs, so the two forms rank contacts
+            // differently. That made it a *second* complementarity law
+            // producing the same phenomenon — exactly the design smell
+            // Principle 2 names.
+            //
+            // Only the charge term appears here, with no shape term: FCC
+            // contacts have no extent to compare, since every contact is at
+            // the same lattice distance. That is a real reason, not an
+            // omission.
+            t[pair_index(a, b)] = -(fa + fb) * (fa + fb) * u.consts.w_charge;
         }
     }
     t
@@ -673,6 +809,21 @@ mod tests {
         assert!(c.stats().evictions > 0, "budget never bit");
     }
 
+    /// The same sequence under two universes must not share a cache entry.
+    /// The fold depends on the universe through monomer classes and
+    /// `w_charge`, so a shared entry silently returns a conformation computed
+    /// under different physics.
+    #[test]
+    fn the_same_sequence_in_two_universes_does_not_share_an_entry() {
+        let (u1, u2) = (Universe::generate(2), Universe::generate(3));
+        let mut c = FoldCache::with_budget(8 << 20);
+        let p = poly(1, 30);
+        let _ = c.get_or_fold(&p, &u1);
+        let _ = c.get_or_fold(&p, &u2);
+        assert_eq!(c.stats().misses, 2, "a hit crossed universes");
+        assert_eq!(c.stats().hits, 0);
+    }
+
     #[test]
     fn eviction_is_deterministic() {
         let u = Universe::generate(2);
@@ -754,12 +905,23 @@ pub struct FoldCache {
     ws: FoldWorkspace,
 }
 
-/// 128-bit key from two independent passes of the RNG mixer over the
-/// sequence. At a few million entries the birthday probability is ~1e-27, so
-/// storing the sequence itself would be paying for a guarantee we already have.
-fn key_of(p: &Polymer) -> u128 {
-    let mut a = Stream::new(0xB0_1BAA_5EED, Domain::Fold, 1);
-    let mut b = Stream::new(0x5EED_B0_1BAA, Domain::Fold, 2);
+/// 128-bit key from two independent passes of the RNG mixer over the sequence
+/// **and the universe seed**. At a few million entries the birthday
+/// probability is ~1e-27, so storing the sequence itself would be paying for a
+/// guarantee we already have.
+///
+/// **The universe is part of the key.** The fold depends on it through the
+/// monomer classes and `w_charge`, so a key on the sequence alone means a hit
+/// from universe A silently answers for universe B. Task 20's battery iterates
+/// forty universes and Task 21's sweeps many more; whether the bug fires would
+/// then depend on visit order and on which entries survived eviction.
+///
+/// `Domain::Hash` rather than `Domain::Fold`: using a live simulation domain
+/// as a hash function couples the two, so that adding a draw in folding would
+/// change cache keys.
+fn key_of(p: &Polymer, u: &Universe) -> u128 {
+    let mut a = Stream::new(0xB0_1BAA_5EED ^ u.seed, Domain::Hash, 1);
+    let mut b = Stream::new(0x5EED_B0_1BAA ^ u.seed, Domain::Hash, 2);
     let (mut ha, mut hb) = (a.next_u64(), b.next_u64());
     for (i, &u) in p.units().iter().enumerate() {
         ha ^= u64::from(u).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left((i % 61) as u32);
@@ -790,7 +952,7 @@ impl FoldCache {
     }
 
     pub fn get_or_fold(&mut self, p: &Polymer, u: &Universe) -> &Fold {
-        let k = key_of(p);
+        let k = key_of(p, u);
         if let Some(&slot) = self.map.get(&k) {
             self.stats.hits += 1;
             if let Some((_, e)) = &mut self.slots[slot] {
@@ -801,10 +963,9 @@ impl FoldCache {
         }
 
         self.stats.misses += 1;
-        // Fold seed derives from the key, so the same sequence anneals
-        // identically regardless of when it is first encountered.
-        let mut rng = Stream::new(k as u64, Domain::Fold, 0);
-        let fold = self.ws.fold(p, u, &mut rng);
+        // `fold` derives its own seed from (sequence, universe), so the cached
+        // and uncached paths cannot disagree.
+        let fold = self.ws.fold(p, u);
         let bytes = std::mem::size_of::<Fold>()
             + fold.coords.len() * std::mem::size_of::<i32>()
             + fold.exposure.len();
@@ -912,7 +1073,7 @@ mod tests {
         for _ in 0..n {
             p.push(ElementId(r.next_range(20) as u8));
         }
-        let f = FoldWorkspace::new().fold(&p, u, &mut Stream::new(seed, Domain::Fold, 0));
+        let f = FoldWorkspace::new().fold(&p, u);
         (p, f)
     }
 
