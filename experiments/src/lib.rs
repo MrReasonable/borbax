@@ -21,4 +21,8 @@
 //! Task 7's content, written here first because the measurement needs it, and
 //! it lifts into `borbax-molecule` unchanged whatever G2 returns.
 
+pub mod embed;
 pub mod geodesic;
+pub mod molecule;
+pub mod rng;
+pub mod signature;

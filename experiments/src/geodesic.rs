@@ -315,59 +315,98 @@ impl<const D: usize> Geodesic<D> {
     /// `every_rotation_has_determinant_plus_one` measures it rather than
     /// trusting this paragraph.
     fn build_perms(dirs: &[Vec3; D]) -> Result<[[u8; D]; N_ROTATIONS], GeoError> {
-        let base = icosahedron();
-        let min_d2 = min_pair_dist2(&base);
-        let neighbours = |a: usize| -> Vec<usize> {
-            (0..base.len())
-                .filter(|&b| b != a && (dist2(base[a], base[b]) - min_d2).abs() < 1e-9)
-                .collect()
-        };
-
-        // Orthonormal frame from an axis and a second direction.
-        let frame = |v: Vec3, w: Vec3| -> [Vec3; 3] {
-            let e0 = normalise(v);
-            let e1 = normalise(sub(w, scale(e0, dot(w, e0))));
-            let e2 = cross(e0, e1);
-            [e0, e1, e2]
-        };
-
-        let first_neighbour = *neighbours(0).first().ok_or(GeoError::RotationNotClosed)?;
-        let f0 = frame(base[0], base[first_neighbour]);
+        let mats = rotation_matrices()?;
         let mut perms = [[0u8; D]; N_ROTATIONS];
-        let mut r = 0usize;
-
-        for v in 0..base.len() {
-            for &w in &neighbours(v) {
-                if r >= N_ROTATIONS {
-                    return Err(GeoError::RotationNotClosed);
-                }
-                let f = frame(base[v], base[w]);
-                // R = F * F0^T, applied as: express in F0's basis, rebuild in F's.
-                let apply = |p: Vec3| -> Vec3 {
-                    let c = [dot(p, f0[0]), dot(p, f0[1]), dot(p, f0[2])];
-                    [
-                        c[0] * f[0][0] + c[1] * f[1][0] + c[2] * f[2][0],
-                        c[0] * f[0][1] + c[1] * f[1][1] + c[2] * f[2][1],
-                        c[0] * f[0][2] + c[1] * f[1][2] + c[2] * f[2][2],
-                    ]
-                };
-
-                for i in 0..D {
-                    // Looser than `build_anti`'s tolerance because `apply`
-                    // accumulates six products per coordinate; still far
-                    // tighter than the ~0.3 spacing between neighbouring
-                    // directions at D = 162, so a genuine miss cannot pass.
-                    perms[r][i] = exact_index(dirs, apply(dirs[i]), 1e-12)?;
-                }
-                r += 1;
+        for (r, m) in mats.iter().enumerate() {
+            for i in 0..D {
+                // Looser than `build_anti`'s tolerance because `apply_mat`
+                // accumulates three products per coordinate; still far
+                // tighter than the ~0.3 spacing between neighbouring
+                // directions at D = 162, so a genuine miss cannot pass.
+                perms[r][i] = exact_index(dirs, apply_mat(m, dirs[i]), 1e-12)?;
             }
-        }
-
-        if r != N_ROTATIONS {
-            return Err(GeoError::RotationNotClosed);
         }
         Ok(perms)
     }
+}
+
+/// A 3x3 matrix, indexed `[row][column]`.
+pub type Mat3 = [[f64; 3]; 3];
+
+/// Apply a matrix to a vector.
+#[must_use]
+pub fn apply_mat(m: &Mat3, p: Vec3) -> Vec3 {
+    [
+        m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2],
+        m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2],
+        m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2],
+    ]
+}
+
+/// The 60 rotations as matrices, in the same order as [`Geodesic::perms`].
+///
+/// `perms` is what the binding kernel needs — a rotation as a table lookup.
+/// This is the same 60 rotations as actual geometry, and it exists so the two
+/// can be checked against each other. Without it, `perms` is a table of
+/// integers that no test can tie back to rotating anything: it would pass
+/// every group-theoretic check while corresponding to the wrong rotations, or
+/// to none.
+///
+/// Construction: pick a reference icosahedron vertex and one of its
+/// neighbours. For every (vertex, neighbour) pair there is exactly one
+/// rotation carrying the reference pair onto it, giving 12 x 5 = 60.
+///
+/// Every frame is built right-handed (`e2 = e0 × e1`), so each `R` maps one
+/// right-handed orthonormal frame onto another and is therefore proper. That
+/// is what keeps reflections out of the set, and
+/// `every_rotation_has_determinant_plus_one` measures it rather than trusting
+/// this paragraph.
+///
+/// # Errors
+///
+/// [`GeoError::RotationNotClosed`] if the icosahedron does not yield exactly
+/// 60 directed edges, which would mean `icosahedron` is not one.
+pub fn rotation_matrices() -> Result<Vec<Mat3>, GeoError> {
+    let base = icosahedron();
+    let min_d2 = min_pair_dist2(&base);
+    let neighbours = |a: usize| -> Vec<usize> {
+        (0..base.len())
+            .filter(|&b| b != a && (dist2(base[a], base[b]) - min_d2).abs() < 1e-9)
+            .collect()
+    };
+
+    // Orthonormal frame from an axis and a second direction.
+    let frame = |v: Vec3, w: Vec3| -> [Vec3; 3] {
+        let e0 = normalise(v);
+        let e1 = normalise(sub(w, scale(e0, dot(w, e0))));
+        let e2 = cross(e0, e1);
+        [e0, e1, e2]
+    };
+
+    let first_neighbour = *neighbours(0).first().ok_or(GeoError::RotationNotClosed)?;
+    let f0 = frame(base[0], base[first_neighbour]);
+
+    let mut out = Vec::with_capacity(N_ROTATIONS);
+    for v in 0..base.len() {
+        for &w in &neighbours(v) {
+            let f = frame(base[v], base[w]);
+            // R = F^T F0 in the sense that R maps f0[m] onto f[m]:
+            // expressing p in F0's basis and rebuilding it in F's gives
+            // R[k][l] = sum_m f[m][k] * f0[m][l].
+            let mut r = [[0.0; 3]; 3];
+            for (k, row) in r.iter_mut().enumerate() {
+                for (l, cell) in row.iter_mut().enumerate() {
+                    *cell = f[0][k] * f0[0][l] + f[1][k] * f0[1][l] + f[2][k] * f0[2][l];
+                }
+            }
+            out.push(r);
+        }
+    }
+
+    if out.len() != N_ROTATIONS {
+        return Err(GeoError::RotationNotClosed);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -598,6 +637,53 @@ mod tests {
         check::<12>();
         check::<42>();
         check::<162>();
+    }
+
+    /// Ties the integer table back to geometry. Every other test here treats
+    /// `perms` as an abstract permutation group — and a table of the *wrong*
+    /// 60 rotations, or of some unrelated group of order 60, would satisfy all
+    /// of them. This is the only check that says the lookup means what the
+    /// binding kernel will assume it means.
+    #[test]
+    fn the_permutation_table_agrees_with_the_rotation_matrices() {
+        let g = Geodesic::<42>::build().unwrap();
+        let mats = rotation_matrices().unwrap();
+        assert_eq!(mats.len(), N_ROTATIONS);
+        for (r, m) in mats.iter().enumerate() {
+            for i in 0..42 {
+                let rotated = apply_mat(m, g.dirs[i]);
+                let expected = g.dirs[g.perms[r][i] as usize];
+                for k in 0..3 {
+                    assert!(
+                        (rotated[k] - expected[k]).abs() < 1e-12,
+                        "rotation {r} on direction {i}: matrix and table disagree"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The matrices must be rotations in their own right, checked without
+    /// reference to the direction set: orthonormal rows and determinant `+1`.
+    #[test]
+    fn rotation_matrices_are_orthonormal_with_determinant_one() {
+        for (r, m) in rotation_matrices().unwrap().iter().enumerate() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    let d = m[i][0] * m[j][0] + m[i][1] * m[j][1] + m[i][2] * m[j][2];
+                    let want = if i == j { 1.0 } else { 0.0 };
+                    assert!(
+                        (d - want).abs() < 1e-12,
+                        "rotation {r}: rows {i},{j} give {d}"
+                    );
+                }
+            }
+            let det = det3(m[0], m[1], m[2]);
+            assert!(
+                (det - 1.0).abs() < 1e-12,
+                "rotation {r} has determinant {det}"
+            );
+        }
     }
 
     #[test]
