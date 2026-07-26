@@ -187,17 +187,70 @@ metric against a neutral shadow run.
 
 ## Agents
 
-Five project agents in `.claude/agents/`, each mapped to a named risk in §20
+Six project agents in `.claude/agents/`, most mapped to a named risk in §20
 rather than to a generic role. They review; none of them writes code.
 
 | Agent | Invoke when |
 |---|---|
+| `rust-developer-expert` | On any new module before it settles; when a type or trait is introduced; when code works but reads badly; as the last pass before a task is committed. Also owns **dependency review** — whether a well-established crate should be doing this instead of us. |
 | `rust-performance-expert` | Before committing to a data structure in a hot path; when a task specifies performance targets; to audit that an optimisation preserved determinism. |
 | `determinism-auditor` | Before adding parallelism or a dependency that touches results; when a golden hash moves; on any diff touching float arithmetic, collection iteration, sorting or RNG. Every hazard here is invisible on one machine. |
 | `emergence-auditor` | Before adding a threshold, special case or per-molecule field; when a behaviour is not emerging and there is a temptation to help it along; on any chemistry or simulation diff. |
 | `geometry-numerics-reviewer` | On canonicalisation, geodesic construction, the rotation table, stress majorization, signatures, binding, FCC folding, cavity detection — code that is either correct or silently wrong forever. |
 | `alife-researcher` | When implementing an algorithm or metric from the literature (RAF, Gillespie, Bedau activity statistics, neutral networks, plateau fitting), or when a design decision rests on a cited result. Constrained never to return real chemistry (§5). |
 
-The three auditors are independent lenses on the same diff and can run in
-parallel. Run the emergence and determinism auditors before any commit that
-touches physics — those are the two invariants no test suite fully protects.
+The auditors are independent lenses on the same diff and can run in parallel.
+Run the emergence and determinism auditors before any commit that touches
+physics — those are the two invariants no test suite fully protects.
+
+### Review precedence
+
+The agents are told to argue with each other rather than defer, so genuine
+conflicts will surface. This order breaks ties. **It ranks how expensive a
+mistake is to discover late, not how important each concern is** — every one
+of them matters.
+
+1. **Fiction guarantees (§5, G1–G6).** Absolute. No result is worth breaching
+   them, and there is nothing to trade against.
+2. **Correctness of the physics.** Geometry and numerics that are silently
+   wrong poison everything downstream and are the hardest thing here to
+   detect.
+3. **Determinism (§13.1, §13.4).** A result nobody can reproduce cannot be
+   verified, shared, or debugged.
+4. **Emergence invariants (§3, §8.6).** A special case for life means the
+   physics is wrong.
+5. **Performance (§17).** The budget is real, but a fast wrong answer is
+   worthless.
+6. **Idiom and readability.** Genuinely matters, and yields to the above.
+
+Two notes on applying it. **2 above 3 is deliberate**: when a numerically
+better formulation changes bit patterns, adopt it and regenerate goldens as a
+deliberate physics change — do not preserve a worse formulation to protect a
+hash. And **most conflicts are not about this order at all** — they are two
+correct observations pulling opposite ways, where the resolution is a
+measurement or a line of the spec, not a ruling.
+
+## Dependencies
+
+The best code is code someone else maintains. Reach for the settled crate:
+`thiserror` for library errors, `anyhow` for binaries only, `clap` for CLI,
+`proptest` for property tests, `insta` for snapshot and golden tests,
+`criterion` for benchmarks, `libm` for portable transcendentals, `serde` for
+serialisation, `rustc-hash` for deterministic hashing.
+
+The asymmetry that governs the decision:
+
+- **Dev-dependencies are cheap.** `proptest`, `insta`, `criterion`, `rstest`
+  cannot affect simulation output. Low bar.
+- **A runtime dependency in a result-affecting path is expensive.** It must be
+  version-pinned, and upgrading it is a physics change requiring deliberate
+  golden regeneration — exactly like a compiler bump (§18.1). Run the
+  determinism auditor on any such addition.
+
+Deliberately hand-rolled, with reasons that should be re-checked rather than
+assumed: three-component vector maths and small dense linear algebra (thirty
+lines, total control over operation order, and `nalgebra` is heavy for the
+use). Deliberately *not* hand-rolled: transcendentals — `libm` is rust-lang's
+pure-Rust MUSL port with no platform dispatch, which is precisely what §13.1
+requires, and writing a correctly-rounded `exp` is hard to get right and easy
+to get subtly wrong.

@@ -2545,10 +2545,36 @@ not actually biting.
 
 - [ ] **Step 6: Portable transcendentals, then the cross-platform matrix**
 
-Replace the `det_math` bodies with a vendored pure-Rust implementation.
-`exp`, `ln`, `sin`, `cos` differ between Apple's libm and glibc, and between
-glibc versions, so goldens generated on the M1 will not reproduce on CI
-runners until this lands (spec §13.1).
+Replace the `det_math` bodies with the [`libm`](https://crates.io/crates/libm)
+crate — rust-lang's pure-Rust port of MUSL's libm:
+
+```rust
+//! Deterministic transcendentals (spec §13.1, §13.4).
+//!
+//! Backed by the `libm` crate rather than the platform's. Apple's libm and
+//! glibc genuinely disagree in the last bits of `exp`, `ln`, `sin` and `cos`,
+//! and glibc versions disagree with each other — none of them is wrong, since
+//! IEEE-754 does not specify these to be correctly rounded. `libm` is pure
+//! Rust with no platform dispatch, so it gives the same bits everywhere,
+//! which is exactly what §13.4 needs.
+pub fn exp(x: f64) -> f64 { libm::exp(x) }
+pub fn ln(x: f64) -> f64 { libm::log(x) }
+pub fn sin(x: f64) -> f64 { libm::sin(x) }
+pub fn cos(x: f64) -> f64 { libm::cos(x) }
+```
+
+**Do not write these by hand.** An earlier draft of this plan said "vendored
+pure-Rust implementation", which was a mistake worth naming: a correctly-
+rounded `exp` is hard to get right and easy to get subtly wrong, and the
+maintained implementation already exists. `sqrt` and the four arithmetic
+operations stay native — IEEE-754 specifies those exactly, so they are already
+portable.
+
+This is a runtime dependency in a result-affecting path, so pin it exactly and
+treat any upgrade as a physics change requiring golden regeneration (CLAUDE.md
+§ Dependencies). Run the determinism auditor on the change.
+
+Goldens generated on the M1 will not reproduce on CI runners until this lands.
 
 Then enable `determinism-matrix` in CI (Task 1) and confirm goldens are
 identical across macOS/aarch64, Windows/x86-64 and Linux/x86-64. **Do this
