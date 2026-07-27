@@ -91,3 +91,15 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
+
+      # `[workspace.lints.rustdoc]` is enforced by nothing else. Clippy does
+      # not run rustdoc lints — measured, with a planted broken link passing
+      # `clippy -D warnings` cleanly — so without this the `deny` on
+      # `broken_intra_doc_links` is inert. Sub-second on this workspace.
+      - id: cargo-doc
+        name: cargo doc -D warnings
+        entry: env RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --no-deps --document-private-items
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

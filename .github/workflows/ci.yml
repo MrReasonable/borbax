@@ -1,7 +1,61 @@
 name: CI
-on: [push, pull_request]
+
+# `push` is restricted to `main` deliberately. With a bare `on: [push,
+# pull_request]` every PR branch ran the whole matrix twice — once for the
+# push, once for the PR — which is why PR #1 showed eight checks for four
+# jobs. Branch pushes are now covered by the PR that contains them, and `main`
+# is still covered directly for the goldens.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Superseded PR runs are cancelled; `main` runs are never cancelled, because a
+# `main` run is what emits the golden artifacts the determinism matrix compares.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Platform-independent checks, on one runner, as their own status check.
+  #
+  # Split out of `test` for two reasons. They are genuinely
+  # platform-independent — `rustfmt` pins `newline_style = "Unix"` and rustdoc
+  # resolves the same links everywhere — so running them three times bought
+  # nothing. And as steps inside a matrix job they were invisible: the PR check
+  # list showed `test (ubuntu-latest)` and gave no sign that formatting and
+  # documentation had been verified at all.
+  quality:
+    name: quality (fmt, docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Show toolchain
+        run: rustup show active-toolchain
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # `[workspace.lints.rustdoc] broken_intra_doc_links = "deny"` was
+      # enforcing nothing before this step existed. Verified rather than
+      # assumed: a planted `[`NoSuchItem`]` link passes
+      # `cargo clippy --all-targets -- -D warnings` cleanly, because clippy
+      # does not run rustdoc lints — only `cargo doc` does. Same shape as the
+      # `[lints] workspace = true` trap this repo has already hit twice: the
+      # configuration is present, believed, and inert.
+      #
+      # It matters here more than in most codebases. Nearly every type in
+      # `borbax-units` documents its contract with intra-doc links to its
+      # siblings, and a rename silently rots every one of them.
+      #
+      # `--document-private-items` so the private helpers that carry the
+      # load-bearing comments are checked too, and `RUSTDOCFLAGS` rather than
+      # `--` because rustdoc lint levels are not `cargo doc` arguments.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --no-deps --document-private-items
+
   # The matrix is not for coverage — it is the enforcement mechanism for the
   # cross-platform determinism promise in spec §13.4. Every portability
   # hazard listed there is invisible on a single machine: the code runs, the
@@ -41,10 +95,13 @@ jobs:
       # the one diagnosis it must never give wrongly. With it, a stale lock
       # fails loudly on all three legs with "the lock file needs to be
       # updated", which is a five-second fix instead of a day.
+      # Stays on the matrix rather than moving to `quality`. It walks the
+      # filesystem and compares paths component-wise, and its own doc comments
+      # say the Windows behaviour is the reason that code is written the way it
+      # is — so it is one of the few checks where running it three times is the
+      # point.
       - name: Fiction guarantees (spec §5)
         run: cargo run --locked -p xtask
-      - name: Format
-        run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
