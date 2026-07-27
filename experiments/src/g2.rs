@@ -122,6 +122,16 @@ const ROTATION_MUST_MOVE_RAW: f64 = 0.1;
 /// itself one of the 60. Measured at ~1e-15 on a working pipeline.
 const ROTATION_MUST_NOT_MOVE_GROUP: f64 = 1e-6;
 
+/// Minimum `D_group` between a 12-path and a 12-star — same composition,
+/// different topology. Measured on a working pipeline: 14.42 (7.76 at n = 8,
+/// 21.53 at n = 16, so it scales with size rather than sitting near a cliff).
+/// An `embed` that ignores the molecule gives exactly 0.0, so 1.0 sits 14x
+/// below the working value and infinitely above the failure.
+const TOPOLOGY_MUST_CHANGE_SHAPE: f64 = 1.0;
+
+/// Atom count of the path/star fixtures the check above thresholds on.
+const TOPOLOGY_FIXTURE_ATOMS: usize = 12;
+
 /// Does the shape pipeline actually compute shape?
 ///
 /// **The two controls this joins do not touch the geometry, and that was
@@ -141,10 +151,29 @@ const ROTATION_MUST_NOT_MOVE_GROUP: f64 = 1e-6;
 /// - `D_raw` compares direction-by-direction with no alignment, so it **must**
 ///   move. A dead pipeline reports ~0 and fails here.
 /// - `D_group` searches all 60, one of which is exactly the rotation applied,
-///   so it **must not** move. A broken permutation table, a dropped `ANTI`, or
-///   a signature that is not a pure function of direction fails here.
+///   so it **must not** move. A broken permutation table or a signature that is
+///   not a pure function of direction fails here.
 ///
-/// One molecule and one rotation: this is a liveness check, not a correctness
+/// **A dropped `ANTI` cannot fail either of those, and an earlier version of
+/// this comment claimed it could.** `d_group` reads `g.perms` and never touches
+/// `g.anti` — correctly, because `ANTI` exists for the binding kernel, where two
+/// bodies in contact touch along *opposite* directions, and this compares one
+/// shape against itself in two poses. That coverage has to come from Task 8's
+/// kernel tests; advertising it here is worse than the gap, because it is the
+/// sentence that stops someone writing the real test for the failure CLAUDE.md
+/// names as the most dangerous in the project.
+///
+/// The rotation pair alone is also not enough, and that was measured rather
+/// than reasoned. Replacing `embed` with one returning a **fixed configuration
+/// keyed only on `mol.len()`** — no graph, no SMACOF, nothing from the molecule
+/// — still moves `D_raw` and still recovers under `D_group`, so both checks
+/// above pass while the harness reports a stable, plausible, entirely spurious
+/// `D_frame` concordance of 0.88. So the third check compares two molecules of
+/// **identical composition and different topology**: a 12-path against a
+/// 12-star. It is the composition control's shape counterpart — `PositiveControl`
+/// proves composition reaches the descriptor, this proves topology does.
+///
+/// Two molecules, one rotation: this is a liveness check, not a correctness
 /// proof. The proofs are `rotating_the_molecule_permutes_the_signature` and
 /// `the_permutation_table_agrees_with_the_rotation_matrices`, which are unit
 /// tests and do not gate the binary.
@@ -177,6 +206,24 @@ fn check_geometry_is_live() -> Result<(), ControlFailure> {
             max: ROTATION_MUST_NOT_MOVE_GROUP,
         });
     }
+
+    // Same composition, different topology. Every atom is element 0 in both, so
+    // nothing but the graph can separate them — which is exactly what an
+    // `embed` keyed on `mol.len()` alone cannot do.
+    let atoms = TOPOLOGY_FIXTURE_ATOMS;
+    let path = Molecule::from_parts(vec![0; atoms], (1..atoms).map(|i| (i - 1, i)).collect());
+    let star = Molecule::from_parts(vec![0; atoms], (1..atoms).map(|i| (0, i)).collect());
+    let sig_path = signature(&g, &embed(&path), &path.elements);
+    let sig_star = signature(&g, &embed(&star), &star.elements);
+
+    let separation = d_group(&g, &sig_path, &sig_star);
+    if separation <= TOPOLOGY_MUST_CHANGE_SHAPE {
+        return Err(ControlFailure::GeometryIgnoresMolecule {
+            got: separation,
+            min: TOPOLOGY_MUST_CHANGE_SHAPE,
+            n: atoms,
+        });
+    }
     Ok(())
 }
 
@@ -196,17 +243,35 @@ pub enum ControlFailure {
         min: f64,
     },
     /// The 60-rotation search failed to recover a rotation that is one of the
-    /// 60 — so `perms`, `anti`, or the signature's direction-purity is broken.
+    /// 60 — so `perms` or the signature's direction-purity is broken.
+    ///
+    /// **Not `anti`.** `d_group` never reads it; see `check_geometry_is_live`.
     #[error(
         "the rotation search is broken: D_group left {got:.3e} between a molecule and a copy \
-         rotated by a group element, expected < {max} — check perms, anti, and that the \
-         signature is a pure function of direction"
+         rotated by a group element, expected < {max} — check perms and that the signature \
+         is a pure function of direction (not anti; d_group does not read it)"
     )]
     RotationSearchIsBroken {
         /// Measured `D_group` residual.
         got: f64,
         /// The ceiling it had to stay under.
         max: f64,
+    },
+    /// The pipeline computes *a* shape, but not one that depends on the
+    /// molecule: two graphs of identical composition came out the same.
+    #[error(
+        "the geometry ignores the molecule: a {n}-path and a {n}-star of identical composition \
+         differ by only {got:.3e} under D_group, expected > {min} — embed() is producing a \
+         configuration that does not depend on the graph, so every descriptor row is an \
+         artefact of atom count alone"
+    )]
+    GeometryIgnoresMolecule {
+        /// Measured `D_group` between the path and the star.
+        got: f64,
+        /// The floor it had to clear.
+        min: f64,
+        /// Atom count of both fixtures.
+        n: usize,
     },
     /// A control was not measured at all.
     #[error("the {0} was not measured — the run cannot be calibrated")]
@@ -750,6 +815,35 @@ mod tests {
                     "rotation {r}: an unaligned descriptor did not move — geometry is dead"
                 );
             }
+        }
+    }
+
+    /// The rotation pair above passes for an `embed` that ignores the molecule
+    /// entirely — a fixed configuration keyed on atom count still moves under
+    /// rotation and still recovers. So the property that mutation violates is
+    /// stated here separately: **same composition, different graph, different
+    /// shape.**
+    ///
+    /// Checked across sizes because the separation scales with atom count
+    /// (7.8 at n = 8, 14.4 at n = 12, 21.5 at n = 16) and a threshold chosen
+    /// at one size should visibly clear it at the others.
+    #[test]
+    fn identical_composition_with_different_topology_gives_a_different_shape() {
+        let g = Geodesic::<D>::build().unwrap();
+        for n in [8_usize, 12, 16] {
+            let path = Molecule::from_parts(vec![0; n], (1..n).map(|i| (i - 1, i)).collect());
+            let star = Molecule::from_parts(vec![0; n], (1..n).map(|i| (0, i)).collect());
+            assert_eq!(
+                path.elements, star.elements,
+                "n={n}: the fixtures must differ only in topology, or this proves nothing"
+            );
+            let a = signature(&g, &embed(&path), &path.elements);
+            let b = signature(&g, &embed(&star), &star.elements);
+            assert!(
+                d_group(&g, &a, &b) > TOPOLOGY_MUST_CHANGE_SHAPE,
+                "n={n}: a path and a star of identical composition were not separated — \
+                 embed() is not reading the graph"
+            );
         }
     }
 
