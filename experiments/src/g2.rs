@@ -38,10 +38,12 @@
                   never -0.0"
 )]
 
+use crate::embed::{Point, embed};
 use crate::geodesic::Geodesic;
+use crate::geodesic::{apply_mat, rotation_matrices};
 use crate::molecule::Molecule;
 use crate::rng::Stream;
-use crate::signature::{D, Descriptor, profile};
+use crate::signature::{D, Descriptor, d_group, d_raw, profile, signature};
 
 /// The positive control must clear this, or the harness cannot see locality.
 ///
@@ -111,9 +113,101 @@ pub struct Stats {
     pub concordance: f64,
 }
 
+/// Minimum distance `D_raw` must report between a molecule and a bodily
+/// rotated copy of itself. Measured on a working pipeline it is ~1-4 at
+/// D = 42; a dead one gives ~1e-15.
+const ROTATION_MUST_MOVE_RAW: f64 = 0.1;
+
+/// Maximum residual `D_group` may leave after recovering a rotation that is
+/// itself one of the 60. Measured at ~1e-15 on a working pipeline.
+const ROTATION_MUST_NOT_MOVE_GROUP: f64 = 1e-6;
+
+/// Does the shape pipeline actually compute shape?
+///
+/// **The two controls this joins do not touch the geometry, and that was
+/// measured rather than suspected.** `PositiveControl` reads only
+/// `Profile::composition` and `NegativeControl` only `Profile::form_hash`;
+/// neither goes through `embed`, `Geodesic`, `signature` or any descriptor.
+/// Replacing `embed` with one returning every atom at the origin — no geometry
+/// computed at all — left this harness printing `controls: PASS — the
+/// descriptor rows may be read`, exiting 0, and passing its own calibration
+/// test, while all four descriptor rows read 0.52 and the tie fraction was
+/// 0.936. That is this module's own thesis failing one level up: a harness
+/// that reports a number it cannot calibrate is measuring itself.
+///
+/// The check is a property, not a threshold on the reported rows. Rotate a
+/// molecule bodily by one of the 60 group elements, and:
+///
+/// - `D_raw` compares direction-by-direction with no alignment, so it **must**
+///   move. A dead pipeline reports ~0 and fails here.
+/// - `D_group` searches all 60, one of which is exactly the rotation applied,
+///   so it **must not** move. A broken permutation table, a dropped `ANTI`, or
+///   a signature that is not a pure function of direction fails here.
+///
+/// One molecule and one rotation: this is a liveness check, not a correctness
+/// proof. The proofs are `rotating_the_molecule_permutes_the_signature` and
+/// `the_permutation_table_agrees_with_the_rotation_matrices`, which are unit
+/// tests and do not gate the binary.
+fn check_geometry_is_live() -> Result<(), ControlFailure> {
+    let g = Geodesic::<D>::build().map_err(|_| ControlFailure::ControlMissing("geodesic"))?;
+    let mats = rotation_matrices().map_err(|_| ControlFailure::ControlMissing("rotations"))?;
+    let mat = mats
+        .get(7)
+        .ok_or(ControlFailure::ControlMissing("rotation 7"))?;
+
+    let mut rng = Stream::new(0x006E_01E7);
+    let m = Molecule::random_tree(&mut rng, 12);
+    let coords = embed(&m);
+    let turned: Vec<Point> = coords.iter().map(|&p| apply_mat(mat, p)).collect();
+
+    let a = signature(&g, &coords, &m.elements);
+    let b = signature(&g, &turned, &m.elements);
+
+    let moved = d_raw(&a, &b);
+    if moved <= ROTATION_MUST_MOVE_RAW {
+        return Err(ControlFailure::GeometryIsDead {
+            got: moved,
+            min: ROTATION_MUST_MOVE_RAW,
+        });
+    }
+    let recovered = d_group(&g, &a, &b);
+    if recovered >= ROTATION_MUST_NOT_MOVE_GROUP {
+        return Err(ControlFailure::RotationSearchIsBroken {
+            got: recovered,
+            max: ROTATION_MUST_NOT_MOVE_GROUP,
+        });
+    }
+    Ok(())
+}
+
 /// Why a run's numbers may not be believed.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ControlFailure {
+    /// The shape pipeline produced no shape: a molecule and a bodily rotated
+    /// copy were indistinguishable to an unaligned descriptor.
+    #[error(
+        "the geometry is dead: a rotated copy moved D_raw by only {got:.3e}, expected > {min} \
+         — embed() or signature() is not computing shape, so every descriptor row is noise"
+    )]
+    GeometryIsDead {
+        /// Measured `D_raw` between a molecule and its rotated copy.
+        got: f64,
+        /// The floor it had to clear.
+        min: f64,
+    },
+    /// The 60-rotation search failed to recover a rotation that is one of the
+    /// 60 — so `perms`, `anti`, or the signature's direction-purity is broken.
+    #[error(
+        "the rotation search is broken: D_group left {got:.3e} between a molecule and a copy \
+         rotated by a group element, expected < {max} — check perms, anti, and that the \
+         signature is a pure function of direction"
+    )]
+    RotationSearchIsBroken {
+        /// Measured `D_group` residual.
+        got: f64,
+        /// The ceiling it had to stay under.
+        max: f64,
+    },
     /// A control was not measured at all.
     #[error("the {0} was not measured — the run cannot be calibrated")]
     ControlMissing(&'static str),
@@ -344,6 +438,10 @@ impl Report {
     /// statement that the instrument is broken and the run says nothing about
     /// signature space either way.
     pub fn check_controls(&self) -> Result<(), ControlFailure> {
+        // First, because without it every check below can pass on a pipeline
+        // that computed no geometry at all.
+        check_geometry_is_live()?;
+
         let positive = self
             .get(Descriptor::PositiveControl)
             .ok_or(ControlFailure::ControlMissing("positive control"))?
@@ -618,6 +716,50 @@ mod tests {
     /// The real calibration check, run against the actual molecule generator
     /// rather than synthetic numbers. Both regimes, because a control that
     /// only works when sizes differ is not controlling for shape.
+    /// **The gate must fail when the geometry is broken, and before this it
+    /// did not.** Measured: replacing `embed` with one returning every atom at
+    /// the origin left the harness printing "controls: PASS — the descriptor
+    /// rows may be read", exiting 0, and passing this very module's
+    /// calibration test, because neither control touches `embed`. All four
+    /// descriptor rows read 0.52 with a 0.936 tie fraction and nothing
+    /// objected.
+    ///
+    /// This is the liveness property stated directly, so a future refactor of
+    /// `check_geometry_is_live` has something to fail against.
+    #[test]
+    fn a_rotated_copy_moves_the_unaligned_descriptor_and_not_the_aligned_one() {
+        let g = Geodesic::<D>::build().unwrap();
+        let mats = rotation_matrices().unwrap();
+        let mut rng = Stream::new(0x006E_01E7);
+        let m = Molecule::random_tree(&mut rng, 12);
+        let coords = embed(&m);
+        let a = signature(&g, &coords, &m.elements);
+
+        // Every group element, not just the one the gate samples.
+        for (r, mat) in mats.iter().enumerate() {
+            let turned: Vec<Point> = coords.iter().map(|&p| apply_mat(mat, p)).collect();
+            let b = signature(&g, &turned, &m.elements);
+            assert!(
+                d_group(&g, &a, &b) < ROTATION_MUST_NOT_MOVE_GROUP,
+                "rotation {r}: the group search failed to recover a group element"
+            );
+            // r == 0 is the identity, which legitimately moves nothing.
+            if r != 0 {
+                assert!(
+                    d_raw(&a, &b) > ROTATION_MUST_MOVE_RAW,
+                    "rotation {r}: an unaligned descriptor did not move — geometry is dead"
+                );
+            }
+        }
+    }
+
+    /// And the gate itself passes on the real pipeline, so the thresholds are
+    /// not so tight that a working run trips them.
+    #[test]
+    fn the_geometry_liveness_gate_passes_on_a_working_pipeline() {
+        assert_eq!(check_geometry_is_live(), Ok(()));
+    }
+
     #[test]
     fn the_controls_calibrate_in_both_regimes() {
         for size_matched in [false, true] {
