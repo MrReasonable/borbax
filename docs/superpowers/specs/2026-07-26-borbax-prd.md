@@ -239,7 +239,9 @@ Together these mean the interesting question — *what does it take for chemistr
         └───────────────┘   └──────────────────────┘
 ```
 
-A world is addressed by both seeds together, written `U-7F3A21C9 / W-0004`. Share that pair and someone else gets a bit-identical planet. Keep the universe seed and change the world seed to get a new planet under chemistry you already understand. Change the universe seed to start over in a universe where nothing you learned applies.
+A world is addressed by both seeds together **and the physics version that generated it**, written `U-7F3A21C9@1 / W-0004`. Share that and someone else gets a bit-identical planet.
+
+The version is not decoration. Today the true identity of a world is `(universe_seed, world_seed, physics, compiler)` and only the seeds are written down — which is fine while there is exactly one set of laws, and stops being fine the first time a law is added. A universe carries the physics it was generated under and is replayed under those laws forever; new laws mint a new version rather than reinterpreting old worlds. See §7.1 for the mechanism and the two rules that make an added law additive rather than destructive. Keep the universe seed and change the world seed to get a new planet under chemistry you already understand. Change the universe seed to start over in a universe where nothing you learned applies.
 
 ---
 
