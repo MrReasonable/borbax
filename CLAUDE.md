@@ -41,6 +41,7 @@ cargo xtask                                                     # fiction-guaran
 cargo run --locked -p borbax-experiments --release --bin g2     # G2 locality measurement (docs/experiments/)
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --no-deps --document-private-items
 cargo run --locked -p borbax-cli --release -- goldens --emit    # golden state hashes (cross-platform matrix)
 UPDATE_GOLDENS=1 cargo test -p borbax-render                    # regenerate SVG goldens after a deliberate render change
 ```
@@ -51,6 +52,14 @@ stale `Cargo.lock` lets the three CI legs resolve different versions — and the
 golden matrix would report that as a portability failure in the simulation,
 which is the one diagnosis it must never give wrongly. The `cargo xtask` alias
 carries it too.
+
+**`cargo doc` is part of the gate, not a convenience.** `[workspace.lints.rustdoc]`
+denies `broken_intra_doc_links`, and *nothing else enforces it* — clippy does
+not run rustdoc lints, measured with a planted broken link that passed
+`clippy -D warnings` cleanly. Same shape as the `[lints] workspace = true`
+trap: present, believed, inert. It matters here because nearly every type
+documents its contract with intra-doc links to its siblings, and a rename rots
+them silently. It runs as its own CI job and in the pre-push hook.
 
 **Run the suite in release as well as debug.** `debug_assert!` and
 `overflow-checks` both key off `debug_assertions`, so a guard can be present in
