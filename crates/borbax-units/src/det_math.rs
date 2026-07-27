@@ -135,3 +135,77 @@ pub fn acos(x: f64) -> f64 {
 pub fn powf(x: f64, y: f64) -> f64 {
     libm::pow(x, y)
 }
+
+/// Real cube root.
+///
+/// **Its portability argument is not `exp`'s, and assuming it is would be the
+/// wrong reading.** The other wrappers here are safe because `libm` computes
+/// them in pure Rust from operations IEEE-754 specifies exactly. `libm::cbrt`
+/// is different: it is the core-math port and it calls `f64::fma`, which on
+/// aarch64+neon lowers to hardware `fmadd` and on x86-64 is *runtime
+/// dispatched* between `vfmadd213sd` and a software fallback. That looks like
+/// exactly the hazard this module exists to prevent, so it was measured rather
+/// than argued: over 200 000 samples in `[1e-6, 1000]` the digest is
+/// **identical** on aarch64 and x86-64 — and identical with the dispatch taking
+/// *different branches*, because under Rosetta `is_x86_feature_detected!("fma")`
+/// reports false and the soft path runs. Which is what IEEE-754 predicts:
+/// `fusedMultiplyAdd` is a specified, correctly-rounded operation. Same
+/// argument [`acos`] makes for `sqrt`, one step further.
+///
+/// The platform `f64::cbrt` is a genuinely different function and is banned in
+/// `clippy.toml`: over the same samples it disagrees with this on **15 223** of
+/// them on aarch64 and 15 230 on x86-64, with *different digests* — a 7.6%
+/// divergence rate between two macOS builds differing only in architecture.
+///
+/// Do not substitute `powf(x, 1.0 / 3.0)`. It is accurate to under an ulp, but
+/// `1.0 / 3.0` is not one third, so it is exact on no perfect cube above 27 —
+/// `powf(64.0, 1.0 / 3.0)` is `3.999_999_999_999_999_6` and `powf(343.0, …)` is
+/// `6.999_999_999_999_999_1`. A permanent cube root in a result-affecting path
+/// should be spelled as one.
+#[must_use]
+pub fn cbrt(x: f64) -> f64 {
+    libm::cbrt(x)
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "CLAUDE.md: tests may assert exactly; exactness on perfect cubes is the \
+              property under test, so an epsilon would defeat it"
+)]
+mod tests {
+    /// The reason [`cbrt`] exists rather than `powf(x, 1.0 / 3.0)`. `1.0 / 3.0`
+    /// is not one third, so the substitute is exact on no perfect cube above
+    /// 27 — a sparse, silent one-ulp discontinuity for no benefit.
+    #[test]
+    fn cbrt_is_exact_on_perfect_cubes_where_powf_is_not() {
+        let mut powf_wrong = 0;
+        for root in 1_u32..=40 {
+            let cube = f64::from(root * root * root);
+            assert_eq!(
+                super::cbrt(cube),
+                f64::from(root),
+                "cbrt({cube}) should be exactly {root}"
+            );
+            if super::powf(cube, 1.0 / 3.0) != f64::from(root) {
+                powf_wrong += 1;
+            }
+        }
+        assert!(
+            powf_wrong > 0,
+            "powf(x, 1.0/3.0) was exact on every cube tested — if that is now \
+             true, this wrapper's justification needs rewriting, not deleting"
+        );
+    }
+
+    /// `libm`'s cube root and the platform's are different functions. This
+    /// pins that we call the portable one; on a platform where they agree the
+    /// test still passes, so it cannot fail spuriously.
+    #[test]
+    fn cbrt_matches_libm_not_the_platform() {
+        for i in 1_u32..=2000 {
+            let x = f64::from(i) * 0.37;
+            assert_eq!(super::cbrt(x), libm::cbrt(x));
+        }
+    }
+}

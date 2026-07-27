@@ -14,10 +14,28 @@
 //! 2. Does the *radius series* — the one element property the signature
 //!    actually consumes — give molecular shapes that spread as well as the
 //!    harness's hand-picked ladder?
-//! 3. Does the descriptor image keep its effective dimensionality? `alife`
-//!    measured 2.90 of 42 under the current radii, with 57% of the variance in
-//!    one mode, so this is the number a principled radius series most plausibly
-//!    moves.
+//! 3. Does the descriptor image keep its effective dimensionality?
+//!
+//! **Read the answer to 2 and 3 as "costs nothing", not "improves".** An
+//! earlier version of this comment cited `alife`'s 2.90-of-42 next to this
+//! probe's 7.59, which reads as a large improvement and is not one: 2.90 was
+//! measured on molecules of *free* size (8-20 atoms), where gross size is one
+//! dominant mode taking 57% of the variance, and this probe fixes every
+//! molecule at 14 atoms, which removes that mode. Same metric, different
+//! populations. State the population beside any figure from here.
+//!
+//! Two further limits on question 3, both measured after the fact:
+//!
+//! - **The participation ratio on raw signatures is gameable.** Spinning each
+//!   molecule by a random one of the 60 rotations — a transformation `D_group`
+//!   is exactly invariant to, changing no shape at all — moves the score from
+//!   7.59 to 13.24. A diversity statistic for this project must be invariant
+//!   under the group, because the adopted descriptor is.
+//! - **It is not what §7.2 asks for.** §7.2 wants signatures spread rather than
+//!   collapsed into a few clusters — a *cluster count*. The two disagree in the
+//!   case that matters: uniform radii collapse 574 distinct molecules to 12
+//!   distinguishable shapes while the participation ratio falls only 38%, to a
+//!   value no plausible floor would reject.
 //!
 //! Run: `cargo run -p borbax-experiments --release --bin ptable`
 
@@ -52,13 +70,39 @@ const D: usize = 42;
 
 /// Units in the `n`th packing shell of an icosahedral cluster: `10n² + 2`.
 ///
-/// Cumulative totals are the icosahedral magic numbers 13, 55, 147, 309. The
-/// first two shell sizes, 12 and 42, are also the first two rungs of the
-/// geodesic ladder `geodesic.rs` already builds — the same geometry that makes
-/// a rotation an exact permutation would make a shell close.
+/// **Defined for `n >= 1`.** `shell_size(0)` returns 2, which is meaningless —
+/// shell 0 is the single central unit. Nothing calls it at 0: the fill loop
+/// always evaluates `shell_size(shell + 1)`, and the burial calculation
+/// special-cases `shell == 0` to 1.
+///
+/// Cumulative totals are 1, 13, 55, 147, 309.
+///
+/// **On the relationship to `geodesic.rs`, which an earlier version of this
+/// comment overstated.** It claimed "the same geometry that makes a rotation an
+/// exact permutation would make a shell close". What the two objects genuinely
+/// share is the icosahedron's face tiling and its rotation group. What they do
+/// **not** share is the point set, and the ladders are different sequences:
+/// geodesic is `10·4^L + 2` = 12, 42, 162, 642, packing is `10n² + 2` = 12, 42,
+/// 92, 162, 252. They coincide only where `n = 2^L`, so **92 has no geodesic
+/// counterpart at all**, and 162 is packing shell 4 against geodesic level 2 —
+/// measured as *different* point sets, mismatch 2.29e-2, which is 8% of the
+/// nearest-neighbour spacing and nowhere near `exact_index`'s 1e-12.
+/// Recursive midpoint-then-normalise is not radial projection of a planar
+/// triangular grid. A shell's neighbour spacing is uniform; a geodesic's is not.
+///
+/// So do not reuse `Geodesic::dirs` as cluster site positions. It is right at
+/// 12 and 42 and silently wrong at 162.
 const fn shell_size(n: usize) -> usize {
     10 * n * n + 2
 }
+
+/// Binding defect for a closed cluster, as a fraction of its unpacked mass.
+///
+/// Dyadic on purpose — see the derivation at the `mass` computation. `1/128`.
+const DEFECT_CLOSED: f64 = 0.007_812_5;
+
+/// Binding defect for a cluster with a partly-filled outer shell. `1/256`.
+const DEFECT_OPEN: f64 = 0.003_906_25;
 
 /// A derived element. Nothing here is drawn; every field is a function of
 /// `units` and the universe's generated constants.
@@ -97,10 +141,27 @@ fn derive_table(
         let cap = shell_size(shell + 1);
 
         // Mass: integer multiples of the base unit, less a binding defect that
-        // grows with how well-packed the cluster is. Exact on the fixed-point
-        // grid by construction, which is what `Mass` was built for.
+        // grows with how well-packed the cluster is.
+        //
+        // **The defect factors are dyadic, and that is load-bearing rather than
+        // tidy.** `Mass` is fixed-point at SCALE = 1024, so a mass series is
+        // exact on its grid only if every factor has a denominator dividing
+        // 1024. The values here stood at 0.012 and 0.004 under a comment
+        // claiming exactness — measured, **0 of 120** elements landed on the
+        // grid, because 0.988 is 247/250 and 250 does not divide 1024. With
+        // 1/128 and 1/256 against a 7/4 base the products are 889/512 and
+        // 1785/1024, so every element is an exact multiple of 1/1024 and the
+        // claim is true rather than believed.
+        //
+        // The magnitudes also had to move. At 0.012/0.004 the series stops
+        // increasing at N = 124 — `mass(146) > mass(147)` — so the third
+        // closed shell weighs less than the element below it, against §7.1's
+        // "increases down the table". Monotonicity holds while
+        // `N < (1 - d_closed) / (d_closed - d_open)`; these values carry it to
+        // N = 307, breaking only at the fifth closure (309), far past any table
+        // V0 will build. `mass_increases_with_unit_count` asserts it.
         let closed = outer == 0;
-        let defect = if closed { 0.012 } else { 0.004 };
+        let defect = if closed { DEFECT_CLOSED } else { DEFECT_OPEN };
         let mass = units as f64 * base_mass * (1.0 - defect);
 
         // Radius: packing gives the cube root — but that alone compresses the
@@ -112,32 +173,78 @@ fn derive_table(
         // Worth noting for G3: real atomic radius *decreases* across a period
         // and jumps up at a new one. Packing gives the opposite sign, so this
         // is structurally anti-isomorphic rather than a renamed trend.
-        let fill = if cap == 0 {
-            0.0
-        } else {
-            outer as f64 / cap as f64
-        };
-        let radius = base_radius * det_math::powf(units as f64, 1.0 / 3.0) * (1.0 + bulge * fill);
+        // `cap` is `shell_size(shell + 1)` = 10(shell+1)^2 + 2, so it is never
+        // below 12. A `cap == 0` guard stood here and could not fire.
+        let fill = outer as f64 / cap as f64;
+        let radius = base_radius * det_math::cbrt(units as f64) * (1.0 + bulge * fill);
 
         // Valence: bonding slots are unpaired sites in the incomplete outer
-        // shell. A closed shell has none — the noble family falls out rather
+        // shell. A closed shell has none — the closed-shell family falls out rather
         // than being placed at the end of a period.
-        let valence = if closed {
-            0
-        } else {
-            let toward = (outer.min(cap - outer)) as f64;
-            (toward.sqrt().round() as u8).min(6)
-        };
+        //
+        // **There is deliberately no `if closed { 0 }` branch, and that is the
+        // strongest emergence result in this file.** One stood here. Deleting
+        // it changes the valence of *zero* of 120 elements, because `outer` is
+        // 0 at a closure and `min(0, cap)` is 0 already. By the deletion test
+        // the closed-shell family is a thing the arithmetic *detects*, not a
+        // case the code *makes* — §3's distinction exactly. A redundant special
+        // case on a chemically-loaded predicate is how a detector quietly
+        // becomes a declaration two refactors later.
+        //
+        // The `sqrt` and the `min(6)` are both known-bad and are replaced
+        // wholesale in Task 4: they are a fitted curve, the clamp caps this at
+        // 6 where 8+ is wanted, and geometry measured that a per-site count
+        // *cannot* exceed 6 (coordination 12 minus a vertex site's 6). Reaching
+        // 8 needs a count over sites plus a canonical filling order.
+        let toward = (outer.min(cap - outer)) as f64;
+        let valence = (toward.sqrt().round() as u8).min(6);
 
         // Affinity: the fraction of units exposed on the cluster surface. A
         // shape property of the nucleus, which is the kind of thing this
         // project is made of.
-        let surface = if closed { cap } else { outer.max(1) };
-        let ratio = surface as f64 / units as f64;
-        let affinity = (2.0 * ratio - 1.0).clamp(-1.0, 1.0);
+        //
+        // A unit is buried when its shell is covered by the one outside it.
+        // Shells strictly inside the outermost occupied one are covered
+        // completely; the outermost *complete* shell is covered in proportion
+        // to how far the next shell has filled. That proportion is the whole
+        // model — there is no coefficient to tune.
+        //
+        // It is continuous at every closure by construction: at `outer == 0`
+        // it reduces to `surface == shell_units(shell)`, and at `outer == cap`
+        // it reduces to the same expression for the next shell. **An earlier
+        // version was not.** It read `if closed { cap }` — the capacity of the
+        // shell that is still *empty* — giving N=13 a surface of 42 on a
+        // 13-unit cluster, a ratio of 3.23 clamped to exactly +1.000. Every
+        // closed shell scored maximum affinity and its N+1 neighbour scored
+        // near minimum, a swing of 1.86 where the real exposed fraction moves
+        // by less than 0.01. That made the closed-shell elements simultaneously
+        // the least reactive by valence and the *stickiest* by affinity — and
+        // §8.3 runs the one mechanism on affinity, so nothing would have
+        // accumulated.
+        let shell_units = if shell == 0 { 1 } else { shell_size(shell) };
+        let inner = filled - shell_units;
+        let covered = shell_units as f64 * outer as f64 / cap as f64;
+        let surface = units as f64 - (inner as f64 + covered);
+
+        // In (0, 1] by construction — `inner + covered` is a subset of `units`
+        // — so `2r - 1` lands in (-1, 1] with no clamp. A clamp here would be
+        // a guard that can never fire, which is the shape of defect this file
+        // is partly about. `affinity_stays_in_range` asserts it instead.
+        let ratio = surface / units as f64;
+        let affinity = 2.0 * ratio - 1.0;
 
         // Instability: distance from the binding peak, with closed shells
-        // stabilised. An iron-peak analogue emerges instead of being drawn.
+        // stabilised.
+        //
+        // **`peak` is a fudge factor and this is not an emergent minimum.** With
+        // the open-shell bonus at 0 the minimum sits at N = 62 — the value of
+        // `peak` itself — and 0.013 is just `((55-62)/62)^2`. Sweeping `peak`
+        // over 5..120 the minimum lands on a closed shell in 13 of 24 draws. It
+        // is also the second encoding of "closed shells bind better", the first
+        // being the mass defect above, in incommensurable units so neither can
+        // check the other. Task 4 derives one binding energy per unit from the
+        // packing counts and makes both a function of it, so `peak` becomes an
+        // output rather than an argument.
         let d = (units as f64 - peak) / peak;
         let raw_inst = d * d + if closed { 0.0 } else { 0.15 };
         let instability = if raw_inst > 1.0 { 1.0 } else { raw_inst };
@@ -255,9 +362,9 @@ fn main() {
             Some(*a)
         })
         .collect();
-    println!("cumulative (magic numbers): {cum:?}\n");
+    println!("cumulative shell totals: {cum:?}\n");
 
-    let table = derive_table(120, 1.7, 0.42, 62.0, 0.55);
+    let table = derive_table(120, 1.75, 0.42, 62.0, 0.55);
 
     println!(
         "{:>4} {:>5} {:>5} {:>8} {:>7} {:>4} {:>8} {:>8}",
@@ -300,7 +407,7 @@ fn main() {
         .filter(|e| e.outer == 0)
         .map(|e| e.units)
         .collect();
-    println!("closed shells (the emergent noble family): {closed:?}");
+    println!("closed shells: {closed:?}");
     let vals: Vec<u8> = (0..=6)
         .map(|v| table.iter().filter(|e| e.valence == v).count() as u8)
         .collect();
@@ -328,13 +435,9 @@ fn main() {
     };
     // Pure cube root, and cube root with the shell-occupancy bulge. The first
     // four elements sit in shells 0 and 1, so the bulge is visible there.
-    let cbrt_only = rescale(
-        (1..=4)
-            .map(|n| 0.42 * det_math::powf(n as f64, 1.0 / 3.0))
-            .collect(),
-    );
+    let cbrt_only = rescale((1..=4).map(|n| 0.42 * det_math::cbrt(n as f64)).collect());
     let with_bulge = rescale(
-        derive_table(4, 1.7, 0.42, 62.0, 0.55)
+        derive_table(4, 1.75, 0.42, 62.0, 0.55)
             .iter()
             .map(|e| e.radius)
             .collect(),
@@ -381,5 +484,127 @@ fn main() {
             100.0 * top,
             sd / mean
         );
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "the float comparisons are against exact multiples of 1/1024, which is \
+              the property being asserted — an epsilon would defeat the test"
+)]
+mod tests {
+    use super::*;
+
+    /// The table Task 4's note reports on.
+    fn table() -> Vec<Derived> {
+        derive_table(120, 1.75, 0.42, 62.0, 0.55)
+    }
+
+    /// `affinity` is `2 * surface_fraction - 1`, and a surface fraction is a
+    /// fraction — so this cannot exceed `(-1, 1]` unless burial is computed
+    /// wrongly.
+    ///
+    /// It was. The previous formulation took a *closed* cluster's surface to be
+    /// the capacity of the shell outside it, so N=13 scored 42 exposed units on
+    /// 13 units total: a ratio of 3.23, saved from being visibly absurd only by
+    /// a clamp.
+    #[test]
+    fn affinity_stays_in_range() {
+        for e in table() {
+            assert!(
+                e.affinity > -1.0 && e.affinity <= 1.0,
+                "N={}: affinity {} outside (-1, 1] — burial is miscounted",
+                e.units,
+                e.affinity
+            );
+        }
+    }
+
+    /// Adding one unit to a cluster changes its exposed fraction by about one
+    /// unit's worth. The bound `2/N` is loose on purpose: the point is to catch
+    /// a *discontinuity*, and the old code jumped 1.86 at every closure while
+    /// the real exposed fraction moved by under 0.01.
+    #[test]
+    fn affinity_is_continuous_across_shell_closures() {
+        let t = table();
+        for pair in t.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let bound = 2.0 / a.units as f64;
+            assert!(
+                (b.affinity - a.affinity).abs() <= bound,
+                "N={} -> {}: affinity jumped {:.4} (bound {:.4}) — closed={} -> {}",
+                a.units,
+                b.units,
+                (b.affinity - a.affinity).abs(),
+                bound,
+                a.outer == 0,
+                b.outer == 0
+            );
+        }
+    }
+
+    /// §7.1: mass increases down the table. With the original 0.012/0.004
+    /// defects this failed at N=124, so the third closed shell — the element a
+    /// designer would most want to include — weighed less than its predecessor.
+    ///
+    /// **Deliberately past 120.** Checked against the 120-element table this
+    /// test passes with the broken constants, because the first inversion sits
+    /// four elements beyond the end. It was written that way first; a mutation
+    /// run caught it. 200 covers the fourth closure at 147 with margin.
+    #[test]
+    fn mass_increases_with_unit_count() {
+        for pair in derive_table(200, 1.75, 0.42, 62.0, 0.55).windows(2) {
+            assert!(
+                pair[1].mass > pair[0].mass,
+                "N={} mass {} >= N={} mass {}",
+                pair[0].units,
+                pair[0].mass,
+                pair[1].units,
+                pair[1].mass
+            );
+        }
+    }
+
+    /// The claim that made `Mass`'s fixed-point representation the right home
+    /// for this series. It was false for **every** element before the defect
+    /// factors were made dyadic, under a comment asserting it.
+    #[test]
+    fn every_mass_is_exact_on_the_fixed_point_grid() {
+        for e in table() {
+            let scaled = e.mass * 1024.0;
+            assert_eq!(
+                scaled,
+                scaled.round(),
+                "N={}: mass {} is not a multiple of 1/1024 (x1024 = {})",
+                e.units,
+                e.mass,
+                scaled
+            );
+        }
+    }
+
+    /// Cumulative shell totals are 1, 13, 55, 147 — and the fill loop must
+    /// agree with the closed form, since burial and valence both key on it.
+    #[test]
+    fn closures_land_where_the_shell_arithmetic_says() {
+        let closed: Vec<usize> = table()
+            .iter()
+            .filter(|e| e.outer == 0)
+            .map(|e| e.units)
+            .collect();
+        assert_eq!(closed, vec![1, 13, 55]);
+    }
+
+    /// Emergence's deletion test, pinned. The closed-shell family is produced
+    /// by the general formula, not by a branch that names it — so there is
+    /// nothing here to accidentally promote into a declaration.
+    #[test]
+    fn closed_shells_have_valence_zero_without_being_special_cased() {
+        for e in table() {
+            if e.outer == 0 {
+                assert_eq!(e.valence, 0, "N={}", e.units);
+            }
+        }
     }
 }

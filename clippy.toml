@@ -85,7 +85,7 @@ disallowed-methods = [
   { path = "f64::asinh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::acosh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::atanh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
-  { path = "f64::cbrt", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::cbrt", reason = "spec §13.1 — use borbax_units::det_math::cbrt; the platform one differs on 7.6% of samples between architectures" },
   { path = "f64::hypot", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   # --- f64: exactly specified, but not by the criterion above ---
   { path = "f64::powi", reason = "spec §13.1 — write the multiplication out AND pin the association in a comment; different trees give different values above exponent 2" },
@@ -118,7 +118,7 @@ disallowed-methods = [
   { path = "f32::asinh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f32::acosh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f32::atanh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
-  { path = "f32::cbrt", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::cbrt", reason = "spec §13.1 — use borbax_units::det_math::cbrt (convert to f64)" },
   { path = "f32::hypot", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   # --- f32: exactly specified, but not by the criterion above ---
   { path = "f32::powi", reason = "spec §13.1 — write the multiplication out AND pin the association in a comment; different trees give different values above exponent 2" },
