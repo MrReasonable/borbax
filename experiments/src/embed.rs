@@ -16,12 +16,6 @@
 //! `sqrt` and the four arithmetic operations, and the initial layout is built
 //! from graph distances rather than from a trigonometric spiral, precisely so
 //! that stays true.
-#![expect(
-    clippy::disallowed_methods,
-    reason = "§13.4: graph distances are non-negative sums, never -0.0. They CAN be \
-                  f64::INFINITY for a disconnected component — see the finiteness \
-                  guard above, which is what makes this selection safe"
-)]
 #![allow(
     clippy::indexing_slicing,
     reason = "every index is a loop bound over the same n as the coordinate vector"
@@ -178,6 +172,20 @@ pub fn initial_coords(mol: &Molecule, target: &[Vec<f64>]) -> Vec<Point> {
     }
 
     let p0 = *order.first().unwrap_or(&0);
+    // §13.4: graph distances are non-negative sums, so -0.0 is unreachable.
+    // They CAN be `f64::INFINITY` for a disconnected component, which
+    // `total_cmp` orders consistently — an infinity simply sorts last, so the
+    // landmark pick stays deterministic rather than becoming a tie.
+    //
+    // **Scoped to these two picks, not to the module.** A module-scoped expect
+    // stood here and switched `disallowed_methods` off for the whole file —
+    // measured, a planted `<f64>::exp(x)` drew zero clippy diagnostics. Its
+    // reason string also cited "the finiteness guard above", which does not
+    // exist in this file and never did.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "graph distances are non-negative; see the comment above"
+    )]
     let p1 = (0..n)
         .max_by(|&a, &b| {
             target[p0][a]
@@ -185,6 +193,10 @@ pub fn initial_coords(mol: &Molecule, target: &[Vec<f64>]) -> Vec<Point> {
                 .then(rank[b].cmp(&rank[a]))
         })
         .unwrap_or(0);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "graph distances are non-negative; see p1 above"
+    )]
     let p2 = (0..n)
         .max_by(|&a, &b| {
             (target[p0][a] + target[p1][a])

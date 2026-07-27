@@ -32,11 +32,6 @@
 //! locality shows it and a descriptor known to have none does not. That gate
 //! has its own tests, because a gate that cannot fail is the same mistake one
 //! level up — the same principle as exit criterion 9.
-#![expect(
-    clippy::disallowed_methods,
-    reason = "§13.4: concordance values are ratios of non-negative counts — never NaN, \
-                  never -0.0"
-)]
 
 use crate::embed::{Point, embed};
 use crate::geodesic::Geodesic;
@@ -403,6 +398,14 @@ pub struct Report {
 /// Sorted with `total_cmp`, which is a total order with no tolerance, so the
 /// result does not depend on how the input happened to be ordered.
 #[must_use]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "§13.4: these are concordance values — ratios of non-negative counts, so \
+              never NaN and never -0.0, which are the two cases canonical_cmp exists \
+              for. Scoped to this fn: a module-scoped expect stood here and switched \
+              the transcendental ban off for the whole file, verified by planting a \
+              <f64>::exp(x) that drew zero clippy diagnostics"
+)]
 pub fn median(xs: &[f64]) -> f64 {
     if xs.is_empty() {
         return f64::NAN;
