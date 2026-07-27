@@ -231,6 +231,24 @@ macro_rules! unit {
             pub fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
                 canonical_sign(self.0).total_cmp(&canonical_sign(other.0))
             }
+
+            /// The bit pattern to hash or serialise — **use this, not
+            /// `get().to_bits()`.**
+            ///
+            /// Same hazard as [`Self::canonical_cmp`], one step further on.
+            /// A runtime NaN's sign bit is architecture-dependent and `-0.0`
+            /// carries one while equalling `0.0`, so two runs that agree on
+            /// every value can still hash differently. §13.6's golden matrix
+            /// would report that as a simulation divergence.
+            ///
+            /// It costs nothing to have this ready before the state hash
+            /// exists (Task 20) and a great deal to discover the need
+            /// afterwards, from a red matrix with no visible cause.
+            #[must_use]
+            #[inline]
+            pub const fn canonical_bits(self) -> u64 {
+                canonical_sign(self.0).to_bits()
+            }
         }
 
         impl Add for $name {
@@ -836,6 +854,36 @@ mod tests {
         assert_eq!(Quanta::ZERO.canonical_cmp(&neg), std::cmp::Ordering::Equal);
         // ... and that agrees with what `==` already said.
         assert_eq!(neg, Quanta::ZERO);
+    }
+
+    /// The whole point of the wrapper: a rotation matrix built by accumulating
+    /// products routinely has `tr(R) = 3.0000000000000004`, so the argument
+    /// exceeds 1 and unclamped `acos` returns NaN — with an
+    /// architecture-dependent sign bit. This is the case that would have hit
+    /// the renderer's axis-angle extraction.
+    #[test]
+    fn acos_clamps_rather_than_returning_nan() {
+        for x in [1.0, 1.000_000_000_000_000_2, 1.5, f64::INFINITY] {
+            assert!(det_math::acos(x).is_finite(), "acos({x}) was not finite");
+        }
+        for x in [-1.0, -1.000_000_000_000_000_2, -1.5, f64::NEG_INFINITY] {
+            assert!(det_math::acos(x).is_finite(), "acos({x}) was not finite");
+        }
+        // The trace of the identity rotation, the ill-conditioned end.
+        let theta = det_math::acos((3.000_000_000_000_000_4 - 1.0) / 2.0);
+        assert!(theta.is_finite() && theta.abs() < 1e-7, "theta = {theta}");
+    }
+
+    /// Hashing `get().to_bits()` would expose the sign-bit hazard that
+    /// `canonical_cmp` closes for ordering. The helper exists so Task 20's
+    /// state hash cannot get it wrong.
+    #[test]
+    fn canonical_bits_erases_the_sign_ambiguity() {
+        assert_eq!(Span(runtime_nan()).canonical_bits(), CANONICAL_NAN_BITS);
+        assert_eq!((-Quanta::ZERO).canonical_bits(), 0.0_f64.to_bits());
+        // Everything else is untouched.
+        assert_eq!(Span(1.5).canonical_bits(), 1.5_f64.to_bits());
+        assert_eq!(Span(-1.5).canonical_bits(), (-1.5_f64).to_bits());
     }
 
     /// The platform calls below are the one legitimate reason to call a

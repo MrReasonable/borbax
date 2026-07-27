@@ -152,6 +152,32 @@ const BANNED_CALLS: &[&str] = &[
     "f32::min",
 ];
 
+/// §13.4 — parallel iteration, which reorders float reductions.
+///
+/// `impl Sum for Quanta` is *exactly* the bound `rayon`'s
+/// `ParallelIterator::sum` requires, so `iter()` → `par_iter()` is a one-word
+/// change that compiles, typechecks, passes clippy and is invisible in review.
+/// Measured on the shipped `Sum` shape: five thread counts gave five different
+/// answers, while the serial fold was stable at all of them.
+///
+/// Guarded here rather than in `clippy.toml` because rayon is not a dependency,
+/// so there is no path for `disallowed-methods` to resolve — a text scan is the
+/// only check available until the day it would be too late to add one.
+///
+/// Integer reductions are exempt in principle (`Sum for Mass` is associative
+/// and exact), but not in this check: the spelling is identical, and the
+/// day someone genuinely wants a parallel `Mass` sum is a day for a per-site
+/// `#[allow]` and a determinism review, not a hole in a grep.
+const BANNED_PARALLEL_CALLS: &[&str] = &[
+    ".par_iter()",
+    ".par_iter_mut()",
+    ".into_par_iter()",
+    ".par_bridge()",
+    ".par_sort",
+    ".par_chunks",
+    ".par_extend(",
+];
+
 /// Directories scanned for §13.1 violations, relative to the workspace root.
 ///
 /// `experiments` is here for the same reason it is in `CHEMISTRY_CRATES`: it
@@ -484,6 +510,15 @@ fn scan_rust_source(rel: &str, src: &str, failures: &mut Vec<String>) {
                     failures.push(format!(
                         "§13.1: platform transcendental {call} at {rel}:{} — route through \
                          borbax_units::det_math",
+                        i + 1
+                    ));
+                }
+            }
+            for call in BANNED_PARALLEL_CALLS {
+                if code.contains(call) {
+                    failures.push(format!(
+                        "§13.4: parallel iteration {call} at {rel}:{} — float reductions \
+                         must fold in index order",
                         i + 1
                     ));
                 }
@@ -856,6 +891,34 @@ mod tests {
              the only thing that would catch one of these being deleted from \
              clippy.toml, so it has to know about them"
         );
+    }
+
+    /// `impl Sum for Quanta` is exactly `rayon::ParallelIterator::sum`'s
+    /// bound, so this is a one-word change that compiles and passes clippy.
+    /// rayon is not a dependency, so `disallowed-methods` has no path to
+    /// resolve and this text scan is the only check available.
+    #[test]
+    fn parallel_reductions_are_reported() {
+        for call in [
+            "v.par_iter().sum::<Quanta>()",
+            "v.into_par_iter().map(f).sum::<Quanta>()",
+            "v.par_sort_by(cmp)",
+            "v.par_bridge().count()",
+        ] {
+            let src = format!("fn f(v: Vec<Quanta>) {{ let _ = {call}; }}\n");
+            let found = scan(&src);
+            assert_eq!(found.len(), 1, "{call:?} -> {found:?}");
+            assert!(
+                found.first().is_some_and(|f| f.contains("§13.4")),
+                "{found:?}"
+            );
+        }
+    }
+
+    /// A serial fold must not be mistaken for a parallel one.
+    #[test]
+    fn serial_iteration_is_left_alone() {
+        assert!(scan("fn f(v: Vec<Quanta>) { let _ = v.iter().sum::<Quanta>(); }\n").is_empty());
     }
 
     /// The `r` in `for` must not open a raw string.
