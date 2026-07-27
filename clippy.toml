@@ -28,8 +28,22 @@
 # "if the inputs compare equal (such as for the case of +0.0 and -0.0), either
 # input may be returned non-deterministically". Measured: `(+0.0).max(-0.0)` is
 # `+0.0` on aarch64 and `-0.0` on x86-64, and it varies with *codegen* on one
-# target, so a rustc bump could move a golden with no source change. Write
-# `if a > b { a } else { b }`, which has no ±0 ambiguity.
+# target, so a rustc bump could move a golden with no source change.
+#
+# The replacement is `if a > b { a } else { b }` — but it is NOT a
+# behaviour-preserving substitution, and the reason strings below say so
+# because a caller who assumes equivalence will be wrong. Measured over 256
+# special-value pairs, 29 differ, in two classes:
+#
+#   NaN:  std's max/min *swallow* it (`max(a, NaN) == a`); the comparison form
+#         propagates it, so NaN wins both max and min. Usually an improvement —
+#         a NaN should not vanish — but it interacts with the NaN-wins-selection
+#         hazard `Unit::canonical_cmp` documents, so check reachability.
+#   ±0.0: the comparison form returns `b` on every tie, so `max(+0.0, -0.0)` is
+#         `-0.0`. Deterministic, which is the goal, but it inverts IEEE
+#         `maxNum`'s preference and is not commutative bitwise — the zero's
+#         sign depends on argument order, and that reaches `to_bits()` the
+#         moment such a value is hashed.
 #
 # `libm::exp` and friends are untouched by these entries: the disallowed path
 # is `f64::exp`, the inherent method, not every function named `exp`. That is
@@ -62,7 +76,7 @@ disallowed-methods = [
   { path = "f64::tan", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::sin_cos", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::asin", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
-  { path = "f64::acos", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::acos", reason = "spec §13.1 — use borbax_units::det_math::acos, which clamps inside the wrapper" },
   { path = "f64::atan", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::atan2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::sinh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
@@ -76,8 +90,9 @@ disallowed-methods = [
   # --- f64: exactly specified, but not by the criterion above ---
   { path = "f64::powi", reason = "spec §13.1 — write the multiplication out AND pin the association in a comment; different trees give different values above exponent 2" },
   { path = "f64::mul_add", reason = "spec §13.1 — one rounding instead of two, so it changes results everywhere" },
-  { path = "f64::max", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a > b { a } else { b }`" },
-  { path = "f64::min", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a < b { a } else { b }`" },
+  { path = "f64::min", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a < b { a } else { b }`, which propagates NaN and returns the second argument on a tie" },
+  { path = "f64::total_cmp", reason = "spec §13.4 — orders on the sign bit, and a runtime NaN's sign differs by architecture; use Unit::canonical_cmp, or #[expect] with a note on why this input cannot be NaN or -0.0" },
+  { path = "f64::max", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a > b { a } else { b }`, which propagates NaN and returns the second argument on a tie" },
   # --- f32: wrapped in det_math ---
   { path = "f32::exp", reason = "spec §13.1 — use borbax_units::det_math::exp (convert to f64)" },
   { path = "f32::ln", reason = "spec §13.1 — use borbax_units::det_math::ln (convert to f64)" },
@@ -94,7 +109,7 @@ disallowed-methods = [
   { path = "f32::tan", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f32::sin_cos", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f32::asin", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
-  { path = "f32::acos", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::acos", reason = "spec §13.1 — use borbax_units::det_math::acos (convert to f64), which clamps inside" },
   { path = "f32::atan", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f32::atan2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f32::sinh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
@@ -108,6 +123,7 @@ disallowed-methods = [
   # --- f32: exactly specified, but not by the criterion above ---
   { path = "f32::powi", reason = "spec §13.1 — write the multiplication out AND pin the association in a comment; different trees give different values above exponent 2" },
   { path = "f32::mul_add", reason = "spec §13.1 — one rounding instead of two, so it changes results everywhere" },
-  { path = "f32::max", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a > b { a } else { b }`" },
-  { path = "f32::min", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a < b { a } else { b }`" },
+  { path = "f32::min", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a < b { a } else { b }`, which propagates NaN and returns the second argument on a tie" },
+  { path = "f32::total_cmp", reason = "spec §13.4 — orders on the sign bit, and a runtime NaN's sign differs by architecture; use Unit::canonical_cmp, or #[expect] with a note on why this input cannot be NaN or -0.0" },
+  { path = "f32::max", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a > b { a } else { b }`, which propagates NaN and returns the second argument on a tie" },
 ]

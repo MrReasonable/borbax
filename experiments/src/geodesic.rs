@@ -280,9 +280,26 @@ impl<const D: usize> Geodesic<D> {
             return Err(GeoError::UnsupportedResolution(D));
         }
 
-        // Canonical ordering. `total_cmp` gives a total order on f64 with no
-        // tolerance and no platform variation, so the resulting index
-        // assignment is identical everywhere (spec §13.4).
+        // Canonical ordering, and the *reason* matters more than the call.
+        //
+        // `total_cmp` is a pure function of the bits, so it is portable when
+        // the bits are — not, as an earlier version of this comment claimed,
+        // free of platform variation in general. It orders on the sign bit,
+        // and a runtime NaN's sign bit differs between aarch64 and x86-64;
+        // that is precisely the defect `borbax_units::Span::canonical_cmp`
+        // exists to fix, and this comment asserting the opposite in the file
+        // CLAUDE.md says lifts into `borbax-molecule` unchanged is how the
+        // wrong lesson gets cited a year from now.
+        //
+        // It is safe *here* because these coordinates are provably free of
+        // both hazards, measured at all three levels: 0 `-0.0` components,
+        // 0 NaN, antipodes bit-exact, max |‖v‖-1| = 1.11e-16. Every value is
+        // a normalised coordinate built from sums of squares. When this lifts,
+        // that reasoning lifts with it or the call changes (spec §13.4).
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "§13.4: measured free of NaN and -0.0 at all three levels — see above"
+        )]
         verts.sort_by(|a, b| {
             a[2].total_cmp(&b[2])
                 .then(a[1].total_cmp(&b[1]))

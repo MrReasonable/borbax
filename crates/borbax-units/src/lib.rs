@@ -102,6 +102,22 @@ const NEG_ZERO_BITS: u64 = 0x8000_0000_0000_0000;
 /// architecture-dependent sign bit (clear on aarch64, set on x86-64), and
 /// `-0.0` carries a sign bit while comparing equal to `0.0`. Both would move
 /// under `f64::total_cmp` without meaning anything different.
+///
+/// **It normalises the whole NaN class, not only the sign** — payload and
+/// signalling-ness go too, because it replaces the value outright rather than
+/// masking a bit. That is deliberate and stronger than it looks: `det_math`
+/// records that NaN *payloads* also differ between the architectures for
+/// `0.0/0.0`, `inf - inf`, `inf * 0.0` and `(-1.0).sqrt()`. Anyone
+/// "simplifying" this to a sign-bit mask would lose payload canonicalisation
+/// and every current test would still pass.
+///
+/// What it deliberately leaves alone is what IEEE-754 already specifies
+/// exactly: infinities and subnormals. The one hazard in this class it cannot
+/// address is flush-to-zero — if `FTZ`/`DAZ` were ever set, a subnormal would
+/// become `±0.0` on one platform and stay subnormal on the other. Rust sets
+/// neither and this workspace is `forbid(unsafe_code)` with no C dependency,
+/// so nothing here can set them; noted so nobody concludes this helper is
+/// total.
 #[inline]
 const fn canonical_sign(x: f64) -> f64 {
     if x.is_nan() {
@@ -111,6 +127,24 @@ const fn canonical_sign(x: f64) -> f64 {
     } else {
         x
     }
+}
+
+/// The bit pattern to hash or serialise for a bare `f64`.
+///
+/// The method on each unit is the one to reach for when you have a unit. This
+/// exists because the state hash will be dominated by values that are *not*
+/// units: `Signature.r`, `BindConsts::ideal_gap`, the cavity `SHELL` and
+/// `LATTICE_SPAN` are all bare `f64` today, and the signature array is the
+/// single most-hashed quantity in the system. Without an exported form, a
+/// caller holding an `f64` writes `.to_bits()` and the canonicalisation is
+/// silently skipped for exactly the data that matters most.
+///
+/// Typing those quantities as [`Span`] (Task 8) shrinks the surface but does
+/// not remove it — signature bins are dimensionless.
+#[must_use]
+#[inline]
+pub const fn canonical_bits(x: f64) -> u64 {
+    canonical_sign(x).to_bits()
 }
 
 /// Generate a float-backed unit.
@@ -217,10 +251,22 @@ macro_rules! unit {
             /// second benefit of agreeing with `==` about signed zeros, which
             /// `f64::total_cmp` does not.
             ///
-            /// A reproducible order is necessary and not sufficient. §13.4
-            /// also requires a tie-break on a stable ID wherever two keys can
-            /// be equal — and `-0.0` versus `0.0` is now such a case — which
-            /// belongs to the caller.
+            /// A reproducible order is necessary and not sufficient, and
+            /// this method makes §13.4's ID tie-break **more** necessary
+            /// rather than less. Under `f64::total_cmp` two keys tie only if
+            /// bit-identical; here `+0.0`/`-0.0`, two NaN signs, and a quiet
+            /// against a signalling NaN all tie. Demonstrated: a stable sort
+            /// over the same multiset in two input permutations gives two
+            /// different outputs, because stability preserves *input* order
+            /// and input order is only canonical if the upstream is. So the
+            /// tie-break belongs to the caller, on a strictly larger set of
+            /// inputs than before.
+            ///
+            /// **Do not build `Ord` from this.** It reports two NaNs `Equal`
+            /// while the derived `PartialEq` reports them unequal, so an
+            /// `Ord` impl delegating here would violate the `Ord`/`PartialEq`
+            /// consistency contract and `BTreeMap` behaviour would follow it
+            /// into the weeds.
             ///
             /// This is a *sort* order. `max_by`/`min_by` over it still
             /// propagate NaN, so a NaN in a selection wins; the invariant that
@@ -228,6 +274,12 @@ macro_rules! unit {
             /// values are finite, asserted where they are built.
             #[must_use]
             #[inline]
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "§13.4: this is the one legitimate caller — it is what \
+                          canonicalising the inputs makes safe, and the ban exists \
+                          to route everyone else through here"
+            )]
             pub fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
                 canonical_sign(self.0).total_cmp(&canonical_sign(other.0))
             }
@@ -375,14 +427,29 @@ unit!(
 pub struct Mass(i64);
 
 /// The whole overflow argument, checked by the compiler rather than asserted
-/// in prose. `MAX_SUMMABLE_TERMS` values of `MAX_RAW` sub-units must fit in an
-/// `i64`, and `MAX_MAGNITUDE` must be exactly `MAX_RAW` sub-units.
+/// in prose — and this block previously said that while asserting only two
+/// thirds of it. Three reviewers caught it independently and one mutation-tested
+/// it: `MAX_MAGNITUDE` could be quadrupled, both assertions still passed, and
+/// only a runtime test noticed. That is the same shape as the defect this
+/// constant was rewritten to fix, so the missing assertion is now here.
+///
+/// The three claims, all now checked at compile time:
+/// 1. `MAX_SUMMABLE_TERMS` values of `MAX_RAW` sub-units fit in an `i64`.
+/// 2. `MAX_RAW` is a whole number of mass units.
+/// 3. `MAX_MAGNITUDE` is *exactly* `MAX_RAW` sub-units — the one that was
+///    asserted in prose while `from_f64_quantised` gated on it alone.
 const _: () = assert!(
     Mass::MAX_RAW
         .checked_mul(Mass::MAX_SUMMABLE_TERMS)
         .is_some()
 );
 const _: () = assert!(Mass::MAX_RAW % Mass::SCALE == 0);
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "both operands are powers of two below 2^53, so the product is exact in f64               and the conversion back is lossless; this assertion is the proof of that"
+)]
+const _: () = assert!((Mass::MAX_MAGNITUDE * Mass::SCALE_F64) as i64 == Mass::MAX_RAW);
 
 /// A real value could not be placed on the fixed-point mass grid.
 ///
@@ -390,10 +457,19 @@ const _: () = assert!(Mass::MAX_RAW % Mass::SCALE == 0);
 /// interesting question is which generated quantity went out of range — and
 /// `inf` versus `NaN` versus `1e300` point at different bugs.
 ///
-/// Deliberately not `PartialEq`: the headline input this type exists for is
-/// NaN, and `NaN != NaN`, so a derived `PartialEq` would make the error
-/// unequal to itself and `assert_eq!(got, Err(MassRangeError { value: NAN }))`
-/// fail for a reason that has nothing to do with the code under test.
+/// `PartialEq` is hand-written over canonicalised bits, and the route here is
+/// worth recording. It was derived; a reviewer pointed out that NaN is the
+/// headline input this type exists for and `NaN != NaN`, so the error was not
+/// equal to itself. The derive was removed — and the same reviewer then
+/// measured the cost of removing it and withdrew their own proposal: absence
+/// also blocks `assert_eq!` on the **`Ok`** arm (`Result: PartialEq` needs
+/// both bounds) and blocks `#[derive(PartialEq)]` on any error enum that later
+/// wraps this one, which `borbax-universe` will plausibly want.
+///
+/// Comparing `canonical_sign(value).to_bits()` beats both. It is reflexive for
+/// NaN, agrees about `±0.0`, restores `assert_eq!` on both arms, and keeps
+/// derives available upstack. Since the relation is a genuine equivalence,
+/// `Eq` follows honestly rather than by assertion.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error(
     "mass {value} is not on the fixed-point grid: must be finite and at most ±{}",
@@ -403,6 +479,15 @@ pub struct MassRangeError {
     /// The value that could not be quantised.
     pub value: f64,
 }
+
+impl PartialEq for MassRangeError {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        canonical_bits(self.value) == canonical_bits(other.value)
+    }
+}
+
+impl Eq for MassRangeError {}
 
 impl Mass {
     /// Sub-units per mass unit. A power of two so that quantisation is
@@ -433,8 +518,11 @@ impl Mass {
     /// over molecules. Two values the constructor accepted summed to **−2**
     /// under release wrapping. Three independent reviewers found it.
     ///
-    /// 2^32 is roughly four thousand times the 10^6-molecule beaker in §17,
-    /// so the budget is not a constraint anyone will meet by accident.
+    /// The budget is denominated in **atoms**, not molecules — a molecular
+    /// mass is itself a sum, so §17's 10^6 molecules at ~10 atoms each is 10^7
+    /// against 4.3x10^9, roughly 400x. An earlier version of this line
+    /// compared against molecules and claimed four thousand times; same
+    /// conclusion, wrong unit.
     pub const MAX_SUMMABLE_TERMS: i64 = 1 << 32;
 
     /// The value bound in sub-units — where the arithmetic actually happens,
@@ -446,9 +534,21 @@ impl Mass {
     /// of them can be added without leaving `i64`. Both are powers of two, so
     /// this is exact in `f64` and the const assertion below is the whole proof.
     ///
-    /// It is ~400× the heaviest element the generator in Task 4 can produce
-    /// (measured at ~1700-2500 mass units over 20 000 sampled universes), so
-    /// the bound costs nothing real.
+    /// **This bounds a single *element*, not a molecule.** `from_f64_quantised`
+    /// is a universe-generation entry point for atomic masses; molecular and
+    /// beaker masses arrive through [`Sum`] and are bounded by
+    /// [`Self::MAX_SUMMABLE_TERMS`] instead, which is why a 40-monomer chain
+    /// exceeding this number is fine and quantising one through this
+    /// constructor would not be.
+    ///
+    /// Reviewers measured Task 4's generator at ~1700-2500 mass units, giving
+    /// ~400x headroom — but that script was never checked in and Task 4 is
+    /// unwritten, so the number is not reproducible from this repository. The
+    /// previous version of this doc replaced an unmeasurable claim on exactly
+    /// those grounds and then made two more; saying so here rather than
+    /// repeating the trick. **Task 4 owns the other half**: it must assert
+    /// that no generated element mass exceeds a fraction of this constant, or
+    /// nothing connects the bound to the thing that justifies it.
     ///
     /// Public because [`Self::from_f64_quantised`] holds callers to it, and a
     /// bound a caller cannot read is not a contract.
@@ -520,8 +620,29 @@ impl Mass {
         clippy::as_conversions,
         reason = "no lossless i64 -> f64 conversion exists"
     )]
+    // Missed by the pass that added the other twenty-one, because its
+    // multi-line `#[expect]` block broke the pattern being matched. Measured
+    // cross-crate at opt-level 1: 1.49x in a loop with independent work, and
+    // *no difference* in a reduction-bound one — which is why a spot-check in
+    // the obvious shape would have shown nothing. Its own doc says "rate
+    // arithmetic", and that is the beaker step.
+    #[inline]
     pub fn to_f64(self) -> f64 {
         self.0 as f64 / Self::SCALE_F64
+    }
+
+    /// The bit pattern to hash or serialise, matching the float units' method
+    /// of the same name so a state hash needs one spelling rather than two.
+    ///
+    /// No canonicalisation is possible or needed — `i64` has exactly one
+    /// representation per value, which is the whole argument for the fixed
+    /// point. `cast_unsigned` rather than `as`: it is the lossless
+    /// bit-reinterpretation, and `raw()` fed to a hasher would otherwise need
+    /// a sign-losing conversion and a suppression at every call site.
+    #[must_use]
+    #[inline]
+    pub const fn canonical_bits(self) -> u64 {
+        self.0.cast_unsigned()
     }
 
     /// The raw count of sub-units. Exact, and the only thing worth
@@ -559,11 +680,27 @@ impl Mass {
 
 /// Unchecked, unlike [`Mass::checked_mul_count`], and the asymmetry is
 /// deliberate. `checked_mul_count`'s multiplier is externally supplied and
-/// unbounded; addition's operands come from [`Mass::from_f64_quantised`],
-/// which admits at most [`Mass::MAX_MAGNITUDE`] — a bound *derived* from
-/// [`Mass::MAX_SUMMABLE_TERMS`] precisely so that folding this operator over
-/// that many values stays inside `i64`. The const assertion beside the type
-/// is the proof, and it is the compiler's rather than a comment's.
+/// unbounded; addition's is not.
+///
+/// The invariant is **not** "both operands came from
+/// [`Mass::from_f64_quantised`]" — most additions in the simulation have
+/// operands that are themselves sums, since a molecular mass is a `Sum` over
+/// atoms and a beaker mass is a `Sum` over molecules, and neither is ever
+/// re-validated against [`Mass::MAX_MAGNITUDE`]. Stating it that way was a
+/// category error and two reviewers caught it.
+///
+/// The invariant that actually holds: **every `Mass` in circulation is a sum
+/// of at most [`Mass::MAX_SUMMABLE_TERMS`] constructor outputs**, and the
+/// const assertion beside the type proves that many fit. The budget is
+/// denominated in *atoms*, not molecules — §17's 10^6 molecules at ~10 atoms
+/// each is 10^7 against a 4.3x10^9 budget.
+///
+/// One caveat the budget does not cover: a fold mixing [`Add`] and [`Sub`] can
+/// reach twice the accumulator magnitude, and twice the budget is exactly
+/// `i64::MAX + 1`. The conservation pattern that motivates `Sub` — sum, then
+/// subtract the same parts — returns toward zero and cannot reach it, so this
+/// is contrived rather than live; the honest budget for a mixed signed fold is
+/// 2^31.
 ///
 /// Making these checked would return `Option` into a workspace that denies
 /// `unwrap`, poisoning every call site to guard a case the constructor has
@@ -770,10 +907,14 @@ mod tests {
     fn the_summation_budget_is_the_tightest_true_statement() {
         let ceiling = Mass::MAX_RAW.checked_mul(Mass::MAX_SUMMABLE_TERMS);
         assert!(ceiling.is_some(), "the declared budget already overflows");
+        // `x2`, not `x4`. Headroom is exactly 2.0 and not one unit more
+        // (2^62 x 2 = 2^63 = i64::MAX + 1), so asserting `x4` overflows would
+        // pass unchanged at half the declared budget — the test permitted
+        // precisely the slack its own failure message warns about.
         assert!(
             Mass::MAX_RAW
                 .checked_mul(Mass::MAX_SUMMABLE_TERMS)
-                .and_then(|c| c.checked_mul(4))
+                .and_then(|c| c.checked_mul(2))
                 .is_none(),
             "the bound is looser than it needs to be — say so, or tighten it"
         );
@@ -884,6 +1025,46 @@ mod tests {
         // Everything else is untouched.
         assert_eq!(Span(1.5).canonical_bits(), 1.5_f64.to_bits());
         assert_eq!(Span(-1.5).canonical_bits(), (-1.5_f64).to_bits());
+    }
+
+    /// The free function is what a caller holding a bare `f64` reaches for,
+    /// and the state hash will be mostly bare `f64` until Task 8 types the
+    /// length quantities. It must agree with the method exactly.
+    #[test]
+    fn the_free_and_method_forms_of_canonical_bits_agree() {
+        for x in [0.0, -0.0, 1.5, -1.5, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(canonical_bits(x), Span(x).canonical_bits(), "{x}");
+        }
+        assert_eq!(
+            canonical_bits(runtime_nan()),
+            Span(runtime_nan()).canonical_bits()
+        );
+    }
+
+    /// `Mass` needs no canonicalisation — `i64` has one representation per
+    /// value — but it needs the *spelling*, so a state hash has one method
+    /// name rather than two.
+    #[test]
+    fn mass_canonical_bits_round_trips_through_raw() {
+        for raw in [0_i64, 1, -1, i64::MAX, i64::MIN] {
+            let m = Mass::from_raw(raw);
+            assert_eq!(m.canonical_bits(), raw.cast_unsigned());
+            assert_eq!(Mass::from_raw(m.canonical_bits().cast_signed()), m);
+        }
+    }
+
+    /// The reason the derive came off and a hand-written impl went on: NaN is
+    /// the input this error exists for, and a derived `PartialEq` made it
+    /// unequal to itself.
+    #[test]
+    fn a_mass_range_error_is_equal_to_itself_for_every_input_it_exists_for() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300] {
+            let e = Mass::from_f64_quantised(bad);
+            assert_eq!(e, Mass::from_f64_quantised(bad), "{bad}");
+            assert!(e.is_err());
+        }
+        // And the Ok arm compares too, which dropping the derive would block.
+        assert_eq!(Mass::from_f64_quantised(1.0), Ok(Mass::from_raw(1024)));
     }
 
     /// The platform calls below are the one legitimate reason to call a

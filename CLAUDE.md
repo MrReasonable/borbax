@@ -9,8 +9,9 @@ whose chemistry is **invented from a 64-bit seed**, not modelled on the real wor
 Molecules are shapes; binding is a geometric complementarity test; catalysis,
 membranes and heredity are all downstream consequences of that single mechanism.
 
-**The repository currently contains no code.** It holds a spec and an
-implementation plan. Read them before proposing anything:
+**Tasks 1-2 of 21 are complete** — the workspace and fiction-guarantee gate,
+and `borbax-units` with the portable-transcendental chokepoint. Everything else
+is spec and plan. Read them before proposing anything:
 
 | Document | What it is |
 |---|---|
@@ -29,9 +30,11 @@ Commit after every task, conventional-commit style, with the trailer
 **Worktree → commit → `/review-pr` → push → PR. Never push to `main`.**
 
 `/review-pr` runs **before** the push, not after it, and not "if the change
-looks risky". Always. Its Step 0 gate (`fmt`, `clippy -D warnings`, `test`,
-`cargo doc`, `xtask`) must be green before any specialist is dispatched — a
-red suite means fix the suite, not review it.
+looks risky". Always. Its Step 0 gate must be green before any specialist is
+dispatched — a red suite means fix the suite, not review it. All six:
+`fmt`, `clippy -D warnings`, `test`, **`test --release`**, `cargo doc`,
+`xtask`. The release leg is the one an earlier version of this sentence left
+out, which is precisely the leg whose absence let two defects ship.
 
 **Why it is unconditional, with the number attached.** Task 2 was reviewed by
 two specialists before it was committed, their findings were applied, and the
@@ -58,7 +61,7 @@ green, linear history, no force-push, `enforce_admins` on. Bypassing is a
 deliberate, visible act:
 `gh api -X DELETE repos/MrReasonable/borbax/branches/main/protection/enforce_admins`.
 
-Next action if starting fresh: **Task 1** — workspace, `.prototools`, `xtask`, CI.
+Next action if starting fresh: **Task 3** — `borbax-rng`, counter-based deterministic streams.
 
 ## Commands
 
