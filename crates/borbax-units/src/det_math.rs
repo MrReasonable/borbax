@@ -65,6 +65,32 @@ pub fn cos(x: f64) -> f64 {
     libm::cos(x)
 }
 
+/// Arc cosine, in radians. **Clamps its argument**, and that is the feature.
+///
+/// Every caller in this project will be extracting an angle from a quantity
+/// that is mathematically in `[-1, 1]` and numerically is not: a dot product
+/// of two unit vectors, or `(tr(R) - 1) / 2` for a rotation matrix built by
+/// accumulating products, where `tr(R)` routinely comes out as
+/// `3.0000000000000004`. Unclamped, that is `acos(1.0000000000000002)` — NaN,
+/// and a NaN whose sign bit differs between the CI architectures.
+///
+/// So the clamp lives here rather than at the call site. The alternative is
+/// `ln`'s contract one line down — "callers must guarantee" — which is only
+/// safe while there is exactly one caller who remembered. A caller who does
+/// not know the trace can exceed 3 cannot get this wrong.
+/// It is **not** a NaN guard, and should not be. `clamp` propagates NaN, so a
+/// NaN argument still gives a NaN result — which is right: that means the
+/// caller already had a NaN, which is a different bug, and swallowing it here
+/// would hide it. What this fixes is the rounding overshoot, which is not a
+/// bug anywhere and cannot be avoided by the caller.
+///
+/// `clamp` rather than `max`/`min`, which §13.1 bans for their `±0.0`
+/// behaviour; `clamp` uses ordinary comparisons and has no such ambiguity.
+#[must_use]
+pub fn acos(x: f64) -> f64 {
+    libm::acos(x.clamp(-1.0, 1.0))
+}
+
 /// `x^y` for runtime `y`.
 ///
 /// For small integer exponents write the multiplication out instead. The
