@@ -88,6 +88,31 @@ use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 pub mod det_math;
 
+/// The positive quiet NaN. Written as bits rather than `f64::NAN` because the
+/// bit pattern is the whole point here, and `f64::NAN`'s is not guaranteed.
+const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
+
+/// Negative zero, the other value whose sign bit changes an IEEE `totalOrder`
+/// without changing what the number *is*.
+const NEG_ZERO_BITS: u64 = 0x8000_0000_0000_0000;
+
+/// `x` with any sign-bit ambiguity removed, so that ordering it is portable.
+///
+/// Two values need this and no others. A runtime-produced NaN carries an
+/// architecture-dependent sign bit (clear on aarch64, set on x86-64), and
+/// `-0.0` carries a sign bit while comparing equal to `0.0`. Both would move
+/// under `f64::total_cmp` without meaning anything different.
+#[inline]
+const fn canonical_sign(x: f64) -> f64 {
+    if x.is_nan() {
+        f64::from_bits(CANONICAL_NAN_BITS)
+    } else if x.to_bits() == NEG_ZERO_BITS {
+        0.0
+    } else {
+        x
+    }
+}
+
 /// Generate a float-backed unit.
 ///
 /// Extra derives are listed per unit rather than fixed here, because the
@@ -99,6 +124,21 @@ pub mod det_math;
 /// a beaker in which nothing ever happens — and not loudly, because the
 /// Arrhenius rate clamps the temperature away from zero before the exponent
 /// rather than producing a NaN that would announce itself.
+///
+/// **Every operator below carries `#[inline]`, and it is load-bearing.**
+/// These are non-generic, so without the attribute their bodies live only in
+/// this crate's codegen unit and every downstream crate emits a call. Measured
+/// at `opt-level = 1` — the dev profile — `a + b * s` was 12 instructions with
+/// two calls and register spills, against 3 for bare `f64`; with `#[inline]`,
+/// 3. Raising the opt-level does not fix it (opt-1 through opt-3 all sit at
+/// ~9 000 ns on a proxy kernel against ~1 700 for the inlined form); only LTO
+/// or this attribute does, and the dev profile has no LTO. The zero-cost claim
+/// in the root `Cargo.toml` was false for the dev profile until these were
+/// added. Release was always fine, because `lto = "thin"` closes it anyway.
+///
+/// It cannot move a golden: `#[inline]` grants no licence to reassociate float
+/// arithmetic, and the release asm was verified byte-identical with and
+/// without.
 macro_rules! unit {
     ($name:ident, $doc:literal $(, $extra_derive:ident)*) => {
         #[doc = $doc]
@@ -133,45 +173,76 @@ macro_rules! unit {
             /// they should be rare and local — display, serialisation, and
             /// arithmetic that genuinely leaves the unit system.
             #[must_use]
+            #[inline]
             pub const fn get(self) -> f64 {
                 self.0
             }
 
             /// Whether the magnitude is neither infinite nor NaN.
             #[must_use]
+            #[inline]
             pub const fn is_finite(self) -> bool {
                 self.0.is_finite()
             }
 
-            /// A total order over every value including NaN, for sorting.
+            /// A reproducible order over every value including NaN, for
+            /// sorting. **NaN sorts last and `-0.0` ties with `0.0`, on every
+            /// platform.**
             ///
             /// Sorting by a float key is common in the simulation and §13.4
             /// requires every such sort to be reproducible, which
             /// [`PartialOrd`] cannot promise: `partial_cmp` returns `None` on
             /// a NaN, and the workspace denies `unwrap`, so the obvious
-            /// spelling is not available. Without this the fallback is
-            /// `sort_by(|a, b| a.get().total_cmp(&b.get()))` at every site —
-            /// which works, but puts a `get()` into ordinary code and makes
-            /// the NaN position a decision taken twelve times instead of
-            /// once. It is taken here: NaN sorts last.
+            /// spelling is not available. Nor does it put a `get()` into
+            /// ordinary code, or make the NaN position a decision taken
+            /// twelve times instead of once.
             ///
-            /// A total order is necessary and not sufficient. §13.4 also
-            /// requires a tie-break on a stable ID wherever two keys can be
-            /// equal, and that belongs to the caller.
+            /// **This is not `f64::total_cmp`, and the difference is the
+            /// reason the method exists.** `f64::total_cmp` is IEEE-754
+            /// `totalOrder`, which sorts on the sign bit first — and a
+            /// *runtime-produced* NaN has its sign bit clear on aarch64 and
+            /// set on x86-64. Measured on the pinned toolchain:
+            ///
+            /// ```text
+            /// aarch64   0.0/0.0 = 0x7ff8...   f64::total_cmp -> [1, 2, NaN]
+            /// x86-64    0.0/0.0 = 0xfff8...   f64::total_cmp -> [NaN, 1, 2]
+            /// ```
+            ///
+            /// So the plain delegation shipped in Task 2 reordered the entire
+            /// slice between the macOS leg and the Linux and Windows legs.
+            /// Its test did not catch that, because `f64::NAN` is
+            /// const-evaluated to the positive pattern on every target — the
+            /// one NaN whose sign is portable. Canonicalising both signs here
+            /// makes the documented contract true everywhere, and has the
+            /// second benefit of agreeing with `==` about signed zeros, which
+            /// `f64::total_cmp` does not.
+            ///
+            /// A reproducible order is necessary and not sufficient. §13.4
+            /// also requires a tie-break on a stable ID wherever two keys can
+            /// be equal — and `-0.0` versus `0.0` is now such a case — which
+            /// belongs to the caller.
+            ///
+            /// This is a *sort* order. `max_by`/`min_by` over it still
+            /// propagate NaN, so a NaN in a selection wins; the invariant that
+            /// keeps that from mattering is that signature and affinity
+            /// values are finite, asserted where they are built.
             #[must_use]
-            pub fn total_cmp(&self, other: &Self) -> std::cmp::Ordering {
-                self.0.total_cmp(&other.0)
+            #[inline]
+            pub fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+                canonical_sign(self.0).total_cmp(&canonical_sign(other.0))
             }
         }
 
         impl Add for $name {
             type Output = Self;
+            #[inline]
             fn add(self, rhs: Self) -> Self {
                 Self(self.0 + rhs.0)
             }
         }
 
         impl AddAssign for $name {
+            #[inline]
             fn add_assign(&mut self, rhs: Self) {
                 self.0 += rhs.0;
             }
@@ -179,6 +250,7 @@ macro_rules! unit {
 
         impl Sub for $name {
             type Output = Self;
+            #[inline]
             fn sub(self, rhs: Self) -> Self {
                 Self(self.0 - rhs.0)
             }
@@ -186,6 +258,7 @@ macro_rules! unit {
 
         impl Neg for $name {
             type Output = Self;
+            #[inline]
             fn neg(self) -> Self {
                 Self(-self.0)
             }
@@ -196,6 +269,7 @@ macro_rules! unit {
         /// have a unit we have no name for.
         impl Mul<f64> for $name {
             type Output = Self;
+            #[inline]
             fn mul(self, rhs: f64) -> Self {
                 Self(self.0 * rhs)
             }
@@ -203,6 +277,7 @@ macro_rules! unit {
 
         impl Div<f64> for $name {
             type Output = Self;
+            #[inline]
             fn div(self, rhs: f64) -> Self {
                 Self(self.0 / rhs)
             }
@@ -217,12 +292,14 @@ macro_rules! unit {
         /// by something that could be zero should say what they expect.
         impl Div for $name {
             type Output = f64;
+            #[inline]
             fn div(self, rhs: Self) -> f64 {
                 self.0 / rhs.0
             }
         }
 
         impl Sum for $name {
+            #[inline]
             fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
                 iter.fold(Self::ZERO, Add::add)
             }
@@ -267,16 +344,39 @@ unit!(
 /// goes through [`Mass::checked_mul_count`], and anything that genuinely
 /// needs a real — a rate, a display string — goes through
 /// [`Mass::to_f64`] and does not come back.
+/// No `Default`, for a sharper version of the reason `Thermal` has none.
+/// `Mass::default()` would be `Mass::ZERO`, and this type's own documentation
+/// calls that the worst possible wrong answer — a zero mass is conserved
+/// perfectly forever, so every conservation test downstream still passes on a
+/// universe containing a bogus element. With the derive present,
+/// `Mass::from_f64_quantised(v).unwrap_or_default()` collapses the fallible
+/// constructor straight back into that value, and no workspace lint objects:
+/// `unwrap_or_default` is not `unwrap`.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mass(i64);
+
+/// The whole overflow argument, checked by the compiler rather than asserted
+/// in prose. `MAX_SUMMABLE_TERMS` values of `MAX_RAW` sub-units must fit in an
+/// `i64`, and `MAX_MAGNITUDE` must be exactly `MAX_RAW` sub-units.
+const _: () = assert!(
+    Mass::MAX_RAW
+        .checked_mul(Mass::MAX_SUMMABLE_TERMS)
+        .is_some()
+);
+const _: () = assert!(Mass::MAX_RAW % Mass::SCALE == 0);
 
 /// A real value could not be placed on the fixed-point mass grid.
 ///
 /// Carries the offending value, because by the time this surfaces the
 /// interesting question is which generated quantity went out of range — and
 /// `inf` versus `NaN` versus `1e300` point at different bugs.
-#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+///
+/// Deliberately not `PartialEq`: the headline input this type exists for is
+/// NaN, and `NaN != NaN`, so a derived `PartialEq` would make the error
+/// unequal to itself and `assert_eq!(got, Err(MassRangeError { value: NAN }))`
+/// fail for a reason that has nothing to do with the code under test.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error(
     "mass {value} is not on the fixed-point grid: must be finite and at most ±{}",
     Mass::MAX_MAGNITUDE
@@ -303,22 +403,58 @@ impl Mass {
     /// two spellings are kept in step by `quantises_on_the_declared_grid`.
     const SCALE_F64: f64 = 1024.0;
 
-    /// Largest magnitude [`Self::from_f64_quantised`] can place on the grid:
-    /// `i64::MAX / SCALE`, which for a 1024-sub-unit grid is `2^53 - 1` and so
-    /// is itself exactly representable in `f64`. Spelled as a literal for the
-    /// same reason as [`Self::SCALE_F64`]; `the_representable_range_matches_the_grid`
-    /// pins it to `SCALE`.
+    /// How many `Mass` values may be summed before the running total can
+    /// leave `i64`.
+    ///
+    /// This exists because [`Self::MAX_MAGNITUDE`] is derived from it, not the
+    /// other way round. The first version of this type bounded a single value
+    /// at `i64::MAX / SCALE` and asserted in a comment that "a single addition
+    /// cannot leave the range" — which was false by a factor of `SCALE`, and
+    /// wrong in kind as well, because [`Sum`] folds an unbounded iterator and
+    /// a molecular mass is a sum over atoms while a beaker's mass is a sum
+    /// over molecules. Two values the constructor accepted summed to **−2**
+    /// under release wrapping. Three independent reviewers found it.
+    ///
+    /// 2^32 is roughly four thousand times the 10^6-molecule beaker in §17,
+    /// so the budget is not a constraint anyone will meet by accident.
+    pub const MAX_SUMMABLE_TERMS: i64 = 1 << 32;
+
+    /// The value bound in sub-units — where the arithmetic actually happens,
+    /// and therefore where the overflow argument has to be made.
+    const MAX_RAW: i64 = 1 << 30;
+
+    /// Largest magnitude [`Self::from_f64_quantised`] will place on the grid,
+    /// in mass units: `MAX_RAW / SCALE`, so that [`Self::MAX_SUMMABLE_TERMS`]
+    /// of them can be added without leaving `i64`. Both are powers of two, so
+    /// this is exact in `f64` and the const assertion below is the whole proof.
+    ///
+    /// It is ~400× the heaviest element the generator in Task 4 can produce
+    /// (measured at ~1700-2500 mass units over 20 000 sampled universes), so
+    /// the bound costs nothing real.
     ///
     /// Public because [`Self::from_f64_quantised`] holds callers to it, and a
     /// bound a caller cannot read is not a contract.
-    pub const MAX_MAGNITUDE: f64 = 9_007_199_254_740_991.0;
+    pub const MAX_MAGNITUDE: f64 = 1_048_576.0;
 
     /// Quantise a real value onto the fixed-point grid.
     ///
     /// Called only at universe-generation time, never in a hot path.
-    /// `round_ties_even` is used rather than `round` because it is
-    /// symmetric — `round` biases away from zero, which would make
-    /// generated mass distributions very slightly heavier than intended.
+    ///
+    /// `round_ties_even` rather than `round`, and the reason first written
+    /// here was not the real one. It claimed `round`'s away-from-zero bias
+    /// would make generated mass distributions "very slightly heavier" —
+    /// measured over 180 000 draws from the Task 4 generator, the two agree
+    /// on **every** input and not one lands on a tie, because a tie needs a
+    /// value dyadic with denominator 2048 and these come out of `powf` plus a
+    /// Gaussian. The claim was unmeasurable, which is the same shape of
+    /// unbacked justification the `powi` note in `clippy.toml` records.
+    ///
+    /// The real reason is that ties-to-even is the mode every other float
+    /// operation in the program already uses, so quantising a value and doing
+    /// arithmetic on it round the same way. That bites exactly where ties are
+    /// reachable — dyadic inputs, which is what a half-mass or a test fixture
+    /// literal is, and what `quantisation_breaks_ties_to_even_not_away_from_zero`
+    /// exercises.
     ///
     /// # Errors
     ///
@@ -373,6 +509,7 @@ impl Mass {
     /// The raw count of sub-units. Exact, and the only thing worth
     /// hashing or serialising.
     #[must_use]
+    #[inline]
     pub const fn raw(self) -> i64 {
         self.0
     }
@@ -387,6 +524,7 @@ impl Mass {
     /// [`Self::MAX_MAGNITUDE`], so a value that did not come from
     /// [`Self::raw`] has not been range-checked by anybody.
     #[must_use]
+    #[inline]
     pub const fn from_raw(v: i64) -> Self {
         Self(v)
     }
@@ -395,6 +533,7 @@ impl Mass {
     /// on overflow rather than wrapping, because a silently wrapped mass
     /// would look like a conservation violation somewhere far away.
     #[must_use]
+    #[inline]
     pub fn checked_mul_count(self, n: u32) -> Option<Self> {
         self.0.checked_mul(i64::from(n)).map(Self)
     }
@@ -402,20 +541,29 @@ impl Mass {
 
 /// Unchecked, unlike [`Mass::checked_mul_count`], and the asymmetry is
 /// deliberate. `checked_mul_count`'s multiplier is externally supplied and
-/// unbounded; addition's operands are two masses that
-/// [`Mass::from_f64_quantised`] has already bounded to ±2^53 sub-units, so a
-/// single addition cannot leave the range — which makes that constructor's
-/// range check load-bearing for this impl and not merely adjacent to it.
+/// unbounded; addition's operands come from [`Mass::from_f64_quantised`],
+/// which admits at most [`Mass::MAX_MAGNITUDE`] — a bound *derived* from
+/// [`Mass::MAX_SUMMABLE_TERMS`] precisely so that folding this operator over
+/// that many values stays inside `i64`. The const assertion beside the type
+/// is the proof, and it is the compiler's rather than a comment's.
+///
 /// Making these checked would return `Option` into a workspace that denies
-/// `unwrap`, poisoning every call site to guard an unreachable case.
+/// `unwrap`, poisoning every call site to guard a case the constructor has
+/// already excluded.
+///
+/// The one route past that argument is [`Mass::from_raw`], which validates
+/// nothing by design. A `Mass` that did not come from `raw()` has been
+/// bounded by nobody, and this operator will wrap on it in release.
 impl Add for Mass {
     type Output = Self;
+    #[inline]
     fn add(self, rhs: Self) -> Self {
         Self(self.0 + rhs.0)
     }
 }
 
 impl AddAssign for Mass {
+    #[inline]
     fn add_assign(&mut self, rhs: Self) {
         self.0 += rhs.0;
     }
@@ -423,6 +571,7 @@ impl AddAssign for Mass {
 
 impl Sub for Mass {
     type Output = Self;
+    #[inline]
     fn sub(self, rhs: Self) -> Self {
         Self(self.0 - rhs.0)
     }
@@ -430,12 +579,14 @@ impl Sub for Mass {
 
 impl Neg for Mass {
     type Output = Self;
+    #[inline]
     fn neg(self) -> Self {
         Self(-self.0)
     }
 }
 
 impl Sum for Mass {
+    #[inline]
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self::ZERO, Add::add)
     }
@@ -553,16 +704,60 @@ mod tests {
         assert_eq!(parts.iter().copied().fold(forwards, Sub::sub), Mass::ZERO);
     }
 
-    /// Pins [`Mass::MAX_MAGNITUDE`] to the grid without an `as` cast in
-    /// either direction: if `SCALE` moves, the first assertion fails.
+    /// Pins the two spellings of the bound together without an `as` cast:
+    /// `MAX_MAGNITUDE` mass units must be exactly `MAX_RAW` sub-units.
     #[test]
     fn the_representable_range_matches_the_grid() {
-        assert_eq!(i64::MAX / Mass::SCALE, 9_007_199_254_740_991);
-        // Compared as bits: exact, and `clippy::float_cmp` is right that `==`
-        // on floats needs a reason every other time.
-        assert_eq!(
-            Mass::MAX_MAGNITUDE.to_bits(),
-            9_007_199_254_740_991.0_f64.to_bits()
+        assert_eq!(grid(Mass::MAX_MAGNITUDE).raw(), Mass::MAX_RAW);
+        assert_eq!(grid(-Mass::MAX_MAGNITUDE).raw(), -Mass::MAX_RAW);
+    }
+
+    /// The regression test for the claim `impl Add for Mass` makes.
+    ///
+    /// Before this, `MAX_MAGNITUDE` was `i64::MAX / SCALE`, so two values the
+    /// constructor *accepted* summed to `-2` mass units under release wrapping
+    /// and panicked in debug. A test over realistic masses passes either way;
+    /// this one has to use the largest values the constructor admits, and has
+    /// to run in the profile that mints goldens.
+    #[test]
+    fn the_largest_admissible_masses_sum_without_wrapping() {
+        let m = grid(Mass::MAX_MAGNITUDE);
+        let doubled = m + m;
+        assert!(
+            doubled > m,
+            "addition wrapped: {} -> {}",
+            m.raw(),
+            doubled.raw()
+        );
+        assert_eq!(doubled.raw(), 2 * Mass::MAX_RAW);
+        assert_eq!(doubled - m, m);
+    }
+
+    /// `Sum` folds an unbounded iterator, so the pairwise claim is not the one
+    /// the type actually ships. `MAX_SUMMABLE_TERMS` is 2^32, which is too
+    /// many to iterate; the const assertion beside `Mass` proves the whole
+    /// budget, and this checks the fold agrees at a size a test can run.
+    #[test]
+    fn summing_many_maximal_masses_stays_positive_and_exact() {
+        const N: i64 = 4096;
+        let m = grid(Mass::MAX_MAGNITUDE);
+        let total: Mass = std::iter::repeat_n(m, usize::try_from(N).unwrap_or(0)).sum();
+        assert_eq!(total.raw(), N * Mass::MAX_RAW);
+        assert!(total > m);
+    }
+
+    /// The budget is a real ceiling, not a slogan: `MAX_SUMMABLE_TERMS` values
+    /// at the bound must fit, and one more than the budget allows must not.
+    #[test]
+    fn the_summation_budget_is_the_tightest_true_statement() {
+        let ceiling = Mass::MAX_RAW.checked_mul(Mass::MAX_SUMMABLE_TERMS);
+        assert!(ceiling.is_some(), "the declared budget already overflows");
+        assert!(
+            Mass::MAX_RAW
+                .checked_mul(Mass::MAX_SUMMABLE_TERMS)
+                .and_then(|c| c.checked_mul(4))
+                .is_none(),
+            "the bound is looser than it needs to be — say so, or tighten it"
         );
     }
 
@@ -578,18 +773,69 @@ mod tests {
         assert_eq!(Mass::from_raw(m.raw()), m);
     }
 
-    /// NaN sorts last and the order does not depend on where it started —
-    /// which `partial_cmp` cannot promise, and §13.4 requires.
+    /// A NaN the compiler could not fold. `f64::NAN` is const-evaluated to the
+    /// *positive* pattern on every target, which is the one NaN whose sign bit
+    /// is portable — so a test built on it passes on all three CI legs while a
+    /// sign-bit-ordering bug is live. That is exactly what the first version
+    /// of this test did.
+    fn runtime_nan() -> f64 {
+        std::hint::black_box(0.0_f64) / std::hint::black_box(0.0_f64)
+    }
+
     #[test]
-    fn total_cmp_is_a_reproducible_order_even_with_a_nan() {
-        let mut a = [Span(2.0), Span(f64::NAN), Span(1.0)];
-        let mut b = [Span(f64::NAN), Span(1.0), Span(2.0)];
-        a.sort_by(Span::total_cmp);
-        b.sort_by(Span::total_cmp);
-        let bits: Vec<u64> = a.iter().map(|s| s.get().to_bits()).collect();
-        let other: Vec<u64> = b.iter().map(|s| s.get().to_bits()).collect();
-        assert_eq!(bits, other);
-        assert!(a.last().is_some_and(|s| s.get().is_nan()));
+    fn the_runtime_nan_is_the_one_that_varies_by_platform() {
+        // Not an assertion about which pattern this platform produces — that
+        // is the thing that differs. It asserts the test is using a NaN the
+        // optimiser did not replace with the constant, because if it ever
+        // does, `canonical_cmp_sorts_nan_last` silently stops testing anything.
+        assert!(runtime_nan().is_nan());
+        assert!(
+            runtime_nan().to_bits() == CANONICAL_NAN_BITS
+                || runtime_nan().to_bits() == CANONICAL_NAN_BITS | NEG_ZERO_BITS,
+            "unexpected NaN payload: 0x{:016x}",
+            runtime_nan().to_bits()
+        );
+    }
+
+    /// The distinguishing test for the sign-bit bug. On x86-64 this fails
+    /// against a plain `f64::total_cmp` delegation and passes with the
+    /// canonicalisation; on aarch64 both pass, which is why the CI matrix and
+    /// not the local run is what proves it.
+    #[test]
+    fn canonical_cmp_sorts_nan_last_on_every_platform() {
+        let mut v = [Span(2.0), Span(runtime_nan()), Span(1.0)];
+        v.sort_by(Span::canonical_cmp);
+        assert!(
+            v.last().is_some_and(|s| s.get().is_nan()),
+            "NaN did not sort last: {v:?}"
+        );
+        assert_eq!(
+            v.first().map(|s| s.get().to_bits()),
+            Some(1.0_f64.to_bits())
+        );
+    }
+
+    #[test]
+    fn canonical_cmp_does_not_depend_on_input_order() {
+        let mut a = [Span(2.0), Span(runtime_nan()), Span(1.0)];
+        let mut b = [Span(runtime_nan()), Span(1.0), Span(2.0)];
+        a.sort_by(Span::canonical_cmp);
+        b.sort_by(Span::canonical_cmp);
+        let key = |v: &[Span; 3]| v.iter().map(|s| s.get().is_nan()).collect::<Vec<_>>();
+        assert_eq!(key(&a), key(&b));
+    }
+
+    /// `f64::total_cmp` calls these `Less`; `==` calls them equal. Two orders
+    /// that disagree is a trap for the ID tie-break §13.4 requires, so
+    /// `canonical_cmp` agrees with `==`.
+    #[test]
+    fn canonical_cmp_ties_the_two_signed_zeros() {
+        let neg = -Quanta::ZERO;
+        assert_eq!(neg.get().to_bits(), NEG_ZERO_BITS, "test needs a real -0.0");
+        assert_eq!(neg.canonical_cmp(&Quanta::ZERO), std::cmp::Ordering::Equal);
+        assert_eq!(Quanta::ZERO.canonical_cmp(&neg), std::cmp::Ordering::Equal);
+        // ... and that agrees with what `==` already said.
+        assert_eq!(neg, Quanta::ZERO);
     }
 
     /// The platform calls below are the one legitimate reason to call a

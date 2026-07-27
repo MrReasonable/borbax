@@ -31,18 +31,31 @@ Next action if starting fresh: **Task 1** — workspace, `.prototools`, `xtask`,
 These exist once Task 1 lands; none of them work before that.
 
 ```bash
-proto install                                          # toolchain from .prototools (Rust only)
-cargo xtask setup                                      # prek + git hooks (once per clone)
-cargo test --workspace                                 # full suite
-cargo test -p borbax-molecule signature                # one crate, one filter
-cargo test -p borbax-units --doc                       # doc tests (compile_fail unit-mixing tests live here)
-cargo xtask                                            # fiction-guarantee checks (spec §5) — CI gate
-cargo run -p borbax-experiments --release --bin g2     # G2 locality measurement (docs/experiments/)
+proto install                                                   # toolchain from .prototools (Rust only)
+cargo xtask setup                                               # prek + git hooks (once per clone)
+cargo test --locked --workspace                                 # full suite
+cargo test --locked --workspace --release                       # again, in the profile that mints goldens
+cargo test --locked -p borbax-molecule signature                # one crate, one filter
+cargo test --locked -p borbax-units --doc                       # doc tests (compile_fail unit-mixing tests live here)
+cargo xtask                                                     # fiction-guarantee checks (spec §5) — CI gate
+cargo run --locked -p borbax-experiments --release --bin g2     # G2 locality measurement (docs/experiments/)
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p borbax-cli --release -- goldens --emit    # golden state hashes (cross-platform matrix)
-UPDATE_GOLDENS=1 cargo test -p borbax-render           # regenerate SVG goldens after a deliberate render change
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo run --locked -p borbax-cli --release -- goldens --emit    # golden state hashes (cross-platform matrix)
+UPDATE_GOLDENS=1 cargo test -p borbax-render                    # regenerate SVG goldens after a deliberate render change
 ```
+
+**`--locked` everywhere is not decoration.** From Task 2 the workspace has a
+runtime dependency in a result-affecting path (`libm`, a caret range), so a
+stale `Cargo.lock` lets the three CI legs resolve different versions — and the
+golden matrix would report that as a portability failure in the simulation,
+which is the one diagnosis it must never give wrongly. The `cargo xtask` alias
+carries it too.
+
+**Run the suite in release as well as debug.** `debug_assert!` and
+`overflow-checks` both key off `debug_assertions`, so a guard can be present in
+`cargo test` and absent from `goldens --emit`. Task 2's review found that
+defect twice, in adjacent functions. CI runs both legs.
 
 `cargo xtask` is an alias for `cargo run -p xtask --`, from the checked-in
 `.cargo/config.toml`. CI and the git hooks deliberately keep the long form:

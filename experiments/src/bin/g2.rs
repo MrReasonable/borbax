@@ -56,8 +56,22 @@ fn main() -> std::process::ExitCode {
                 .filter_map(|r| r.get(d))
                 .map(|s| s.concordance)
                 .collect();
-            let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
-            let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            // Not `fold(_, f64::min)`: §13.1 bans it because std documents that
+            // when the inputs compare equal — which `+0.0` and `-0.0` do —
+            // either may be returned non-deterministically, and it was measured
+            // returning different signs on aarch64 and x86-64. This is report
+            // formatting rather than a result, but the ban is worth more than
+            // the exemption would be.
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for v in values.iter().copied() {
+                if v < lo {
+                    lo = v;
+                }
+                if v > hi {
+                    hi = v;
+                }
+            }
             println!("{:<24} {lo:>10.4} {hi:>10.4} {:>10.4}", d.name(), hi - lo);
         }
         println!();

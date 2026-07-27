@@ -341,7 +341,14 @@ mod tests {
         let sig = signature(&g, &coords, &[0, 3]);
         for (i, &s) in sig.iter().enumerate() {
             let u = g.dirs[i];
-            let want = (3.0 * u[0] + ELEMENT_RADII[0]).max(-3.0 * u[0] + ELEMENT_RADII[3]);
+            // Spelled as a comparison, not `f64::max`, for the reason in
+            // `min_pair_dist2` — and because a test that reaches for the
+            // banned spelling is how the ban gets relaxed later.
+            let (lo, hi) = (
+                3.0 * u[0] + ELEMENT_RADII[0],
+                -3.0 * u[0] + ELEMENT_RADII[3],
+            );
+            let want = if lo > hi { lo } else { hi };
             assert!((s - want).abs() < 1e-12, "direction {i}: {s} != {want}");
         }
     }

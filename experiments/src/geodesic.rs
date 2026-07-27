@@ -158,10 +158,20 @@ fn icosahedron() -> Vec<Vec3> {
 
 /// The squared length of the shortest edge, which is the adjacency threshold.
 fn min_pair_dist2(v: &[Vec3]) -> f64 {
+    // `f64::min` rather than a comparison would be the obvious spelling and is
+    // banned (§13.1): std documents that when the inputs compare equal — which
+    // `+0.0` and `-0.0` do — either may be returned non-deterministically, and
+    // it was measured returning different signs on aarch64 and x86-64 *and*
+    // under different codegen on one target. Squared distances make that
+    // unreachable here, but this function lifts into `borbax-molecule` and the
+    // comparison costs nothing.
     let mut min_d2 = f64::MAX;
     for i in 0..v.len() {
         for j in (i + 1)..v.len() {
-            min_d2 = min_d2.min(dist2(v[i], v[j]));
+            let d2 = dist2(v[i], v[j]);
+            if d2 < min_d2 {
+                min_d2 = d2;
+            }
         }
     }
     min_d2

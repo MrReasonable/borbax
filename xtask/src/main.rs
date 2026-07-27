@@ -113,6 +113,43 @@ const BANNED_CALLS: &[&str] = &[
     "f64::cbrt",
     "f64::hypot",
     "f64::mul_add",
+    // Both float widths, matching `clippy.toml`. §13.4 says f64 everywhere in
+    // simulation arithmetic, but `borbax-render` may legitimately use f32 for
+    // output and its SVG goldens are compared byte-for-byte across the matrix,
+    // so an `f32::sin` there diverges just as an f64 one would. The method
+    // spellings above (`.exp()` and friends) are type-blind and already catch
+    // f32; only the path forms need mirroring.
+    "f32::exp",
+    "f32::ln",
+    "f32::log",
+    "f32::sin",
+    "f32::cos",
+    "f32::tan",
+    "f32::asin",
+    "f32::acos",
+    "f32::atan",
+    "f32::sinh",
+    "f32::cosh",
+    "f32::tanh",
+    "f32::asinh",
+    "f32::acosh",
+    "f32::atanh",
+    "f32::powf",
+    "f32::powi",
+    "f32::cbrt",
+    "f32::hypot",
+    "f32::mul_add",
+    // `max`/`min` in path form only. The method spelling `x.max(y)` is
+    // deliberately absent: it is type-blind here, and `a.len().min(b.len())`
+    // is `Ord::min` on a `usize`, which is perfectly deterministic. Banning
+    // `.min(` as text would fire on every integer clamp in the workspace, and
+    // a check that cries wolf gets relaxed. Clippy resolves the type and has
+    // no such problem, which is the clearest single case for why it is the
+    // authority and this is the second pass.
+    "f64::max",
+    "f64::min",
+    "f32::max",
+    "f32::min",
 ];
 
 /// Directories scanned for §13.1 violations, relative to the workspace root.
@@ -207,7 +244,15 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_no_platform_transcendentals(root, &mut failures)?;
 
     if failures.is_empty() {
-        println!("repository invariants: all checks passed");
+        // Deliberately not an unqualified "all checks passed". The §13.1 scan
+        // here is textual and cannot see `<f64>::sin(x)`; its doc says an
+        // absence means nothing on its own, and a doc comment on a private
+        // function does not reach the person reading hook output. Naming the
+        // authority in the success line is the only place that lands.
+        println!(
+            "repository invariants: all checks passed \
+             (§13.1 textually — clippy::disallowed_methods is the authority)"
+        );
         Ok(())
     } else {
         for f in &failures {
@@ -586,15 +631,18 @@ fn strip_comments_and_literals(line: &str, lex: &mut LexState) -> String {
 /// `(hash count, prefix length in chars)` if a raw string literal opens at
 /// `start`, which must be its `r`.
 ///
-/// The `r` has to start a token, or the `r` in `for` would open one. A `b`
-/// immediately before it is allowed, for `br"..."`.
+/// The `r` has to start a token, or the `r` in `for` would open one. A `b` or
+/// `c` immediately before it is allowed, for `br"..."` and `cr"..."` — Rust
+/// has three raw-string prefixes and the first version of this function knew
+/// about two, which left `cr#"` reproducing the exact silent-blinding bug the
+/// function was written to prevent.
 fn raw_string_prefix(chars: &[char], start: usize) -> Option<(usize, usize)> {
     let preceded_by = |k: usize| chars.get(start.checked_sub(k)?).copied();
     if start > 0 {
         let prev = preceded_by(1)?;
-        let byte_string_prefix = prev == 'b'
+        let literal_prefix = (prev == 'b' || prev == 'c')
             && (start < 2 || preceded_by(2).is_none_or(|p| !p.is_alphanumeric() && p != '_'));
-        if !byte_string_prefix && (prev.is_alphanumeric() || prev == '_') {
+        if !literal_prefix && (prev.is_alphanumeric() || prev == '_') {
             return None;
         }
     }
@@ -667,7 +715,7 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
 /// each way it could miscount gets a test.
 #[cfg(test)]
 mod tests {
-    use super::scan_rust_source;
+    use super::{BANNED_CALLS, scan_rust_source};
 
     fn scan(src: &str) -> Vec<String> {
         let mut failures = Vec::new();
@@ -743,6 +791,71 @@ mod tests {
         let src = "fn f() {\n    let _a = r\"{ .exp() \";\n    let _b = r#\"} .cos()\"#;\n\
                    let _c = br##\"{{ .powf( \"##;\n}\n";
         assert!(scan(src).is_empty(), "{:?}", scan(src));
+    }
+
+    /// Rust has three raw-string prefixes and the first version of
+    /// `raw_string_prefix` knew about two, so `cr#"` reproduced the exact
+    /// silent-blinding bug the function exists to prevent. The original test
+    /// used `r#` only, which is why it passed.
+    #[test]
+    fn every_raw_string_prefix_is_recognised() {
+        for prefix in ["r", "br", "cr"] {
+            let src = format!(
+                "fn open() -> T {{ {prefix}#\"<path d=\"M0 0\"# }}\n\
+                 fn hidden(x: f64) -> f64 {{ x.exp() }}\n\
+                 fn close() -> T {{ {prefix}#\"<path d=\"M1 1\"# }}\n"
+            );
+            let found = scan(&src);
+            assert_eq!(found.len(), 1, "prefix {prefix:?} -> {found:?}");
+            assert!(
+                found.first().is_some_and(|f| f.contains(".exp()")),
+                "prefix {prefix:?} -> {found:?}"
+            );
+        }
+    }
+
+    /// The two ban lists are the redundancy that makes a deleted `clippy.toml`
+    /// entry survivable, and redundancy only works while it agrees. Nothing
+    /// else keeps them in step, and they were already one short on day one —
+    /// four `clippy.toml` names were covered in `BANNED_CALLS` only by prefix
+    /// containment (`f64::atan` matching `f64::atan2`), which is coverage by
+    /// accident rather than by intent.
+    #[test]
+    fn the_two_ban_lists_cover_the_same_functions() {
+        let clippy_toml = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("clippy.toml"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        assert!(!clippy_toml.is_empty(), "clippy.toml not found or empty");
+
+        let mut missing = Vec::new();
+        for line in clippy_toml.lines() {
+            let Some(rest) = line.split_once("path = \"") else {
+                continue;
+            };
+            let Some((path, _)) = rest.1.split_once('"') else {
+                continue;
+            };
+            let Some((_, func)) = path.split_once("::") else {
+                continue;
+            };
+            // Either spelling in `BANNED_CALLS` counts: the method form
+            // (`.exp()`) is type-blind and covers both widths, and the path
+            // form is exact.
+            let covered = BANNED_CALLS
+                .iter()
+                .any(|banned| banned.contains(path) || banned.starts_with(&format!(".{func}")));
+            if !covered {
+                missing.push(path.to_owned());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "in clippy.toml but not BANNED_CALLS: {missing:?} — the text scan is \
+             the only thing that would catch one of these being deleted from \
+             clippy.toml, so it has to know about them"
+        );
     }
 
     /// The `r` in `for` must not open a raw string.
