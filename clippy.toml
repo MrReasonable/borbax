@@ -8,29 +8,51 @@
 # found the same hole in the textual version, independently, which is the
 # argument for having this file at all.
 #
-# `+ - * / sqrt` are absent because IEEE-754 specifies them to be correctly
-# rounded. `mul_add` is present despite being a single instruction on aarch64:
-# on the baseline x86-64 the Linux and Windows CI legs compile for, it lowers
-# to a dynamic call into the platform's libm, which is the same hazard as
-# `exp`. That is also why `clippy::suboptimal_flops` — which rewrites
-# `a * b + c` into exactly this — is allowed at workspace level rather than
-# taken.
+# THE CRITERION IS "is the result exactly specified by IEEE-754", not "does it
+# call libm". Those are different questions and the second one is wrong. On
+# baseline x86-64, `round_ties_even` lowers to a dynamic `rint` call into the
+# platform libm — and it is perfectly safe, because IEEE-754 defines
+# `roundToIntegralTiesToEven` exactly, so every conforming implementation
+# returns identical bits. `sqrt`, `round`, `floor`, `ceil` and `trunc` are the
+# same. `exp` is unsafe because it is *unspecified*, not because of how it is
+# called. Getting this backwards would ban `floor` and wave through something
+# genuinely unspecified that happened to be one instruction on aarch64.
+#
+# `mul_add` fails the criterion for its own reason: fused and unfused give
+# different values — one rounding instead of two — so it changes results even
+# where it is a single instruction. That is also why `clippy::suboptimal_flops`,
+# which rewrites `a * b + c` into exactly this, is allowed at workspace level
+# rather than taken.
+#
+# `max`/`min` fail it too, and this one is easy to miss. std documents that
+# "if the inputs compare equal (such as for the case of +0.0 and -0.0), either
+# input may be returned non-deterministically". Measured: `(+0.0).max(-0.0)` is
+# `+0.0` on aarch64 and `-0.0` on x86-64, and it varies with *codegen* on one
+# target, so a rustc bump could move a golden with no source change. Write
+# `if a > b { a } else { b }`, which has no ±0 ambiguity.
 #
 # `libm::exp` and friends are untouched by these entries: the disallowed path
 # is `f64::exp`, the inherent method, not every function named `exp`. That is
 # what lets `det_math.rs` be checked like every other file instead of carrying
 # a path exemption.
 #
+# Both float widths are listed. §13.4 says f64 everywhere in simulation
+# arithmetic, but `borbax-render` may legitimately use f32 for output, and its
+# SVG goldens are compared byte-for-byte across the matrix — so an `f32::sin`
+# there diverges just as an f64 one would.
+#
 # The list is wider than `det_math` is. Most of these have no wrapper; wanting
-# one is the signal to add it there, not to delete a line here.
+# one is the signal to add it there, not to delete a line here — and if you do
+# delete one, `xtask`'s second list still holds it, which is the point of
+# keeping both.
 disallowed-methods = [
+  # --- f64: wrapped in det_math ---
   { path = "f64::exp", reason = "spec §13.1 — use borbax_units::det_math::exp" },
   { path = "f64::ln", reason = "spec §13.1 — use borbax_units::det_math::ln" },
   { path = "f64::sin", reason = "spec §13.1 — use borbax_units::det_math::sin" },
   { path = "f64::cos", reason = "spec §13.1 — use borbax_units::det_math::cos" },
   { path = "f64::powf", reason = "spec §13.1 — use borbax_units::det_math::powf" },
-
-  # No wrapper below. Add one to det_math rather than deleting the entry.
+  # --- f64: no wrapper below; add one to det_math rather than deleting a line ---
   { path = "f64::exp2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::exp_m1", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::ln_1p", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
@@ -51,17 +73,41 @@ disallowed-methods = [
   { path = "f64::atanh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::cbrt", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
   { path = "f64::hypot", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
-
-  # `powi` is banned for a weaker reason than the rest, stated honestly: its
-  # multiply tree is lowered by LLVM and we have not verified that lowering
-  # across all three targets and every toolchain we will ever pin. Writing
-  # `x * x` out costs nothing and is clearer, so the ban is free — but it is
-  # a precaution, not a measured divergence, and saying otherwise is how an
-  # unbacked determinism claim becomes folklore (see the glam/nalgebra note
-  # in CLAUDE.md).
-  { path = "f64::powi", reason = "spec §13.1 — write the multiplication out, or use det_math::powf" },
-
-  # Not a transcendental: one rounding instead of two, and a libm call on
-  # baseline x86-64. See the note above.
-  { path = "f64::mul_add", reason = "spec §13.1 — changes rounding and calls libm on baseline x86-64" },
+  # --- f64: exactly specified, but not by the criterion above ---
+  { path = "f64::powi", reason = "spec §13.1 — write the multiplication out AND pin the association in a comment; different trees give different values above exponent 2" },
+  { path = "f64::mul_add", reason = "spec §13.1 — one rounding instead of two, so it changes results everywhere" },
+  { path = "f64::max", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a > b { a } else { b }`" },
+  { path = "f64::min", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a < b { a } else { b }`" },
+  # --- f32: wrapped in det_math ---
+  { path = "f32::exp", reason = "spec §13.1 — use borbax_units::det_math::exp (convert to f64)" },
+  { path = "f32::ln", reason = "spec §13.1 — use borbax_units::det_math::ln (convert to f64)" },
+  { path = "f32::sin", reason = "spec §13.1 — use borbax_units::det_math::sin (convert to f64)" },
+  { path = "f32::cos", reason = "spec §13.1 — use borbax_units::det_math::cos (convert to f64)" },
+  { path = "f32::powf", reason = "spec §13.1 — use borbax_units::det_math::powf (convert to f64)" },
+  # --- f32: no wrapper below; add one to det_math rather than deleting a line ---
+  { path = "f32::exp2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::exp_m1", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::ln_1p", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::log", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::log2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::log10", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::tan", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::sin_cos", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::asin", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::acos", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::atan", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::atan2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::sinh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::cosh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::tanh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::asinh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::acosh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::atanh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::cbrt", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f32::hypot", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  # --- f32: exactly specified, but not by the criterion above ---
+  { path = "f32::powi", reason = "spec §13.1 — write the multiplication out AND pin the association in a comment; different trees give different values above exponent 2" },
+  { path = "f32::mul_add", reason = "spec §13.1 — one rounding instead of two, so it changes results everywhere" },
+  { path = "f32::max", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a > b { a } else { b }`" },
+  { path = "f32::min", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a < b { a } else { b }`" },
 ]

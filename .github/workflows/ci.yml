@@ -49,6 +49,15 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked --workspace
+      # The release leg is not redundant. `debug_assert!` and `overflow-checks`
+      # both key off `debug_assertions`, so a guard can be present in the suite
+      # above and absent from the profile that mints the goldens — which is
+      # exactly the defect the Task 2 review found in `Mass::from_f64_quantised`
+      # and then found again, one operator away, in `impl Add for Mass`.
+      # `values_off_the_grid_are_refused_in_every_profile` is named for a
+      # promise nothing was keeping until this step existed. ~5s warm.
+      - name: Test (release — the profile that mints goldens)
+        run: cargo test --locked --workspace --release
       # borbax-cli does not exist until Task 21. Without this guard the whole
       # `test` job fails on all three platforms for twenty tasks — and because
       # `determinism-matrix` is gated on `needs: test`, it would never run at

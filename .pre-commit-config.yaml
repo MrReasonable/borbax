@@ -50,9 +50,15 @@ repos:
       # than filtering on `types`, because the violation this exists to catch
       # is a .json/.csv appearing in a chemistry crate — which is precisely
       # not a Rust file.
+      #
+      # `--locked` here matters more than anywhere else, because this is the
+      # *first* cargo command a commit runs. Without it, a stale Cargo.lock is
+      # silently rewritten before any other hook could object, the rewrite is
+      # not staged, and the commit goes out without it — so all three CI legs
+      # fail on a lockfile the author never saw change.
       - id: fiction-guarantees
         name: fiction guarantees (spec §5)
-        entry: cargo run -q -p xtask
+        entry: cargo run -q --locked -p xtask
         language: system
         pass_filenames: false
         always_run: true
