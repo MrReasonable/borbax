@@ -116,6 +116,21 @@ pub struct Stats {
 /// Minimum distance `D_raw` must report between a molecule and a bodily
 /// rotated copy of itself. Measured on a working pipeline it is ~1-4 at
 /// D = 42; a dead one gives ~1e-15.
+///
+/// **This is an absolute distance in signature units, not a scale-free ratio,
+/// and that is worth knowing before anything rescales the radii.** Signature
+/// extents are O(1-10) at D = 42 under the current `ELEMENT_RADII`. Measured
+/// over 400 random 12-atom molecules x 59 non-identity rotations, the smallest
+/// `D_raw` observed is **1.40** (1.30 on an independent draw). The nearest
+/// genuinely degenerate case is a *2-atom* molecule, whose floor is **7.8e-4**
+/// and which this correctly rejects. So 0.1 sits ~14x below the working floor
+/// and ~128x above the degenerate one — a wide gap, not a tuned value.
+///
+/// The exposure: that 13x margin is proportional to molecule size and to radius
+/// scale. If a derived radius series replaces the ladder at a smaller scale, or
+/// the fixture shrinks, the margin shrinks with it and this constant has to be
+/// re-measured rather than assumed. [`ROTATION_MUST_NOT_MOVE_GROUP`] has no such
+/// exposure — its margin is 1.65e8x and it is comparing against zero.
 const ROTATION_MUST_MOVE_RAW: f64 = 0.1;
 
 /// Maximum residual `D_group` may leave after recovering a rotation that is
