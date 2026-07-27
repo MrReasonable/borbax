@@ -48,7 +48,6 @@
     clippy::as_conversions,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_lossless,
     clippy::indexing_slicing,
     clippy::needless_range_loop,
     clippy::too_many_lines,
@@ -60,9 +59,10 @@
 )]
 
 use borbax_experiments::embed::embed;
-use borbax_experiments::geodesic::Geodesic;
+use borbax_experiments::geodesic::{Geodesic, apply_mat, rotation_matrices};
 use borbax_experiments::molecule::Molecule;
 use borbax_experiments::rng::Stream;
+use borbax_experiments::signature::d_group;
 use borbax_units::det_math;
 
 /// Sample directions. Matches the harness so the numbers are comparable.
@@ -286,15 +286,6 @@ fn signature_with(
     out
 }
 
-fn d_raw(a: &[f64], b: &[f64]) -> f64 {
-    let mut acc = 0.0;
-    for i in 0..a.len().min(b.len()) {
-        let d = a[i] - b[i];
-        acc += d * d;
-    }
-    acc.sqrt()
-}
-
 /// Participation ratio of the covariance spectrum — the number of directions
 /// the variance is actually spread over. `alife`'s metric.
 fn effective_dim(sigs: &[Vec<f64>]) -> (f64, f64) {
@@ -348,6 +339,72 @@ fn effective_dim(sigs: &[Vec<f64>]) -> (f64, f64) {
         }
     }
     (tr * tr / tr2, lam / tr)
+}
+
+/// Molecules drawn per seed in the diversity measurement.
+const MOLS_PER_SEED: usize = 200;
+
+/// Random 4-element draws used to size the *sampling* variation, which is the
+/// term an earlier version of this probe left out and then reported inside.
+const RANDOM_DRAWS: usize = 200;
+
+/// Effective dimensionality that is invariant under the 60 rotations.
+///
+/// **Why this exists alongside [`effective_dim`].** That one takes a
+/// participation ratio of the raw signature covariance, and a raw signature is
+/// not rotation-invariant even though `D_group` is. Measured: spinning every
+/// molecule by a group element — changing no shape at all — moves the raw score
+/// from 7.59 to 13.24. A diversity statistic for this project has to be blind
+/// to exactly what the adopted descriptor is blind to, or a universe can score
+/// well on orientation noise.
+///
+/// Classical MDS on the `D_group` distance matrix, read through the same
+/// participation ratio. `tr(B)^2 / tr(B^2)` needs no eigendecomposition, since
+/// `tr(B) = sum(lambda)` and `tr(B^2) = sum(lambda^2) = sum of squared entries`
+/// for symmetric `B`. `D_group` is not guaranteed Euclidean, so `B` may carry
+/// small negative eigenvalues; they enter `tr(B^2)` positively and depress the
+/// ratio slightly, which is the conservative direction.
+///
+/// Returns `(effective_dim, collapsed_pairs)`. The second is a control that
+/// genuinely fires — uniform radii give 23 collapsed pairs on this population
+/// and 3-atom trees give 4145 — so it is reported rather than dropped when the
+/// raw-distance path went away.
+///
+/// Accumulation is in index order throughout and must stay that way (§13.4).
+fn group_invariant_dim(g: &Geodesic<D>, sigs: &[Vec<f64>]) -> (f64, usize) {
+    let n = sigs.len();
+    if n < 2 {
+        return (0.0, 0);
+    }
+    let mut d2 = vec![vec![0.0_f64; n]; n];
+    let mut flat = Vec::with_capacity(n * (n - 1) / 2);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let d = d_group(g, &sigs[i], &sigs[j]);
+            d2[i][j] = d * d;
+            d2[j][i] = d2[i][j];
+            flat.push(d);
+        }
+    }
+    let mean_d = flat.iter().sum::<f64>() / flat.len() as f64;
+    let collapsed = flat.iter().filter(|&&d| d < 0.10 * mean_d).count();
+    let nf = n as f64;
+    let row: Vec<f64> = (0..n).map(|i| d2[i].iter().sum::<f64>() / nf).collect();
+    let grand = row.iter().sum::<f64>() / nf;
+    let (mut trace, mut trace_sq) = (0.0_f64, 0.0_f64);
+    for i in 0..n {
+        for j in 0..n {
+            let b = -0.5 * (d2[i][j] - row[i] - row[j] + grand);
+            if i == j {
+                trace += b;
+            }
+            trace_sq += b * b;
+        }
+    }
+    if trace_sq <= 0.0 {
+        return (0.0, collapsed);
+    }
+    (trace * trace / trace_sq, collapsed)
 }
 
 fn main() {
@@ -413,78 +470,186 @@ fn main() {
         .collect();
     println!("valence histogram 0..=6: {vals:?}");
 
-    // -- The question that decides it: does shape still spread? ------------
+    // -- Does shape still spread? -----------------------------------------
+    //
+    // **This section reports distributions, not single numbers, and that is a
+    // repair.** An earlier version drew one molecule seed, hand-picked four
+    // elements, and concluded the derived table was "slightly better on every
+    // measure". Over 8 seeds the difference is smaller than the between-seed
+    // spread and points the other way; the hand-picked draw sits in the top
+    // few percent of what that choice could have produced. A statistic quoted
+    // without its variation is an opinion with a decimal point.
     println!("\n== shape diversity: harness ladder vs packing-derived radii ==\n");
     let Ok(g) = Geodesic::<D>::build() else {
         println!("geodesic failed to build");
         return;
     };
-    let mut rng = Stream::new(0x0B0B_BA05);
-    let mols: Vec<Molecule> = (0..400)
-        .map(|_| Molecule::random_tree(&mut rng, 14))
-        .collect();
-    let coords: Vec<Vec<[f64; 3]>> = mols.iter().map(embed).collect();
+    let Ok(mats) = rotation_matrices() else {
+        println!("rotation table failed to build");
+        return;
+    };
 
-    // The harness's hand-picked ladder, and the first four derived radii
-    // rescaled to the same mean so only the *shape* of the series differs.
     let ladder = [0.55, 0.80, 1.05, 1.40];
     let mean_l = ladder.iter().sum::<f64>() / 4.0;
     let rescale = |v: Vec<f64>| {
         let m = v.iter().sum::<f64>() / v.len() as f64;
         v.iter().map(|r| r * mean_l / m).collect::<Vec<_>>()
     };
-    // Pure cube root, and cube root with the shell-occupancy bulge. The first
-    // four elements sit in shells 0 and 1, so the bulge is visible there.
-    let cbrt_only = rescale((1..=4).map(|n| 0.42 * det_math::cbrt(n as f64)).collect());
-    let with_bulge = rescale(
-        derive_table(4, 1.75, 0.42, 62.0, 0.55)
-            .iter()
-            .map(|e| e.radius)
-            .collect(),
-    );
-    // The fair comparison. A universe draws its elements from across the whole
-    // table, not from the first four. Taking N = 3, 20, 60, 110 spans three
-    // shells and two closures.
+    let radii_for = |picks: &[usize]| {
+        rescale(
+            picks
+                .iter()
+                .map(|&n| table.get(n - 1).map_or(0.0, |e| e.radius))
+                .collect(),
+        )
+    };
+    // The draw an earlier version reported. Kept so its percentile can be
+    // stated rather than its value re-quoted.
     let picks = [3_usize, 20, 60, 110];
-    let spread = rescale(
-        picks
-            .iter()
-            .map(|&n| table.get(n - 1).map_or(0.0, |e| e.radius))
-            .collect(),
-    );
+    let spread = radii_for(&picks);
     println!("ladder    {ladder:.3?}");
-    println!("cbrt      {cbrt_only:.3?}  (rescaled to the same mean)");
-    println!("+bulge    {with_bulge:.3?}  (rescaled to the same mean)");
-    println!("spread    {spread:.3?}  (N = 3, 20, 60, 110 — across the table)");
+    println!("spread    {spread:.3?}  (N = 3, 20, 60, 110 — the earlier draft's pick)\n");
 
-    for (label, radii) in [
-        ("ladder", &ladder[..]),
-        ("cbrt", &cbrt_only[..]),
-        ("+bulge", &with_bulge[..]),
-        ("spread", &spread[..]),
-    ] {
+    // --- Over 8 molecule seeds, paired: same molecules feed both arms.
+    let mut l_eff = Vec::new();
+    let mut s_eff = Vec::new();
+    let mut l_inv = Vec::new();
+    let mut s_inv = Vec::new();
+    let mut paired = Vec::new();
+    let (mut collapsed_l, mut collapsed_s) = (0_usize, 0_usize);
+    for seed_ix in 0..8_u64 {
+        let mut rng = Stream::new(0x0B0B_BA05 ^ seed_ix);
+        let mols: Vec<Molecule> = (0..MOLS_PER_SEED)
+            .map(|_| Molecule::random_tree(&mut rng, 14))
+            .collect();
+        let coords: Vec<Vec<[f64; 3]>> = mols.iter().map(embed).collect();
+        let sig = |radii: &[f64]| -> Vec<Vec<f64>> {
+            mols.iter()
+                .zip(&coords)
+                .map(|(m, c)| signature_with(&g, c, &m.elements, radii))
+                .collect()
+        };
+        let (sl, ss) = (sig(&ladder), sig(&spread));
+        let (el, _) = effective_dim(&sl);
+        let (es, _) = effective_dim(&ss);
+        l_eff.push(el);
+        s_eff.push(es);
+        paired.push(es - el);
+        let (li, lc) = group_invariant_dim(&g, &sl);
+        let (si, sc) = group_invariant_dim(&g, &ss);
+        l_inv.push(li);
+        s_inv.push(si);
+        collapsed_l += lc;
+        collapsed_s += sc;
+    }
+    let stat = |v: &[f64]| -> (f64, f64) {
+        let n = v.len() as f64;
+        let m = v.iter().sum::<f64>() / n;
+        (
+            m,
+            (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / n).sqrt(),
+        )
+    };
+    let (lm, ls) = stat(&l_eff);
+    let (sm, ss_) = stat(&s_eff);
+    let (lim, lis) = stat(&l_inv);
+    let (sim, sis) = stat(&s_inv);
+    let (pm, ps) = stat(&paired);
+    println!("over 8 molecule seeds, {MOLS_PER_SEED} molecules of 14 atoms each:\n");
+    println!("series   eff.dim (raw covariance)   eff.dim (D_group, invariant)   collapsed");
+    println!(
+        "ladder   {lm:6.3} +/- {ls:.3}          {lim:6.3} +/- {lis:.3}          {collapsed_l}"
+    );
+    println!(
+        "spread   {sm:6.3} +/- {ss_:.3}          {sim:6.3} +/- {sis:.3}          {collapsed_s}"
+    );
+    println!(
+        "\npaired difference (spread - ladder): {pm:+.3} +/- {ps:.3}  -> {}",
+        if pm.abs() < ps {
+            "inside its own noise"
+        } else {
+            "outside the noise"
+        }
+    );
+
+    // --- How much of that is the *element draw* rather than the scheme?
+    let mut rng = Stream::new(0x5EED_D2A4);
+    let mut mols_rng = Stream::new(0x0B0B_BA05);
+    let mols: Vec<Molecule> = (0..MOLS_PER_SEED)
+        .map(|_| Molecule::random_tree(&mut mols_rng, 14))
+        .collect();
+    let coords: Vec<Vec<[f64; 3]>> = mols.iter().map(embed).collect();
+    let mut draws = Vec::new();
+    for _ in 0..RANDOM_DRAWS {
+        let mut pick = [0_usize; 4];
+        for slot in &mut pick {
+            *slot = 1 + (rng.next_u64() % table.len() as u64) as usize;
+        }
+        let radii = radii_for(&pick);
         let sigs: Vec<Vec<f64>> = mols
             .iter()
             .zip(&coords)
-            .map(|(m, c)| signature_with(&g, c, &m.elements, radii))
+            .map(|(m, c)| signature_with(&g, c, &m.elements, &radii))
             .collect();
-        let (eff, top) = effective_dim(&sigs);
-        let mut ds = Vec::new();
-        for i in 0..sigs.len() {
-            for j in (i + 1)..sigs.len() {
-                ds.push(d_raw(&sigs[i], &sigs[j]));
-            }
-        }
-        let n = ds.len() as f64;
-        let mean = ds.iter().sum::<f64>() / n;
-        let sd = (ds.iter().map(|d| (d - mean) * (d - mean)).sum::<f64>() / n).sqrt();
-        let collapsed = ds.iter().filter(|&&d| d < 0.10 * mean).count();
-        println!(
-            "{label:7} eff.dim {eff:5.2}/42   top PC {:5.1}%   CV {:.4}   collapsed pairs {collapsed}",
-            100.0 * top,
-            sd / mean
-        );
+        draws.push(effective_dim(&sigs).0);
     }
+    draws.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    let pct = |q: f64| draws[((draws.len() as f64 - 1.0) * q) as usize];
+    let hand = {
+        let sigs: Vec<Vec<f64>> = mols
+            .iter()
+            .zip(&coords)
+            .map(|(m, c)| signature_with(&g, c, &m.elements, &spread))
+            .collect();
+        effective_dim(&sigs).0
+    };
+    let below = draws.iter().filter(|&&d| d < hand).count();
+    println!("\n{RANDOM_DRAWS} random 4-element draws from the same table:");
+    println!(
+        "  eff.dim  p10 {:.2}   median {:.2}   p90 {:.2}",
+        pct(0.10),
+        pct(0.50),
+        pct(0.90)
+    );
+    println!(
+        "  the earlier draft's hand-picked draw scores {hand:.2} — {}th percentile",
+        100 * below / draws.len()
+    );
+
+    // --- Is the statistic itself measuring shape, or orientation?
+    //
+    // Spin every molecule by a group element. `D_group` is exactly invariant to
+    // that, so no shape changes. Anything the statistic reports as a change is
+    // the statistic's own artefact.
+    let mut spin = Stream::new(0x5717_0001);
+    let spun: Vec<Vec<[f64; 3]>> = coords
+        .iter()
+        .map(|c| {
+            let r = (spin.next_u64() % mats.len() as u64) as usize;
+            mats.get(r).map_or_else(
+                || c.clone(),
+                |mat| c.iter().map(|&p| apply_mat(mat, p)).collect(),
+            )
+        })
+        .collect();
+    let sig_of = |cs: &[Vec<[f64; 3]>]| -> Vec<Vec<f64>> {
+        mols.iter()
+            .zip(cs)
+            .map(|(m, c)| signature_with(&g, c, &m.elements, &ladder))
+            .collect()
+    };
+    let (still, spun_sigs) = (sig_of(&coords), sig_of(&spun));
+    println!("\ngameability: every molecule spun by a random group element (no shape changes)");
+    println!(
+        "  raw covariance  {:6.2} -> {:6.2}   <- moves, so it is not measuring shape alone",
+        effective_dim(&still).0,
+        effective_dim(&spun_sigs).0
+    );
+    println!(
+        "  D_group MDS     {:6.2} -> {:6.2}   <- invariant, as the adopted descriptor is",
+        group_invariant_dim(&g, &still).0,
+        group_invariant_dim(&g, &spun_sigs).0
+    );
 }
 
 #[cfg(test)]
