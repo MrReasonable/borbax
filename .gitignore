@@ -6,7 +6,21 @@
 /target/
 **/*.rs.bk
 
-# Node
-node_modules/
-dist/
-.vite/
+# `insta` writes these beside the committed `.snap` files when a snapshot test
+# fails, so `cargo insta review` can show the diff. The accepted `.snap` is what
+# belongs in git; a stray `.snap.new` committed next to it is a golden nobody
+# agreed to.
+**/*.snap.new
+
+# `cargo run -p borbax-cli --release -- goldens --emit` writes these, and CI
+# writes one per platform before diffing them. They are evidence produced by a
+# run, not a reference checked into the tree — a stale one sitting in the repo
+# would be read as authoritative by whoever found it next.
+/goldens-*.txt
+
+# Coverage instrumentation, if it is ever run.
+*.profraw
+
+# No Node section. This project is Rust-only by construction, and the web
+# viewer was considered and rejected in spec §14.0 — ignoring node_modules
+# would quietly imply the option is still open.
