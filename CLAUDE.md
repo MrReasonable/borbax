@@ -32,16 +32,22 @@ These exist once Task 1 lands; none of them work before that.
 
 ```bash
 proto install                                          # toolchain from .prototools (Rust only)
-cargo run -p xtask -- setup                            # prek + git hooks (once per clone)
+cargo xtask setup                                      # prek + git hooks (once per clone)
 cargo test --workspace                                 # full suite
 cargo test -p borbax-molecule signature                # one crate, one filter
 cargo test -p borbax-units --doc                       # doc tests (compile_fail unit-mixing tests live here)
-cargo run -p xtask                                     # fiction-guarantee checks (spec §5) — CI gate
+cargo xtask                                            # fiction-guarantee checks (spec §5) — CI gate
+cargo run -p borbax-experiments --release --bin g2     # G2 locality measurement (docs/experiments/)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p borbax-cli --release -- goldens --emit    # golden state hashes (cross-platform matrix)
 UPDATE_GOLDENS=1 cargo test -p borbax-render           # regenerate SVG goldens after a deliberate render change
 ```
+
+`cargo xtask` is an alias for `cargo run -p xtask --`, from the checked-in
+`.cargo/config.toml`. CI and the git hooks deliberately keep the long form:
+flags belonging to `cargo run` — the hook's `-q` — must sit before `run`, and
+an alias cannot splice them in.
 
 `borbax-cli` subcommands: `beaker`, `sweep`, `band`, `battery`, `render`, `goldens`.
 
@@ -166,7 +172,7 @@ Windows/x86-64 and Linux/x86-64, enforced by a CI golden matrix (§13.4, §13.6)
   invalidates golden hashes and requires deliberate regeneration, reviewed like
   a change to physics.
 
-**Fiction guarantees** (§5, enforced by `cargo run -p xtask`):
+**Fiction guarantees** (§5, enforced by `cargo xtask`):
 
 - No real chemistry data anywhere — no element tables, reaction databases,
   molecular structures or sequence data. No data files in `borbax-universe`,

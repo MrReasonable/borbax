@@ -1,6 +1,6 @@
 # Git hooks, run by prek — https://prek.j178.dev
 #
-#   cargo run -p xtask -- setup      # installs prek if absent, then the hooks
+#   cargo xtask setup                # installs prek if absent, then the hooks
 #
 # `default_install_hook_types` below is why that is one command rather than
 # three: a bare `prek install` picks up both stages instead of needing them

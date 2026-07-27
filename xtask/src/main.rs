@@ -122,42 +122,78 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     }
 }
 
-/// §18.1 — the toolchain is pinned in two files, which must agree.
+/// §18.1 — the toolchain is pinned in *three* files, which must all agree.
 ///
-/// `.prototools` installs the toolchain and `rust-toolchain.toml` selects it;
-/// both are needed, for the reason documented in `rust-toolchain.toml`. Two
-/// sources of truth is a hazard unless something checks them, so this is that
-/// something. Drift here means CI silently compiles with a different rustc
-/// than the one the goldens were generated under.
+/// `.prototools` installs the toolchain, `rust-toolchain.toml` selects it, and
+/// `[workspace.package] rust-version` is the MSRV that makes cargo refuse to
+/// build with anything older. All three are needed, for the reasons documented
+/// in `rust-toolchain.toml` and `xtask/Cargo.toml`.
+///
+/// The MSRV was previously left out of this check, and a gap between it and
+/// the pin is a hole in the guard exactly the size of that gap. The MSRV
+/// exists because proto selects the toolchain with an environment variable, so
+/// any context that misses the selection — a GUI git client, an agent shell, a
+/// stale `RUSTUP_TOOLCHAIN` — falls back to the machine default. With the MSRV
+/// equal to the pin that fails loudly. With the MSRV even one release behind,
+/// that context compiles happily on the older rustc and produces different
+/// floats, which is the exact failure the MSRV line was added to prevent.
+///
+/// Keeping the pin *equal* to current stable is the goal; tracking `stable`
+/// itself is not. A floating channel would change the compiler under the
+/// project without a commit, and every golden hash with it. Renovate proposes
+/// bumps as labelled PRs that never automerge, so moving to a new release
+/// stays a deliberate act reviewed like a change to physics.
 fn check_toolchain_pins_agree(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
-    let proto = read_pin(&root.join(".prototools"), "rust")?;
-    let rustup = read_pin(&root.join("rust-toolchain.toml"), "channel")?;
+    let sources = [
+        (".prototools `rust`", root.join(".prototools"), "rust"),
+        (
+            "rust-toolchain.toml `channel`",
+            root.join("rust-toolchain.toml"),
+            "channel",
+        ),
+        (
+            "Cargo.toml `rust-version`",
+            root.join("Cargo.toml"),
+            "rust-version",
+        ),
+    ];
 
-    match (proto, rustup) {
-        (Some(a), Some(b)) if a == b => Ok(()),
-        (Some(a), Some(b)) => {
-            failures.push(format!(
-                "§18.1: toolchain pins disagree — .prototools has {a:?}, rust-toolchain.toml has {b:?}"
-            ));
-            Ok(())
-        }
-        (None, _) => {
-            failures.push("§18.1: no `rust` pin found in .prototools".into());
-            Ok(())
-        }
-        (_, None) => {
-            failures.push("§18.1: no `channel` pin found in rust-toolchain.toml".into());
-            Ok(())
+    let mut found: Vec<(&str, String)> = Vec::new();
+    for (label, path, key) in &sources {
+        match read_pin(path, key)? {
+            Some(value) => found.push((label, value)),
+            None => failures.push(format!("§18.1: no pin found for {label}")),
         }
     }
+
+    let Some((first_label, first_value)) = found.first() else {
+        return Ok(());
+    };
+    let disagreeing: Vec<String> = found
+        .iter()
+        .filter(|(_, value)| value != first_value)
+        .map(|(label, value)| format!("{label} has {value:?}"))
+        .collect();
+    if !disagreeing.is_empty() {
+        failures.push(format!(
+            "§18.1: toolchain pins disagree — {first_label} has {first_value:?}, but {}",
+            disagreeing.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// The value of the first `<key> = "<value>"` line in a simple TOML file.
 ///
-/// Deliberately not a TOML parser: xtask has no dependencies, and both pins are
-/// a bare key at the top level of a file this repository owns. A real parser
-/// would be the right call the moment either file grows a `[table]` whose keys
-/// could collide with these.
+/// Deliberately not a TOML parser: xtask has no dependencies, and every pin is
+/// a bare key in a file this repository owns.
+///
+/// `Cargo.toml` does have tables, which stretches that further than
+/// `.prototools` and `rust-toolchain.toml` do. It is still safe today because
+/// `rust-version` appears exactly once as a bare key, and the member crates
+/// spell theirs `rust-version.workspace`, which does not match. A real parser
+/// becomes the right call the moment a second `rust-version` can appear —
+/// a `[package.metadata]` table would do it.
 fn read_pin(path: &Path, key: &str) -> Result<Option<String>, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     for line in src.lines() {

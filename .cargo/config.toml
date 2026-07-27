@@ -1,0 +1,14 @@
+# Checked in, so every clone and every CI runner gets the same aliases without
+# anyone having to install anything.
+
+[alias]
+# `cargo xtask setup` rather than `cargo run -p xtask -- setup`.
+#
+# The trailing `--` is part of the alias, so arguments land on xtask rather
+# than on cargo: `cargo xtask setup` expands to `cargo run -p xtask -- setup`.
+#
+# CI and .pre-commit-config.yaml deliberately keep the long form. Flags that
+# belong to `cargo run` — the hook's `-q` — have to sit before `run`, and an
+# alias cannot splice them in. A hook that shadowed the real command with a
+# subtly different one would be worse than typing it out.
+xtask = "run -p xtask --"
