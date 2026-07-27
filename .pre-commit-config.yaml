@@ -65,9 +65,14 @@ repos:
       # every hazard on that list runs, passes and looks fine locally. The
       # 3-OS CI matrix is the contract; these two only spare you a wasted
       # round trip, and must never be mistaken for the same guarantee.
+      #
+      # `--locked` matches CI. A push that re-resolves the dependency graph
+      # locally and passes, then re-resolves differently on three runners, is
+      # the shape of failure this stage exists to catch before it wastes a
+      # round trip.
       - id: cargo-clippy
         name: cargo clippy -D warnings
-        entry: cargo clippy --workspace --all-targets -- -D warnings
+        entry: cargo clippy --locked --workspace --all-targets -- -D warnings
         language: system
         pass_filenames: false
         always_run: true
@@ -75,7 +80,7 @@ repos:
 
       - id: cargo-test
         name: cargo test --workspace
-        entry: cargo test --workspace
+        entry: cargo test --locked --workspace
         language: system
         pass_filenames: false
         always_run: true

@@ -33,14 +33,22 @@ jobs:
       - name: Show toolchain
         run: rustup show active-toolchain
 
+      # `--locked` on every invocation, from the commit that added the first
+      # runtime dependency. Without it a stale Cargo.lock lets each of the
+      # three legs independently re-resolve the graph, so the platforms could
+      # build against different versions of `libm` — and the golden matrix
+      # would report that as a portability failure in the simulation, which is
+      # the one diagnosis it must never give wrongly. With it, a stale lock
+      # fails loudly on all three legs with "the lock file needs to be
+      # updated", which is a five-second fix instead of a day.
       - name: Fiction guarantees (spec §5)
-        run: cargo run -p xtask
+        run: cargo run --locked -p xtask
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
       # borbax-cli does not exist until Task 21. Without this guard the whole
       # `test` job fails on all three platforms for twenty tasks — and because
       # `determinism-matrix` is gated on `needs: test`, it would never run at
@@ -56,7 +64,7 @@ jobs:
       - name: Emit golden hashes
         if: hashFiles('crates/borbax-cli/Cargo.toml') != ''
         shell: bash
-        run: cargo run -p borbax-cli --release -- goldens --emit > goldens-${{ matrix.os }}.txt
+        run: cargo run --locked -p borbax-cli --release -- goldens --emit > goldens-${{ matrix.os }}.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: hashFiles('crates/borbax-cli/Cargo.toml') != ''
         with:

@@ -1,0 +1,67 @@
+# §13.1 — transcendentals must route through `borbax_units::det_math`.
+#
+# This is the *authoritative* check. `cargo xtask` also greps for these, but a
+# grep matches a spelling and this matches a resolved path, which is a
+# different kind of guarantee: `x.exp()`, `f64::exp(x)`, `<f64>::sin(x)`,
+# `std::primitive::f64::cos(x)` and the point-free `.map(f64::exp)` are one
+# rule here and five problems for a text scanner. Both reviewers of Task 2
+# found the same hole in the textual version, independently, which is the
+# argument for having this file at all.
+#
+# `+ - * / sqrt` are absent because IEEE-754 specifies them to be correctly
+# rounded. `mul_add` is present despite being a single instruction on aarch64:
+# on the baseline x86-64 the Linux and Windows CI legs compile for, it lowers
+# to a dynamic call into the platform's libm, which is the same hazard as
+# `exp`. That is also why `clippy::suboptimal_flops` — which rewrites
+# `a * b + c` into exactly this — is allowed at workspace level rather than
+# taken.
+#
+# `libm::exp` and friends are untouched by these entries: the disallowed path
+# is `f64::exp`, the inherent method, not every function named `exp`. That is
+# what lets `det_math.rs` be checked like every other file instead of carrying
+# a path exemption.
+#
+# The list is wider than `det_math` is. Most of these have no wrapper; wanting
+# one is the signal to add it there, not to delete a line here.
+disallowed-methods = [
+  { path = "f64::exp", reason = "spec §13.1 — use borbax_units::det_math::exp" },
+  { path = "f64::ln", reason = "spec §13.1 — use borbax_units::det_math::ln" },
+  { path = "f64::sin", reason = "spec §13.1 — use borbax_units::det_math::sin" },
+  { path = "f64::cos", reason = "spec §13.1 — use borbax_units::det_math::cos" },
+  { path = "f64::powf", reason = "spec §13.1 — use borbax_units::det_math::powf" },
+
+  # No wrapper below. Add one to det_math rather than deleting the entry.
+  { path = "f64::exp2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::exp_m1", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::ln_1p", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::log", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::log2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::log10", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::tan", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::sin_cos", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::asin", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::acos", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::atan", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::atan2", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::sinh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::cosh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::tanh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::asinh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::acosh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::atanh", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::cbrt", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+  { path = "f64::hypot", reason = "spec §13.1 — not correctly rounded; add a det_math wrapper" },
+
+  # `powi` is banned for a weaker reason than the rest, stated honestly: its
+  # multiply tree is lowered by LLVM and we have not verified that lowering
+  # across all three targets and every toolchain we will ever pin. Writing
+  # `x * x` out costs nothing and is clearer, so the ban is free — but it is
+  # a precaution, not a measured divergence, and saying otherwise is how an
+  # unbacked determinism claim becomes folklore (see the glam/nalgebra note
+  # in CLAUDE.md).
+  { path = "f64::powi", reason = "spec §13.1 — write the multiplication out, or use det_math::powf" },
+
+  # Not a transcendental: one rounding instead of two, and a libm call on
+  # baseline x86-64. See the note above.
+  { path = "f64::mul_add", reason = "spec §13.1 — changes rounding and calls libm on baseline x86-64" },
+]

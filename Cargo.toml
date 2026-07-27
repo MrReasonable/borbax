@@ -1,9 +1,10 @@
 [workspace]
 resolver = "3"
-# `crates/*` joins this list in Task 2, with the first crate. Cargo falls back
+# `crates/*` joined this list in Task 2, with the first crate. Cargo falls back
 # to treating a glob that matches nothing as a literal path, so listing
-# `crates/*` before `crates/` has a package in it fails the workspace outright.
-members = ["experiments", "xtask"]
+# `crates/*` before `crates/` has a package in it fails the workspace outright —
+# which is why Task 1 shipped without it.
+members = ["crates/*", "experiments", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -51,6 +52,14 @@ expect_used = "deny"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"
+
+# The §13.1 transcendental ban. The list of paths lives in `clippy.toml`
+# because that is the only place clippy will read it from; this line is what
+# makes the list load-bearing rather than advisory. It matches resolved paths,
+# so `x.exp()`, `f64::exp(x)`, `<f64>::sin(x)` and the point-free
+# `.map(f64::exp)` are all one rule — which a text scanner cannot manage, as
+# the Task 2 review demonstrated by walking through the gap in ours.
+disallowed_methods = "deny"
 
 # `a[i]` is an unwrap wearing a hat. Warn rather than deny because the
 # geometry code indexes fixed-size arrays with proven bounds constantly —
