@@ -40,7 +40,7 @@
 
 use crate::embed::{Point, embed};
 use crate::geodesic::Geodesic;
-use crate::geodesic::{Mat3, apply_mat, rotation_matrices};
+use crate::geodesic::{apply_mat, is_identity, rotation_matrices};
 use crate::molecule::Molecule;
 use crate::rng::Stream;
 use crate::signature::{D, Descriptor, d_group, d_raw, profile, signature};
@@ -147,23 +147,44 @@ const TOPOLOGY_MUST_CHANGE_SHAPE: f64 = 1.0;
 /// Atom count of the path/star fixtures the check above thresholds on.
 const TOPOLOGY_FIXTURE_ATOMS: usize = 12;
 
-/// Whether a group element is the identity, to within the error of building it.
+/// Whether a measured quantity clears a floor it is required to exceed.
 ///
-/// Not `m == IDENTITY`: the 60 elements are frame products, so the identity
-/// arrives with entries at `1.0000000000000004` and `-5.6e-17`, and an exact
-/// comparison finds it in **zero** of the 60. Measured margins — the identity
-/// deviates from `I` by 4.44e-16 entrywise, and the nearest other element by
-/// 0.809, because the smallest rotation in this group is 72°. So 1e-9 sits six
-/// orders above the construction noise and nine below the nearest real
-/// rotation, and selects exactly one matrix. Nothing is near the boundary.
-fn is_identity(m: &Mat3) -> bool {
-    /// Entrywise tolerance. See [`is_identity`] for the measured margins.
-    const TOL: f64 = 1e-9;
-    const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    m.iter()
-        .flatten()
-        .zip(IDENTITY.iter().flatten())
-        .all(|(a, b)| (a - b).abs() < TOL)
+/// **Two separate guards, and it is worth knowing which does what**, because
+/// the obvious reading credits the wrong one.
+///
+/// The first is the *shape* of the test. The gate used to read
+/// `if got <= min { Err }`, and `NaN <= 0.1` is `false`, so a `NaN` was waved
+/// through as healthy — the identical defect
+/// [`ControlFailure::ControlNotFinite`] exists to catch one level up, and one
+/// that `the_control_gate_rejects_controls_that_are_not_numbers` already
+/// describes in its own doc comment: "every ordering comparison against `NaN`
+/// is false — so a gate written as `positive < MIN` would wave it through as
+/// healthy". Stating the *positive* condition and negating it at the call site
+/// fixes that on its own, because `NaN > 0.1` is false too.
+///
+/// The `is_finite` call is the second guard and catches something else:
+/// `+inf`, which genuinely does exceed any floor and would pass the rewritten
+/// test on its own terms rather than by the `NaN` rule. Measured — deleting
+/// `is_finite` from this function fails
+/// `a_non_finite_measurement_clears_no_threshold` on the `inf` case and not on
+/// the `NaN` one.
+///
+/// Neither is reachable today, and that was checked rather than assumed —
+/// `normalise` guards `n > 0.0`, `guttman` skips non-positive distances, and
+/// `signature` returns `NEG_INFINITY` only for empty coordinates, which the
+/// gate's 12-atom fixtures cannot produce. It is here because a gate that
+/// cannot fail is the mistake this module exists to avoid making.
+fn clears_floor(got: f64, min: f64) -> bool {
+    got.is_finite() && got > min
+}
+
+/// Whether a measured quantity stays below a ceiling it must not reach.
+///
+/// The mirror of [`clears_floor`], guarded twice for the same two reasons:
+/// `NaN >= 1e-6` is false, so the old `if got >= max { Err }` waved it through;
+/// and `-inf` is under every ceiling on its own terms.
+fn under_ceiling(got: f64, max: f64) -> bool {
+    got.is_finite() && got < max
 }
 
 /// Does the shape pipeline actually compute shape?
@@ -235,14 +256,14 @@ fn check_geometry_is_live() -> Result<(), ControlFailure> {
     let b = signature(&g, &turned, &m.elements);
 
     let moved = d_raw(&a, &b);
-    if moved <= ROTATION_MUST_MOVE_RAW {
+    if !clears_floor(moved, ROTATION_MUST_MOVE_RAW) {
         return Err(ControlFailure::GeometryIsDead {
             got: moved,
             min: ROTATION_MUST_MOVE_RAW,
         });
     }
     let recovered = d_group(&g, &a, &b);
-    if recovered >= ROTATION_MUST_NOT_MOVE_GROUP {
+    if !under_ceiling(recovered, ROTATION_MUST_NOT_MOVE_GROUP) {
         return Err(ControlFailure::RotationSearchIsBroken {
             got: recovered,
             max: ROTATION_MUST_NOT_MOVE_GROUP,
@@ -259,7 +280,7 @@ fn check_geometry_is_live() -> Result<(), ControlFailure> {
     let sig_star = signature(&g, &embed(&star), &star.elements);
 
     let separation = d_group(&g, &sig_path, &sig_star);
-    if separation <= TOPOLOGY_MUST_CHANGE_SHAPE {
+    if !clears_floor(separation, TOPOLOGY_MUST_CHANGE_SHAPE) {
         return Err(ControlFailure::GeometryIgnoresMolecule {
             got: separation,
             min: TOPOLOGY_MUST_CHANGE_SHAPE,
@@ -839,13 +860,14 @@ mod tests {
         let coords = embed(&m);
         let a = signature(&g, &coords, &m.elements);
 
-        // The `r != 0` skip below is sound only if index 0 is the identity,
-        // which is a fact about `rotation_matrices()`' construction order and
-        // not something the types pin. State it here, so a reordering fails
-        // with that sentence rather than as a confusing liveness failure.
-        assert!(
-            mats.first().is_some_and(is_identity),
-            "rotation_matrices() no longer starts at the identity, so the skip below is wrong"
+        // Nothing else checks this at the matrix level: `identity_is_present`
+        // and `rotations_are_all_distinct` both test `perms`, and the matrices
+        // inherit it only transitively through
+        // `the_permutation_table_agrees_with_the_rotation_matrices`.
+        assert_eq!(
+            mats.iter().filter(|m| is_identity(m)).count(),
+            1,
+            "the group must contain the identity exactly once"
         );
 
         // Every group element, not just the one the gate samples.
@@ -856,8 +878,13 @@ mod tests {
                 d_group(&g, &a, &b) < ROTATION_MUST_NOT_MOVE_GROUP,
                 "rotation {r}: the group search failed to recover a group element"
             );
-            // r == 0 is the identity, which legitimately moves nothing.
-            if r != 0 {
+            // Not `r != 0`: the identity's *position* is a fact about
+            // construction order, so naming it would reintroduce the coupling
+            // the gate above just removed — and if a reordering put some other
+            // element at index 0 and the identity at index 5, this loop would
+            // fail at `r == 5` with the "geometry is dead" misdiagnosis this
+            // whole change exists to eliminate. Ask which element it is.
+            if !is_identity(mat) {
                 assert!(
                     d_raw(&a, &b) > ROTATION_MUST_MOVE_RAW,
                     "rotation {r}: an unaligned descriptor did not move — geometry is dead"
@@ -900,6 +927,34 @@ mod tests {
     #[test]
     fn the_geometry_liveness_gate_passes_on_a_working_pipeline() {
         assert_eq!(check_geometry_is_live(), Ok(()));
+    }
+
+    /// A non-finite measurement must fail every threshold, in both directions.
+    ///
+    /// This is the seam the geometry gate did not have. Written as
+    /// `got <= min`, all three of its comparisons waved `NaN` through, because
+    /// every ordering comparison against `NaN` is false — the identical defect
+    /// `the_control_gate_rejects_controls_that_are_not_numbers` guards one
+    /// level up. Without extracting the comparison there is nothing to inject
+    /// a `NaN` into: the quantities are computed from real geometry that cannot
+    /// currently produce one.
+    #[test]
+    fn a_non_finite_measurement_clears_no_threshold() {
+        // `+inf` is the one a bare `got > min` would let past on its own terms
+        // rather than by the NaN rule — it genuinely does exceed the floor. It
+        // is still not a measurement.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!clears_floor(bad, 0.1), "{bad} cleared a floor");
+            assert!(!under_ceiling(bad, 1e-6), "{bad} stayed under a ceiling");
+        }
+
+        // And the guards did not break the ordinary cases they wrap.
+        assert!(clears_floor(5.98, 0.1));
+        assert!(!clears_floor(0.05, 0.1));
+        assert!(!clears_floor(0.1, 0.1), "the floor is exclusive");
+        assert!(under_ceiling(3.9e-15, 1e-6));
+        assert!(!under_ceiling(0.5, 1e-6));
+        assert!(!under_ceiling(1e-6, 1e-6), "the ceiling is exclusive");
     }
 
     /// The real calibration check, run against the actual molecule generator
