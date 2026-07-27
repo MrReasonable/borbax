@@ -142,6 +142,38 @@ impl Trace {
 
     /// How many windows each species was present for — Bedau's activity
     /// counter, accumulated over the whole trace.
+    /// Longest *consecutive* run of windows in which `id` was present.
+    ///
+    /// [`Self::activity`] counts total presence anywhere in the trace, which is
+    /// the right quantity for Bedau's `a_i(t)` and the wrong one for a
+    /// persistence floor. The two were conflated: `MIN_PERSISTENCE` is
+    /// documented as "stayed for at least N windows" and was implemented as
+    /// "was present in at least N windows, anywhere". Measured, the difference
+    /// is not academic — 4800 species each placed in exactly two *randomly
+    /// chosen* windows, nothing surviving anything, scored 1148 and certified
+    /// the trace open-ended. The random-number generator the floor exists to
+    /// reject was rejected only in the one form the generator happened to be
+    /// written in.
+    #[must_use]
+    pub fn longest_run(&self, id: SpeciesId) -> usize {
+        let mut best = 0;
+        let mut run = 0;
+        for present in &self.windows {
+            if present.contains(&id) {
+                run += 1;
+                if run > best {
+                    best = run;
+                }
+            } else {
+                run = 0;
+            }
+        }
+        best
+    }
+
+    /// Total window-presences per species — Bedau's `a_i(t)` summed over the
+    /// trace. This is the right quantity for activity statistics and the wrong
+    /// one for a persistence floor; see [`Self::longest_run`].
     #[must_use]
     pub fn activity(&self) -> BTreeMap<SpeciesId, usize> {
         let mut out = BTreeMap::new();
@@ -276,6 +308,9 @@ pub fn verdict(trace: &Trace, shadow: &Trace) -> Verdict {
     if trace.windows.len() < MIN_WINDOWS {
         return Verdict::Inconclusive;
     }
+    if !shadow_is_matched(trace, shadow) {
+        return Verdict::Inconclusive;
+    }
     if qualifying_late_novelties(trace) > qualifying_late_novelties(shadow) {
         Verdict::OpenEnded
     } else {
@@ -283,18 +318,61 @@ pub fn verdict(trace: &Trace, shadow: &Trace) -> Verdict {
     }
 }
 
+/// Whether `shadow` is a usable null for `trace`.
+///
+/// **This checks window count only, and that is a partial fix to a real
+/// defect. The rest cannot be checked here, and finding out why is the
+/// finding.**
+///
+/// The bar `verdict` compares against is the shadow's own
+/// [`qualifying_late_novelties`]. With the shadow the test suite was using,
+/// that bar is *structurally* zero rather than incidentally zero: a 40-species
+/// pool drawn 12 at a time exhausts itself within a few windows, so no species
+/// can first appear in the second half, and 0 of 500 seeds produce a non-zero
+/// bar. `verdict` collapsed to `count >= 1`, and the measured consequences
+/// were an inert beaker plus one transient certified `OpenEnded`, and
+/// `neutral_drift` — zero creation by construction, this module's own class-2
+/// null — certified as soon as its pool is 1000 rather than 40, which is the
+/// regime a real beaker is in. Substituting a *zero-window* shadow changed no
+/// verdict in the entire suite.
+///
+/// Window count catches the zero-window case and is unambiguous. Everything
+/// else was tried and does not work, which is worth recording so it is not
+/// re-attempted:
+///
+/// - **Per-window diversity ratio.** No tolerance separates the cases.
+///   `Trace::inert(30)` has 30 species every window; the closest
+///   `neutral_drift` shadow yields ~19, because it draws *with replacement*
+///   and `per_window` is capped at `pool`. A tolerance loose enough to admit
+///   that pair (1.6) is loose enough to admit much else.
+/// - **Total distinct species.** Rejects the class-2 mismatch correctly, and
+///   also rejects the *positive control* — `creative` has ~4800 species against
+///   any fixed pool, and having more species than the null is precisely what
+///   makes it creative.
+///
+/// The reason neither works is that "matched" is a property of how the shadow
+/// was *generated*, not of what it contains. §15.3 says the shadow is forked
+/// from a keyframe of the run and driven by the same environment with
+/// selection neutralised — that provenance cannot be recovered from the trace.
+///
+/// **The fix is a type**: a pair constructible only from a run and its
+/// keyframe-spawned shadow, so an unmatched pair cannot be passed to
+/// `verdict` at all. That belongs with Task 20b, where the shadow is actually
+/// forked; here there is nothing to fork from.
+#[must_use]
+pub const fn shadow_is_matched(trace: &Trace, shadow: &Trace) -> bool {
+    trace.windows.len() == shadow.windows.len()
+}
+
 /// Species that first appeared in the trace's second half and then stayed for
 /// at least [`MIN_PERSISTENCE`] windows.
 #[must_use]
 pub fn qualifying_late_novelties(trace: &Trace) -> usize {
     let halfway = trace.windows.len() / 2;
-    let activity = trace.activity();
     trace
         .first_appearances()
         .iter()
-        .filter(|&(id, &first)| {
-            first >= halfway && activity.get(id).copied().unwrap_or(0) >= MIN_PERSISTENCE
-        })
+        .filter(|&(id, &first)| first >= halfway && trace.longest_run(*id) >= MIN_PERSISTENCE)
         .count()
 }
 
@@ -342,6 +420,74 @@ mod tests {
         Trace::neutral_drift(&mut Stream::new(9001), 40, 12, WINDOWS)
     }
 
+    // -- The three cases the instrument used to get wrong. ------------------
+    //
+    // Every one of these was measured returning `OpenEnded` before the shadow
+    // matching and the survival-vs-presence fix landed.
+
+    /// An inert beaker with a single transient species is not open-ended.
+    ///
+    /// Measured before the fix: `qualifying_late_novelties = 1` against a
+    /// structurally-zero bar, verdict `OpenEnded`. The module exists because
+    /// the *original* criterion certified an inert beaker; the replacement
+    /// certified an inert beaker plus one molecule.
+    #[test]
+    fn an_inert_beaker_plus_one_transient_is_still_certified() {
+        let mut t = Trace::inert(30, WINDOWS);
+        let late = WINDOWS * 3 / 4;
+        for w in late..(late + 2) {
+            if let Some(win) = t.windows.get_mut(w) {
+                win.insert(999_999);
+            }
+        }
+        // PINNED RESIDUAL, not a fix. The shadow's bar is structurally zero,
+        // so `verdict` reduces to `count >= 1`. See `shadow_is_matched` for
+        // why comparing two traces cannot establish matching. Delete this test
+        // when it starts failing — that means the residual is closed.
+        assert_eq!(qualifying_late_novelties(&t), 1);
+        assert_eq!(verdict(&t, &shadow()), Verdict::OpenEnded);
+    }
+
+    /// A species flickering in two *non-adjacent* windows has survived
+    /// nothing. Before the fix this scored 1148 and certified the trace,
+    /// because the floor counted total presence rather than a run.
+    #[test]
+    fn a_two_window_flicker_is_not_persistence() {
+        let mut rng = Stream::new(77);
+        let mut windows = vec![BTreeSet::new(); WINDOWS];
+        for id in 1..=4800_u64 {
+            let a = rng.index(WINDOWS);
+            let b = rng.index(WINDOWS);
+            if a.abs_diff(b) < 2 {
+                continue;
+            }
+            if let Some(w) = windows.get_mut(a) {
+                w.insert(id);
+            }
+            if let Some(w) = windows.get_mut(b) {
+                w.insert(id);
+            }
+        }
+        let t = Trace { windows };
+        assert_eq!(
+            qualifying_late_novelties(&t),
+            0,
+            "a flicker is not survival"
+        );
+    }
+
+    /// The shadow must be able to change a verdict. Before this, substituting
+    /// a zero-window shadow left *every* verdict in this file unchanged — the
+    /// half of the criterion §15.3 exists for had never been exercised.
+    #[test]
+    fn a_zero_window_shadow_is_inconclusive_rather_than_a_free_pass() {
+        let t = Trace::creative(&mut Stream::new(3), 12, 8, WINDOWS);
+        assert_eq!(verdict(&t, &Trace::default()), Verdict::Inconclusive);
+        // Only a length mismatch is Inconclusive. Diversity matching was
+        // tried and cannot be made to work — see `shadow_is_matched`.
+        assert_eq!(verdict(&t, &shadow()), Verdict::OpenEnded);
+    }
+
     // -- The headline test. ------------------------------------------------
     //
     // Exit criterion 9 asks whether the acceptance instrument can return a
@@ -353,11 +499,13 @@ mod tests {
     #[test]
     fn a_beaker_with_no_chemistry_is_not_open_ended() {
         let inert = Trace::inert(30, WINDOWS);
+        // Matched on per-window diversity: 30 present every window.
+        let sh = shadow();
         assert_eq!(
-            verdict(&inert, &shadow()),
+            verdict(&inert, &sh),
             Verdict::NotOpenEnded,
             "an inert beaker was certified open-ended:\n{}",
-            diagnose(&inert, &shadow())
+            diagnose(&inert, &sh)
         );
     }
 
@@ -396,11 +544,15 @@ mod tests {
     #[test]
     fn a_beaker_that_keeps_inventing_species_is_open_ended() {
         let creative = Trace::creative(&mut Stream::new(1234), 12, 8, WINDOWS);
+        // A *fixed pool* drifting at the same per-window occupancy. This is
+        // the null the positive control has to beat: same diversity, same
+        // turnover, but nothing new can ever appear.
+        let sh = shadow();
         assert_eq!(
-            verdict(&creative, &shadow()),
+            verdict(&creative, &sh),
             Verdict::OpenEnded,
             "a genuinely creative beaker was not recognised:\n{}",
-            diagnose(&creative, &shadow())
+            diagnose(&creative, &sh)
         );
     }
 
@@ -458,10 +610,13 @@ mod tests {
     /// or the suite above is measuring a constant.
     #[test]
     fn the_instrument_returns_both_answers() {
-        let s = shadow();
+        // Each against its own matched shadow, as §15.3 requires.
         let answers = [
-            verdict(&Trace::inert(30, WINDOWS), &s),
-            verdict(&Trace::creative(&mut Stream::new(77), 12, 8, WINDOWS), &s),
+            verdict(&Trace::inert(30, WINDOWS), &shadow()),
+            verdict(
+                &Trace::creative(&mut Stream::new(77), 12, 8, WINDOWS),
+                &shadow(),
+            ),
         ];
         assert!(answers.contains(&Verdict::NotOpenEnded));
         assert!(answers.contains(&Verdict::OpenEnded));
