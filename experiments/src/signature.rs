@@ -25,11 +25,6 @@
 //! The two controls are not descriptors of shape at all, and that is the
 //! point. They calibrate the instrument: see [`Descriptor::PositiveControl`]
 //! and [`Descriptor::NegativeControl`].
-#![expect(
-    clippy::disallowed_methods,
-    reason = "§13.4: support-function extents are sums of squares and radii — never NaN, \
-                  never -0.0"
-)]
 #![allow(
     clippy::indexing_slicing,
     reason = "every index is a loop bound over D or over the molecule's own atom count"
@@ -148,6 +143,13 @@ pub fn profile<const N: usize>(g: &Geodesic<N>, m: &Molecule) -> Profile {
     let framed = signature(g, &framed_coords, &m.elements);
 
     let mut sorted = raw.clone();
+    // §13.4: extents are sums of squares and radii — never NaN, never -0.0.
+    // Scoped here rather than to the module, which is what stood before and
+    // took the transcendental ban down with it for the whole file.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "extents are non-negative and finite; see the comment above"
+    )]
     sorted.sort_by(f64::total_cmp);
 
     #[allow(
@@ -210,8 +212,15 @@ pub fn d_group<const N: usize>(g: &Geodesic<N>, a: &[f64], b: &[f64]) -> f64 {
 pub fn d_sorted(a: &[f64], b: &[f64]) -> f64 {
     let mut x = a.to_vec();
     let mut y = b.to_vec();
-    x.sort_by(f64::total_cmp);
-    y.sort_by(f64::total_cmp);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "§13.4: extents are non-negative and finite, so neither NaN nor -0.0 \
+                  is reachable here"
+    )]
+    {
+        x.sort_by(f64::total_cmp);
+        y.sort_by(f64::total_cmp);
+    }
     d_raw(&x, &y)
 }
 
