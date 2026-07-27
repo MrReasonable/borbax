@@ -40,7 +40,7 @@
 
 use crate::embed::{Point, embed};
 use crate::geodesic::Geodesic;
-use crate::geodesic::{apply_mat, rotation_matrices};
+use crate::geodesic::{Mat3, apply_mat, rotation_matrices};
 use crate::molecule::Molecule;
 use crate::rng::Stream;
 use crate::signature::{D, Descriptor, d_group, d_raw, profile, signature};
@@ -147,6 +147,25 @@ const TOPOLOGY_MUST_CHANGE_SHAPE: f64 = 1.0;
 /// Atom count of the path/star fixtures the check above thresholds on.
 const TOPOLOGY_FIXTURE_ATOMS: usize = 12;
 
+/// Whether a group element is the identity, to within the error of building it.
+///
+/// Not `m == IDENTITY`: the 60 elements are frame products, so the identity
+/// arrives with entries at `1.0000000000000004` and `-5.6e-17`, and an exact
+/// comparison finds it in **zero** of the 60. Measured margins — the identity
+/// deviates from `I` by 4.44e-16 entrywise, and the nearest other element by
+/// 0.809, because the smallest rotation in this group is 72°. So 1e-9 sits six
+/// orders above the construction noise and nine below the nearest real
+/// rotation, and selects exactly one matrix. Nothing is near the boundary.
+fn is_identity(m: &Mat3) -> bool {
+    /// Entrywise tolerance. See [`is_identity`] for the measured margins.
+    const TOL: f64 = 1e-9;
+    const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    m.iter()
+        .flatten()
+        .zip(IDENTITY.iter().flatten())
+        .all(|(a, b)| (a - b).abs() < TOL)
+}
+
 /// Does the shape pipeline actually compute shape?
 ///
 /// **The two controls this joins do not touch the geometry, and that was
@@ -195,9 +214,17 @@ const TOPOLOGY_FIXTURE_ATOMS: usize = 12;
 fn check_geometry_is_live() -> Result<(), ControlFailure> {
     let g = Geodesic::<D>::build().map_err(|_| ControlFailure::ControlMissing("geodesic"))?;
     let mats = rotation_matrices().map_err(|_| ControlFailure::ControlMissing("rotations"))?;
+    // *Which* rotation is immaterial — any non-identity element moves the
+    // molecule. This was `mats[7]`, which is a fact about `rotation_matrices()`'
+    // construction order standing in for a property nothing checked: reorder the
+    // group so index 7 becomes the identity, and the gate fails on a healthy
+    // pipeline with a diagnostic blaming `embed`. Naming the index in a constant
+    // documents the requirement without enforcing it, and this repository has
+    // four recorded defects of exactly that shape. So ask for the property.
     let mat = mats
-        .get(7)
-        .ok_or(ControlFailure::ControlMissing("rotation 7"))?;
+        .iter()
+        .find(|m| !is_identity(m))
+        .ok_or(ControlFailure::ControlMissing("a non-identity rotation"))?;
 
     let mut rng = Stream::new(0x006E_01E7);
     let m = Molecule::random_tree(&mut rng, 12);
@@ -811,6 +838,15 @@ mod tests {
         let m = Molecule::random_tree(&mut rng, 12);
         let coords = embed(&m);
         let a = signature(&g, &coords, &m.elements);
+
+        // The `r != 0` skip below is sound only if index 0 is the identity,
+        // which is a fact about `rotation_matrices()`' construction order and
+        // not something the types pin. State it here, so a reordering fails
+        // with that sentence rather than as a confusing liveness failure.
+        assert!(
+            mats.first().is_some_and(is_identity),
+            "rotation_matrices() no longer starts at the identity, so the skip below is wrong"
+        );
 
         // Every group element, not just the one the gate samples.
         for (r, mat) in mats.iter().enumerate() {
