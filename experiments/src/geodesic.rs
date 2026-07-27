@@ -370,6 +370,55 @@ pub fn apply_mat(m: &Mat3, p: Vec3) -> Vec3 {
     ]
 }
 
+/// Whether a group element is the identity, to within the error of building it.
+///
+/// Lives here rather than beside its caller because it is a fact about
+/// [`rotation_matrices`], and this module is intended to lift into
+/// `borbax-molecule` unchanged — Task 8's binding kernel needs the same
+/// predicate.
+///
+/// Not `m == IDENTITY`: the 60 elements are frame products, so the identity
+/// arrives with entries at `1.0000000000000004` and `-5.6e-17`, and an exact
+/// comparison finds it in **zero** of the 60.
+///
+/// **The tolerance is structural, not measured — it needs no re-measuring when
+/// something nearby changes.** The identity deviates from `I` by 4.44e-16
+/// entrywise (2 ulp at 1.0), and the nearest other element by
+/// 0.80901699437494742…, which is exactly φ/2 = cos 36°: a constant of the
+/// icosahedral group, independent of `D`, of the element radii and of any
+/// fixture. That is the difference between this and
+/// `g2::ROTATION_MUST_MOVE_RAW`, whose margin *is* proportional to molecule
+/// size and radius scale and which documents that exposure. So 1e-9 sits 6.35
+/// orders above the construction noise and 8.91 below the nearest real
+/// rotation, in a safe window 15.3 orders wide, and selects exactly one matrix.
+///
+/// The predicate also never has to discriminate a *near*-identity. Every
+/// caller runs [`Geodesic::build`] first, and `build_perms` rejects any matrix
+/// that fails to carry the direction set onto itself, so the only elements
+/// that reach here are exact icosahedral symmetries — the identity, or at
+/// least 72°. The band where this predicate says "not the identity" while the
+/// rotation is too small to move a molecule is θ ∈ (1e-9, 1.26e-2) rad, and
+/// nothing can present an element in it.
+///
+/// Entrywise rather than by trace or by angle, deliberately. `det_math`'s own
+/// documentation records that `(tr(R) − 1) / 2` exceeds 1 for 685 of the 3,600
+/// compositions — the identity among them — so a trace predicate needs a
+/// clamp; and `det_math::acos` loses angles below ~1.5e-8 rad entirely, which
+/// is *above* this tolerance, so an angle predicate would compare inside its
+/// own noise floor. Entrywise is also the only one of the three that does not
+/// assume its input is orthogonal, which matters when part of the job is to
+/// notice a construction that has broken.
+#[must_use]
+pub fn is_identity(m: &Mat3) -> bool {
+    /// Entrywise tolerance. See [`is_identity`] for why it is structural.
+    const TOL: f64 = 1e-9;
+    const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    m.iter()
+        .flatten()
+        .zip(IDENTITY.iter().flatten())
+        .all(|(a, b)| (a - b).abs() < TOL)
+}
+
 /// The 60 rotations as matrices, in the same order as [`Geodesic::perms`].
 ///
 /// `perms` is what the binding kernel needs — a rotation as a table lookup.
