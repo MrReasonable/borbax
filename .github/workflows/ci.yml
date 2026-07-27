@@ -65,6 +65,22 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # `needs: quality` is the enforcement, not a sequencing preference.
+    #
+    # Splitting `fmt` out of this job made it *advisory*: branch protection
+    # requires `test (…)` and `goldens …` by name, and a newly-created
+    # `quality` job is in neither list — so for one commit, a PR with red
+    # formatting or a broken intra-doc link was mergeable. The commit that
+    # added `cargo doc` *because* a configured-but-inert check is this repo's
+    # recorded failure mode had made the check configured-but-inert one level
+    # up. A reviewer caught it by querying the protection API.
+    #
+    # This makes the gate transitive: `quality` fails, the matrix never runs,
+    # and the required checks cannot go green. It holds without anyone
+    # remembering a `gh api` call, and it holds for PRs opened before
+    # `quality` is added to the required list. Adding it there too is still
+    # worth doing — belt and braces — but is no longer load-bearing.
+    needs: quality
     strategy:
       fail-fast: false
       matrix:

@@ -16,7 +16,12 @@
 //! `sqrt` and the four arithmetic operations, and the initial layout is built
 //! from graph distances rather than from a trigonometric spiral, precisely so
 //! that stays true.
-
+#![expect(
+    clippy::disallowed_methods,
+    reason = "§13.4: graph distances are non-negative sums, never -0.0. They CAN be \
+                  f64::INFINITY for a disconnected component — see the finiteness \
+                  guard above, which is what makes this selection safe"
+)]
 #![allow(
     clippy::indexing_slicing,
     reason = "every index is a loop bound over the same n as the coordinate vector"

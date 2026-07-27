@@ -150,6 +150,20 @@ const BANNED_CALLS: &[&str] = &[
     "f64::min",
     "f32::max",
     "f32::min",
+    // Path forms previously "covered" only by prefix accident — `f64::atan`
+    // happening to be a substring of `f64::atan2`. Requiring an exact match in
+    // the agreement test is what surfaced them.
+    "f64::log2",
+    "f64::log10",
+    "f64::sin_cos",
+    "f64::atan2",
+    "f32::log2",
+    "f32::log10",
+    "f32::sin_cos",
+    "f32::atan2",
+    "f32::exp2",
+    "f32::exp_m1",
+    "f32::ln_1p",
 ];
 
 /// §13.4 — parallel iteration, which reorders float reductions.
@@ -855,6 +869,16 @@ mod tests {
     /// four `clippy.toml` names were covered in `BANNED_CALLS` only by prefix
     /// containment (`f64::atan` matching `f64::atan2`), which is coverage by
     /// accident rather than by intent.
+    /// `.min(` in a text scan fires on `a.len().min(b.len())`, which is
+    /// `Ord::min` on a `usize` and perfectly deterministic. A check that cries
+    /// wolf gets relaxed, so these keep the path form only.
+    const METHOD_FORM_IS_TYPE_BLIND: &[&str] = &["max", "min"];
+
+    /// Enforced by clippy alone, because they have legitimate library-code
+    /// uses that need a per-site `#[expect]` — which the text scan cannot
+    /// express, and deliberately so.
+    const CLIPPY_ONLY: &[&str] = &["total_cmp"];
+
     #[test]
     fn the_two_ban_lists_cover_the_same_functions() {
         let clippy_toml = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -875,14 +899,42 @@ mod tests {
             let Some((_, func)) = path.split_once("::") else {
                 continue;
             };
-            // Either spelling in `BANNED_CALLS` counts: the method form
-            // (`.exp()`) is type-blind and covers both widths, and the path
-            // form is exact.
-            let covered = BANNED_CALLS
+            // Both spellings required, and the method match exact.
+            //
+            // This was a prefix match, so `.sinh()` "covered" `sin`, `.exp2()`
+            // covered `exp` and `.ln_1p()` covered `ln`. Measured: deleting
+            // *both* spellings of `exp`, `ln`, `sin` and `cos` left this test
+            // green — the four functions with `det_math` wrappers and the four
+            // §13.1 names. Coverage by accident, which is the thing this test
+            // exists to prevent, reintroduced in the other direction.
+            // The deliberate divergences, named rather
+            // than hidden by a loose predicate. The method spelling `.min(` is
+            // type-blind in a text scan, and `a.len().min(b.len())` is
+            // `Ord::min` on a `usize` — perfectly deterministic. Banning it as
+            // text would fire on every integer clamp in the workspace, and a
+            // check that cries wolf gets relaxed. Clippy resolves the type and
+            // has no such problem, which is the clearest single case for why it
+            // is the authority and this is the second pass.
+            //
+            // `total_cmp` diverges for a different reason: it has legitimate
+            // uses in library code, each needing a *per-site* exemption, and
+            // the text scan deliberately cannot express one — an `#[expect]`
+            // smuggling a call past clippy is still reported here, which is a
+            // feature. So it lives in `clippy.toml` alone, where `#[expect]`
+            // works and the reason travels with the call site.
+            let path_exempt = CLIPPY_ONLY.contains(&func);
+            let method_exempt = path_exempt || METHOD_FORM_IS_TYPE_BLIND.contains(&func);
+
+            let has_path = BANNED_CALLS.contains(&path);
+            let has_method = BANNED_CALLS
                 .iter()
-                .any(|banned| banned.contains(path) || banned.starts_with(&format!(".{func}")));
-            if !covered {
-                missing.push(path.to_owned());
+                .any(|b| *b == format!(".{func}()") || *b == format!(".{func}("));
+            if !(has_path || path_exempt) || !(has_method || method_exempt) {
+                missing.push(format!(
+                    "{path} (path: {}, method: {})",
+                    if has_path { "ok" } else { "MISSING" },
+                    if has_method { "ok" } else { "MISSING" }
+                ));
             }
         }
         assert!(
@@ -890,6 +942,30 @@ mod tests {
             "in clippy.toml but not BANNED_CALLS: {missing:?} — the text scan is \
              the only thing that would catch one of these being deleted from \
              clippy.toml, so it has to know about them"
+        );
+
+        // The other direction, which nothing checked: `clippy.toml` is the
+        // authority, so a path silently disappearing from *it* is the more
+        // dangerous of the two edits.
+        let mut orphaned = Vec::new();
+        for banned in BANNED_CALLS {
+            let Some((width, func)) = banned.split_once("::") else {
+                continue;
+            };
+            if width != "f64" && width != "f32" {
+                continue;
+            }
+            if !CLIPPY_ONLY.contains(&func)
+                && !clippy_toml.contains(&format!("path = \"{width}::{func}\""))
+            {
+                orphaned.push((*banned).to_owned());
+            }
+        }
+        assert!(
+            orphaned.is_empty(),
+            "in BANNED_CALLS but not clippy.toml: {orphaned:?} — clippy is the \
+             authority, so a path missing there is unenforced everywhere clippy \
+             can see, which is almost everywhere"
         );
     }
 

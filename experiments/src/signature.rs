@@ -25,7 +25,11 @@
 //! The two controls are not descriptors of shape at all, and that is the
 //! point. They calibrate the instrument: see [`Descriptor::PositiveControl`]
 //! and [`Descriptor::NegativeControl`].
-
+#![expect(
+    clippy::disallowed_methods,
+    reason = "§13.4: support-function extents are sums of squares and radii — never NaN, \
+                  never -0.0"
+)]
 #![allow(
     clippy::indexing_slicing,
     reason = "every index is a loop bound over D or over the molecule's own atom count"
