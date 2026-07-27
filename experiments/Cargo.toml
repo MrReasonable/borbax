@@ -19,3 +19,4 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+borbax-units.workspace = true
