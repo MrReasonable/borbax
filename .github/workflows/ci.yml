@@ -1,7 +1,61 @@
 name: CI
-on: [push, pull_request]
+
+# `push` is restricted to `main` deliberately. With a bare `on: [push,
+# pull_request]` every PR branch ran the whole matrix twice — once for the
+# push, once for the PR — which is why PR #1 showed eight checks for four
+# jobs. Branch pushes are now covered by the PR that contains them, and `main`
+# is still covered directly for the goldens.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Superseded PR runs are cancelled; `main` runs are never cancelled, because a
+# `main` run is what emits the golden artifacts the determinism matrix compares.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Platform-independent checks, on one runner, as their own status check.
+  #
+  # Split out of `test` for two reasons. They are genuinely
+  # platform-independent — `rustfmt` pins `newline_style = "Unix"` and rustdoc
+  # resolves the same links everywhere — so running them three times bought
+  # nothing. And as steps inside a matrix job they were invisible: the PR check
+  # list showed `test (ubuntu-latest)` and gave no sign that formatting and
+  # documentation had been verified at all.
+  quality:
+    name: quality (fmt, docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Show toolchain
+        run: rustup show active-toolchain
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # `[workspace.lints.rustdoc] broken_intra_doc_links = "deny"` was
+      # enforcing nothing before this step existed. Verified rather than
+      # assumed: a planted `[`NoSuchItem`]` link passes
+      # `cargo clippy --all-targets -- -D warnings` cleanly, because clippy
+      # does not run rustdoc lints — only `cargo doc` does. Same shape as the
+      # `[lints] workspace = true` trap this repo has already hit twice: the
+      # configuration is present, believed, and inert.
+      #
+      # It matters here more than in most codebases. Nearly every type in
+      # `borbax-units` documents its contract with intra-doc links to its
+      # siblings, and a rename silently rots every one of them.
+      #
+      # `--document-private-items` so the private helpers that carry the
+      # load-bearing comments are checked too, and `RUSTDOCFLAGS` rather than
+      # `--` because rustdoc lint levels are not `cargo doc` arguments.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --no-deps --document-private-items
+
   # The matrix is not for coverage — it is the enforcement mechanism for the
   # cross-platform determinism promise in spec §13.4. Every portability
   # hazard listed there is invisible on a single machine: the code runs, the
@@ -11,6 +65,22 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # `needs: quality` is the enforcement, not a sequencing preference.
+    #
+    # Splitting `fmt` out of this job made it *advisory*: branch protection
+    # requires `test (…)` and `goldens …` by name, and a newly-created
+    # `quality` job is in neither list — so for one commit, a PR with red
+    # formatting or a broken intra-doc link was mergeable. The commit that
+    # added `cargo doc` *because* a configured-but-inert check is this repo's
+    # recorded failure mode had made the check configured-but-inert one level
+    # up. A reviewer caught it by querying the protection API.
+    #
+    # This makes the gate transitive: `quality` fails, the matrix never runs,
+    # and the required checks cannot go green. It holds without anyone
+    # remembering a `gh api` call, and it holds for PRs opened before
+    # `quality` is added to the required list. Adding it there too is still
+    # worth doing — belt and braces — but is no longer load-bearing.
+    needs: quality
     strategy:
       fail-fast: false
       matrix:
@@ -41,14 +111,26 @@ jobs:
       # the one diagnosis it must never give wrongly. With it, a stale lock
       # fails loudly on all three legs with "the lock file needs to be
       # updated", which is a five-second fix instead of a day.
+      # Stays on the matrix rather than moving to `quality`. It walks the
+      # filesystem and compares paths component-wise, and its own doc comments
+      # say the Windows behaviour is the reason that code is written the way it
+      # is — so it is one of the few checks where running it three times is the
+      # point.
       - name: Fiction guarantees (spec §5)
         run: cargo run --locked -p xtask
-      - name: Format
-        run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked --workspace
+      # The release leg is not redundant. `debug_assert!` and `overflow-checks`
+      # both key off `debug_assertions`, so a guard can be present in the suite
+      # above and absent from the profile that mints the goldens — which is
+      # exactly the defect the Task 2 review found in `Mass::from_f64_quantised`
+      # and then found again, one operator away, in `impl Add for Mass`.
+      # `values_off_the_grid_are_refused_in_every_profile` is named for a
+      # promise nothing was keeping until this step existed. ~5s warm.
+      - name: Test (release — the profile that mints goldens)
+        run: cargo test --locked --workspace --release
       # borbax-cli does not exist until Task 21. Without this guard the whole
       # `test` job fails on all three platforms for twenty tasks — and because
       # `determinism-matrix` is gated on `needs: test`, it would never run at

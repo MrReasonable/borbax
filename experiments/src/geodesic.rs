@@ -158,10 +158,20 @@ fn icosahedron() -> Vec<Vec3> {
 
 /// The squared length of the shortest edge, which is the adjacency threshold.
 fn min_pair_dist2(v: &[Vec3]) -> f64 {
+    // `f64::min` rather than a comparison would be the obvious spelling and is
+    // banned (§13.1): std documents that when the inputs compare equal — which
+    // `+0.0` and `-0.0` do — either may be returned non-deterministically, and
+    // it was measured returning different signs on aarch64 and x86-64 *and*
+    // under different codegen on one target. Squared distances make that
+    // unreachable here, but this function lifts into `borbax-molecule` and the
+    // comparison costs nothing.
     let mut min_d2 = f64::MAX;
     for i in 0..v.len() {
         for j in (i + 1)..v.len() {
-            min_d2 = min_d2.min(dist2(v[i], v[j]));
+            let d2 = dist2(v[i], v[j]);
+            if d2 < min_d2 {
+                min_d2 = d2;
+            }
         }
     }
     min_d2
@@ -270,9 +280,26 @@ impl<const D: usize> Geodesic<D> {
             return Err(GeoError::UnsupportedResolution(D));
         }
 
-        // Canonical ordering. `total_cmp` gives a total order on f64 with no
-        // tolerance and no platform variation, so the resulting index
-        // assignment is identical everywhere (spec §13.4).
+        // Canonical ordering, and the *reason* matters more than the call.
+        //
+        // `total_cmp` is a pure function of the bits, so it is portable when
+        // the bits are — not, as an earlier version of this comment claimed,
+        // free of platform variation in general. It orders on the sign bit,
+        // and a runtime NaN's sign bit differs between aarch64 and x86-64;
+        // that is precisely the defect `borbax_units::Span::canonical_cmp`
+        // exists to fix, and this comment asserting the opposite in the file
+        // CLAUDE.md says lifts into `borbax-molecule` unchanged is how the
+        // wrong lesson gets cited a year from now.
+        //
+        // It is safe *here* because these coordinates are provably free of
+        // both hazards, measured at all three levels: 0 `-0.0` components,
+        // 0 NaN, antipodes bit-exact, max |‖v‖-1| = 1.11e-16. Every value is
+        // a normalised coordinate built from sums of squares. When this lifts,
+        // that reasoning lifts with it or the call changes (spec §13.4).
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "§13.4: measured free of NaN and -0.0 at all three levels — see above"
+        )]
         verts.sort_by(|a, b| {
             a[2].total_cmp(&b[2])
                 .then(a[1].total_cmp(&b[1]))

@@ -1,10 +1,21 @@
 //! Portable transcendentals (spec §13.1, §13.4).
 //!
 //! Backed by the `libm` crate — rust-lang's pure-Rust port of MUSL's libm.
-//! Its `exp`, `log`, `sin`, `cos` and `pow` carry no architecture dispatch;
-//! the `use_arch` paths in that crate are `sqrt`, `fma`, the rounding
-//! functions, and x87 variants gated on 32-bit x86 without SSE2, none of which
-//! is a CI target or reachable from the five functions wrapped here.
+//!
+//! **The criterion is "is the result exactly specified by IEEE-754", not
+//! "does it avoid arch dispatch"** — the same restatement `clippy.toml`
+//! carries, and for the same reason. `exp`, `log`, `sin`, `cos` and `pow` are
+//! portable because they are pure Rust with no dispatch at all. `acos` is
+//! portable for a *different* reason: it reaches `super::sqrt`, which **is**
+//! arch-dispatched on both CI architectures, to the hardware instruction —
+//! and IEEE-754 specifies `sqrt` to be correctly rounded, so the hardware and
+//! generic paths are bit-identical.
+//!
+//! Applying the wrong test would reject `hypot` and `cbrt` for no reason, or
+//! wave through something that reaches a genuinely unspecified helper. An
+//! earlier version of this paragraph counted the wrappers and asserted none
+//! reached a dispatched path; the count went stale the moment `acos` was
+//! added, which is why the criterion is stated instead of a number.
 //!
 //! Apple's libm and glibc genuinely disagree in the last bits of `exp`, `ln`,
 //! `sin` and `cos`, and glibc versions disagree with each other. Measured on
@@ -63,6 +74,50 @@ pub fn sin(x: f64) -> f64 {
 #[must_use]
 pub fn cos(x: f64) -> f64 {
     libm::cos(x)
+}
+
+/// Arc cosine, in radians. **Clamps its argument**, and that is the feature.
+///
+/// Every caller in this project will be extracting an angle from a quantity
+/// that is mathematically in `[-1, 1]` and numerically is not: a dot product
+/// of two unit vectors, or `(tr(R) - 1) / 2` for a rotation matrix built by
+/// accumulating products, where `tr(R)` routinely comes out as
+/// `3.0000000000000004`. Unclamped, that is `acos(1.0000000000000002)` — NaN,
+/// and a NaN whose sign bit differs between the CI architectures.
+///
+/// So the clamp lives here rather than at the call site. The alternative is
+/// `ln`'s contract one line down — "callers must guarantee" — which is only
+/// safe while there is exactly one caller who remembered. A caller who does
+/// not know the trace can exceed 3 cannot get this wrong.
+/// It is **not** a NaN guard, and should not be. `clamp` propagates NaN, so a
+/// NaN argument still gives a NaN result — which is right: that means the
+/// caller already had a NaN, which is a different bug, and swallowing it here
+/// would hide it. What this fixes is the rounding overshoot, which is not a
+/// bug anywhere and cannot be avoided by the caller.
+///
+/// `clamp` rather than `max`/`min`, which §13.1 bans for their `±0.0`
+/// behaviour; `clamp` uses ordinary comparisons and has no such ambiguity.
+/// Measured: it lowers to `maxsd`/`minsd` on x86-64 and `fcmp`/`fcsel` on
+/// aarch64 — branchless on both — and costs ~13% of a 3.4 ns call.
+///
+/// **The clamp is load-bearing, measured on this repo's own data.** Computing
+/// `(tr(R) - 1) / 2` for all 3 600 compositions of `rotation_matrices()`:
+/// **685 of them exceed 1** and would return NaN unclamped, worst overshoot
+/// 8.9e-16. The identity element alone does it at D = 42.
+///
+/// **Accuracy limit, so a downstream tolerance can be checked against it.**
+/// `acos` loses half its digits at both ends (`dθ/dx = -1/√(1-x²)`): angles
+/// from this are trustworthy to **~1.4e-8 rad absolute**, and θ below ~1.5e-8
+/// is lost entirely. No downstream tolerance on an angle derived this way may
+/// be tighter than 1e-7. The icosahedral group's own angles are safe — the
+/// two ill-conditioned ones, 0 and π, come out *exactly* — and the smallest
+/// angle between sample directions is 0.277 rad, where the error is ~8e-16.
+/// If an angle ever enters a result-affecting path near 0 or π, switch to
+/// `atan2` on the axis magnitude, which is exact everywhere; that wrapper does
+/// not exist yet and should not be added speculatively.
+#[must_use]
+pub fn acos(x: f64) -> f64 {
+    libm::acos(x.clamp(-1.0, 1.0))
 }
 
 /// `x^y` for runtime `y`.

@@ -36,10 +36,10 @@ Before dispatching anyone:
 
 ```bash
 # If code exists, these must be green. Not "mostly" — green.
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run -p xtask                       # §5 fiction gate
+cargo check --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo run --locked -p xtask              # §5 fiction gate
 
 # Claim audit — for every "X was replaced by Y" comment, prove X is gone.
 # Four hand-run greps of this shape each found a live defect.

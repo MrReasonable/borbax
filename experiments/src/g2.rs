@@ -32,6 +32,11 @@
 //! locality shows it and a descriptor known to have none does not. That gate
 //! has its own tests, because a gate that cannot fail is the same mistake one
 //! level up — the same principle as exit criterion 9.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "§13.4: concordance values are ratios of non-negative counts — never NaN, \
+                  never -0.0"
+)]
 
 use crate::geodesic::Geodesic;
 use crate::molecule::Molecule;

@@ -113,10 +113,16 @@ must_use_candidate = "allow"
 lto = "thin"
 codegen-units = 1
 
-# The units newtypes (Task 2) scalarise to bare f64 in release, but in debug
-# every operator is a real function call — and the beaker harness's whole
-# value is that a chemistry-tuning iteration takes seconds. Without this,
-# that claim only holds under --release and the test suite is unpleasant.
+# The beaker harness's whole value is that a chemistry-tuning iteration takes
+# seconds, and at opt-level 0 it does not.
+#
+# What this does NOT do, measured rather than assumed: it does not make the
+# unit newtypes scalarise. They are non-generic, so cross-crate they inline
+# only under LTO or `#[inline]`, and the dev profile has no LTO — opt-level 1,
+# 2 and 3 all left `a + b * s` as two calls with register spills until
+# `#[inline]` was added to every operator in `borbax-units`. The earlier
+# version of this comment claimed opt-level 1 bought the scalarisation, which
+# was wrong; the attribute buys it, and this buys everything else.
 [profile.dev]
 opt-level = 1
 

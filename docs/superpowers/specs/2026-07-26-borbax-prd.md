@@ -239,7 +239,11 @@ Together these mean the interesting question — *what does it take for chemistr
         └───────────────┘   └──────────────────────┘
 ```
 
-A world is addressed by both seeds together, written `U-7F3A21C9 / W-0004`. Share that pair and someone else gets a bit-identical planet. Keep the universe seed and change the world seed to get a new planet under chemistry you already understand. Change the universe seed to start over in a universe where nothing you learned applies.
+A world is addressed by both seeds together **and the physics version that generated it**, written `U-7F3A21C9@1 / W-0004`. Share that and someone else gets a bit-identical planet.
+
+The version is not decoration. Today the true identity of a world is `(universe_seed, world_seed, physics, compiler)` and only the seeds are written down — which is fine while there is exactly one set of laws, and stops being fine the first time a law is added. A universe carries the physics it was generated under and is replayed under those laws forever; new laws mint a new version rather than reinterpreting old worlds. The mechanism and the rules that make an added law additive rather than destructive live in the V0 plan, at Tasks 3 and 5 — an earlier version of this sentence cited §7.1, which is the generated periodic table and contains none of it.
+
+Two things this address does **not** promise, stated here because the overclaim is tempting. It records the *physics*, not the *toolchain*: the true identity is `(universe_seed, world_seed, physics, compiler)`, and a rustc or `libm` bump still moves results under an unchanged `@1`. What versioning buys is **deliberateness** — when a replay diverges you can tell whether the laws changed — not bit-identity across time, which additionally needs the pins. And it versions the *universe*, not the world: changing world generation changes what `W-0004` produces while leaving the chemistry alone, which is a separate and currently unversioned kind of breakage. Keep the universe seed and change the world seed to get a new planet under chemistry you already understand. Change the universe seed to start over in a universe where nothing you learned applies.
 
 ---
 

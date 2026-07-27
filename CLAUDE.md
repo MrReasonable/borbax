@@ -9,8 +9,9 @@ whose chemistry is **invented from a 64-bit seed**, not modelled on the real wor
 Molecules are shapes; binding is a geometric complementarity test; catalysis,
 membranes and heredity are all downstream consequences of that single mechanism.
 
-**The repository currently contains no code.** It holds a spec and an
-implementation plan. Read them before proposing anything:
+**Tasks 1-2 of 21 are complete** — the workspace and fiction-guarantee gate,
+and `borbax-units` with the portable-transcendental chokepoint. Everything else
+is spec and plan. Read them before proposing anything:
 
 | Document | What it is |
 |---|---|
@@ -24,25 +25,83 @@ write the failing test, verify it fails for the stated reason, then implement.
 Commit after every task, conventional-commit style, with the trailer
 `MrReasonable <4990954+MrReasonable@users.noreply.github.com>`.
 
-Next action if starting fresh: **Task 1** — workspace, `.prototools`, `xtask`, CI.
+## How work reaches `main`
+
+**Worktree → commit → `/review-pr` → push → PR. Never push to `main`.**
+
+`/review-pr` runs **before** the push, not after it, and not "if the change
+looks risky". Always. Its Step 0 gate must be green before any specialist is
+dispatched — a red suite means fix the suite, not review it. All six:
+`fmt`, `clippy -D warnings`, `test`, **`test --release`**, `cargo doc`,
+`xtask`. The release leg is the one an earlier version of this sentence left
+out, which is precisely the leg whose absence let two defects ship.
+
+**Why it is unconditional, with the number attached.** Task 2 was reviewed by
+two specialists before it was committed, their findings were applied, and the
+*fixes* went to `main` having been read by nobody. A five-specialist review of
+that commit then found nine more defects — and **the two worst were in the
+fixes**, not the original code:
+
+- `impl Add for Mass` documented a bound that was false by 1024×; two values
+  the constructor accepted summed to −2 under release wrapping.
+- `canonical_cmp` documented "NaN sorts last", which was true on aarch64 and
+  false on x86-64.
+
+Both shipped **with tests that passed while the defect stood**. That is the
+recorded pattern — 6 of 7 proposed fixes rejected or materially amended in an
+earlier round — happening one level up. Finding a defect and repairing it are
+different activities, and only the first one had a process.
+
+So when reviewing work that has already been reviewed, **point the reviewers at
+the fixes** and route each to a specialist *other* than the one who proposed
+it. That framing is what surfaced both of the above.
+
+Branch protection enforces the rest server-side: PR required, all CI checks
+green, linear history, no force-push, `enforce_admins` on. Bypassing is a
+deliberate, visible act:
+`gh api -X DELETE repos/MrReasonable/borbax/branches/main/protection/enforce_admins`.
+
+Next action if starting fresh: **Task 3** — `borbax-rng`, counter-based deterministic streams.
 
 ## Commands
 
 These exist once Task 1 lands; none of them work before that.
 
 ```bash
-proto install                                          # toolchain from .prototools (Rust only)
-cargo xtask setup                                      # prek + git hooks (once per clone)
-cargo test --workspace                                 # full suite
-cargo test -p borbax-molecule signature                # one crate, one filter
-cargo test -p borbax-units --doc                       # doc tests (compile_fail unit-mixing tests live here)
-cargo xtask                                            # fiction-guarantee checks (spec §5) — CI gate
-cargo run -p borbax-experiments --release --bin g2     # G2 locality measurement (docs/experiments/)
+proto install                                                   # toolchain from .prototools (Rust only)
+cargo xtask setup                                               # prek + git hooks (once per clone)
+cargo test --locked --workspace                                 # full suite
+cargo test --locked --workspace --release                       # again, in the profile that mints goldens
+cargo test --locked -p borbax-molecule signature                # one crate, one filter
+cargo test --locked -p borbax-units --doc                       # doc tests (compile_fail unit-mixing tests live here)
+cargo xtask                                                     # fiction-guarantee checks (spec §5) — CI gate
+cargo run --locked -p borbax-experiments --release --bin g2     # G2 locality measurement (docs/experiments/)
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p borbax-cli --release -- goldens --emit    # golden state hashes (cross-platform matrix)
-UPDATE_GOLDENS=1 cargo test -p borbax-render           # regenerate SVG goldens after a deliberate render change
+cargo clippy --locked --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --no-deps --document-private-items
+cargo run --locked -p borbax-cli --release -- goldens --emit    # golden state hashes (cross-platform matrix)
+UPDATE_GOLDENS=1 cargo test -p borbax-render                    # regenerate SVG goldens after a deliberate render change
 ```
+
+**`--locked` everywhere is not decoration.** From Task 2 the workspace has a
+runtime dependency in a result-affecting path (`libm`, a caret range), so a
+stale `Cargo.lock` lets the three CI legs resolve different versions — and the
+golden matrix would report that as a portability failure in the simulation,
+which is the one diagnosis it must never give wrongly. The `cargo xtask` alias
+carries it too.
+
+**`cargo doc` is part of the gate, not a convenience.** `[workspace.lints.rustdoc]`
+denies `broken_intra_doc_links`, and *nothing else enforces it* — clippy does
+not run rustdoc lints, measured with a planted broken link that passed
+`clippy -D warnings` cleanly. Same shape as the `[lints] workspace = true`
+trap: present, believed, inert. It matters here because nearly every type
+documents its contract with intra-doc links to its siblings, and a rename rots
+them silently. It runs as its own CI job and in the pre-push hook.
+
+**Run the suite in release as well as debug.** `debug_assert!` and
+`overflow-checks` both key off `debug_assertions`, so a guard can be present in
+`cargo test` and absent from `goldens --emit`. Task 2's review found that
+defect twice, in adjacent functions. CI runs both legs.
 
 `cargo xtask` is an alias for `cargo run -p xtask --`, from the checked-in
 `.cargo/config.toml`. CI and the git hooks deliberately keep the long form:

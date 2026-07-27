@@ -113,6 +113,83 @@ const BANNED_CALLS: &[&str] = &[
     "f64::cbrt",
     "f64::hypot",
     "f64::mul_add",
+    // Both float widths, matching `clippy.toml`. §13.4 says f64 everywhere in
+    // simulation arithmetic, but `borbax-render` may legitimately use f32 for
+    // output and its SVG goldens are compared byte-for-byte across the matrix,
+    // so an `f32::sin` there diverges just as an f64 one would. The method
+    // spellings above (`.exp()` and friends) are type-blind and already catch
+    // f32; only the path forms need mirroring.
+    "f32::exp",
+    "f32::ln",
+    "f32::log",
+    "f32::sin",
+    "f32::cos",
+    "f32::tan",
+    "f32::asin",
+    "f32::acos",
+    "f32::atan",
+    "f32::sinh",
+    "f32::cosh",
+    "f32::tanh",
+    "f32::asinh",
+    "f32::acosh",
+    "f32::atanh",
+    "f32::powf",
+    "f32::powi",
+    "f32::cbrt",
+    "f32::hypot",
+    "f32::mul_add",
+    // `max`/`min` in path form only. The method spelling `x.max(y)` is
+    // deliberately absent: it is type-blind here, and `a.len().min(b.len())`
+    // is `Ord::min` on a `usize`, which is perfectly deterministic. Banning
+    // `.min(` as text would fire on every integer clamp in the workspace, and
+    // a check that cries wolf gets relaxed. Clippy resolves the type and has
+    // no such problem, which is the clearest single case for why it is the
+    // authority and this is the second pass.
+    "f64::max",
+    "f64::min",
+    "f32::max",
+    "f32::min",
+    // Path forms previously "covered" only by prefix accident — `f64::atan`
+    // happening to be a substring of `f64::atan2`. Requiring an exact match in
+    // the agreement test is what surfaced them.
+    "f64::log2",
+    "f64::log10",
+    "f64::sin_cos",
+    "f64::atan2",
+    "f32::log2",
+    "f32::log10",
+    "f32::sin_cos",
+    "f32::atan2",
+    "f32::exp2",
+    "f32::exp_m1",
+    "f32::ln_1p",
+];
+
+/// §13.4 — parallel iteration, which reorders float reductions.
+///
+/// `impl Sum for Quanta` is *exactly* the bound `rayon`'s
+/// `ParallelIterator::sum` requires, so `iter()` → `par_iter()` is a one-word
+/// change that compiles, typechecks, passes clippy and is invisible in review.
+/// Measured on the shipped `Sum` shape: five thread counts gave five different
+/// answers, while the serial fold was stable at all of them.
+///
+/// Guarded here rather than in `clippy.toml` because rayon is not a dependency,
+/// so there is no path for `disallowed-methods` to resolve — a text scan is the
+/// only check available until the day it would be too late to add one.
+///
+/// Integer reductions are exempt in principle (`Sum for Mass` is associative
+/// and exact), but not in this check: the spelling is identical, and the
+/// day someone genuinely wants a parallel `Mass` sum is a day for a per-site
+/// `#[allow]` and a determinism review, not a hole in a grep.
+const BANNED_PARALLEL_CALLS: &[&str] = &[
+    ".par_iter()",
+    ".par_iter_mut()",
+    ".into_par_iter()",
+    ".par_bridge()",
+    ".par_sort",
+    ".par_chunks",
+    ".par_extend(",
 ];
 
 /// Directories scanned for §13.1 violations, relative to the workspace root.
@@ -207,7 +284,15 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_no_platform_transcendentals(root, &mut failures)?;
 
     if failures.is_empty() {
-        println!("repository invariants: all checks passed");
+        // Deliberately not an unqualified "all checks passed". The §13.1 scan
+        // here is textual and cannot see `<f64>::sin(x)`; its doc says an
+        // absence means nothing on its own, and a doc comment on a private
+        // function does not reach the person reading hook output. Naming the
+        // authority in the success line is the only place that lands.
+        println!(
+            "repository invariants: all checks passed \
+             (§13.1 textually — clippy::disallowed_methods is the authority)"
+        );
         Ok(())
     } else {
         for f in &failures {
@@ -443,6 +528,15 @@ fn scan_rust_source(rel: &str, src: &str, failures: &mut Vec<String>) {
                     ));
                 }
             }
+            for call in BANNED_PARALLEL_CALLS {
+                if code.contains(call) {
+                    failures.push(format!(
+                        "§13.4: parallel iteration {call} at {rel}:{} — float reductions \
+                         must fold in index order",
+                        i + 1
+                    ));
+                }
+            }
         }
 
         let mut opens: i64 = 0;
@@ -586,15 +680,18 @@ fn strip_comments_and_literals(line: &str, lex: &mut LexState) -> String {
 /// `(hash count, prefix length in chars)` if a raw string literal opens at
 /// `start`, which must be its `r`.
 ///
-/// The `r` has to start a token, or the `r` in `for` would open one. A `b`
-/// immediately before it is allowed, for `br"..."`.
+/// The `r` has to start a token, or the `r` in `for` would open one. A `b` or
+/// `c` immediately before it is allowed, for `br"..."` and `cr"..."` — Rust
+/// has three raw-string prefixes and the first version of this function knew
+/// about two, which left `cr#"` reproducing the exact silent-blinding bug the
+/// function was written to prevent.
 fn raw_string_prefix(chars: &[char], start: usize) -> Option<(usize, usize)> {
     let preceded_by = |k: usize| chars.get(start.checked_sub(k)?).copied();
     if start > 0 {
         let prev = preceded_by(1)?;
-        let byte_string_prefix = prev == 'b'
+        let literal_prefix = (prev == 'b' || prev == 'c')
             && (start < 2 || preceded_by(2).is_none_or(|p| !p.is_alphanumeric() && p != '_'));
-        if !byte_string_prefix && (prev.is_alphanumeric() || prev == '_') {
+        if !literal_prefix && (prev.is_alphanumeric() || prev == '_') {
             return None;
         }
     }
@@ -667,7 +764,7 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
 /// each way it could miscount gets a test.
 #[cfg(test)]
 mod tests {
-    use super::scan_rust_source;
+    use super::{BANNED_CALLS, scan_rust_source};
 
     fn scan(src: &str) -> Vec<String> {
         let mut failures = Vec::new();
@@ -743,6 +840,161 @@ mod tests {
         let src = "fn f() {\n    let _a = r\"{ .exp() \";\n    let _b = r#\"} .cos()\"#;\n\
                    let _c = br##\"{{ .powf( \"##;\n}\n";
         assert!(scan(src).is_empty(), "{:?}", scan(src));
+    }
+
+    /// Rust has three raw-string prefixes and the first version of
+    /// `raw_string_prefix` knew about two, so `cr#"` reproduced the exact
+    /// silent-blinding bug the function exists to prevent. The original test
+    /// used `r#` only, which is why it passed.
+    #[test]
+    fn every_raw_string_prefix_is_recognised() {
+        for prefix in ["r", "br", "cr"] {
+            let src = format!(
+                "fn open() -> T {{ {prefix}#\"<path d=\"M0 0\"# }}\n\
+                 fn hidden(x: f64) -> f64 {{ x.exp() }}\n\
+                 fn close() -> T {{ {prefix}#\"<path d=\"M1 1\"# }}\n"
+            );
+            let found = scan(&src);
+            assert_eq!(found.len(), 1, "prefix {prefix:?} -> {found:?}");
+            assert!(
+                found.first().is_some_and(|f| f.contains(".exp()")),
+                "prefix {prefix:?} -> {found:?}"
+            );
+        }
+    }
+
+    /// The two ban lists are the redundancy that makes a deleted `clippy.toml`
+    /// entry survivable, and redundancy only works while it agrees. Nothing
+    /// else keeps them in step, and they were already one short on day one —
+    /// four `clippy.toml` names were covered in `BANNED_CALLS` only by prefix
+    /// containment (`f64::atan` matching `f64::atan2`), which is coverage by
+    /// accident rather than by intent.
+    /// `.min(` in a text scan fires on `a.len().min(b.len())`, which is
+    /// `Ord::min` on a `usize` and perfectly deterministic. A check that cries
+    /// wolf gets relaxed, so these keep the path form only.
+    const METHOD_FORM_IS_TYPE_BLIND: &[&str] = &["max", "min"];
+
+    /// Enforced by clippy alone, because they have legitimate library-code
+    /// uses that need a per-site `#[expect]` — which the text scan cannot
+    /// express, and deliberately so.
+    const CLIPPY_ONLY: &[&str] = &["total_cmp"];
+
+    #[test]
+    fn the_two_ban_lists_cover_the_same_functions() {
+        let clippy_toml = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("clippy.toml"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        assert!(!clippy_toml.is_empty(), "clippy.toml not found or empty");
+
+        let mut missing = Vec::new();
+        for line in clippy_toml.lines() {
+            let Some(rest) = line.split_once("path = \"") else {
+                continue;
+            };
+            let Some((path, _)) = rest.1.split_once('"') else {
+                continue;
+            };
+            let Some((_, func)) = path.split_once("::") else {
+                continue;
+            };
+            // Both spellings required, and the method match exact.
+            //
+            // This was a prefix match, so `.sinh()` "covered" `sin`, `.exp2()`
+            // covered `exp` and `.ln_1p()` covered `ln`. Measured: deleting
+            // *both* spellings of `exp`, `ln`, `sin` and `cos` left this test
+            // green — the four functions with `det_math` wrappers and the four
+            // §13.1 names. Coverage by accident, which is the thing this test
+            // exists to prevent, reintroduced in the other direction.
+            // The deliberate divergences, named rather
+            // than hidden by a loose predicate. The method spelling `.min(` is
+            // type-blind in a text scan, and `a.len().min(b.len())` is
+            // `Ord::min` on a `usize` — perfectly deterministic. Banning it as
+            // text would fire on every integer clamp in the workspace, and a
+            // check that cries wolf gets relaxed. Clippy resolves the type and
+            // has no such problem, which is the clearest single case for why it
+            // is the authority and this is the second pass.
+            //
+            // `total_cmp` diverges for a different reason: it has legitimate
+            // uses in library code, each needing a *per-site* exemption, and
+            // the text scan deliberately cannot express one — an `#[expect]`
+            // smuggling a call past clippy is still reported here, which is a
+            // feature. So it lives in `clippy.toml` alone, where `#[expect]`
+            // works and the reason travels with the call site.
+            let path_exempt = CLIPPY_ONLY.contains(&func);
+            let method_exempt = path_exempt || METHOD_FORM_IS_TYPE_BLIND.contains(&func);
+
+            let has_path = BANNED_CALLS.contains(&path);
+            let has_method = BANNED_CALLS
+                .iter()
+                .any(|b| *b == format!(".{func}()") || *b == format!(".{func}("));
+            if !(has_path || path_exempt) || !(has_method || method_exempt) {
+                missing.push(format!(
+                    "{path} (path: {}, method: {})",
+                    if has_path { "ok" } else { "MISSING" },
+                    if has_method { "ok" } else { "MISSING" }
+                ));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "in clippy.toml but not BANNED_CALLS: {missing:?} — the text scan is \
+             the only thing that would catch one of these being deleted from \
+             clippy.toml, so it has to know about them"
+        );
+
+        // The other direction, which nothing checked: `clippy.toml` is the
+        // authority, so a path silently disappearing from *it* is the more
+        // dangerous of the two edits.
+        let mut orphaned = Vec::new();
+        for banned in BANNED_CALLS {
+            let Some((width, func)) = banned.split_once("::") else {
+                continue;
+            };
+            if width != "f64" && width != "f32" {
+                continue;
+            }
+            if !CLIPPY_ONLY.contains(&func)
+                && !clippy_toml.contains(&format!("path = \"{width}::{func}\""))
+            {
+                orphaned.push((*banned).to_owned());
+            }
+        }
+        assert!(
+            orphaned.is_empty(),
+            "in BANNED_CALLS but not clippy.toml: {orphaned:?} — clippy is the \
+             authority, so a path missing there is unenforced everywhere clippy \
+             can see, which is almost everywhere"
+        );
+    }
+
+    /// `impl Sum for Quanta` is exactly `rayon::ParallelIterator::sum`'s
+    /// bound, so this is a one-word change that compiles and passes clippy.
+    /// rayon is not a dependency, so `disallowed-methods` has no path to
+    /// resolve and this text scan is the only check available.
+    #[test]
+    fn parallel_reductions_are_reported() {
+        for call in [
+            "v.par_iter().sum::<Quanta>()",
+            "v.into_par_iter().map(f).sum::<Quanta>()",
+            "v.par_sort_by(cmp)",
+            "v.par_bridge().count()",
+        ] {
+            let src = format!("fn f(v: Vec<Quanta>) {{ let _ = {call}; }}\n");
+            let found = scan(&src);
+            assert_eq!(found.len(), 1, "{call:?} -> {found:?}");
+            assert!(
+                found.first().is_some_and(|f| f.contains("§13.4")),
+                "{found:?}"
+            );
+        }
+    }
+
+    /// A serial fold must not be mistaken for a parallel one.
+    #[test]
+    fn serial_iteration_is_left_alone() {
+        assert!(scan("fn f(v: Vec<Quanta>) { let _ = v.iter().sum::<Quanta>(); }\n").is_empty());
     }
 
     /// The `r` in `for` must not open a raw string.
