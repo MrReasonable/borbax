@@ -793,9 +793,6 @@ mod tests {
         }
     }
 
-    /// The real calibration check, run against the actual molecule generator
-    /// rather than synthetic numbers. Both regimes, because a control that
-    /// only works when sizes differ is not controlling for shape.
     /// **The gate must fail when the geometry is broken, and before this it
     /// did not.** Measured: replacing `embed` with one returning every atom at
     /// the origin left the harness printing "controls: PASS — the descriptor
@@ -869,6 +866,9 @@ mod tests {
         assert_eq!(check_geometry_is_live(), Ok(()));
     }
 
+    /// The real calibration check, run against the actual molecule generator
+    /// rather than synthetic numbers. Both regimes, because a control that
+    /// only works when sizes differ is not controlling for shape.
     #[test]
     fn the_controls_calibrate_in_both_regimes() {
         for size_matched in [false, true] {
