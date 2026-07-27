@@ -24,6 +24,40 @@ write the failing test, verify it fails for the stated reason, then implement.
 Commit after every task, conventional-commit style, with the trailer
 `MrReasonable <4990954+MrReasonable@users.noreply.github.com>`.
 
+## How work reaches `main`
+
+**Worktree → commit → `/review-pr` → push → PR. Never push to `main`.**
+
+`/review-pr` runs **before** the push, not after it, and not "if the change
+looks risky". Always. Its Step 0 gate (`fmt`, `clippy -D warnings`, `test`,
+`cargo doc`, `xtask`) must be green before any specialist is dispatched — a
+red suite means fix the suite, not review it.
+
+**Why it is unconditional, with the number attached.** Task 2 was reviewed by
+two specialists before it was committed, their findings were applied, and the
+*fixes* went to `main` having been read by nobody. A five-specialist review of
+that commit then found nine more defects — and **the two worst were in the
+fixes**, not the original code:
+
+- `impl Add for Mass` documented a bound that was false by 1024×; two values
+  the constructor accepted summed to −2 under release wrapping.
+- `canonical_cmp` documented "NaN sorts last", which was true on aarch64 and
+  false on x86-64.
+
+Both shipped **with tests that passed while the defect stood**. That is the
+recorded pattern — 6 of 7 proposed fixes rejected or materially amended in an
+earlier round — happening one level up. Finding a defect and repairing it are
+different activities, and only the first one had a process.
+
+So when reviewing work that has already been reviewed, **point the reviewers at
+the fixes** and route each to a specialist *other* than the one who proposed
+it. That framing is what surfaced both of the above.
+
+Branch protection enforces the rest server-side: PR required, all CI checks
+green, linear history, no force-push, `enforce_admins` on. Bypassing is a
+deliberate, visible act:
+`gh api -X DELETE repos/MrReasonable/borbax/branches/main/protection/enforce_admins`.
+
 Next action if starting fresh: **Task 1** — workspace, `.prototools`, `xtask`, CI.
 
 ## Commands

@@ -1,18 +1,35 @@
 ---
 name: review-pr
-description: Review a Borbax branch or pull request with the six specialist agents, reconciled through a coordinator. Use before merging, after implementing a task, and on any diff touching the chemistry, reaction or simulation crates. The determinism and emergence auditors should run on every commit that touches physics — those are the two invariants no test suite fully protects.
+description: Review a Borbax branch or pull request with the six specialist agents, reconciled through a coordinator. Run before EVERY push, not only before merging — CLAUDE.md makes it unconditional. Also use after implementing a task and on any diff touching the chemistry, reaction or simulation crates. The determinism and emergence auditors should run on every commit that touches physics — those are the two invariants no test suite fully protects.
 ---
 
 # Review Pull Request
+
+**This runs before the push, not after it.** Worktree → commit → `/review-pr`
+→ push → PR, per CLAUDE.md. Reviewing after the code has landed on `main` is
+how Task 2's fixes reached trunk unread.
 
 ## Step 0 — The suite must be green before anyone is dispatched
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run -p xtask                       # §5 fiction gate
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo test --locked --workspace --release          # guards that vanish with debug_assertions
+RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --no-deps --document-private-items
+cargo run --locked -p xtask                        # §5 fiction gate
 ```
+
+This list is the whole CI gate, and each entry earns its place by having caught
+something the others missed:
+
+- **`--release`** — `debug_assert!` and `overflow-checks` key off
+  `debug_assertions`, so a guard can be present in `cargo test` and absent from
+  the profile that mints goldens. Task 2's review found that defect twice.
+- **`cargo doc`** — clippy does not run rustdoc lints, measured. Without this,
+  `[workspace.lints.rustdoc]`'s `deny` on `broken_intra_doc_links` is inert.
+- **`--locked`** — the workspace has a runtime dependency in a result-affecting
+  path, so a stale lockfile lets the three CI legs resolve different versions.
 
 **Red suite, no review.** Specialists are for logic, architecture and approach;
 a compiler is better than all six at compilation and runs in seconds. Sending
@@ -21,6 +38,20 @@ you, and buries the findings only they can produce.
 
 The one exception is a build broken in a way you do not understand — then a
 reviewer is diagnosing, not reviewing, and should be told which it is.
+
+## Step 0b — If the work has already been reviewed, review the *fixes*
+
+A second review that re-reads the original code finds the same things and
+misses what matters. Measured on Task 2: two specialists reviewed it
+pre-commit, the findings were applied, and a five-specialist review of the
+result found nine more defects — **the two worst of them in the fixes**, both
+shipped alongside tests that passed while the defect stood.
+
+So when the diff carries repairs from an earlier round, tell the reviewers so,
+list what each finding was and what changed in response, and **route each fix
+to a specialist other than the one who proposed it**. State plainly that their
+job is to check whether each fix has the *property* the finding demanded, not
+whether it looks plausible.
 
 **Announce:** "Using review-pr to review `<target>` with the specialist fleet."
 
