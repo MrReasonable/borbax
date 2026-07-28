@@ -278,7 +278,6 @@ Each element carries:
 | `radius` | Steric size; contributes to shape extent |
 | `bond_energies` | Per-partner-group bond strength matrix |
 | `stability` | Decay probability. Unstable elements are both an energy source and a mutation source. |
-| `phase_points` | Melt and boil thresholds in thermals |
 | `catalytic_class` | Which reaction families this element promotes when exposed on a mineral surface |
 
 ### 7.2 Validation — is this universe worth simulating?

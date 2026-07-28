@@ -683,6 +683,31 @@ mod tests {
         }
     }
 
+    /// §7.1 needs *families* — "everything in this column behaves alike" is the
+    /// moment the table becomes learnable rather than watchable. Position in a
+    /// drawn period was the old answer and it caused nothing.
+    ///
+    /// The fusion answer: the element one unit past any closure is a closed
+    /// core plus a single adhering unit, and that unit has all six of its
+    /// lateral contacts unmade wherever it sits. So it has exactly one docking
+    /// notch, in every shell and every universe. That is a family with a cause.
+    #[test]
+    fn elements_one_past_a_closure_all_have_valence_one() {
+        for k in 6..=14_usize {
+            let c = Consts { k, ..consts() };
+            let t = derive_table(c, 200);
+            for close in closures(k, 199) {
+                let next = t.get(close).copied();
+                assert!(
+                    next.is_some_and(|e| e.valence == 1),
+                    "k={k}: N={} follows closure {close} with valence {:?}, not 1",
+                    close + 1,
+                    next.map(|e| e.valence)
+                );
+            }
+        }
+    }
+
     /// A per-*site* count caps at `z - 6`, which is why the first draft could
     /// not exceed 6. A count over sites has no such ceiling, and §7.2 needs the
     /// tail to reach 8 for a high-functionality species to exist at all.
