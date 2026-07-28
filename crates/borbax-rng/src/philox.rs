@@ -9,10 +9,26 @@
 //! **Why a published algorithm rather than the hand-rolled mixer this crate
 //! started with.** Two properties, and only the second needed a paper:
 //!
-//! 1. It is a **bijection of the counter for any fixed key**. Both multipliers
-//!    are odd, so each round is invertible, so the ten-round composition is.
-//!    That means distinct counters give distinct output — *by construction*,
-//!    not below a birthday bound.
+//! 1. It is a **bijection of the counter for any fixed key**, so distinct
+//!    counters give distinct output *by construction* rather than below a
+//!    birthday bound. Odd multipliers are necessary for that but **not
+//!    sufficient**, and the sufficient part is the one worth writing down: a
+//!    round emits `lo`, from which the input word is recoverable because
+//!    `mullo(·, M)` is a bijection for odd `M`; the non-injective `hi` is only
+//!    ever XOR-mixed into a lane recovered from a *different* low half. That
+//!    Feistel pairing is what makes the round invert. Measured on a toy width
+//!    with the same odd multiplier: emitting `hi` instead of `lo` is *not*
+//!    bijective. "Any odd multiplier, any arrangement" is false, and the
+//!    earlier wording licensed it.
+//!
+//!    Bijectivity is also **round-count independent** — one round is a
+//!    bijection too — so it buys non-collision and nothing else. What buys
+//!    *independence* between streams differing only in a low-entropy counter
+//!    field is diffusion, which is bought entirely by rounds. Measured at one
+//!    round: `Decay` and `Shadow` emit literally identical values in two of
+//!    four words while distinctness still reads 40000/40000. Salmon et al.,
+//!    footnote 11: "four-round Philox fails the avalanche criterion and is
+//!    inadequate as a PRNG."
 //! 2. That turns the stream-collision problem into a packing problem. The
 //!    earlier design hashed `(seed, domain, index)` — 192 bits of coordinate —
 //!    into a 64-bit key, which admits permanent collisions the seed cannot
@@ -26,14 +42,30 @@
 //! block are placed, with nothing spare and no room for §13.1's
 //! `(universe_seed, world_seed, config_hash)` tuple. 4x64 carries a 128-bit
 //! key and a 256-bit counter. It also emits four `u64` per block rather than
-//! two, which happens to halve the per-draw cost.
+//! two, which halves the number of Philox *invocations* per draw — not the
+//! time: the paper's Table 2 puts 4x64-10 at 3.2 cpB against 2x64-10's 4.3,
+//! which is 26% cheaper per byte, not 50%.
+//!
+//! **We inherit Philox; we do not inherit the paper's partitioning
+//! validation.** §2.2.1 is explicit that stream partitioning needs its own
+//! checking, and the partitions they sampled are affine in a single scalar
+//! counter — where ours gives each coordinate its own 64-bit word, so the
+//! per-draw coordinate sits in `ctr[3]` and enters a multiply only from round
+//! 2 (9 rounds of diffusion against the 7 shown sufficient). Ample margin, and
+//! measured: `PractRand` finds no anomaly at 1–2 GB on the raw stream, on nine
+//! interleaved domains, on 64 interleaved forks, on the top, middle and bottom
+//! 32 bits, and on Box-Muller's `(u1, u2)` pairs. That is "no evidence of a
+//! problem at this scale", not a replication of `Crush`-resistance.
 //!
 //! **Portability.** Every operation here is `u64` wrapping arithmetic, `XOR`,
 //! and a full 64×64→128 multiply via `u128`. All are exactly specified; there
 //! is no float, no dispatch, no intrinsic and no `unsafe`. The one thing worth
-//! naming is that `u128` multiplication lowers to `umulh`+`mul` on aarch64 and
-//! `mulx` on x86-64 — different instructions computing the same exactly
-//! defined product.
+//! naming is that `u128` multiplication lowers to `mul`+`umulh` on aarch64 and
+//! to the one-operand `mul` on x86-64 — different instructions computing the
+//! same exactly specified product. (Not `mulx`: that is BMI2, and neither CI
+//! leg enables it. Three reviewers measured `mulq` at our baseline
+//! independently, and the digest is identical across the `mulq`/`mulx` split
+//! anyway.)
 //!
 //! **What makes this trustworthy is the test, not the citation.** The three
 //! published known-answer vectors are asserted in this file. A crate reviewed
@@ -53,10 +85,18 @@ const W0: u64 = 0x9E37_79B9_7F4A_7C15;
 /// Key-schedule increment for word 1 — √3 − 1 (`PHILOX_W64_1`).
 const W1: u64 = 0xBB67_AE85_84CA_A73B;
 
-/// The published round count. Salmon et al. show 7 rounds already pass
-/// `BigCrush`; 10 is the standard margin and is what the reference vectors
-/// are computed at. Changing it changes every number this project will ever
-/// produce.
+/// The reference implementation's default (`PHILOX4x64_DEFAULT_ROUNDS`), and
+/// the count the authors themselves recommend: "variants with additional
+/// rounds as a safety margin … We favor use of the latter variants".
+///
+/// Salmon et al. verified *`Crush`-resistance* — `SmallCrush`, Crush and `BigCrush`
+/// across their parallel-stream sampling — at **7** rounds for this variant.
+/// The `philox.h` wording is weaker and dated ("As of September 2011, the
+/// authors know of no statistical flaws with ROUNDS=7 or more"), and the
+/// neighbouring 4x32 claim was later walked back to 8. The KAT file publishes
+/// vectors at both 7 and 10; we assert the 10-round ones.
+///
+/// Changing this changes every number this project will ever produce.
 const ROUNDS: usize = 10;
 
 /// Full 64×64 → 128 multiply, returned as `(high, low)`.
@@ -96,6 +136,14 @@ const fn round(ctr: [u64; 4], key: [u64; 2]) -> [u64; 4] {
 ///
 /// Stateless and pure: the whole point is that block `n` is computable
 /// directly, without having produced blocks `0..n`.
+///
+/// **No `#[inline]`, deliberately and measurably.** [`super::Stream::next_u64`]
+/// carries one and wants it (+34.5% dev without); this does not. Measured:
+/// `#[inline]` here is 8.1% worse on the fold-step shape, and
+/// `#[inline(always)]` is 17.1% worse on bulk draws — the body is 200
+/// instructions with all ten rounds unrolled, so inlining it at every call
+/// site costs more in code size than it saves in call overhead. Recorded so
+/// the next reviewer does not re-run that afternoon.
 #[must_use]
 #[expect(
     clippy::redundant_pub_crate,
@@ -184,19 +232,78 @@ mod tests {
         }
     }
 
-    /// The property the whole design rests on: distinct counters give distinct
-    /// output under a fixed key. Asserted directly over the coordinate layout
-    /// `Stream` actually uses, because "provably distinct" is the claim that
-    /// replaced a birthday bound and it should not rest on the word "provably".
+    /// The property the whole design rests on, tested by **inverting** the
+    /// function rather than by counting outputs.
+    ///
+    /// **The first version of this test counted distinct blocks and asserted
+    /// the count — which passes for any function with 256-bit output.**
+    /// Measured: with `M0`'s low bit cleared — the single change that
+    /// falsifies "both multipliers are odd, so each round is invertible" —
+    /// it still reported 18000 distinct of 18000 and passed, while a
+    /// hand-constructed collision existed. Its own doc said the claim
+    /// "should not rest on the word provably", and it rested on the
+    /// birthday bound it was written to replace.
+    ///
+    /// An explicit inverse cannot pass for a non-bijection.
     #[test]
-    fn distinct_counters_give_distinct_blocks() {
-        let mut seen = std::collections::BTreeSet::new();
-        for domain in 1..=9_u64 {
-            for index in 0..2000_u64 {
-                seen.insert(philox4x64_10([domain, index, 0, 0], [0x5EED, 0]));
+    #[expect(
+        clippy::as_conversions,
+        clippy::indexing_slicing,
+        reason = "the inverse mirrors the kernel's own 128-bit product and fixed-size [u64; 4] \
+                  indexing; both are bounded by construction, as in `mulhilo` and `round`"
+    )]
+    fn the_kernel_is_invertible() {
+        /// `m^-1 mod 2^64` by Newton iteration; exists iff `m` is odd.
+        fn inverse_of(m: u64) -> u64 {
+            let mut inv = m;
+            for _ in 0..6 {
+                inv = inv.wrapping_mul(2u64.wrapping_sub(m.wrapping_mul(inv)));
             }
+            inv
         }
-        assert_eq!(seen.len(), 9 * 2000, "counters collided");
+        let (i0, i1) = (inverse_of(super::M0), inverse_of(super::M1));
+        assert_eq!(
+            super::M0.wrapping_mul(i0),
+            1,
+            "M0 is not odd — no inverse exists"
+        );
+        assert_eq!(
+            super::M1.wrapping_mul(i1),
+            1,
+            "M1 is not odd — no inverse exists"
+        );
+
+        // Invert one round: recover ctr[0] from out[3] and ctr[2] from out[1],
+        // then the high halves, then un-XOR the remaining two lanes.
+        let inv_round = |out: [u64; 4], key: [u64; 2]| -> [u64; 4] {
+            let c0 = out[3].wrapping_mul(i0);
+            let c2 = out[1].wrapping_mul(i1);
+            let hi0 = ((u128::from(super::M0) * u128::from(c0)) >> 64) as u64;
+            let hi1 = ((u128::from(super::M1) * u128::from(c2)) >> 64) as u64;
+            [c0, out[0] ^ hi1 ^ key[0], c2, out[2] ^ hi0 ^ key[1]]
+        };
+
+        let mut s = 0x5EED_u64;
+        for _ in 0..20_000 {
+            // A cheap in-test stirrer; its quality is irrelevant, only coverage.
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let ctr = [s, s ^ 0xAAAA, s.rotate_left(17), s.rotate_right(29)];
+            let key = [s ^ 0x1234, s.rotate_left(41)];
+            let out = philox4x64_10(ctr, key);
+            // Walk the key schedule forward, then invert the rounds backward.
+            let mut ks = [key; 10];
+            for i in 1..10 {
+                ks[i] = [
+                    ks[i - 1][0].wrapping_add(super::W0),
+                    ks[i - 1][1].wrapping_add(super::W1),
+                ];
+            }
+            let mut c = out;
+            for i in (0..10).rev() {
+                c = inv_round(c, ks[i]);
+            }
+            assert_eq!(c, ctr, "philox4x64-10 failed to invert");
+        }
     }
 
     /// Philox is a bijection of the counter, so it cannot map two counters to
