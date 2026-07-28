@@ -15,9 +15,13 @@
 //! *not* portability: `rand_chacha` and `rand_pcg` are pure integer
 //! arithmetic and are bit-identical across our three targets. The two real
 //! reasons are that `rand` guarantees value stability only across *patch*
-//! releases and has already broken it in a minor bump (0.10.0's changelog
-//! lists Canon's and Lemire's methods for `Uniform`, "breaks value
-//! stability"), and that `rand_distr`'s normal calls `f64::exp` and
+//! releases and has already broken it in a minor bump (0.9.0's changelog
+//! has a "Reproducibility-breaking optimisations" section listing Canon's
+//! and Lemire's methods for `Uniform`, "breaks value stability"). Note the
+//! break is *not* lockfile-silent — cargo will not cross a 0.x minor, so
+//! `rand = "0.9"` stays on 0.9.x — which makes this a weaker analogy to the
+//! `libm` hazard than it first appears; the policy is the reason, not the
+//! drift. The second is that `rand_distr`'s normal calls `f64::exp` and
 //! `f64::ln` — the exact paths `clippy.toml` denies, invisible to clippy
 //! because they sit inside the dependency. What is left to outsource after
 //! `next_f64`, `next_range` and `next_normal` are ours anyway is the
@@ -26,8 +30,16 @@
 //! **The key is 64 bits wide, and that is a bound worth knowing.** A stream's
 //! whole output is determined by one `u64`, so distinct streams are
 //! *probabilistically* rather than provably distinct — unlike Philox and
-//! Threefry, which carry 128-bit keys precisely so the simulation's own
-//! indices can be embedded rather than hashed down. Expected colliding stream
+//! Threefry, whose 192-bit or wider `(key, counter)` tuple lets the
+//! simulation's own indices be *embedded* rather than hashed down. (Philox4x32
+//! is 64-bit key + 128-bit counter = exactly the 192 bits `Stream::new` hashes
+//! into 64. An earlier version of this sentence said those families carry
+//! 128-bit keys; they do not, and the correction matters because adopting one
+//! would fix nothing unless the coordinates went in the *counter*.) Salmon et
+//! al. put it directly: "(key, counter) tuples must never be improperly
+//! re-used, since an inadvertent re-use of the same tuple will result in
+//! exactly the same random number, with potentially dire consequences for
+//! simulation accuracy." Expected colliding stream
 //! pairs among `S` streams is about `S²/2⁶⁵`: negligible at 10⁶ streams
 //! (3e-8), around 0.5 at 2³², and expected-many if anything ever opens a
 //! stream per molecule per step. Two colliding streams emit *identical*
@@ -36,13 +48,29 @@
 
 #![no_std]
 
-// `core` is all the library needs. `#![no_std]` is not portability theatre
-// here — it is the enforcement that [`Stream::next_u64`]'s doc comment
-// describes: with `std` out of scope, a clock, an allocator or a thread-local
-// is a compile error rather than a review finding. Verified with a planted
-// `std::time::Instant::now()` and a planted `HashMap`, which give
-// `E0433: failed to resolve: use of unresolved module or unlinked crate`
-// rather than passing silently.
+// `core` is all the library needs. What this does and does not buy, measured
+// rather than asserted, because the first version of this comment overclaimed
+// it:
+//
+//   DOES block path-based `std` — a planted `std::time::Instant::now()` and a
+//   planted `HashMap` both give `E0433`. Those are real §13.1 hazards and this
+//   stops them at the crate boundary rather than in review.
+//
+//   DOES NOT block `x.exp()`, `x.ln()`, `x.cos()`, `x.powf()` or
+//   `x.mul_add()`. All five still compile here. They are *inherent* impls on
+//   the `f64` primitive contributed by `std`, and `std` is still in the crate
+//   graph because `borbax-units` links it; rustc collects primitive inherent
+//   impls from every loaded crate regardless of this attribute. So the one
+//   §13.1 hazard this crate actually trips — `ln`/`cos` in `normal_from` — is
+//   NOT protected here. `clippy::disallowed_methods` remains the sole
+//   authority, exactly as it was before.
+//
+// One inversion worth recording: `f64::sqrt` resolves here *because*
+// `borbax-units` links `std`. `next_down`, `MIN_POSITIVE`, `abs` and `TAU` all
+// come from `core`, but `sqrt` does not — so if `borbax-units` ever becomes
+// `no_std` (plausible; `det_math` is `libm`-backed and `libm` is `no_std`),
+// this crate stops compiling with `E0599`. That is the wrong direction for the
+// crate order and should be fixed there, not worked around here.
 #[cfg(test)]
 extern crate std;
 
@@ -86,8 +114,13 @@ use borbax_units::det_math;
 // `Ord` is not decoration. Without it `BTreeMap<Domain, _>` does not compile
 // while `HashMap<Domain, _>` does, so the public API would be steering every
 // downstream crate toward the container §13.1 bans in result-affecting paths.
-// The order is the discriminant order the whole append-only argument rests on,
-// which is what `ordering_agrees_with_discriminant` pins.
+// The order is the discriminant order the whole append-only argument rests on.
+// Note *why* that is free: derived `Ord` on a fieldless enum compares the
+// discriminant VALUE, not the declaration index, so a derive and the
+// discriminant order cannot disagree — an earlier version of this comment
+// claimed a reordered enum would break them apart, which is impossible. What
+// `ordering_agrees_with_discriminant` actually guards is a hand-written `impl
+// Ord`, which it does catch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u64)]
 pub enum Domain {
@@ -101,7 +134,8 @@ pub enum Domain {
     Fold = 4,
     /// Reaction selection and outcome.
     Reaction = 5,
-    /// Decay *outcomes* — which bond, which neighbour (§9.4).
+    /// Decay *outcomes* — which bond orbit of the species, which neighbouring
+    /// *species* drawn from abundance (§9.4).
     ///
     /// Not decay scheduling. §9.5 is emphatic that decay is not separate
     /// machinery: thermal cleavage is "one more channel in the same scheduler
@@ -126,13 +160,32 @@ pub enum Domain {
     /// from the live run's, and whether that is wanted is an open question,
     /// not a settled one. §15.3 makes every emergence claim a `run − shadow`
     /// difference, and a paired difference estimated from one run and one
-    /// shadow has far lower variance under common random numbers than under
-    /// independent streams. Against that, common random numbers decouple in a
-    /// Gillespie setting once the two paths fire different reactions, so the
-    /// benefit is not free and depends on indexing draws per reaction channel.
-    /// Both uses are reachable from `(seed, domain, index)` — the replicate
-    /// number is what `index` is for. **Decide it in Task 15/20; do not read
-    /// this variant as having decided it.**
+    /// shadow *can* have far lower variance under common random numbers than
+    /// under independent streams — "can", because Glasserman and Yao (1992)
+    /// find the class of systems for which CRN is *provably* advantageous
+    /// "rather limited". Against that, common random numbers decouple in a
+    /// Gillespie setting as the integrated intensities diverge; indexing draws
+    /// per reaction channel (the common-reaction-path method) *reduces but
+    /// does not remove* that, and Anderson (2012) shows it decouples too.
+    ///
+    /// **And the whole literature is for infinitesimal parameter
+    /// perturbations.** `run − shadow` is selection on versus selection off, a
+    /// large structural difference — the regime where every one of these
+    /// couplings decays fastest. The pessimistic side of this is understated
+    /// above, not overstated.
+    ///
+    /// §15.3 also defines a *second* control that this variant will be read as
+    /// covering and does not: randomising which molecule catalyses which
+    /// reaction at fixed catalysis density. That is a different experiment
+    /// with the opposite requirement — it needs a permutation that does *not*
+    /// move when the live run's draw count changes — and may want its own
+    /// domain. Whatever Task 15 decides must then apply to *every* draw on the
+    /// shadow path; mixing `Shadow` and `Beaker` draws gives partial CRN,
+    /// silently, which is the worst of the options.
+    ///
+    /// **Decide it in Task 15/20; do not read this variant as having decided
+    /// it.** What would settle it is cheap: run both indexings at fixed budget
+    /// and compare the variance of the paired difference.
     Shadow = 8,
     /// Hashing only — cache keys and content digests. Separated from the live
     /// domains so that using a `Stream` as a hash function cannot couple to
@@ -194,15 +247,27 @@ impl Domain {
 /// worst deviation over 133 120 cells is exactly what that many samples
 /// predict. And empirically, a single finalizer over a sequential counter
 /// **fails `PractRand` at 8 GB** (`BRank(12)`, p ≈ 1.7e-53), where the composed
-/// form is clean to 128 GB. That is a published result for this mixer family, not
-/// a surprise.
+/// form is clean to 128 GB. Measured here rather than cited: the published
+/// material on this mixer family is grey literature (Evensen's *Mostly
+/// Mangling*, Lemire's `testingRNG`) and reports a different setup, so it
+/// corroborates the direction and not the number.
 ///
-/// The second application costs about 0.75 ns per draw, roughly doubling the
-/// cost of `next_u64`. It is worth it: with a single mix, streams whose keys
-/// differ by a multiple of the golden-ratio constant are the same sequence
-/// shifted — measured 4032 collisions out of 4032 constructed cases, against
-/// 0 out of 4032 for the shipped form. That matters precisely because
-/// [`Stream::fork`] exists to be called in a loop.
+/// The second application costs about 0.75 ns per draw on aarch64 (M1 Pro),
+/// roughly doubling the cost of `next_u64`. It is worth it, and the evidence
+/// has to be stated against the right reduction or it will read as stale:
+///
+/// - With **stock `SplitMix64`** — one finalizer over a state advanced by the
+///   golden-ratio constant — two seeds differing by `k·φ` are the same
+///   sequence shifted by `k`: 4032 of 4032 constructed cases, against 0 of
+///   4032 for the shipped form. That is what splitting in a loop produces.
+/// - Deleting one `mix` from `next_u64` instead gives `mix(key ^ c)`, which
+///   scores 0 of 4032 on *that* test and fails differently: 4032 of 4032
+///   `XOR`-differing key pairs emit an exact permutation of each other's
+///   draws.
+///
+/// Both reductions are unsafe; they are unsafe for different reasons, and a
+/// reader who tries the second one against the first one's evidence will
+/// wrongly conclude the comment is wrong.
 #[inline]
 #[must_use]
 const fn mix(mut z: u64) -> u64 {
@@ -288,8 +353,13 @@ const fn rejection_zone(n: u64) -> u64 {
 /// that recomputed this expression instead of calling it would pass for a
 /// wrong one just as happily.
 ///
-/// `u` is monotone non-decreasing in the result, so checking the largest and
-/// smallest `u` checks the whole grid.
+/// **`u` is NOT monotone in the result**, and an earlier version of this
+/// comment claimed it was and used that to argue four endpoint checks covered
+/// all 2⁵³ draws. Measured on this function: `(1000.0, 1000.0 + 1e-9)`
+/// descends at 0.39% of consecutive grid steps, and `(180.0, 260.0)` — a range
+/// the tests actually use — descends at 18.75% near the top of the grid. The
+/// bound still holds everywhere it was checked; the *argument* for why a few
+/// points sufficed did not. The endpoint test is a spot check and says so.
 fn range_from(u: f64, lo: f64, hi: f64) -> f64 {
     // Written as `lo < hi` rather than a negated comparison so it reads as a
     // total ordering question it is not: a NaN bound compares false against
@@ -330,8 +400,17 @@ impl Stream {
     /// an equation the seed cancels out of. A colliding pair therefore
     /// collides *for every seed*, permanently, in every universe ever
     /// generated. A complete search below 2³⁰ finds five such index relations
-    /// among the nine domains, matching the birthday expectation for a 64-bit
-    /// key (2.25 predicted, 5 found); two of them pair `Decay` with `Shadow`.
+    /// among the nine domains, two of them pairing `Decay` with `Shadow`.
+    ///
+    /// Five is a *local upward fluctuation*, not structure — and the arithmetic
+    /// has to be stated carefully, because an earlier version of this comment
+    /// called it "matching the birthday expectation" over numbers that do not
+    /// match. For distinct unordered relations the expectation is
+    /// `36 × C(2³⁰,2)/2⁶⁴ = 1.125`, against which five is a 4.4× excess at
+    /// p = 0.006. (2.25 is the expectation for *ordered* index pairs, whose
+    /// matching observation is 10, not 5.) Extending the search to 2³² gives 25
+    /// relations against 18 expected, p = 0.068 — unremarkable, which is what
+    /// says the mixer has no structure and the 2³⁰ window was just a bump.
     ///
     /// This is not a defect in the mixing — it is the price of hashing 192
     /// bits of coordinate into a 64-bit key, and it is why the module doc
@@ -417,9 +496,15 @@ impl Stream {
     /// count — is unreachable. The distinction is not pedantry, because three
     /// downstream constants follow from the real resolution and none from the
     /// false one: `0.0` occurs with probability 2⁻⁵³, so `if next_f64() < p`
-    /// fires at 1.11e-16 for *any* smaller `p`; `-ln(u)` truncates at 36.7368,
-    /// which caps a Gillespie waiting time; and Box-Muller truncates at
-    /// 8.5717σ (see `normal_from`, whose clamp target is this same 2⁻⁵³).
+    /// fires at 1.11e-16 for *any* smaller `p`; **`-ln(1 - u)`** truncates at
+    /// 36.7368, which caps a Gillespie waiting time; and Box-Muller truncates
+    /// at 8.5717σ (see `normal_from`, whose clamp target is this same 2⁻⁵³).
+    ///
+    /// **`-ln(u)` does *not* truncate, and writing the Gillespie step that way
+    /// is a live hazard.** `u == 0.0` is reachable, so `-ln(u)` is `+inf`: the
+    /// clock jumps to infinity once in 2⁵³ draws and the run silently stops
+    /// scheduling. The bound above is real only for `1 - u`, or for a clamped
+    /// argument the way `normal_from` clamps `u1`. Task 15 owns this.
     ///
     /// Both steps are exact: the shifted integer is below 2⁵³ so it converts
     /// without rounding, and `SCALE` is a power of two so the multiply cannot
@@ -469,7 +554,27 @@ impl Stream {
     }
 
     /// Uniform in `[lo, hi)` — half-open at both ends, for every finite
-    /// `lo < hi`. Returns `lo` when `lo >= hi` or either is NaN.
+    /// `lo < hi` with `|lo| > 2⁻⁹⁷⁰`. Returns `lo` when `lo >= hi` or either
+    /// is NaN.
+    ///
+    /// **The magnitude qualifier is not decoration.** Below about 2⁻⁹⁷⁰ the
+    /// product `hi * u` underflows into the subnormals, where its rounding
+    /// error is absolute (2⁻¹⁰⁷⁵) rather than relative and can exceed the
+    /// margin `u · (hi − lo)`, so the result lands one ulp *below* `lo`.
+    /// Reproducible at `lo = 4.450_147_717_014_403_75e-308`, `hi = lo.next_up()`,
+    /// `u = 2⁻⁵³`. Nothing in Borbax reaches 1e-293 — the reason to write the
+    /// bound down is that an unqualified guarantee becomes folklore, and the
+    /// next caller asserts on it.
+    ///
+    /// **Non-finite bounds are swallowed, deliberately and dangerously.**
+    /// `hi = NaN` returns `lo`; `hi = +inf` returns `f64::MAX` for every draw.
+    /// This function is named below as the shape a Gillespie channel selection
+    /// over `[0, total_propensity)` would use — so a single NaN rate anywhere
+    /// in that sum makes this return `0.0` forever and the scheduler picks
+    /// channel 0 for the rest of the run, with no crash and nothing in the
+    /// state hash. Pinned in `non_finite_bounds_are_swallowed_not_propagated`
+    /// so the behaviour is a decision rather than an accident; the caller is
+    /// responsible for not building a non-finite bound.
     ///
     /// **The obvious form is wrong twice, and its own test could not see
     /// either.** `lo + u * (hi - lo)` rounds up to exactly `hi`, at a rate of
@@ -742,19 +847,149 @@ mod tests {
         }
     }
 
+    /// The documented `|lo| > 2⁻⁹⁷⁰` qualifier, pinned at the value that
+    /// violates it. Below that threshold `hi * u` underflows into the
+    /// subnormals, its rounding error becomes absolute rather than relative,
+    /// and the result lands one ulp below `lo`.
+    ///
+    /// Asserted as the *known* behaviour rather than as a bound that holds:
+    /// this is out of range, deliberately documented, and unreachable in
+    /// Borbax — nothing here goes near 1e-293. It is pinned so that a future
+    /// change which silently fixes or worsens it is visible.
+    #[test]
+    fn the_range_bound_fails_below_the_documented_magnitude() {
+        let lo = f64::from_bits(0x0020_0000_0000_0001);
+        let hi = lo.next_up();
+        let u = 1.0 / 9_007_199_254_740_992.0;
+        let v = range_from(u, lo, hi);
+        assert!(
+            v < lo,
+            "the subnormal underflow case no longer reproduces — if this is a \
+             deliberate fix, the |lo| > 2^-970 qualifier on next_f64_range's \
+             doc must be removed with it. got {v:e}, lo {lo:e}"
+        );
+    }
+
     /// The convex combination must not move the common case. `lo == 0.0` is
     /// the shape a Gillespie channel selection over `[0, total_propensity)`
     /// would use, and there the two formulations agree bit-for-bit.
+    ///
+    /// **The first draft of this test did not call `range_from` at all** — it
+    /// asserted an algebraic identity between two inline expressions and would
+    /// have passed with the function deleted. Confirmed: it survived every
+    /// degenerate mutation, including "always return `lo`". Same shape as the
+    /// `fork_zero` first draft this crate already had to repair once.
+    ///
+    /// The equality also needs `hi > f64::MIN_POSITIVE`, which the original
+    /// claim omitted: below that the affine form returns `hi` and the clamp
+    /// correctly fires, so the two *should* differ. Measured — at `hi = 1e-320`
+    /// they differ on 3 000 000 of 3 000 000 draws.
     #[test]
     fn a_zero_lower_bound_matches_the_affine_form_bitwise() {
         let mut s = Stream::new(21, Domain::Beaker, 0);
-        for _ in 0..100_000 {
-            let u = s.next_f64();
-            let hi = 12.5_f64;
-            let convex = 0.0 * (1.0 - u) + hi * u;
-            let affine = 0.0 + u * (hi - 0.0);
-            assert_eq!(convex.to_bits(), affine.to_bits(), "u = {u}");
+        for &hi in &[12.5_f64, 1.0, f64::MAX, 1e-300, 2.0 * f64::MIN_POSITIVE] {
+            for _ in 0..20_000 {
+                let u = s.next_f64();
+                let affine = 0.0 + u * (hi - 0.0);
+                assert_eq!(
+                    range_from(u, 0.0, hi).to_bits(),
+                    affine.to_bits(),
+                    "hi = {hi:e}, u = {u}"
+                );
+            }
         }
+    }
+
+    /// **The finding this crate's tests most needed.** The two bound tests pin
+    /// only "finite and in `[lo, hi)`", and `lo` satisfies that — so a
+    /// `range_from` that ignores `u` entirely passes the whole suite. Measured
+    /// against six degenerate mutations (always `lo`, always `next_down(hi)`,
+    /// always the midpoint, weights swapped, clamped affine, clamp to `lo`):
+    /// **all six passed 28 of 28 tests.** The clamped-affine one is the
+    /// plausible refactor, and through the real stream it yields *one distinct
+    /// value in 20 000 draws* over `(-1e308, 1e308)`.
+    ///
+    /// `next_u64` has a golden and `next_f64` is fully specified against it;
+    /// these two had nothing. A golden is the house style here for exactly this
+    /// reason, and it is what makes the difference between a property that
+    /// happens to hold and the function actually being the one intended.
+    ///
+    /// A failure here means the same thing as any other moved golden: the
+    /// physics changed.
+    #[test]
+    fn ranged_and_normal_draws_are_pinned() {
+        let mut s = Stream::new(0x5EED, Domain::Beaker, 0);
+        let got = [
+            s.next_f64_range(-3.5, 2.25).to_bits(),
+            s.next_f64_range(0.0, 1.0).to_bits(),
+            s.next_f64_range(180.0, 260.0).to_bits(),
+            s.next_normal().to_bits(),
+            s.next_normal().to_bits(),
+        ];
+        assert_eq!(got, GOLDEN_RANGE_AND_NORMAL);
+    }
+
+    const GOLDEN_RANGE_AND_NORMAL: [u64; 5] = [
+        13_838_359_919_419_983_661,
+        4_598_440_133_459_397_612,
+        4_642_742_934_248_969_050,
+        13_818_779_806_568_588_147,
+        4_600_412_696_514_022_319,
+    ];
+
+    /// The golden pins the values; this pins that they are not all the *same*
+    /// value. A degenerate implementation that happened to match one golden
+    /// entry would still be caught here, and this is the assertion that
+    /// separates the convex form from the clamped-affine one — which collapses
+    /// a wide range to a single output.
+    #[test]
+    fn a_wide_range_does_not_collapse_to_one_value() {
+        let mut s = Stream::new(3, Domain::Beaker, 0);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..20_000 {
+            seen.insert(s.next_f64_range(-1e308, 1e308).to_bits());
+        }
+        assert!(
+            seen.len() >= 19_000,
+            "only {} distinct values in 20000 draws — the range sampler has collapsed",
+            seen.len()
+        );
+    }
+
+    /// Non-finite bounds produce a plausible value rather than a loud failure.
+    /// Pinned so it is a documented decision: a NaN `total_propensity` reaching
+    /// a Gillespie channel selection would otherwise silently select channel 0
+    /// for the rest of the run.
+    #[test]
+    fn non_finite_bounds_are_swallowed_not_propagated() {
+        assert_eq!(range_from(0.5, 0.0, f64::NAN).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(range_from(0.5, f64::NAN, 1.0).to_bits(), f64::NAN.to_bits());
+        for u in [0.0, 0.5, 1.0 - f64::EPSILON] {
+            assert_eq!(
+                range_from(u, 0.0, f64::INFINITY).to_bits(),
+                f64::MAX.to_bits()
+            );
+        }
+    }
+
+    /// `next_normal` needs a distributional check, not just a support bound.
+    /// A clamp floor of 0.5 collapses half of all draws and is caught today
+    /// only by a bound assertion; nothing looks at the shape.
+    #[test]
+    fn normals_have_the_right_first_two_moments() {
+        let mut s = Stream::new(0x00_1D, Domain::Universe, 0);
+        let n = 400_000;
+        let mut sum = 0.0_f64;
+        let mut sum_sq = 0.0_f64;
+        for _ in 0..n {
+            let z = s.next_normal();
+            sum += z;
+            sum_sq += z * z;
+        }
+        let mean = sum / f64::from(n);
+        let var = sum_sq / f64::from(n) - mean * mean;
+        assert!(mean.abs() < 0.01, "mean was {mean}");
+        assert!((var - 1.0).abs() < 0.02, "variance was {var}");
     }
 
     /// The draw count must not depend on the arguments, or stream position
@@ -823,8 +1058,20 @@ mod tests {
     /// real clamp from a merely-total one is that `u1 == 0` is
     /// *indistinguishable from the edge of the reachable support*.
     ///
-    /// Discriminator: this fails at `f64::MIN_POSITIVE`, at `f64::EPSILON` and
-    /// at any other floor, and passes only at 2⁻⁵³.
+    /// **Discriminator, stated accurately after measurement.** This fails at
+    /// any floor *below* 2⁻⁵³ — verified at `f64::MIN_POSITIVE`, `1e-300` and
+    /// `2⁻⁵⁴`. It does **not** catch floors above: at `f64::EPSILON` (2⁻⁵²),
+    /// `1e-3` and `0.9` it passes vacuously, because for any floor ≥ 2⁻⁵³ both
+    /// arguments clamp to the same value and the equality is trivial. An
+    /// earlier version of this comment claimed it caught "any other floor",
+    /// which is the same defect it was written to repair.
+    ///
+    /// Floors *above* 2⁻⁵³ are caught by
+    /// `the_normal_support_is_bounded_at_the_documented_sigma` — a floor of 0.9
+    /// collapses the normal to `|z| ≤ 0.459` and only that test sees it. The
+    /// two together pin the constant; **neither is redundant**, which is worth
+    /// saying because a reader trusting the old sentence would delete the
+    /// second one.
     #[test]
     fn the_normal_clamp_lands_on_the_edge_of_the_reachable_support() {
         let smallest_reachable = 1.0 / 9_007_199_254_740_992.0;
