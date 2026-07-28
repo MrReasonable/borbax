@@ -39,9 +39,17 @@
 //! emitted identical sequences forever, the seed cancelled out of the
 //! collision equation so a colliding pair collided in *every* universe, and a
 //! complete search below index 2³⁰ found five such relations among the nine
-//! domains — two of them pairing [`Domain::Decay`] with [`Domain::Shadow`],
-//! which is precisely the pair `Shadow` exists to keep apart. Nothing crashed
-//! and no test saw it. Salmon et al. state the rule this design now satisfies:
+//! domains, two of them pairing [`Domain::Decay`] with [`Domain::Shadow`].
+//! Nothing crashed and no test saw it.
+//!
+//! **Five was a local fluctuation, not structure, and the honest number
+//! belongs here** — an earlier draft of this paragraph dropped the correction
+//! and kept only the alarming half. The expectation for distinct relations is
+//! `36 × C(2³⁰,2)/2⁶⁴ = 1.125`, so five is a 4.4× excess at p = 0.006; but
+//! extending the search to 2³² gives 25 against 18 expected, p = 0.068, and
+//! `Decay`/`Shadow` does not grow while two other pairs overtake it. The old
+//! design's defect was compressing 192 bits into 64 — an argument that needs
+//! no inflated anecdote. Salmon et al. state the rule this design now satisfies:
 //! "(key, counter) tuples must never be improperly re-used, since an
 //! inadvertent re-use of the same tuple will result in exactly the same random
 //! number, with potentially dire consequences for simulation accuracy."
@@ -143,7 +151,8 @@ pub enum Domain {
     /// Reaction selection and outcome.
     Reaction = 5,
     /// Decay *outcomes* — which bond orbit of the species, which neighbouring
-    /// *species* drawn from abundance (§9.4).
+    /// *species* drawn from abundance (§9.1 cleave, §9.5 radiogenic; §9.4 is
+    /// why decay is mandatory, not how it resolves).
     ///
     /// Not decay scheduling. §9.5 is emphatic that decay is not separate
     /// machinery: thermal cleavage is "one more channel in the same scheduler
@@ -370,13 +379,26 @@ impl Stream {
     /// any other stream has taken, so drawing order across subsystems is not
     /// part of the contract and never has to be preserved.
     ///
-    /// **Distinct triples are guaranteed distinct streams.** `(domain, index)`
-    /// occupy their own 64-bit fields of a 256-bit Philox counter, and Philox
-    /// is a bijection of that counter, so the guarantee is by construction
-    /// rather than below a birthday bound. This is the property the first
-    /// design did not have, and its absence was not theoretical: hashing the
-    /// same coordinates into a 64-bit key produced five permanent
-    /// seed-independent collisions below index 2³⁰.
+    /// **Distinct *counters* are provably distinct streams**, and distinct
+    /// `(domain, index)` pairs always give distinct counters — they occupy
+    /// their own 64-bit fields of a 256-bit Philox counter, and Philox is a
+    /// bijection of that counter.
+    ///
+    /// The guarantee is stated over counters rather than over the whole
+    /// `(seed, domain, index)` triple because **the seed is the key, and
+    /// bijectivity is of the counter for a *fixed* key**. By pigeonhole it
+    /// could not be otherwise: 320 bits of input map to 256 bits of output.
+    /// Across seeds the guarantee is a birthday bound over 256 bits — which is
+    /// unassailable in practice (2²² seeds at a fixed counter give 2²²
+    /// distinct blocks, and adjacent seed pairs share none of 14 400 words),
+    /// but it is the "improbable" kind, and this file draws a sharp line
+    /// between the two. [`Stream::fork`] has two documented exceptions of its
+    /// own.
+    ///
+    /// This is still the property the first design did not have, and its
+    /// absence was not theoretical: hashing the same coordinates into a
+    /// 64-bit key produced five permanent seed-independent collisions below
+    /// index 2³⁰.
     ///
     /// `Stream::new` does no Philox work — it is field assignment, and the
     /// first draw pays for the first block.
@@ -442,6 +464,16 @@ impl Stream {
     }
 
     /// The next raw 64 bits.
+    ///
+    /// **Cost, both shapes, because reporting only one of them misleads.**
+    /// Against the mixer this replaced, release: 1.544 → 1.639 ns in a
+    /// 1000-draw accumulator loop (**+6.2%**), and 79.2 → 96.7 µs over a
+    /// 20 000-step fold anneal (**+22%**). Put a `black_box` on every single
+    /// draw and it reads 1.37 → 3.52 ns (2.6×) — a correct measurement of a
+    /// serialised pipeline that no caller doing work between draws will pay,
+    /// and the number this commit originally reported on its own. The kernel
+    /// sits at 94.5% of the hardware multiplier-port limit, so there is
+    /// essentially nothing left to win here.
     ///
     /// `const` is not for the sake of const contexts — a stream is drawn from
     /// at runtime. It is a cheap guardrail: a `const fn` cannot reach a clock,
@@ -610,11 +642,17 @@ impl Stream {
     /// **Never returns a non-finite value** — see the private `normal_from`,
     /// which is where that guarantee is implemented and tested.
     ///
+    /// **`#[inline]` here was a 12% regression against the five-line mixer and
+    /// is a 3–5% win against Philox** — measured in both profiles, twice each,
+    /// after the rewrite. The attribute set is kept matching its evidence
+    /// rather than its history.
+    ///
     /// The two draws are bound to locals rather than passed inline. Rust does
     /// specify left-to-right argument evaluation, so the inline form would be
     /// correct; but "this is deterministic because of an evaluation-order
     /// rule" is a claim a future reader has to go and check, and two `let`s
     /// cost nothing.
+    #[inline]
     pub fn next_normal(&mut self) -> f64 {
         let u1 = self.next_f64();
         let u2 = self.next_f64();
@@ -775,6 +813,59 @@ mod tests {
     /// on the same counter. That is a documented limit, and it is pinned here
     /// so it cannot be discovered the hard way by someone building a nested
     /// anneal.
+    /// **Which coordinate lives in which counter field is load-bearing, and
+    /// four mutations of it passed all 38 tests before this existed.**
+    /// Measured, each silently catastrophic and each invisible:
+    ///
+    /// - `fork` writing field 3: `fork(j)` *is* the parent advanced 4(j+1)
+    ///   draws — `fork(0)` and `fork(1)` shared 36 of their first 40 words.
+    /// - `fork` dropping `counter[1]`: every index in a domain shares one fork
+    ///   family, 40 of 40 words identical.
+    /// - `new` writing index into field 2: `new(s, Fold, 3)` *is*
+    ///   `new(s, Fold, 0).fork(2)` — the index and fork axes become one.
+    /// - `new` writing index into field 3: every index stream is a bit-exact
+    ///   *suffix* of index 0's.
+    ///
+    /// The old fork tests all survived because they used `index = 0` and
+    /// asserted a single-word `assert_ne!`. The consequence of the last one is
+    /// the sharpest: `Domain::Molecule` indexed by species means species *k*
+    /// draws numbers species 0 already used, signatures correlate along the
+    /// index axis, and the periodic table's diversity quietly collapses —
+    /// which reads as "this universe was a dud", with the decay band blamed
+    /// first exactly as CLAUDE.md predicts.
+    ///
+    /// Sixteen words per stream is deliberately four blocks, so a
+    /// block-coordinate shift cannot hide inside one. Accidental-collision
+    /// probability is 1440²/2⁶⁵ ≈ 5.6e-14.
+    #[test]
+    fn distinct_coordinates_share_no_words() {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut total = 0_usize;
+        for domain in [Domain::Universe, Domain::Fold, Domain::Molecule] {
+            for index in 0..6_u64 {
+                let base = Stream::new(0x5EED, domain, index);
+                for fork in 0..5_u64 {
+                    let mut s = if fork == 0 {
+                        base.clone()
+                    } else {
+                        base.fork(fork - 1)
+                    };
+                    for _ in 0..16 {
+                        seen.insert(s.next_u64());
+                        total += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            total,
+            "{} of {total} words are shared between distinct (domain, index, fork) streams — \
+             a counter coordinate has been transposed or dropped",
+            total - seen.len()
+        );
+    }
+
     /// The one value the fork offset costs, pinned rather than left to be
     /// discovered. See [`Stream::fork`] for why an alias is unavoidable.
     #[test]
@@ -793,10 +884,20 @@ mod tests {
         assert_eq!(
             via_nesting.next_u64(),
             direct.next_u64(),
-            "fork(3).fork(7) should be indistinguishable from fork(7) — if this now differs,              nesting has acquired a second level and the doc on `fork` must say so"
+            "fork(3).fork(7) should be indistinguishable from fork(7) — if this now differs, \
+             nesting has acquired a second level and the doc on `fork` must say so"
         );
     }
 
+    /// Ranges chosen to *break* the affine form, not to pass. `(-3.5, 2.25)`
+    /// — the only range the first draft tested — is **provably immune on all
+    /// 2⁵³ grid points**, so it would have passed against an implementation
+    /// that returned `hi` half the time. The narrow-at-large-offset rows are
+    /// the discriminator; the wide row is kept only to show it still works.
+    ///
+    /// Keep that number. It is what stops the array being trimmed back to the
+    /// immune case in a later tidy-up — and this doc was itself deleted once,
+    /// in a commit that had nothing to do with it.
     #[test]
     fn floats_in_a_range_are_bounded() {
         const RANGES: &[(f64, f64)] = &[
@@ -820,8 +921,15 @@ mod tests {
     }
 
     /// Sampling cannot reach either end of the grid, so the boundaries are
-    /// checked at the values, through the real function. `u` is monotone in
-    /// the result, so the two extreme draws bracket all 2⁵³.
+    /// checked at the values, through the real function.
+    ///
+    /// **This is a spot check, not a proof of coverage.** An earlier version
+    /// claimed `u` was monotone in the result and that the extremes therefore
+    /// bracketed all 2⁵³ draws. `range_from`'s own doc retracts that with
+    /// measurements — `(180.0, 260.0)`, a range this very test uses, descends
+    /// at 18.75% of consecutive grid steps near the top. The retraction landed
+    /// in one copy and not this one, which is the third time that has happened
+    /// in this file.
     #[test]
     fn the_range_endpoints_hold_at_the_extreme_draws() {
         // The largest and smallest values next_f64 can return.
@@ -1132,15 +1240,26 @@ mod tests {
     #[test]
     fn golden_sequence_is_pinned() {
         let mut s = Stream::new(0, Domain::Universe, 0);
-        let got: Vec<u64> = (0..4).map(|_| s.next_u64()).collect();
+        let got: Vec<u64> = (0..8).map(|_| s.next_u64()).collect();
         assert_eq!(got, GOLDEN_UNIVERSE_0);
     }
 
-    const GOLDEN_UNIVERSE_0: [u64; 4] = [
+    /// **The length is load-bearing.** Philox emits four `u64` per block, so
+    /// a four-draw golden sits entirely inside block 0 and pins nothing about
+    /// how the block counter advances. Measured: changing
+    /// `counter[3].wrapping_add(1)` to `add(2)` — still a bijection, still
+    /// statistically clean, and it changes every number in the project — was
+    /// caught by exactly one test, and only because that test happened to take
+    /// seven draws. Eight words spans two boundaries. Do not shorten this.
+    const GOLDEN_UNIVERSE_0: [u64; 8] = [
         213_000_021_201_967_259,
         4_455_796_210_202_625_458,
         2_055_444_239_878_205_049,
         10_411_612_076_246_414_556,
+        6_312_158_256_571_094_726,
+        10_634_814_581_434_429_480,
+        1_598_446_939_479_630_672,
+        11_723_492_092_571_950_057,
     ];
 
     /// Adding a `Domain` variant must not perturb any existing stream.
