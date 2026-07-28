@@ -117,7 +117,10 @@ order; anywhere higher and the one file guaranteeing portability is unreachable
 from two crates that need it.
 
 **`libm` does dispatch on architecture, and "it doesn't" is the wrong reason to
-trust it.** Measured on the pinned 0.2.16: `arch` is a *default* feature, and it
+trust it.** Measured on 0.2.16 — the version `Cargo.lock` currently resolves,
+not a pin: `Cargo.toml` carries the caret range `0.2`, so the lockfile is the
+only thing holding the version, which is why `--locked` is on every command
+above. `arch` is a *default* feature, and it
 routes `sqrt`, `fma`, `rint`, `ceil` and `floor` to hardware — with `fma` on
 x86-64 doing **runtime CPU feature detection** between FMA3, FMA4 and soft. The
 only FMA instructions in our release binaries today are inside `libm::cbrt`.

@@ -30,7 +30,7 @@
 //!    ceiling of 8 is fine; a distribution centred near 8 is not. Abundance is
 //!    the lever, so it has to be measured through the lever.
 //!
-//! Run: `cargo run -p borbax-experiments --release --bin fusion`
+//! Run: `cargo run --locked -p borbax-experiments --release --bin fusion`
 
 // Same posture as `ptable.rs`: this is a spreadsheet, and every cast is a
 // small count to `f64` for arithmetic. Nothing here reaches a simulation
@@ -630,7 +630,8 @@ fn main() {
 
         let weights: Vec<(u8, f64)> = table.iter().map(|e| (e.valence, e.abundance)).collect();
         let (_, p_c, _) = gel_extent(&weights);
-        gel_extents.push(p_c);
+        // Carries the seed so the sort below has a real tie-break (§13.1).
+        gel_extents.push((p_c, seed));
 
         println!(
             "{seed:>4} {:>3} {:>4} {max_val:>7} {:>5} {peak:>5} {:>7} {:>8} {p_c:>8.3}",
@@ -770,18 +771,24 @@ fn main() {
     }
 
     // Sorted once, then read at three positions, because `f64::min`/`max` are
-    // disallowed (their tie-breaking differs by target). This is a bare
-    // `Vec<f64>` with **no** ID tie-break — an earlier version of this comment
-    // claimed one, which would have been cited later as precedent for a sort
-    // that genuinely needs it. It is deterministic for a different reason:
-    // `sort_by` is stable and the input is already in seed order.
+    // disallowed (their tie-breaking differs by target).
+    //
+    // The seed is the ID tie-break §13.1 requires, and it is in the *key*
+    // rather than in a comment. An earlier version relied on `sort_by` being
+    // stable over seed-ordered input, which is true and invisible: swapping in
+    // `sort_unstable_by` — the obvious cleanup for a `Vec<f64>` — would have
+    // broken it silently, and nothing at this call site would have said so.
     let mut sorted = gel_extents.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(core::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+    });
     println!(
         "\ngel extents across the 24 universes: min {:.3}  median {:.3}  max {:.3}",
-        sorted.first().copied().unwrap_or(0.0),
-        sorted.get(sorted.len() / 2).copied().unwrap_or(0.0),
-        sorted.last().copied().unwrap_or(0.0)
+        sorted.first().map_or(0.0, |&(p, _)| p),
+        sorted.get(sorted.len() / 2).map_or(0.0, |&(p, _)| p),
+        sorted.last().map_or(0.0, |&(p, _)| p)
     );
 }
 
@@ -917,6 +924,25 @@ mod tests {
         draw_consts(&mut rng)
     }
 
+    /// The seed-0 fixture with `k` overridden — and `z` moved with it.
+    ///
+    /// **`consts_with_k(k)` is not a valid universe.** `draw_consts`
+    /// derives `z = k + 2` from the shell law, so overriding `k` alone leaves
+    /// `z` at the seed-0 draw and builds a state the generator cannot produce.
+    /// The assertions that used it key on `k` only, so nothing passed falsely
+    /// — but `contacts_upto` reads `c.z`, so `energy_per_unit` and `mass` in
+    /// those tables were computed off an unreachable universe, and any later
+    /// energy or mass assertion added to them would have measured it. Same
+    /// defect as the hardcoded `n_elements` recorded above: a fixture drifting
+    /// from the generator, invisible until something reads the drifted field.
+    fn consts_with_k(k: usize) -> Consts {
+        Consts {
+            k,
+            z: (k + 2) as f64,
+            ..consts()
+        }
+    }
+
     /// The emergence claim, as a property rather than a deletion test.
     ///
     /// `ptable.rs` had an `if closed { 0 }` branch and earned its result by
@@ -997,7 +1023,7 @@ mod tests {
     #[test]
     fn radius_never_shrinks() {
         for k in 6..=14_usize {
-            let c = Consts { k, ..consts() };
+            let c = consts_with_k(k);
             for pair in derive_table(c, 200).windows(2) {
                 assert!(
                     pair[1].radius >= pair[0].radius,
@@ -1016,11 +1042,7 @@ mod tests {
     #[test]
     fn a_two_unit_cluster_has_exactly_one_contact() {
         for k in 6..=14_usize {
-            let c = Consts {
-                k,
-                z: (k + 2) as f64,
-                ..consts()
-            };
+            let c = consts_with_k(k);
             let n = contacts_upto(c, 2);
             assert!(
                 (n - 1.0).abs() < 1e-9,
@@ -1084,7 +1106,7 @@ mod tests {
     #[test]
     fn elements_one_past_a_closure_all_have_valence_one() {
         for k in 6..=14_usize {
-            let c = Consts { k, ..consts() };
+            let c = consts_with_k(k);
             let t = derive_table(c, 200);
             for close in closures(k, 199) {
                 let next = t.get(close).copied();
@@ -1152,7 +1174,7 @@ mod tests {
     /// two claims cannot be confused again.
     #[test]
     fn the_frontier_count_has_no_per_site_ceiling() {
-        let c = Consts { k: 14, ..consts() };
+        let c = consts_with_k(14);
         let max = derive_table(c, 400).iter().map(|e| e.valence).max();
         assert!(
             max.is_some_and(|m| m >= 8),
@@ -1219,7 +1241,7 @@ mod tests {
     #[test]
     fn closures_agree_with_the_shell_arithmetic() {
         for k in 6..=14_usize {
-            let c = Consts { k, ..consts() };
+            let c = consts_with_k(k);
             let from_table: Vec<usize> = derive_table(c, 120)
                 .iter()
                 .filter(|e| e.outer == 0)
