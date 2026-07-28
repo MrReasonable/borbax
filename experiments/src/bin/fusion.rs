@@ -1107,11 +1107,19 @@ mod tests {
     /// once the fourth shell opens, past N = 200.
     ///
     /// But `n_elements` is drawn on 60..=120, and within that range the ceiling
-    /// is **4 to 7** — measured, after this assertion was first written as
-    /// `5..=7` from a guess and failed with a 4 in it. An earlier version of this test asserted `max >= 8` and
-    /// passed by measuring at 300 elements, outside anything the scheme builds
-    /// — the same "measured at a size the plan does not generate" defect that
-    /// put two false claims into the plan's prose.
+    /// is **4 to 6**.
+    ///
+    /// This assertion has been wrong three times, which is the point of writing
+    /// the history down: `5..=7` from a guess, which failed with a 4 in it;
+    /// widened to `4..=7`, which was loose enough to survive the frontier
+    /// coefficient being refitted from 7.30 to 6.90; now `4..=6`, measured. A
+    /// range assertion that survives a change to the quantity it measures is
+    /// not measuring it.
+    ///
+    /// An earlier version of the test asserted `max >= 8` and passed by
+    /// measuring at 300 elements, outside anything the scheme builds — the same
+    /// "measured at a size the plan does not generate" defect that put two
+    /// false claims into the plan's prose.
     ///
     /// §7.2 wants a thin high-valence tail. What it gets is a ceiling of 6 at
     /// best and 4 at worst — and §7.2 asked for a *shape*, not a magnitude:

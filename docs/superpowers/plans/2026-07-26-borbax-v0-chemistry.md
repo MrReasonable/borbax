@@ -1643,7 +1643,7 @@ pub struct SpeciesRecord<const D: usize> {
     pub sig: Signature<D>,
     pub mass: Mass,
     pub bond_count: u32,
-    /// Summed element instability. Precomputed for the same reason as
+    /// Summed element `decay_rate`. Precomputed for the same reason as
     /// everything else here — an earlier draft recomputed it per call with a
     /// comment saying it would be hoisted "if it shows up in a profile". A
     /// twelve-iteration loop never shows up in a profile and runs millions of
@@ -2072,11 +2072,15 @@ pub fn decay_channels<const D: usize>(
 }
 
 fn radiogenic_rate<const D: usize>(id: SpeciesId, it: &Interner<D>, u: &Universe) -> f64 {
-    // Summed element instability. Also precomputed in principle; kept here
+    // Summed element `decay_rate`. The field was called `stability` until
+    // Task 4's review: it holds 0 at the binding peak and rises toward the
+    // extremes, so it was being summed here *as a rate* — correct sense, wrong
+    // name, which is exactly the inversion a reader reconciling the two would
+    // introduce. Also precomputed in principle; kept here
     // for clarity, and hoisted into SpeciesRecord if it shows up in a profile.
     let canon = it.record(id).canon;
     (0..canon.n as usize)
-        .map(|i| u.element(borbax_universe::ElementId(canon.elem[i])).stability)
+        .map(|i| u.element(borbax_universe::ElementId(canon.elem[i])).decay_rate)
         .sum()
 }
 ```
@@ -2932,11 +2936,41 @@ and checks the criteria of spec §7.2:
 |---|---|
 | Reactivity band | inert universes, and universes that burn |
 | **Decay band** | universes where nothing persists, or nothing decays (§22.6) |
-| Polymer viability | chains of length ≥ 20 that cannot form *or* cannot survive |
+| Polymer viability, **banded** | chains of length ≥ 20 that cannot form, cannot survive, **or a beaker that has gelled** |
+| **Self-synthesis** | universes where no species binds a copy of itself |
 | Shape diversity | signatures collapsing into a few clusters |
 | Neutral-network structure | see below — **not** a redundancy test |
 | Catalytic potential | no folded polymer producing an enclosed cavity |
 | Energy landscape | chemistries that only ever run downhill |
+
+**The gel ceiling is this task's, and it has had no landing site until now.**
+§7.2 says plainly that *a gelled beaker passes the floor* — 51% of mass in one
+component with seven molecules still over 20 units — so a floor-only polymer
+criterion is the sludge failure passing the test written to catch it. That
+ceiling was added to §7.2 by PR #8 and named no task; Task 4 then deferred to
+"Task 5's battery", and Task 5 has no battery and architecturally cannot. It is
+here.
+
+Three numbers, and the third is the one that matters:
+
+- `f_w = ⟨f²⟩/⟨f⟩` on the **realised** degree distribution in the beaker, not
+  nominal valences off the element table.
+- **bonds-per-node at gel**, `p_c⟨f⟩/2`, alongside the extent. Extent alone
+  moves under any rescaling of the mean degree — measured on the generated
+  table, abundance weighting moves extent +85% and bonds-per-node +9%, so most
+  of the apparent effect is coordinate rather than safety.
+- **`p_ss / p_c`, the margin between the operating point and the threshold.**
+  Both of the above are *thresholds*, and reporting a second threshold changes
+  nothing: the ratio is identical in either coordinate. Where the beaker
+  actually sits comes from the steady state of §9.1's Condense against §9.4's
+  Cleave, `(1−p)²/p = k_r/(2·k_f·n·⟨f⟩)`. **Reject on the ratio.** §7.2 carries
+  the derivation and the history of getting this wrong twice.
+
+**The self-synthesis criterion is cheap and the precedent says it discriminates.**
+It is §8.3's kernel run on a species against itself — self-complementarity under
+the 60-rotation search, non-trivial given §22.8's handedness. RBN-World's
+five-test filter cut 183 candidates to 20 on self-synthesis alone, more than its
+other four tests combined (§2.1). We have no equivalent and it costs one call.
 
 **The neutral-network criterion needs three numbers, not one.** "Folding maps
 close to one-to-one" tests *redundancy*, which is necessary and nowhere near
