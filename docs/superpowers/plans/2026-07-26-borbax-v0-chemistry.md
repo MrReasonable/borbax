@@ -1942,7 +1942,67 @@ EOF
 
 **Interfaces:**
 - Consumes: `SpeciesRecord`, `Interner`, `Universe`, `Thermal`
-- Produces: `decay_propensity<D>(SpeciesId, f64, &Interner<D>, Thermal, &Universe) -> f64`, `DecayKind`, `decay_channels<D>(...) -> Vec<(DecayKind, SpeciesId, f64)>`
+- Produces: `decay_propensity<D>(SpeciesId, f64, &Interner<D>, Thermal, &Universe) -> f64`, `DecayKind`, `decay_channels<D>(...) -> [(DecayKind, SpeciesId, f64); 3]`
+
+**Three requirements this task carries, all found by review before any of it was
+written. Read them before Step 1 — two change the signatures above.**
+
+1. **The channels must sum to the propensity.** As drafted they do not:
+   `decay_propensity` returns `count * (thermal + solvent)` while
+   `decay_channels` returns three channels *including* Radiogenic. A scheduler
+   drawing the total from one and selecting the channel from the other either
+   never fires Radiogenic or fires it off-budget — and Radiogenic is §9.5's
+   mutation source, so the failure mode is "mutation silently switched off" with
+   every test still green. Make one the sum of the other, and assert exactly
+   that: `decay_propensity(..) == decay_channels(..).iter().map(|c| c.2).sum()`
+   to the last bit, with the accumulation order pinned and commented (§13.4).
+
+2. **`decay_channels` must not allocate.** It returns a compile-time-constant
+   three-element list from a function the beaker calls whenever a species' count
+   changes, so a `Vec` is a malloc/free pair on the step path. Measured on an
+   M1 Pro: 23.98 ns/call as drafted, 19.94 with the radiogenic walk hoisted,
+   **3.68 with a fixed-size return and the walk hoisted**. The allocator alone
+   is 16.27 ns — **4x the radiogenic walk** at twelve atoms. Hoisting the walk
+   and leaving the `Vec` buys 17% of the available win, which is exactly the
+   plausible-but-not-real fix this project keeps producing. Hence `[_; 3]`
+   above.
+
+   *Test:* a counting global allocator in a `#[test]`, asserting **zero heap
+   allocations per step** past warm-up. Deterministic rather than a timing
+   assertion, so it survives the rule against timing assertions in `#[test]`;
+   and it is the only candidate test that a radiogenic-only fix fails.
+
+3. **Per-step decay cost must be O(1) in species size.** `radiogenic_rate` walks
+   every canonical element per call. The field doc's justification — "a
+   twelve-iteration loop" — understates it: `Mol12` caps small molecules at 12
+   but `MAX_POLYMER` is **200**, and the drafted function reads `record(id).canon`
+   with no polymer arm at all, so whoever closes that gap walks `Polymer::units`
+   through a further indirection. Measured cost of `decay_channels` against a
+   ~10 µs step at 96 species: 6.6% at chain length 12, 10.3% at 20 (§7.2's
+   viability floor), **155% at `MAX_POLYMER`** — i.e. the regime that breaks the
+   budget is precisely the one §7.2's polymer criterion exists to reach.
+
+   Store the summed rate on `SpeciesRecord` at intern time and read it (§8.6).
+   *Test:* a `criterion` bench of `decay_channels` at species size 1 against
+   `MAX_POLYMER`, ratio asserted < 1.2x; it fails today at 8.4x. Pair it with
+   the allocation test — alone, it is satisfied by the plausible fix.
+
+   *And correct the record while doing it:* CLAUDE.md's "~2 orders of magnitude"
+   is right for the class (canonicalisation, embedding, folding are 10⁴–10⁵x per
+   call) and wrong for this member — measured 1.20x at n=12 rising to ~8x at
+   n=200. The defensible sentence is "4% of a step budget with small molecules,
+   over 100% of it at `MAX_POLYMER`". Overclaiming gets the item dismissed the
+   first time someone measures it; "a twelve-iteration loop" gets it
+   deprioritised forever.
+
+**And the test named as this task's §8.6 guard cannot fail.**
+`cost_does_not_depend_on_how_many_molecules_exist` is two `let _: f64 = ..`
+bindings and a comment reading "Asserted structurally: the function takes a
+scalar count, not a collection". The structural argument is sound and the test
+asserts nothing — it is silent on both the allocation and the species-size
+scaling above, and it is the test a reader would point at to justify deferring
+either. Replace it with the allocation counter, which is the assertion its own
+doc comment is describing.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2076,8 +2136,21 @@ fn radiogenic_rate<const D: usize>(id: SpeciesId, it: &Interner<D>, u: &Universe
     // Task 4's review: it holds 0 at the binding peak and rises toward the
     // extremes, so it was being summed here *as a rate* — correct sense, wrong
     // name, which is exactly the inversion a reader reconciling the two would
-    // introduce. Also precomputed in principle; kept here
-    // for clarity, and hoisted into SpeciesRecord if it shows up in a profile.
+    // introduce.
+    //
+    // **This walk is a §8.6 violation and must not be copied as written.** It
+    // is kept here only so the rename is legible against the previous draft.
+    // `SpeciesRecord::radiogenic_rate` is the precomputed value; read that.
+    // An earlier version of this comment ended "hoisted into SpeciesRecord if
+    // it shows up in a profile" — the sentence the field's own doc quotes and
+    // condemns, 430 lines above. Deleted rather than softened, because it is
+    // the sentence an implementer copies.
+    //
+    // Two corrections to the field doc's sizing, measured: the loop is bounded
+    // by MAX_POLYMER = 200, not 12; and on the same eleven lines the returned
+    // `Vec` costs ~4x more than the walk at small-molecule sizes (16.3 ns of
+    // allocator against 4.0 ns of walk). A fix that hoists the walk and leaves
+    // the `Vec` buys 17% of the cost. See Task 15.
     let canon = it.record(id).canon;
     (0..canon.n as usize)
         .map(|i| u.element(borbax_universe::ElementId(canon.elem[i])).decay_rate)
@@ -2906,6 +2979,55 @@ mod tests {
         assert!(!r.passes(), "a universe where nothing decays cannot select (spec §9.4)");
     }
 
+    /// **The gel ceiling, as a test rather than a table row.**
+    ///
+    /// Added because a review found both new criteria present in the criteria
+    /// table and the prose, and absent from this block — and CLAUDE.md's own
+    /// rule is write the failing test first. A criterion with no test is prose,
+    /// and the defect being repaired here is precisely "a criterion that exists
+    /// on paper while the failure it names passes".
+    ///
+    /// Gate on `p_ss / p_c`, not on either threshold alone. Drive the operating
+    /// point above the threshold by raising the forward rate against Cleave —
+    /// that is the sludge case §7.2 describes, where a floor-only polymer
+    /// criterion passes a beaker that has gelled into one component.
+    #[test]
+    fn it_rejects_a_gelled_beaker() {
+        let mut u = Universe::generate(1);
+        // Condense fast against a slow Cleave drives `p_ss` up; `p_c` is a
+        // property of the realised degree distribution and moves far less.
+        u.consts.rate_prefactor *= 1e3;
+        u.consts.decay_scale *= 1e-3;
+        let r = run_battery(&u, &Geodesic::<42>::build().unwrap());
+        assert!(
+            r.p_ss / r.p_c > 1.0,
+            "the fixture must actually gel, or this tests nothing: \
+             p_ss={} p_c={}",
+            r.p_ss,
+            r.p_c
+        );
+        assert!(!r.passes(), "a gelled beaker must fail the ceiling (spec §7.2)");
+    }
+
+    /// Self-synthesis is a **band**, and this is the half a floor misses.
+    ///
+    /// RBN-World eliminated 110 of 163 chemistries for *every* sample
+    /// self-synthesising — no variation — against 53 for none doing so. A
+    /// one-sided criterion passes the 110-analogue, which here is the case
+    /// where complementarity carries no information at all.
+    #[test]
+    fn it_rejects_universes_where_everything_binds_itself() {
+        let mut u = Universe::generate(1);
+        // Collapse the charge term so the complementarity test is trivially
+        // satisfied for every species against itself.
+        u.consts.charge_scale = 0.0;
+        let r = run_battery(&u, &Geodesic::<42>::build().unwrap());
+        assert!(
+            !r.passes(),
+            "universal self-binding is sludge, not richness (spec §2.1, §7.2)"
+        );
+    }
+
     #[test]
     fn some_universes_pass() {
         let g = Geodesic::<42>::build().unwrap();
@@ -2937,7 +3059,7 @@ and checks the criteria of spec §7.2:
 | Reactivity band | inert universes, and universes that burn |
 | **Decay band** | universes where nothing persists, or nothing decays (§22.6) |
 | Polymer viability, **banded** | chains of length ≥ 20 that cannot form, cannot survive, **or a beaker that has gelled** |
-| **Self-synthesis** | universes where no species binds a copy of itself |
+| **Self-synthesis, banded** | universes where **no** species binds a copy of itself — **and** where essentially every species does |
 | Shape diversity | signatures collapsing into a few clusters |
 | Neutral-network structure | see below — **not** a redundancy test |
 | Catalytic potential | no folded polymer producing an enclosed cavity |
@@ -2971,6 +3093,17 @@ It is §8.3's kernel run on a species against itself — self-complementarity un
 the 60-rotation search, non-trivial given §22.8's handedness. RBN-World's
 five-test filter cut 183 candidates to 20 on self-synthesis alone, more than its
 other four tests combined (§2.1). We have no equivalent and it costs one call.
+
+**Copy the band, not the floor — their test was two-sided and the larger half is
+the one a floor misses.** From that paper's Table 4, self-synthesis eliminated
+163 of 183, but **110 of those were chemistries where every sample
+self-synthesised**, discarded for showing no variation, against only 53 where
+none did. A floor captures the 53. The 110-analogue here is sludge: if
+essentially every species binds a copy of itself, complementarity carries no
+information and §22.8's handedness has bought nothing. Writing this as a floor
+would reproduce, one row up in the same table, the exact defect the banded
+polymer criterion two rows below exists to fix — which is why it is banded here
+before anyone implements it.
 
 **The neutral-network criterion needs three numbers, not one.** "Folding maps
 close to one-to-one" tests *redundancy*, which is necessary and nowhere near

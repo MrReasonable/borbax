@@ -137,12 +137,25 @@ fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     let continuum = FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt();
 
     // **The continuum form overestimates tiny patches, and the bound has to be
-    // the *compact* one.** A patch of `a` sites laid out compactly — which is
-    // what a spherical-cap fill order means — exposes at most `6a` less twice
-    // Harborth's internal-bond count. An earlier version used a bare `6a`, the
-    // bound for a patch whose sites touch *nothing*, and it returned valence 3
-    // where the exact count gives 2 at `outer = 3`. By symmetry the same bound
-    // applies to the empty side.
+    // the *compact* one.** A maximally compact patch of `a` sites exposes `6a`
+    // less twice Harborth's internal-bond count, and any other arrangement of
+    // `a` sites exposes *more* — so this is a floor on exposure, used here as a
+    // cap on the continuum's estimate. An earlier version used a bare `6a`, the
+    // bound for a patch whose sites touch nothing.
+    //
+    // **Where it actually binds, measured.** The discrete branch is taken iff
+    // `compact_bound(a) < FRONTIER_COEFF*sqrt(a)`, which at 6.90 holds only at
+    // `a = 1`: at `a = 2` it is 9.76 against 10, at `a = 3` 11.95 against 12,
+    // and `a = 7` would need `cap > 254` where the table's caps run 8..128.
+    // Confirmed over every `(cap, outer)` the table reaches — 54 of 1287 cells,
+    // all at `min(outer, cap-outer) == 1`.
+    //
+    // So the justification this comment used to give — "it returned valence 3
+    // where the exact count gives 2 at `outer = 3`" — is **stale by two
+    // refits**. It was true at the naive 10.635; at 6.90 that case is
+    // unreachable. Do not restore it as evidence, and do not delete the bound
+    // on the strength of its being unreachable: it is what holds `outer == 1`.
+    // By symmetry the same bound applies to the empty side.
     let smaller = if outer < cap - outer {
         outer
     } else {
@@ -183,13 +196,28 @@ fn frontier_notches(cap: usize, outer: usize) -> f64 {
 /// 0.25, admitting [6.2, 7.2] — plus or minus 7%.
 const FRONTIER_COEFF: f64 = 6.90;
 
-/// Maximum unmade lateral contacts a *compact* patch of `a` sites can expose.
+/// **Minimum** unmade lateral contacts a patch of `a` sites can expose.
 ///
 /// Harborth's result gives the **maximum** internal bonds over all arrangements
 /// of `a` cells, `floor(3a - sqrt(12a - 3))`, attained by the compact ones — so
-/// it is an upper bound on internal bonds and a lower bound on exposure. An
-/// earlier version said "at least", which is true only for the compact case and
-/// reads as a universal bound.
+/// it is an upper bound on internal bonds and therefore a **lower** bound on
+/// exposure, `6a - 2H(a)`, with equality only for maximally compact patches.
+///
+/// **The direction has been written three different ways in four places and
+/// this is the settled one.** The title said "maximum" two lines above a body
+/// saying "lower bound"; `unmade_lateral` said a patch "exposes at most `6a`
+/// less twice Harborth's count", which is true only when the patch is
+/// maximally compact; and the plan carried the "at least ... so it exposes at
+/// most" form that this doc's own next paragraph names as the earlier error.
+/// Falsified in this file's own ground truth: on `Geodesic<162>` in
+/// `cap_order`, `a = 3` exposes **14** against `compact_bound(3) = 12`, because
+/// a cap-order fill is not maximally compact — so "at most" is false for the
+/// very fill order the derivation assumes.
+///
+/// No number moves today, because the bound is inert except at `a = 1` where
+/// the fill is trivially compact (see the binding analysis in
+/// `unmade_lateral`). It matters when the fill order is generalised, which the
+/// strain accumulation contemplates.
 ///
 /// Verified by brute force over every connected triangular-lattice animal for
 /// `a = 1..10`. The result is provably positive (`>= 2*sqrt(12a-3)`), so no
@@ -211,9 +239,36 @@ fn compact_bound(a: usize) -> f64 {
 /// `internal = (z_lat*a - unmade)/2`. At a full shell the frontier is empty and
 /// this returns `(z_lat*cap)/2 = 3*cap - 6` exactly — Euler's edge count for a
 /// triangulated sphere, which is the check that the two halves agree.
+///
+/// **"Identity, not a model" is true everywhere except `outer == 1`, and there
+/// the clamp below is load-bearing.** The two halves use different coordination
+/// conventions: `compact_bound(1) = 6` is a flat-lattice degree, while
+/// `lateral_coordination(cap) = 6 - 12/cap` is the sphere's, which is strictly
+/// less for every cap. So `raw` is negative at *every* `outer == 1` cell — 36
+/// of 2808 across k = 6..14 and shells 1..4, worst −0.75 at cap = 8 — and the
+/// clamp is what returns the correct 0, not the identity.
+///
+/// This is not cosmetic: `a_two_unit_cluster_has_exactly_one_contact` — the
+/// test that caught the `z = 6 + k/2` defect — passes *only* because of the
+/// clamp. Unclamped, `contacts_upto(c, 2)` gives 0.250 / 0.500 / 0.625 at
+/// k = 6 / 10 / 14 against a tolerance of 1e-9. `the_clamp_fires_only_at_a_lone
+/// _outer_site` pins the exemption rather than leaving it to be rediscovered.
+///
+/// The same mismatch is why `elements_one_past_a_closure_all_have_valence_one`
+/// gets its result: its stated cause is "all six of its lateral contacts
+/// unmade", but the shell offers 4.5–5.9, and the valence is 1 by rounding
+/// `6/(6 - 12/cap)` ∈ [1.14, 1.33]. Margin to 1.5 is comfortable, so the family
+/// holds — but the cause written down is not the cause.
 fn lateral_made(cap: usize, outer: usize) -> f64 {
-    let raw = (lateral_coordination(cap) * outer as f64 - unmade_lateral(cap, outer)) * 0.5;
+    let raw = lateral_made_raw(cap, outer);
     if raw > 0.0 { raw } else { 0.0 }
+}
+
+/// `lateral_made` before the clamp — exposed so a test can assert *where* the
+/// clamp fires, instead of the clamp being an unnamed rescue inside a function
+/// whose doc calls itself an identity.
+fn lateral_made_raw(cap: usize, outer: usize) -> f64 {
+    (lateral_coordination(cap) * outer as f64 - unmade_lateral(cap, outer)) * 0.5
 }
 
 /// Contacts made by a cluster of `units`, counted shell by shell.
@@ -458,13 +513,38 @@ fn derive_table(c: Consts, n_elements: usize) -> Vec<Derived> {
         // it imports real nuclear physics with no data file in sight. This is a
         // different mechanism: a lattice cannot tile a sphere, so each shell is
         // stretched over a larger radius than the one below it and carries a
-        // strain that grows as `n^2`. Summed over shells that is `~N^(5/3)`
-        // total, `~N^(2/3)` per unit — which competes with the contact term's
-        // saturation and produces a maximum whose position is a
-        // function of the generated constants and of nothing typed in. (An earlier
-        // version quoted a closed form `eps*z*coeff/(8*sigma)` with `coeff`
-        // undefined; solving for it across the grid gives 0.80 to 5.00, so no such
-        // constant exists and the claim was unfalsifiable as written.)
+        // strain that grows as `n^2`. That competes with the contact term's
+        // saturation and produces a maximum. (An earlier version quoted a closed
+        // form `eps*z*coeff/(8*sigma)` with `coeff` undefined; solving for it
+        // across the grid gives 0.80 to 5.00, so no such constant exists and the
+        // claim was unfalsifiable as written.)
+        //
+        // **The exponent 2/3 is CHOSEN, not derived, and it is load-bearing.**
+        // Executing the stated derivation does not produce it: per-*shell*
+        // strain proportional to `n^2`, summed and divided by `N`, gives
+        // `Sum n^2 / (k Sum n^2) = 1/k` — a *constant*, confirmed numerically
+        // (0.154..0.161 against 1/6 at k = 6; 0.067..0.070 against 1/14 at
+        // k = 14, approaching 1/k from below). Reaching `N^(2/3)` needs
+        // per-*site* strain proportional to `n^2`, which is a different claim
+        // and is not the one written above.
+        //
+        // **And the choice decides the headline result.** Accumulating strain
+        // shell-by-shell — as `contacts_upto` does, for the identical reason —
+        // moves the peak in **48.1% of drawn universes** (3170 of 6588 over
+        // k x eps x sigma x n_elements): closure/edge/mid-shell goes from
+        // 86.6/9.9/3.6% to 66.8/33.2/0.0%. So "the peak's position is a
+        // function of the generated constants and of nothing typed in" — which
+        // an earlier version of this comment asserted — is **false**, and the
+        // `19 of 24` census below is a sample from the closed-form row only.
+        //
+        // This is the same defect `contacts_upto` was rewritten to fix, in its
+        // direct competitor in the same subtraction: see that function's doc,
+        // which records that a continuum count "put the binding peak at N = 1
+        // in all 24 drawn universes". Deferred deliberately, not overlooked —
+        // the remedy is shell-by-shell accumulation and it requotes every
+        // number in this file, so it belongs with Task 20's battery. Precedence
+        // 2 (correctness of physics), NOT a G3 breach: no data, no calibration,
+        // no transfer function.
         let strain = c.sigma * det_math::cbrt(units as f64 * units as f64);
         let energy_per_unit = c.eps * contacts / units as f64 - strain;
 
@@ -551,19 +631,47 @@ fn closures(k: usize, n: usize) -> Vec<usize> {
 /// steady-state condition and Task 20's battery, not this file. Terminators (`f <= 1`) are counted in
 /// the averages because they are what stops chains, which is the whole reason
 /// the ceiling exists.
-fn gel_extent(weights: &[(u8, f64)]) -> (f64, f64, f64) {
+/// The three gel statistics, named.
+///
+/// **Not a `(f64, f64, f64)`.** Three same-typed floats read positionally at
+/// four call sites is a transposed destructure away from silently retitling a
+/// printed column, and the same expression is destined for Task 20's battery
+/// where those numbers gate a universe. Fields make the transposition a compile
+/// error instead of a wrong table.
+#[derive(Debug, Clone, Copy)]
+struct Gel {
+    /// Weight-average functionality, `<f^2>/<f>`.
+    f_w: f64,
+    /// Critical conversion extent, `1/(f_w - 1)`.
+    p_c: f64,
+    /// Bonds per node at gel, `p_c*<f>/2` — the coordinate invariant under
+    /// degree-independent thinning.
+    bonds_per_node: f64,
+}
+
+fn gel_extent(weights: &[(u8, f64)]) -> Gel {
     let total: f64 = weights.iter().map(|&(_, w)| w).sum();
     let mean: f64 = weights.iter().map(|&(f, w)| f64::from(f) * w / total).sum();
     let mean_sq: f64 = weights
         .iter()
         .map(|&(f, w)| f64::from(f) * f64::from(f) * w / total)
         .sum();
-    if mean <= 0.0 {
-        return (0.0, f64::INFINITY, f64::INFINITY);
-    }
+    // `f_w = <f^2>/<f>` is *undefined* at zero mean degree, not zero. An
+    // earlier version returned 0.0, which is a fabricated value for a quantity
+    // that does not exist and would flow into a printed column looking like a
+    // measurement. Unreachable over the drawn ranges (abundance bottoms out at
+    // 4.6e-9 per element), so making it loud costs nothing.
+    assert!(
+        mean > 0.0,
+        "gel_extent: mean degree {mean}, so f_w is undefined"
+    );
     let f_w = mean_sq / mean;
     if f_w <= 1.0 {
-        return (f_w, f64::INFINITY, f64::INFINITY);
+        return Gel {
+            f_w,
+            p_c: f64::INFINITY,
+            bonds_per_node: f64::INFINITY,
+        };
     }
     let p_c = 1.0 / (f_w - 1.0);
     // Bonds per node at gel: `p_c * <f> / 2`. **The invariant coordinate** —
@@ -575,7 +683,11 @@ fn gel_extent(weights: &[(u8, f64)]) -> (f64, f64, f64) {
     // where-it-gels is the same number in either coordinate. Where the beaker
     // sits needs the steady-state condition from §9.1/§9.4's kinetics, which
     // Task 4 has no rate constants for. Task 20's battery does.
-    (f_w, p_c, p_c * mean * 0.5)
+    Gel {
+        f_w,
+        p_c,
+        bonds_per_node: p_c * mean * 0.5,
+    }
 }
 
 fn main() {
@@ -629,7 +741,7 @@ fn main() {
         }
 
         let weights: Vec<(u8, f64)> = table.iter().map(|e| (e.valence, e.abundance)).collect();
-        let (_, p_c, _) = gel_extent(&weights);
+        let p_c = gel_extent(&weights).p_c;
         // Carries the seed so the sort below has a real tie-break (§13.1).
         gel_extents.push((p_c, seed));
 
@@ -726,8 +838,10 @@ fn main() {
 
     let flat: Vec<(u8, f64)> = table.iter().map(|e| (e.valence, 1.0)).collect();
     let weighted: Vec<(u8, f64)> = table.iter().map(|e| (e.valence, e.abundance)).collect();
-    let (fw_flat, pc_flat, bc_flat) = gel_extent(&flat);
-    let (fw_w, pc_w, bc_w) = gel_extent(&weighted);
+    let flat_gel = gel_extent(&flat);
+    let (fw_flat, pc_flat, bc_flat) = (flat_gel.f_w, flat_gel.p_c, flat_gel.bonds_per_node);
+    let w_gel = gel_extent(&weighted);
+    let (fw_w, pc_w, bc_w) = (w_gel.f_w, w_gel.p_c, w_gel.bonds_per_node);
     println!(
         "\nunweighted (every element equally common):  f_w = {fw_flat:.3}  extent {pc_flat:.3}  bonds/node {bc_flat:.3}"
     );
@@ -766,7 +880,8 @@ fn main() {
             .sum::<f64>()
             / tot;
         let w: Vec<(u8, f64)> = t.iter().map(|e| (e.valence, e.abundance)).collect();
-        let (fw, pc, bc) = gel_extent(&w);
+        let g = gel_extent(&w);
+        let (fw, pc, bc) = (g.f_w, g.p_c, g.bonds_per_node);
         println!("{decay:>7.2} {fw:>9.3} {pc:>9.3} {bc:>11.3} {low:>19.3}");
     }
 
@@ -778,12 +893,34 @@ fn main() {
     // stable over seed-ordered input, which is true and invisible: swapping in
     // `sort_unstable_by` — the obvious cleanup for a `Vec<f64>` — would have
     // broken it silently, and nothing at this call site would have said so.
+    // **The finiteness check is what makes the comparator below a total order,
+    // and it is not decoration.** `partial_cmp(..).unwrap_or(Equal)` is not a
+    // total order: with a NaN key it is intransitive — for (1.0,0), (NaN,1),
+    // (0.5,2) it reports a<b, b<c, a>c — and `Equal.then(seed)` does not
+    // rescue it, it makes std's "does not correctly implement a total order"
+    // panic *more* likely (70.3% against 54.5% of NaN inputs, measured over
+    // 360k fuzz cases). Trading a silent misorder for a loud panic is not the
+    // same as having an order.
+    //
+    // NaN is unreachable today: `gel_extent` yields non-finite only from its
+    // two early returns, and abundance cannot underflow to zero over the drawn
+    // ranges (worst-case table total 5.763, smallest per-element term
+    // 4.587e-9 — that needs `units*decay ~ 745` against a bound of 120*0.16).
+    // So assert it, and let `total_cmp` be exactly what the library's own
+    // `canonical_cmp` is: a total order made safe by a checked precondition.
+    assert!(
+        gel_extents.iter().all(|&(p, _)| p.is_finite()),
+        "gel extents must be finite before sorting: {gel_extents:?}"
+    );
     let mut sorted = gel_extents.clone();
-    sorted.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0)
-            .unwrap_or(core::cmp::Ordering::Equal)
-            .then(a.1.cmp(&b.1))
-    });
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "§13.4: total_cmp is banned because a runtime NaN's sign bit \
+                  is architecture-dependent. The assert above rules NaN out, \
+                  which is the same precondition Unit::canonical_cmp relies on; \
+                  the seed keeps the order total across equal p_c"
+    )]
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     println!(
         "\ngel extents across the 24 universes: min {:.3}  median {:.3}  max {:.3}",
         sorted.first().map_or(0.0, |&(p, _)| p),
@@ -893,12 +1030,24 @@ mod tests {
         pub(super) fn cap_order<const D: usize>(g: &Geodesic<D>) -> Vec<usize> {
             let mut idx: Vec<usize> = (0..D).collect();
             // Sort by height along +z, with the index as tie-break (§13.4).
-            idx.sort_by(|&a, &b| {
-                g.dirs[b][2]
-                    .partial_cmp(&g.dirs[a][2])
-                    .unwrap_or(core::cmp::Ordering::Equal)
-                    .then(a.cmp(&b))
-            });
+            //
+            // Same reasoning as the gel-extent sort: `partial_cmp(..)
+            // .unwrap_or(Equal)` is not a total order under NaN, so the
+            // precondition has to be checked rather than assumed. Here the
+            // components are coordinates of unit vectors on a geodesic, finite
+            // by construction — asserted anyway, because "by construction" is
+            // what the last three defects in this file were also confident of.
+            assert!(
+                g.dirs.iter().all(|d| d[2].is_finite()),
+                "geodesic directions must be finite"
+            );
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "§13.4: NaN is excluded by the assert above, and the \
+                          index tie-break keeps the order total across equal \
+                          heights — which are common on a geodesic"
+            )]
+            idx.sort_by(|&a, &b| g.dirs[b][2].total_cmp(&g.dirs[a][2]).then(a.cmp(&b)));
             idx
         }
 
@@ -979,7 +1128,14 @@ mod tests {
         fn check<const D: usize>() -> (f64, usize) {
             let built = Geodesic::<D>::build();
             assert!(built.is_ok(), "geodesic D={D} failed to build");
-            let Ok(g) = built else { return (0.0, 0) };
+            // Sentinel must FAIL the caller's `worst < 0.25`, not satisfy it.
+            // `(0.0, 0)` was a *passing* value in the else-arm of the test whose
+            // absence let a 1.46x error stand — unreachable only because of the
+            // assert above it, so relaxing that assert would have converted this
+            // into a silent pass.
+            let Ok(g) = built else {
+                return (f64::INFINITY, 0);
+            };
             let adj = exact::adjacency(&g);
 
             // Euler: any triangulated sphere has exactly twelve degree-5
@@ -1149,23 +1305,137 @@ mod tests {
     /// shape it asked for is present in every one.
     /// Whether that is enough functionality is Task 5's battery to answer; it
     /// is not something this file may assert either way.
+    /// **The gel band, asserted — because prose quoting it has drifted twice.**
+    ///
+    /// `FRONTIER_COEFF` was refitted 7.30 → 6.90 in this branch and the gel
+    /// extents moved with it, from 0.424/0.649/0.892 to 0.468/0.741/0.914. Five
+    /// separate places went on quoting the old triple — including §7.2 of the
+    /// spec, *inside the parenthetical explaining that this had already
+    /// happened once*. Editing five numbers by hand has the same half-life as
+    /// the last time; this is the thing that fails.
+    ///
+    /// Bands are deliberately tight — ±0.02, about 3% — because the point is to
+    /// catch a coefficient change, not to tolerate one. If this fails after a
+    /// deliberate refit, requote every site listed in its message and *then*
+    /// move the band. It is not a range to widen.
+    #[test]
+    fn gel_band_holds() {
+        let mut extents: Vec<f64> = (0..24_u64)
+            .map(|seed| {
+                let mut rng = Stream::new(0xF0_51_00 ^ seed);
+                let c = draw_consts(&mut rng);
+                let w: Vec<(u8, f64)> = derive_table(c, c.n_elements)
+                    .iter()
+                    .map(|e| (e.valence, e.abundance))
+                    .collect();
+                gel_extent(&w).p_c
+            })
+            .collect();
+        assert!(
+            extents.iter().all(|p| p.is_finite()),
+            "non-finite gel extent"
+        );
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "§13.4: finiteness asserted on the line above, which is the \
+                      precondition that makes total_cmp safe"
+        )]
+        extents.sort_by(f64::total_cmp);
+        let (min, median, max) = (extents[0], extents[12], extents[23]);
+        for (name, got, want) in [
+            ("min", min, 0.468),
+            ("median", median, 0.741),
+            ("max", max, 0.914),
+        ] {
+            assert!(
+                (got - want).abs() < 0.02,
+                "gel {name} moved: {got:.3} vs {want:.3}. If this was a deliberate \
+                 refit, requote it in prd.md §7.2, and in v0.md at the Q4 comment \
+                 and the Step 13 commit message, BEFORE touching this band."
+            );
+        }
+    }
+
+    /// The clamp in `lateral_made` is an exemption, so pin its blast radius.
+    ///
+    /// It exists because the two halves of the "identity" use different
+    /// coordination conventions at `outer == 1` (see that function's doc). If
+    /// it ever fires anywhere else, the conventions have diverged somewhere new
+    /// and the identity claim is wrong in a way no other test would show —
+    /// `contacts_upto` would quietly gain spurious *made* contacts while every
+    /// valence still read plausibly.
+    #[test]
+    fn the_clamp_fires_only_at_a_lone_outer_site() {
+        for k in 6..=14_usize {
+            for shell in 1..=4_usize {
+                let cap = shell_size(k, shell);
+                for outer in 0..=cap {
+                    let fires = lateral_made_raw(cap, outer) < 0.0;
+                    assert_eq!(
+                        fires,
+                        outer == 1,
+                        "k={k} shell={shell} cap={cap} outer={outer}: clamp fired={fires}, \
+                         raw={}",
+                        lateral_made_raw(cap, outer)
+                    );
+                }
+            }
+        }
+    }
+
+    /// The clamp is load-bearing, and this is the mutation that proves it.
+    ///
+    /// `a_two_unit_cluster_has_exactly_one_contact` passes only because of it;
+    /// unclamped, `contacts_upto(c, 2)` is 0.250 / 0.500 / 0.625 at
+    /// k = 6 / 10 / 14 against a 1e-9 tolerance. This asserts that directly, so
+    /// the dependency is recorded here rather than discovered by someone
+    /// "simplifying" the clamp away.
+    #[test]
+    fn without_the_clamp_the_two_unit_cluster_test_would_fail() {
+        for k in [6_usize, 10, 14] {
+            let cap = shell_size(k, 1);
+            assert!(
+                lateral_made_raw(cap, 1) < 0.0,
+                "k={k}: raw lateral_made at outer=1 should be negative, got {}",
+                lateral_made_raw(cap, 1)
+            );
+        }
+    }
+
+    /// **Exhaustive, and asserting the attained set — both deliberate.**
+    ///
+    /// `valence` reads only `cap` and `outer`, and both are functions of `k`
+    /// and `units` alone: the other seven `Consts` fields never enter. So the
+    /// ceiling is a pure function of `(k, n_elements)` — 9 x 61 = 549 cells,
+    /// about a millisecond. Sampling 48 seeds out of an enumerable space buys
+    /// a probability where a certainty is free.
+    ///
+    /// It is not academic. `frontier_matches_exact_counts_on_a_real_sphere`
+    /// admits `FRONTIER_COEFF` in [6.135, 7.215]; at 7.20 — *inside the band
+    /// its own gate allows* — the true ceiling reaches 7 in 7 of the 549 cells,
+    /// and 48 random draws miss all seven **54% of the time**. The previous
+    /// sampled form was therefore still blind on the high side, which is the
+    /// only side that matters: §7.1 puts valence at 0..6, so a 7 is a spec
+    /// breach and this is the one test positioned to see it. Raising 48 to 480
+    /// would not fix it — that shrinks a probability instead of removing it.
+    ///
+    /// `assert_eq!` on the set, not `.all(..)` containment: a refit that
+    /// collapsed every universe to 5 satisfies containment and fails this.
     #[test]
     fn valence_ceiling_is_four_to_six_over_the_drawn_range() {
         let mut seen = std::collections::BTreeSet::new();
-        for seed in 0..48_u64 {
-            let mut rng = Stream::new(0xF0_51_00 ^ seed);
-            let c = draw_consts(&mut rng);
-            if let Some(m) = derive_table(c, c.n_elements)
-                .iter()
-                .map(|e| e.valence)
-                .max()
-            {
-                seen.insert(m);
+        for k in 6..=14_usize {
+            let c = consts_with_k(k);
+            for n in 60..=120_usize {
+                if let Some(m) = derive_table(c, n).iter().map(|e| e.valence).max() {
+                    seen.insert(m);
+                }
             }
         }
-        assert!(
-            seen.iter().all(|&v| (4..=6).contains(&v)),
-            "valence ceiling left 4..=6 over the drawn range: {seen:?}"
+        let expected: std::collections::BTreeSet<u8> = [4, 5, 6].into_iter().collect();
+        assert_eq!(
+            seen, expected,
+            "the attained valence ceiling set moved over the full drawn grid"
         );
     }
 

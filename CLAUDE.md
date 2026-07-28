@@ -80,7 +80,7 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --no-deps --document-private-items
 cargo run --locked -p borbax-cli --release -- goldens --emit    # golden state hashes (cross-platform matrix)
-UPDATE_GOLDENS=1 cargo test -p borbax-render                    # regenerate SVG goldens after a deliberate render change
+UPDATE_GOLDENS=1 cargo test --locked -p borbax-render           # regenerate SVG goldens after a deliberate render change
 ```
 
 **`--locked` everywhere is not decoration.** From Task 2 the workspace has a
@@ -89,6 +89,17 @@ stale `Cargo.lock` lets the three CI legs resolve different versions — and the
 golden matrix would report that as a portability failure in the simulation,
 which is the one diagnosis it must never give wrongly. The `cargo xtask` alias
 carries it too.
+
+**One command in that list cannot take it, and one used to be missing it.**
+`cargo fmt` rejects `--locked` outright (it is `cargo-fmt`, not a cargo build
+command) — yet it shells `cargo metadata`, which will happily rewrite
+`Cargo.lock`. That is the standing exception, and the reason the CI `fmt` job
+carries the same gap at `.github/workflows/ci.yml:37`. The one that *was*
+missing it is worse and is now fixed: `UPDATE_GOLDENS=1 cargo test -p
+borbax-render` is the only command in the block whose **output is a golden
+artefact**, and it was the one permitted to silently re-resolve the lockfile
+first. Every result-affecting CI leg — `xtask`, `clippy`, `test`,
+`test --release`, `goldens --emit` — was already correct.
 
 **`cargo doc` is part of the gate, not a convenience.** `[workspace.lints.rustdoc]`
 denies `broken_intra_doc_links`, and *nothing else enforces it* — clippy does
@@ -118,9 +129,17 @@ from two crates that need it.
 
 **`libm` does dispatch on architecture, and "it doesn't" is the wrong reason to
 trust it.** Measured on 0.2.16 — the version `Cargo.lock` currently resolves,
-not a pin: `Cargo.toml` carries the caret range `0.2`, so the lockfile is the
-only thing holding the version, which is why `--locked` is on every command
-above. `arch` is a *default* feature, and it
+not a pin: `Cargo.toml` carries the caret range `0.2`. Two things hold it, and
+naming only the first invites someone to reopen this thread. The **lockfile**,
+enforced by `--locked`, keeps the three CI legs on one version. **Renovate TIER
+B** is what makes a bump deliberate rather than merely visible: the cargo
+manager's `rangeStrategy: auto` resolves to `update-lockfile` for a bare `0.2`,
+so a libm 0.2.17 lands as a lockfile-only PR matching `matchDepTypes:
+["dependencies", "workspace.dependencies"]` — `automerge: false`, labelled
+`deps-runtime` and `determinism-review`, with `lockFileMaintenance` separately
+disabled for this exact hazard. That chain already delivers what the dependency
+doctrine asks, so `=0.2.16` would add nothing but a resolution failure the first
+time something wants `^0.2.17`. `arch` is a *default* feature, and it
 routes `sqrt`, `fma`, `rint`, `ceil` and `floor` to hardware — with `fma` on
 x86-64 doing **runtime CPU feature detection** between FMA3, FMA4 and soft. The
 only FMA instructions in our release binaries today are inside `libm::cbrt`.
