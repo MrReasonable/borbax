@@ -45,18 +45,129 @@
               spreadsheet would bury the arithmetic being checked"
 )]
 
+use borbax_experiments::geodesic::Geodesic;
 use borbax_experiments::rng::Stream;
 use borbax_units::det_math;
-use core::f64::consts::PI;
+
+/// Exact frontier counts on a real triangulated sphere.
+///
+/// **This module is the specification, and the continuum formula is the
+/// approximation being checked against it.** The first version of this probe
+/// had the continuum formula and no ground truth, and it was wrong by 1.46x
+/// for two compounding reasons that no test could see:
+///
+/// - *"each boundary site points three of its six contacts outward"* is wrong.
+///   Measured here, unmade-contacts-per-boundary-site converges to **2.000**.
+///   A boundary site in the top row of a filled patch on a triangular lattice
+///   has two in-row neighbours occupied and two below occupied, leaving two.
+/// - *site spacing `sqrt(4*pi/cap)`* treats the area per site as `s^2`. On a
+///   triangular lattice it is `(sqrt(3)/2)*s^2`, so the spacing was 7.5% low.
+///
+/// Both errors inflate the count, valence ran ~46% high everywhere, and the
+/// two headline chemistry conclusions were consequences of the error rather
+/// than of the design.
+mod exact {
+    use super::Geodesic;
+
+    /// Adjacency of a geodesic sphere, by nearest-neighbour threshold.
+    ///
+    /// A geodesic's edges are its shortest vertex-vertex distances; the next
+    /// shell of distances sits far enough above that a 1.3x threshold on the
+    /// minimum separates them cleanly. Verified by the degree histogram: any
+    /// triangulated sphere must have exactly twelve degree-5 vertices and the
+    /// rest degree 6, and `degrees` asserts it.
+    pub fn adjacency<const D: usize>(g: &Geodesic<D>) -> Vec<Vec<usize>> {
+        let mut min_d2 = f64::MAX;
+        for i in 0..D {
+            for j in (i + 1)..D {
+                let d2 = dist2(g.dirs[i], g.dirs[j]);
+                if d2 < min_d2 {
+                    min_d2 = d2;
+                }
+            }
+        }
+        let cut = min_d2 * 1.3 * 1.3;
+        (0..D)
+            .map(|i| {
+                (0..D)
+                    .filter(|&j| j != i && dist2(g.dirs[i], g.dirs[j]) < cut)
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
+        let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+        dx * dx + dy * dy + dz * dz
+    }
+
+    /// Degree histogram, as `(n_degree_5, n_degree_6, n_other)`.
+    pub fn degrees(adj: &[Vec<usize>]) -> (usize, usize, usize) {
+        let mut out = (0, 0, 0);
+        for a in adj {
+            match a.len() {
+                5 => out.0 += 1,
+                6 => out.1 += 1,
+                _ => out.2 += 1,
+            }
+        }
+        out
+    }
+
+    /// Fill order: a compact spherical cap growing from one pole. This is the
+    /// *canonical filling order* the continuum derivation assumes, so the
+    /// ground truth has to use it too or the comparison is meaningless.
+    pub fn cap_order<const D: usize>(g: &Geodesic<D>) -> Vec<usize> {
+        let mut idx: Vec<usize> = (0..D).collect();
+        // Sort by height along +z, with the index as tie-break (§13.4).
+        idx.sort_by(|&a, &b| {
+            g.dirs[b][2]
+                .partial_cmp(&g.dirs[a][2])
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then(a.cmp(&b))
+        });
+        idx
+    }
+
+    /// Unmade lateral contacts after filling the first `a` sites of `order`:
+    /// the number of filled-empty adjacent pairs. Exact, by construction.
+    pub fn unmade(adj: &[Vec<usize>], order: &[usize], a: usize) -> usize {
+        let mut filled = vec![false; adj.len()];
+        for &i in order.iter().take(a) {
+            filled[i] = true;
+        }
+        let mut n = 0;
+        for (i, nbrs) in adj.iter().enumerate() {
+            if filled[i] {
+                n += nbrs.iter().filter(|&&j| !filled[j]).count();
+            }
+        }
+        n
+    }
+}
 
 /// Units in the `n`th packing shell: `k*n^2 + 2`.
 ///
-/// **Only `k` is drawn; the rest is geometry.** A shell is a surface, and a
-/// surface grows as the square of its radius, so `n^2` is not a choice. The
-/// `+ 2` is the antipodal pair every shell carries. `k` is how densely the base
-/// unit's own shape lets neighbours tile that surface, which is exactly the
-/// kind of thing a universe seed should decide and the kind of thing no real
-/// table fixes for us.
+/// **Only `k` is drawn; the rest is polyhedral combinatorics.** For any convex
+/// simplicial polyhedron, shell `n` holds `V + E(n-1) + F(n-1)(n-2)/2`; apply
+/// `3F = 2E` and the linear term vanishes, and `V - E + F = 2` leaves
+/// `(F/2)n^2 + 2`. So `k = F/2 = E/3 = V - 2`, and **`shell(1) = k + 2 = V`**,
+/// which forces `z = k + 2` in [`Consts`].
+///
+/// The `+ 2` is therefore the **Euler characteristic**, not "the antipodal pair
+/// every shell carries" — an earlier version of this comment said the latter,
+/// and the tetrahedron falsifies it outright: `k = 2`, shell 1 = 4 = 2*1^2 + 2,
+/// and it has no antipodal vertex pair at all. The distinction never changes a
+/// number here; it changes what the next person writes when they generalise to
+/// a hemisphere or a torus.
+///
+/// `k` is how densely the base unit's own shape lets neighbours tile that
+/// surface — the one thing a universe seed decides and no real table fixes.
+///
+/// Footnote for honesty: only `k` in {6, 7, 8, 10} admit a convex *deltahedron*,
+/// i.e. a realisation from identical spheres. The rest are combinatorially fine
+/// but not equal-sphere packings. In an invented chemistry the base unit need
+/// not be a sphere, so this is a documentation point rather than a defect.
 ///
 /// `k = 10` recovers `10n^2 + 2` — the Mackay icosahedral numbers, which are
 /// **real**, observed in rare-gas cluster mass spectra. That is one member of
@@ -124,25 +235,54 @@ fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     let f = outer as f64 / cap as f64;
     // `sqrt` is native on purpose: IEEE-754 specifies it exactly, so it is
     // portable without `det_math`. See the criterion in `clippy.toml`.
-    let continuum = 6.0 * (PI * cap as f64 * f * (1.0 - f)).sqrt();
+    let continuum = FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt();
 
-    // **The continuum form is wrong for tiny patches, and the first run of this
-    // probe is what said so.** At `outer = 1` it returns 10.5 contacts for a
-    // single site that has only six. A patch of `a` sites cannot expose more
-    // than `6a` lateral contacts — that is the case where none of them touch
-    // each other — and by symmetry the same bound applies to the `cap - a`
-    // empty sites. Whichever side is smaller binds.
+    // **The continuum form overestimates tiny patches, and the bound has to be
+    // the *compact* one.** A patch of `a` sites laid out compactly — which is
+    // what a spherical-cap fill order means — has at least
+    // `floor(3a - sqrt(12a - 3))` internal bonds (Harborth's minimum-perimeter
+    // result for triangular-lattice animals), and each internal bond removes
+    // two from the `6a` a fully-dispersed patch would expose. An earlier
+    // version used a bare `6a` — the bound for a patch whose sites touch
+    // *nothing*, which is the opposite of the compactness the continuum
+    // assumes — and it returned valence 3 where the exact count gives 2 at
+    // `outer = 3`. By symmetry the same bound applies to the empty side.
     let smaller = if outer < cap - outer {
         outer
     } else {
         cap - outer
     };
-    let discrete = 6.0 * smaller as f64;
+    let discrete = compact_bound(smaller);
     if continuum < discrete {
         continuum
     } else {
         discrete
     }
+}
+
+/// Continuum coefficient for the frontier length, **fitted to exact counts on
+/// real triangulated spheres** rather than derived — see the [`exact`] module.
+///
+/// The derivation gives `6*sqrt(pi) = 10.635` and is wrong by 1.46x, for the
+/// two compounding reasons [`exact`] documents. Least-squares against exact
+/// counts puts it near 7.3, and an independent bond-cutting derivation gives
+/// 7.275. `frontier_matches_exact_counts` pins it against the real thing,
+/// because it was the derivation that failed.
+const FRONTIER_COEFF: f64 = 7.30;
+
+/// Maximum unmade lateral contacts a *compact* patch of `a` sites can expose.
+///
+/// Harborth's minimum-perimeter result: a compact `a`-site triangular-lattice
+/// animal has at least `floor(3a - sqrt(12a - 3))` internal bonds, and each
+/// one removes two from the `6a` a fully-dispersed patch would expose.
+fn compact_bound(a: usize) -> f64 {
+    if a == 0 {
+        return 0.0;
+    }
+    let af = a as f64;
+    let internal = (3.0 * af - (12.0 * af - 3.0).sqrt()).floor();
+    let raw = 6.0 * af - 2.0 * internal;
+    if raw > 0.0 { raw } else { 0.0 }
 }
 
 /// Unmade lateral contacts on the frontier, divided by the lateral
@@ -196,6 +336,17 @@ fn contacts_upto(c: Consts, units: usize) -> f64 {
 
         // Outward contacts the shell below still has to offer, shared out over
         // this shell's sites.
+        // Divided by the shell's *capacity*, not by how many sites happen to
+        // be placed: how many contacts a site makes inward is fixed by the
+        // geometry, not by how full its shell currently is.
+        //
+        // A review found `z/cap != 1` for a lone unit on a bare core and
+        // proposed dividing by `take` instead. That was measured against the
+        // old `z = 6 + k/2`; with `z = k + 2` forced by the shell law,
+        // `cap = shell_size(k, 1) = z`, so this is exactly 1.0 — and dividing
+        // by `take` instead gives a lone unit the core's *entire* outward
+        // budget, which is 8 contacts against a core that has one site.
+        // Fixing `z` fixed this; the proposed repair would have broken it.
         let outward_budget = prev_cap as f64 * (c.z - prev_z_lat - prev_inward);
         let inward_per_site = outward_budget / cap as f64;
 
@@ -235,9 +386,16 @@ struct Consts {
     k: usize,
     /// Bulk coordination of the base unit.
     z: f64,
-    /// Mass of one base unit. Dyadic, so the mass series lands on `Mass`'s grid.
+    /// Mass of one base unit. **Dyadic, and load-bearing** — it is multiplied
+    /// by an integer and never rounded, so it must land on the 1/1024 grid by
+    /// itself. Probed: 0.3 steps instead of 0.25 fails exactness at N = 1.
     base_mass: f64,
-    /// Mass carried away per made contact. Dyadic for the same reason.
+    /// Mass carried away per made contact. **Need not be dyadic** — the
+    /// defect is quantised explicitly at the point of use. Probed: changing
+    /// the denominator from 512 to 500 leaves exactness passing, while
+    /// deleting the quantisation fails it at N = 2. An earlier version of this
+    /// line claimed it was load-bearing "for the same reason" as `base_mass`,
+    /// which is the half of the pair that actually is.
     contact_defect: f64,
     base_radius: f64,
     /// Energy per made contact.
@@ -246,6 +404,14 @@ struct Consts {
     sigma: f64,
     /// How steeply abundance falls with unit count. The gel lever (§7.2).
     decay: f64,
+    /// How many elements the table holds.
+    ///
+    /// **Drawn, and the probe must draw it too.** An earlier version fixed 120
+    /// here while `generate_elements` drew 60..=120, so every figure this file
+    /// reported was measured at a table size the scheme does not generate. That
+    /// is how "the peak lands on a closure in 24 of 24" and "valence reaches 8
+    /// in 19 of 24" both got into the plan: true at 120, false over the draw.
+    n_elements: usize,
 }
 
 /// Draw one universe's constants.
@@ -257,9 +423,13 @@ fn draw_consts(rng: &mut Stream) -> Consts {
     let k = 6 + rng.below(9) as usize;
     Consts {
         k,
-        // Coordination follows the tiling density: a denser shell means more
-        // neighbours in contact. Not independent of `k`, and must not be.
-        z: 6.0 + (k as f64) * 0.5,
+        // **`z = k + 2` is forced, not chosen.** For any convex simplicial
+        // polyhedron shell n holds `(F/2)n^2 + 2` with `F/2 = V - 2`, so
+        // `shell(1) = k + 2 = V` — and shell 1 *is* the set of units touching
+        // the core, which is what `z` means. An earlier `6 + k/2` agreed only
+        // at k = 8, and put 16 sites in shell 1 around a core with 13
+        // neighbours: three of them orbiting nothing.
+        z: (k + 2) as f64,
         // Dyadic: 1, 1.25, 1.5 or 1.75. See the mass computation.
         base_mass: 1.0 + 0.25 * rng.below(4) as f64,
         // Dyadic: 1/512 .. 4/512.
@@ -268,6 +438,7 @@ fn draw_consts(rng: &mut Stream) -> Consts {
         eps: 0.8 + 0.05 * rng.below(9) as f64,
         sigma: 0.02 + 0.01 * rng.below(12) as f64,
         decay: 0.04 + 0.01 * rng.below(13) as f64,
+        n_elements: 60 + rng.below(61) as usize,
     }
 }
 
@@ -312,7 +483,13 @@ fn derive_table(c: Consts, n_elements: usize) -> Vec<Derived> {
         // finding already on record: a comment telling a future reader that the
         // wrong half is what protects them.
         let raw_defect = contacts * c.contact_defect;
-        let defect = (raw_defect * 1024.0).round() / 1024.0;
+        // `round_ties_even`, matching `Mass::from_f64_quantised` four lines
+        // downstream. Both are IEEE-754-exact, so this is not a portability
+        // fix — it is that the two conventions disagree on reachable ties (13
+        // of them in the mass series, at N = 2, 3, 4, 7 among others, the
+        // lightest and most abundant elements). Two conventions for one grid
+        // means a later "consistency cleanup" silently moves a golden.
+        let defect = (raw_defect * 1024.0).round_ties_even() / 1024.0;
         let mass = units as f64 * c.base_mass - defect;
 
         // Radius: the cube root of the unit count, times a bulge for the
@@ -322,11 +499,25 @@ fn derive_table(c: Consts, n_elements: usize) -> Vec<Derived> {
         // one. This does the opposite — grows through a shell, drops at
         // closure. Structurally anti-isomorphic, not a renamed trend.
         let fill = outer as f64 / cap as f64;
-        let radius = c.base_radius * det_math::cbrt(units as f64) * (1.0 + 0.55 * fill);
+        // **Radius is set by which shell is occupied, and it cannot shrink.**
+        // The enclosing radius of a superset of units is never smaller, and an
+        // earlier `cbrt(units) * (1 + 0.55*fill)` collapsed it by 35% at every
+        // closure (N=74 -> 75: 2.587 -> 1.687 on one unit added). For a shelled
+        // cluster the radius is the shell index — each shell adds one lattice
+        // spacing — so `shell + fill` is both monotone and the better model,
+        // and it recovers the `N^(1/3)` scaling for free since N ~ k*shell^3/3.
+        //
+        // G3 still holds and by a cleaner route: real atomic radius *falls*
+        // across a period and jumps at a new one. This rises monotonically and
+        // never jumps. Structurally unlike, without being geometrically wrong.
+        let radius = c.base_radius * (1.0 + shell as f64 + fill);
 
         // Valence: docking notches on the frontier. Zero at closure with no
         // branch — see `frontier_notches`.
-        let valence = frontier_notches(cap, outer).round() as u8;
+        // `round_ties_even` for the same reason: `notches` lands on an exact
+        // 2.5 at k=8 / outer=2 and k=8 / outer=8, and ties-away vs ties-even
+        // differ by a whole bonding slot there.
+        let valence = frontier_notches(cap, outer).round_ties_even() as u8;
 
         // Affinity: exposed fraction of the cluster, mapped to [-1, 1].
         // Continuous across closures by construction; the first draft's version
@@ -352,9 +543,11 @@ fn derive_table(c: Consts, n_elements: usize) -> Vec<Derived> {
         // stretched over a larger radius than the one below it and carries a
         // strain that grows as `n^2`. Summed over shells that is `~N^(5/3)`
         // total, `~N^(2/3)` per unit — which competes with the contact term's
-        // saturation and produces a maximum whose position is
-        // `eps*z*coeff/(8*sigma)`, a function of the generated constants and of
-        // nothing typed in.
+        // saturation and produces a maximum whose position is a
+        // function of the generated constants and of nothing typed in. (An earlier
+        // version quoted a closed form `eps*z*coeff/(8*sigma)` with `coeff`
+        // undefined; solving for it across the grid gives 0.80 to 5.00, so no such
+        // constant exists and the claim was unfalsifiable as written.)
         let strain = c.sigma * det_math::cbrt(units as f64 * units as f64);
         let energy_per_unit = c.eps * contacts / units as f64 - strain;
 
@@ -362,7 +555,21 @@ fn derive_table(c: Consts, n_elements: usize) -> Vec<Derived> {
         // extra unit costs a step and abundance falls geometrically. Clusters
         // that bind better survive their surroundings longer, so the per-unit
         // energy tilts it. Both halves are processes already in the model.
-        let abundance = det_math::exp(-(units as f64) * c.decay + energy_per_unit * 0.6);
+        // **The energy tilt is deleted, and that is a finding rather than a
+        // simplification.** It read `+ 0.6 * energy_per_unit`, described as
+        // "tilted by how well the cluster binds". Three things were wrong with
+        // it. It pushed the *wrong way* — removing it moves nominal p_c from
+        // 0.358 to 0.381, better than the best the entire `decay` sweep
+        // reaches. The stated compounding mechanism derives `E_total`, not
+        // `E_per_unit`; implementing the stated story makes the *heaviest*
+        // element the most abundant and collapses p_c to 0.112. And `0.6` was
+        // typed in while every neighbouring constant is drawn, which is
+        // structurally the same defect as `peak`-as-an-argument that this
+        // scheme exists to remove.
+        //
+        // What remains is derived: sequential addition with a constant
+        // per-step survival probability gives `r^N = exp(N ln r)`.
+        let abundance = det_math::exp(-(units as f64) * c.decay);
 
         out.push(Derived {
             units,
@@ -460,13 +667,13 @@ fn main() {
     for seed in 0..24_u64 {
         let mut rng = Stream::new(0xF0_51_00 ^ seed);
         let c = draw_consts(&mut rng);
-        let table = derive_table(c, 120);
+        let table = derive_table(c, c.n_elements);
 
         let max_val = table.iter().map(|e| e.valence).max().unwrap_or(0);
         max_valences.push(max_val);
 
         let peak = peak_of(&table);
-        let clos = closures(c.k, 120);
+        let clos = closures(c.k, c.n_elements);
         let on_closure = clos.contains(&peak);
         if on_closure {
             peaks_on_closure += 1;
@@ -485,25 +692,29 @@ fn main() {
         gel_extents.push(p_c);
 
         println!(
-            "{seed:>4} {:>3} {max_val:>6} {:>8} {peak:>6} {:>6} {:>6} {p_c:>8.3}",
+            "{seed:>4} {:>3} {:>4} {max_val:>7} {:>6} {peak:>6} {:>7} {:>7} {p_c:>8.3}",
             c.k,
+            c.n_elements,
             clos.len(),
             if on_closure { "yes" } else { "no" },
             if exact { "yes" } else { "NO" }
         );
     }
     println!(
-        "\npeak lands on a closure in {peaks_on_closure} of 24 -- and this is STRUCTURAL, \
-         not luck.\n  A closed shell has no frontier, so it makes every lateral contact \
-         available to it and\n  maximises contacts per unit; the energy series is a sawtooth \
-         with a local maximum at\n  each closure. What the generated constants choose is \
-         *which* closure wins, and that\n  does move: {} distinct peaks over the 24 draws.",
+        "\npeak lands on a closure in {peaks_on_closure} of 24.\n  \
+         The sawtooth IS structural -- a closed shell has no frontier, so it makes every \
+         lateral\n  contact available to it and maximises contacts per unit, giving a local \
+         maximum at\n  every closure. But the GLOBAL max of a series truncated mid-shell can \
+         sit at the table\n  edge instead, and most misses here are exactly that. An earlier \
+         version measured this\n  at a fixed 120 elements, read 24 of 24, and called it \
+         structural without qualification.\n  What the constants choose is *which* closure \
+         wins: {} distinct peaks over 24 draws.",
         {
             let mut ps: Vec<usize> = Vec::new();
             for seed in 0..24_u64 {
                 let mut r = Stream::new(0xF0_51_00 ^ seed);
                 let cc = draw_consts(&mut r);
-                let p = peak_of(&derive_table(cc, 120));
+                let p = peak_of(&derive_table(cc, cc.n_elements));
                 if !ps.contains(&p) {
                     ps.push(p);
                 }
@@ -598,7 +809,7 @@ fn main() {
     );
     for step in 0..13_u64 {
         let decay = 0.04 + 0.01 * step as f64;
-        let t = derive_table(Consts { decay, ..c }, 120);
+        let t = derive_table(Consts { decay, ..c }, c.n_elements);
         let tot: f64 = t.iter().map(|e| e.abundance).sum();
         let low: f64 = t
             .iter()
@@ -611,9 +822,12 @@ fn main() {
         println!("{decay:>7.2} {fw:>9.3} {pc:>9.3} {low:>25.3}");
     }
 
-    // Sorted once, then read at three positions — `f64::min`/`max` are
-    // disallowed (tie-breaking differs by target), and a sort with an explicit
-    // tie-break is what §13.4 asks for anyway.
+    // Sorted once, then read at three positions, because `f64::min`/`max` are
+    // disallowed (their tie-breaking differs by target). This is a bare
+    // `Vec<f64>` with **no** ID tie-break — an earlier version of this comment
+    // claimed one, which would have been cited later as precedent for a sort
+    // that genuinely needs it. It is deterministic for a different reason:
+    // `sort_by` is stable and the input is already in seed order.
     let mut sorted = gel_extents.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
     println!(
@@ -654,6 +868,110 @@ mod tests {
             if e.outer == 0 {
                 assert_eq!(e.valence, 0, "N={} sits at a closure", e.units);
             }
+        }
+    }
+
+    /// **The specification for `unmade_lateral`, and the test whose absence
+    /// let a 1.46x error stand.**
+    ///
+    /// Builds a real geodesic sphere, derives its adjacency, fills it in
+    /// spherical-cap order — the same canonical order the continuum derivation
+    /// assumes — and counts filled-to-empty edges exactly. The formula must
+    /// track that. Nothing else in this file could have caught the error,
+    /// because every other test compares the formula against itself.
+    #[test]
+    fn frontier_matches_exact_counts_on_a_real_sphere() {
+        let Ok(g) = Geodesic::<162>::build() else {
+            panic!("geodesic failed to build");
+        };
+        let adj = exact::adjacency(&g);
+
+        // Euler: any triangulated sphere has exactly twelve degree-5 vertices.
+        // If this fails the adjacency threshold is wrong and every count below
+        // is meaningless.
+        let (d5, d6, other) = exact::degrees(&adj);
+        assert_eq!(
+            (d5, other),
+            (12, 0),
+            "degree histogram: 5s={d5} 6s={d6} other={other}"
+        );
+
+        let order = exact::cap_order(&g);
+        let (mut worst, mut worst_at) = (0.0_f64, 0);
+        for a in 1..162 {
+            let truth = exact::unmade(&adj, &order, a) as f64;
+            let formula = unmade_lateral(162, a);
+            // Relative error against the truth, away from the endpoints where
+            // both go to zero and a ratio is meaningless.
+            if truth > 0.0 {
+                let rel = (formula - truth).abs() / truth;
+                if rel > worst {
+                    worst = rel;
+                    worst_at = a;
+                }
+            }
+        }
+        assert!(
+            worst < 0.30,
+            "worst relative error {worst:.3} at outer={worst_at} \
+             — the formula has drifted from the geometry it approximates"
+        );
+    }
+
+    /// The enclosing radius of a superset of units cannot be smaller. An
+    /// earlier form collapsed it 35% at every closure, which — since G1
+    /// measured binding at ~93% size and ~7% shape — would have read as
+    /// closed-shell elements binding a different partner set entirely.
+    #[test]
+    fn radius_never_shrinks() {
+        for k in 6..=14_usize {
+            let c = Consts { k, ..consts() };
+            for pair in derive_table(c, 200).windows(2) {
+                assert!(
+                    pair[1].radius >= pair[0].radius,
+                    "k={k}: radius fell from {} to {} at N={}",
+                    pair[0].radius,
+                    pair[1].radius,
+                    pair[1].units
+                );
+            }
+        }
+    }
+
+    /// Two units share exactly one contact. Not a modelling choice — and the
+    /// earlier tolerance of 0.35 was exactly wide enough to span the defect it
+    /// should have caught (`z = 6 + k/2` gave 0.81..1.13 across k).
+    #[test]
+    fn a_two_unit_cluster_has_exactly_one_contact() {
+        for k in 6..=14_usize {
+            let c = Consts {
+                k,
+                z: (k + 2) as f64,
+                ..consts()
+            };
+            let n = contacts_upto(c, 2);
+            assert!(
+                (n - 1.0).abs() < 1e-9,
+                "k={k}: a 2-unit cluster made {n} contacts"
+            );
+        }
+    }
+
+    /// `z` is forced by the shell law: `shell_size(k, 1) == z`. Two hand-written
+    /// copies of a relation are how they drift apart.
+    #[test]
+    fn coordination_agrees_with_the_first_shell() {
+        for k in 6..=14_usize {
+            let mut rng = Stream::new(0xF0_51_00 ^ k as u64);
+            let c = draw_consts(&mut rng);
+            assert_eq!(
+                shell_size(c.k, 1) as f64,
+                c.z,
+                "k={}: shell 1 holds {} sites but z is {}",
+                c.k,
+                shell_size(c.k, 1),
+                c.z
+            );
         }
     }
 
@@ -708,18 +1026,55 @@ mod tests {
         }
     }
 
-    /// A per-*site* count caps at `z - 6`, which is why the first draft could
-    /// not exceed 6. A count over sites has no such ceiling, and §7.2 needs the
-    /// tail to reach 8 for a high-functionality species to exist at all.
+    /// **Valence 8 is not reachable in a table this scheme generates, and
+    /// saying so is the finding.**
+    ///
+    /// A per-*site* count caps at `z - 6`, which is why the fitted curve this
+    /// replaced could not exceed 6 even before its clamp. Summing over the
+    /// frontier removes that ceiling in principle — measured, valence 9 appears
+    /// once the fourth shell opens, past N = 200.
+    ///
+    /// But `n_elements` is drawn on 60..=120, and within that range the ceiling
+    /// is **4 to 7** — measured, after this assertion was first written as
+    /// `5..=7` from a guess and failed with a 4 in it. An earlier version of this test asserted `max >= 8` and
+    /// passed by measuring at 300 elements, outside anything the scheme builds
+    /// — the same "measured at a size the plan does not generate" defect that
+    /// put two false claims into the plan's prose.
+    ///
+    /// §7.2 wants a thin high-valence tail. What it gets is a ceiling of 7 at
+    /// best and 4 at worst.
+    /// Whether that is enough functionality is Task 5's battery to answer; it
+    /// is not something this file may assert either way.
     #[test]
-    fn valence_reaches_eight_somewhere_in_a_large_shell() {
-        // k = 14 gives a third shell of 128 sites; the frontier of a half-filled
-        // shell that size carries well over eight notches.
+    fn valence_ceiling_is_four_to_seven_over_the_drawn_range() {
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 0..48_u64 {
+            let mut rng = Stream::new(0xF0_51_00 ^ seed);
+            let c = draw_consts(&mut rng);
+            if let Some(m) = derive_table(c, c.n_elements)
+                .iter()
+                .map(|e| e.valence)
+                .max()
+            {
+                seen.insert(m);
+            }
+        }
+        assert!(
+            seen.iter().all(|&v| (4..=7).contains(&v)),
+            "valence ceiling left 4..=7 over the drawn range: {seen:?}"
+        );
+    }
+
+    /// The ceiling *is* removed in principle — the mechanism has no per-site
+    /// cap. This pins that separately from what a drawn table reaches, so the
+    /// two claims cannot be confused again.
+    #[test]
+    fn the_frontier_count_has_no_per_site_ceiling() {
         let c = Consts { k: 14, ..consts() };
-        let max = derive_table(c, 300).iter().map(|e| e.valence).max();
+        let max = derive_table(c, 400).iter().map(|e| e.valence).max();
         assert!(
             max.is_some_and(|m| m >= 8),
-            "valence never reached 8: max {max:?}"
+            "a count over sites should exceed the per-site cap of 6 eventually: max {max:?}"
         );
     }
 
