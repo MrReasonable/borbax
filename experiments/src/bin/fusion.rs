@@ -45,106 +45,8 @@
               spreadsheet would bury the arithmetic being checked"
 )]
 
-use borbax_experiments::geodesic::Geodesic;
 use borbax_experiments::rng::Stream;
 use borbax_units::det_math;
-
-/// Exact frontier counts on a real triangulated sphere.
-///
-/// **This module is the specification, and the continuum formula is the
-/// approximation being checked against it.** The first version of this probe
-/// had the continuum formula and no ground truth, and it was wrong by 1.46x
-/// for two compounding reasons that no test could see:
-///
-/// - *"each boundary site points three of its six contacts outward"* is wrong.
-///   Measured here, unmade-contacts-per-boundary-site converges to **2.000**.
-///   A boundary site in the top row of a filled patch on a triangular lattice
-///   has two in-row neighbours occupied and two below occupied, leaving two.
-/// - *site spacing `sqrt(4*pi/cap)`* treats the area per site as `s^2`. On a
-///   triangular lattice it is `(sqrt(3)/2)*s^2`, so the spacing was 7.5% low.
-///
-/// Both errors inflate the count, valence ran ~46% high everywhere, and the
-/// two headline chemistry conclusions were consequences of the error rather
-/// than of the design.
-mod exact {
-    use super::Geodesic;
-
-    /// Adjacency of a geodesic sphere, by nearest-neighbour threshold.
-    ///
-    /// A geodesic's edges are its shortest vertex-vertex distances; the next
-    /// shell of distances sits far enough above that a 1.3x threshold on the
-    /// minimum separates them cleanly. Verified by the degree histogram: any
-    /// triangulated sphere must have exactly twelve degree-5 vertices and the
-    /// rest degree 6, and `degrees` asserts it.
-    pub fn adjacency<const D: usize>(g: &Geodesic<D>) -> Vec<Vec<usize>> {
-        let mut min_d2 = f64::MAX;
-        for i in 0..D {
-            for j in (i + 1)..D {
-                let d2 = dist2(g.dirs[i], g.dirs[j]);
-                if d2 < min_d2 {
-                    min_d2 = d2;
-                }
-            }
-        }
-        let cut = min_d2 * 1.3 * 1.3;
-        (0..D)
-            .map(|i| {
-                (0..D)
-                    .filter(|&j| j != i && dist2(g.dirs[i], g.dirs[j]) < cut)
-                    .collect()
-            })
-            .collect()
-    }
-
-    fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
-        let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-        dx * dx + dy * dy + dz * dz
-    }
-
-    /// Degree histogram, as `(n_degree_5, n_degree_6, n_other)`.
-    pub fn degrees(adj: &[Vec<usize>]) -> (usize, usize, usize) {
-        let mut out = (0, 0, 0);
-        for a in adj {
-            match a.len() {
-                5 => out.0 += 1,
-                6 => out.1 += 1,
-                _ => out.2 += 1,
-            }
-        }
-        out
-    }
-
-    /// Fill order: a compact spherical cap growing from one pole. This is the
-    /// *canonical filling order* the continuum derivation assumes, so the
-    /// ground truth has to use it too or the comparison is meaningless.
-    pub fn cap_order<const D: usize>(g: &Geodesic<D>) -> Vec<usize> {
-        let mut idx: Vec<usize> = (0..D).collect();
-        // Sort by height along +z, with the index as tie-break (§13.4).
-        idx.sort_by(|&a, &b| {
-            g.dirs[b][2]
-                .partial_cmp(&g.dirs[a][2])
-                .unwrap_or(core::cmp::Ordering::Equal)
-                .then(a.cmp(&b))
-        });
-        idx
-    }
-
-    /// Unmade lateral contacts after filling the first `a` sites of `order`:
-    /// the number of filled-empty adjacent pairs. Exact, by construction.
-    pub fn unmade(adj: &[Vec<usize>], order: &[usize], a: usize) -> usize {
-        let mut filled = vec![false; adj.len()];
-        for &i in order.iter().take(a) {
-            filled[i] = true;
-        }
-        let mut n = 0;
-        for (i, nbrs) in adj.iter().enumerate() {
-            if filled[i] {
-                n += nbrs.iter().filter(|&&j| !filled[j]).count();
-            }
-        }
-        n
-    }
-}
 
 /// Units in the `n`th packing shell: `k*n^2 + 2`.
 ///
@@ -261,10 +163,10 @@ fn unmade_lateral(cap: usize, outer: usize) -> f64 {
 }
 
 /// Continuum coefficient for the frontier length, **fitted to exact counts on
-/// real triangulated spheres** rather than derived — see the [`exact`] module.
+/// real triangulated spheres** rather than derived — see the `exact` module.
 ///
 /// The derivation gives `6*sqrt(pi) = 10.635` and is wrong by 1.46x, for the
-/// two compounding reasons [`exact`] documents. Least-squares against exact
+/// two compounding reasons `exact` documents. Least-squares against exact
 /// counts puts it near 7.3, and an independent bond-cutting derivation gives
 /// 7.275. `frontier_matches_exact_counts` pins it against the real thing,
 /// because it was the derivation that failed.
@@ -851,6 +753,111 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// Exact frontier counts on a real triangulated sphere.
+    ///
+    /// **This module is the specification, and the continuum formula is the
+    /// approximation being checked against it.** The first version of this probe
+    /// had the continuum formula and no ground truth, and it was wrong by 1.46x
+    /// for two compounding reasons that no test could see:
+    ///
+    /// - *"each boundary site points three of its six contacts outward"* is wrong.
+    ///   Measured here, unmade-contacts-per-boundary-site converges to **2.000**.
+    ///   A boundary site in the top row of a filled patch on a triangular lattice
+    ///   has two in-row neighbours occupied and two below occupied, leaving two.
+    /// - *site spacing `sqrt(4*pi/cap)`* treats the area per site as `s^2`. On a
+    ///   triangular lattice it is `(sqrt(3)/2)*s^2`, so the spacing was 7.5% low.
+    ///
+    /// Both errors inflate the count, valence ran ~46% high everywhere, and the
+    /// two headline chemistry conclusions were consequences of the error rather
+    /// than of the design.
+    ///
+    /// Test-only: the ground truth exists to check the formula, not to be used by
+    /// it. `#[cfg(test)]` rather than an `expect(dead_code)`, so that if the probe
+    /// ever starts calling it in anger the gate says so.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "fixed-size geodesic arrays indexed by their own 0..D loop bounds"
+    )]
+    mod exact {
+        use borbax_experiments::geodesic::Geodesic;
+
+        /// Adjacency of a geodesic sphere, by nearest-neighbour threshold.
+        ///
+        /// A geodesic's edges are its shortest vertex-vertex distances; the next
+        /// shell of distances sits far enough above that a 1.3x threshold on the
+        /// minimum separates them cleanly. Verified by the degree histogram: any
+        /// triangulated sphere must have exactly twelve degree-5 vertices and the
+        /// rest degree 6, and `degrees` asserts it.
+        pub(super) fn adjacency<const D: usize>(g: &Geodesic<D>) -> Vec<Vec<usize>> {
+            let mut min_d2 = f64::MAX;
+            for i in 0..D {
+                for j in (i + 1)..D {
+                    let d2 = dist2(g.dirs[i], g.dirs[j]);
+                    if d2 < min_d2 {
+                        min_d2 = d2;
+                    }
+                }
+            }
+            let cut = min_d2 * 1.3 * 1.3;
+            (0..D)
+                .map(|i| {
+                    (0..D)
+                        .filter(|&j| j != i && dist2(g.dirs[i], g.dirs[j]) < cut)
+                        .collect()
+                })
+                .collect()
+        }
+
+        fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
+            let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+            dx * dx + dy * dy + dz * dz
+        }
+
+        /// Degree histogram, as `(n_degree_5, n_degree_6, n_other)`.
+        pub(super) fn degrees(adj: &[Vec<usize>]) -> (usize, usize, usize) {
+            let mut out = (0, 0, 0);
+            for a in adj {
+                match a.len() {
+                    5 => out.0 += 1,
+                    6 => out.1 += 1,
+                    _ => out.2 += 1,
+                }
+            }
+            out
+        }
+
+        /// Fill order: a compact spherical cap growing from one pole. This is the
+        /// *canonical filling order* the continuum derivation assumes, so the
+        /// ground truth has to use it too or the comparison is meaningless.
+        pub(super) fn cap_order<const D: usize>(g: &Geodesic<D>) -> Vec<usize> {
+            let mut idx: Vec<usize> = (0..D).collect();
+            // Sort by height along +z, with the index as tie-break (§13.4).
+            idx.sort_by(|&a, &b| {
+                g.dirs[b][2]
+                    .partial_cmp(&g.dirs[a][2])
+                    .unwrap_or(core::cmp::Ordering::Equal)
+                    .then(a.cmp(&b))
+            });
+            idx
+        }
+
+        /// Unmade lateral contacts after filling the first `a` sites of `order`:
+        /// the number of filled-empty adjacent pairs. Exact, by construction.
+        pub(super) fn unmade(adj: &[Vec<usize>], order: &[usize], a: usize) -> usize {
+            let mut filled = vec![false; adj.len()];
+            for &i in order.iter().take(a) {
+                filled[i] = true;
+            }
+            let mut n = 0;
+            for (i, nbrs) in adj.iter().enumerate() {
+                if filled[i] {
+                    n += nbrs.iter().filter(|&&j| !filled[j]).count();
+                }
+            }
+            n
+        }
+    }
+
     fn consts() -> Consts {
         let mut rng = Stream::new(0xF0_51_00);
         draw_consts(&mut rng)
@@ -881,9 +888,12 @@ mod tests {
     /// because every other test compares the formula against itself.
     #[test]
     fn frontier_matches_exact_counts_on_a_real_sphere() {
-        let Ok(g) = Geodesic::<162>::build() else {
-            panic!("geodesic failed to build");
-        };
+        use borbax_experiments::geodesic::Geodesic;
+        // `assert!`, not `panic!` in an else-branch: `clippy::panic` is denied
+        // workspace-wide and the test module's expect covers indexing, not this.
+        let built = Geodesic::<162>::build();
+        assert!(built.is_ok(), "geodesic failed to build");
+        let Ok(g) = built else { return };
         let adj = exact::adjacency(&g);
 
         // Euler: any triangulated sphere has exactly twelve degree-5 vertices.
@@ -964,9 +974,8 @@ mod tests {
         for k in 6..=14_usize {
             let mut rng = Stream::new(0xF0_51_00 ^ k as u64);
             let c = draw_consts(&mut rng);
-            assert_eq!(
-                shell_size(c.k, 1) as f64,
-                c.z,
+            assert!(
+                (shell_size(c.k, 1) as f64 - c.z).abs() < f64::EPSILON,
                 "k={}: shell 1 holds {} sites but z is {}",
                 c.k,
                 shell_size(c.k, 1),
