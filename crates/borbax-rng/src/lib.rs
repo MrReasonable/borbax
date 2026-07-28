@@ -27,24 +27,28 @@
 //! `next_f64`, `next_range` and `next_normal` are ours anyway is the
 //! five-line `mix` finalizer.
 //!
-//! **The key is 64 bits wide, and that is a bound worth knowing.** A stream's
-//! whole output is determined by one `u64`, so distinct streams are
-//! *probabilistically* rather than provably distinct — unlike Philox and
-//! Threefry, whose 192-bit or wider `(key, counter)` tuple lets the
-//! simulation's own indices be *embedded* rather than hashed down. (Philox4x32
-//! is 64-bit key + 128-bit counter = exactly the 192 bits `Stream::new` hashes
-//! into 64. An earlier version of this sentence said those families carry
-//! 128-bit keys; they do not, and the correction matters because adopting one
-//! would fix nothing unless the coordinates went in the *counter*.) Salmon et
-//! al. put it directly: "(key, counter) tuples must never be improperly
-//! re-used, since an inadvertent re-use of the same tuple will result in
-//! exactly the same random number, with potentially dire consequences for
-//! simulation accuracy." Expected colliding stream
-//! pairs among `S` streams is about `S²/2⁶⁵`: negligible at 10⁶ streams
-//! (3e-8), around 0.5 at 2³², and expected-many if anything ever opens a
-//! stream per molecule per step. Two colliding streams emit *identical*
-//! sequences, which nothing crashes on and no test sees. See
-//! [`Stream::new`] for the concrete consequence.
+//! **Stream identity is a 256-bit counter, not a hash, and that is the whole
+//! determinism argument.** Draws come from Philox 4x64-10 (see `philox`), a
+//! bijection of its counter for any fixed key. Every coordinate gets its own
+//! 64-bit field — `[domain, index, fork, block]` — so distinct coordinates are
+//! **provably** distinct streams rather than improbably-colliding ones.
+//!
+//! That is a change of kind, not degree, and it is worth recording why. The
+//! first version of this crate hashed `(seed, domain, index)` — 192 bits of
+//! coordinate — into a single 64-bit key. Two triples whose keys collided
+//! emitted identical sequences forever, the seed cancelled out of the
+//! collision equation so a colliding pair collided in *every* universe, and a
+//! complete search below index 2³⁰ found five such relations among the nine
+//! domains — two of them pairing [`Domain::Decay`] with [`Domain::Shadow`],
+//! which is precisely the pair `Shadow` exists to keep apart. Nothing crashed
+//! and no test saw it. Salmon et al. state the rule this design now satisfies:
+//! "(key, counter) tuples must never be improperly re-used, since an
+//! inadvertent re-use of the same tuple will result in exactly the same random
+//! number, with potentially dire consequences for simulation accuracy."
+//!
+//! The 128-bit key is half-used on purpose: word 0 is the universe seed, word
+//! 1 is reserved for the world seed, so §13.1's `(universe_seed, world_seed,
+//! config_hash)` tuple never has to be compressed into one word.
 
 #![no_std]
 
@@ -74,7 +78,10 @@
 #[cfg(test)]
 extern crate std;
 
+mod philox;
+
 use borbax_units::det_math;
+use philox::philox4x64_10;
 
 /// Which subsystem a stream belongs to.
 ///
@@ -84,10 +91,11 @@ use borbax_units::det_math;
 /// function of `(seed, domain, index)`, so no number of draws in one domain
 /// can move another.
 ///
-/// Domain *separation* is the weaker, probabilistic claim, and the difference
-/// matters. See [`Stream::new`]: because all three coordinates are hashed into
-/// one 64-bit key, distinct `(domain, index)` pairs can collide, and a
-/// colliding pair collides in every universe ever generated.
+/// Separation is **exact**, not probabilistic. The domain is its own 64-bit
+/// field in Philox's counter rather than one input to a hash, so two domains
+/// cannot share a stream at any index. An earlier design hashed all three
+/// coordinates into a 64-bit key and admitted permanent collisions; see the
+/// module documentation for what that cost.
 ///
 /// **Discriminants are explicit and permanent, and a new variant may only be
 /// appended.** This is the seam that lets physics be extended later without
@@ -230,54 +238,6 @@ impl Domain {
     }
 }
 
-/// `SplitMix64`'s finalizer — Stafford's Variant 13. No state, trivially
-/// verifiable, and a bijection, so a stream's period is exactly 2^64 with no
-/// value repeated inside it.
-///
-/// **Do not reduce [`Stream::next_u64`] to a single application of this.** The
-/// obvious justification for the doubling — "strong avalanche" — is the wrong
-/// one, and measurement says so: strict avalanche cannot tell one round from
-/// two, both sitting at the noise floor over all 64×64 input/output bit pairs.
-/// Avalanche is not the property doing the work.
-///
-/// What does the work shows up two ways. Second-order avalanche over all 2080
-/// one- and two-bit input differences finds **three cells of total diffusion
-/// failure** in the single round — flipping input bits 29 and 59 together
-/// *never* flips output bit 0 — and **zero** in `mix(key ^ mix(c))`, whose
-/// worst deviation over 133 120 cells is exactly what that many samples
-/// predict. And empirically, a single finalizer over a sequential counter
-/// **fails `PractRand` at 8 GB** (`BRank(12)`, p ≈ 1.7e-53), where the composed
-/// form is clean to 128 GB. Measured here rather than cited: the published
-/// material on this mixer family is grey literature (Evensen's *Mostly
-/// Mangling*, Lemire's `testingRNG`) and reports a different setup, so it
-/// corroborates the direction and not the number.
-///
-/// The second application costs about 0.75 ns per draw on aarch64 (M1 Pro),
-/// roughly doubling the cost of `next_u64`. It is worth it, and the evidence
-/// has to be stated against the right reduction or it will read as stale:
-///
-/// - With **stock `SplitMix64`** — one finalizer over a state advanced by the
-///   golden-ratio constant — two seeds differing by `k·φ` are the same
-///   sequence shifted by `k`: 4032 of 4032 constructed cases, against 0 of
-///   4032 for the shipped form. That is what splitting in a loop produces.
-/// - Deleting one `mix` from `next_u64` instead gives `mix(key ^ c)`, which
-///   scores 0 of 4032 on *that* test and fails differently: 4032 of 4032
-///   `XOR`-differing key pairs emit an exact permutation of each other's
-///   draws.
-///
-/// Both reductions are unsafe; they are unsafe for different reasons, and a
-/// reader who tries the second one against the first one's evidence will
-/// wrongly conclude the comment is wrong.
-#[inline]
-#[must_use]
-const fn mix(mut z: u64) -> u64 {
-    z ^= z >> 30;
-    z = z.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z ^= z >> 27;
-    z = z.wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
-
 /// Box-Muller's transform, split out from the draws so its boundary can be
 /// tested directly: `next_f64` returns exactly `0.0` with probability 2^-53,
 /// so sampling will never reach the one input that matters.
@@ -382,8 +342,24 @@ fn range_from(u: f64, lo: f64, hi: f64) -> f64 {
 /// whole point of the change.
 #[derive(Debug, Clone)]
 pub struct Stream {
-    key: u64,
-    counter: u64,
+    /// `[universe_seed, reserved]`. The second word is deliberately unused
+    /// and deliberately present: §13.1's reproducibility tuple is
+    /// `(universe_seed, world_seed, config_hash)`, and a 64-bit key would
+    /// force those to be compressed together — which is exactly the hashing
+    /// that produced permanent stream collisions in the first design.
+    key: [u64; 2],
+    /// `[domain, index, fork, block]` — one 64-bit field each, no packing.
+    /// Because Philox is a bijection of the counter, distinct coordinates
+    /// give distinct output *by construction*.
+    counter: [u64; 4],
+    /// The current block. Philox emits four `u64` at once; buffering them is
+    /// what makes the per-draw cost a quarter of a block rather than a whole
+    /// one.
+    buf: [u64; 4],
+    /// How much of `buf` is spent, `0..=4`. Starts at 4, so a fresh stream is
+    /// pure field assignment and the first draw pays for the first block —
+    /// `Stream::new` does no Philox work at all.
+    spent: u32,
 }
 
 impl Stream {
@@ -394,38 +370,25 @@ impl Stream {
     /// any other stream has taken, so drawing order across subsystems is not
     /// part of the contract and never has to be preserved.
     ///
-    /// **Distinct triples are not guaranteed distinct streams, and the seed
-    /// does not help.** The key is `mix(seed ^ mix(D·φ ^ mix(index)))`, so two
-    /// triples collide exactly when `mix(i₁) ^ mix(i₂) == (D₁·φ) ^ (D₂·φ)` —
-    /// an equation the seed cancels out of. A colliding pair therefore
-    /// collides *for every seed*, permanently, in every universe ever
-    /// generated. A complete search below 2³⁰ finds five such index relations
-    /// among the nine domains, two of them pairing `Decay` with `Shadow`.
+    /// **Distinct triples are guaranteed distinct streams.** `(domain, index)`
+    /// occupy their own 64-bit fields of a 256-bit Philox counter, and Philox
+    /// is a bijection of that counter, so the guarantee is by construction
+    /// rather than below a birthday bound. This is the property the first
+    /// design did not have, and its absence was not theoretical: hashing the
+    /// same coordinates into a 64-bit key produced five permanent
+    /// seed-independent collisions below index 2³⁰.
     ///
-    /// Five is a *local upward fluctuation*, not structure — and the arithmetic
-    /// has to be stated carefully, because an earlier version of this comment
-    /// called it "matching the birthday expectation" over numbers that do not
-    /// match. For distinct unordered relations the expectation is
-    /// `36 × C(2³⁰,2)/2⁶⁴ = 1.125`, against which five is a 4.4× excess at
-    /// p = 0.006. (2.25 is the expectation for *ordered* index pairs, whose
-    /// matching observation is 10, not 5.) Extending the search to 2³² gives 25
-    /// relations against 18 expected, p = 0.068 — unremarkable, which is what
-    /// says the mixer has no structure and the 2³⁰ window was just a bump.
-    ///
-    /// This is not a defect in the mixing — it is the price of hashing 192
-    /// bits of coordinate into a 64-bit key, and it is why the module doc
-    /// states the bound. At V0 scale it is unreachable. It stops being
-    /// unreachable if `index` ever becomes a composite of patch and time step
-    /// as §13.1 sketches, or a content digest as [`Domain::Hash`] invites,
-    /// which is where the stream count reaches 10¹⁰–10¹². **Widening the key
-    /// is a Task 13/20 decision; taking it accidentally is the thing to
-    /// avoid.**
+    /// `Stream::new` does no Philox work — it is field assignment, and the
+    /// first draw pays for the first block.
     #[inline]
     #[must_use]
     pub const fn new(seed: u64, domain: Domain, index: u64) -> Self {
-        let key =
-            mix(seed ^ mix(domain.discriminant().wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ mix(index)));
-        Self { key, counter: 0 }
+        Self {
+            key: [seed, 0],
+            counter: [domain.discriminant(), index, 0, 0],
+            buf: [0; 4],
+            spent: 4,
+        }
     }
 
     /// Derive a child stream. Used where a fixed number of sub-streams is
@@ -451,19 +414,30 @@ impl Stream {
     /// a duplicate stream arriving through the one door `!Copy` does not
     /// guard. Give each call site a disjoint index range, or a domain.
     ///
-    /// The odd constant is real but weaker than "separation": `mix(0) == 0`,
-    /// so without it `fork(0)`'s key would be bit-identical to the parent's
-    /// first output. Since `mix` is a bijection, exactly one colliding index
-    /// exists per counter either way — the constant *relocates* the collision
-    /// to index `c − φ` ≈ 1.1e19, which no stream will reach, rather than
-    /// eliminating it. Eliminating it would need the colliding index to depend
-    /// on the key; swapping the constant for another would not achieve that.
+    /// **Forking is one level deep, and that is a real limit rather than an
+    /// oversight.** The child writes `index` into the counter's third field,
+    /// so a fork of a fork replaces its parent's fork coordinate instead of
+    /// extending it — two different fork chains could then land on the same
+    /// counter. If a second level is ever needed, it needs its own field or
+    /// its own `Domain`; it does not get one by nesting. Pinned in
+    /// `forking_twice_is_not_a_second_level`.
+    ///
+    /// **Fork coordinates are offset by one, because the root occupies zero.**
+    /// The first draft wrote `index` directly, so `fork(0)` produced the
+    /// parent's own counter — a duplicate stream, which is the precise hazard
+    /// this whole design exists to remove. Its own test caught it immediately.
+    /// The offset costs one value: `fork(u64::MAX)` wraps back onto the root.
+    /// Sixty-four bits cannot hold 2⁶⁴ forks *and* a distinct root, so some
+    /// aliasing is unavoidable; stating which is better than an unqualified
+    /// claim. Pinned in `fork_of_u64_max_aliases_the_root`.
     #[inline]
     #[must_use]
     pub const fn fork(&self, index: u64) -> Self {
         Self {
-            key: mix(self.key ^ mix(index.wrapping_add(0x9e37_79b9_7f4a_7c15))),
-            counter: 0,
+            key: self.key,
+            counter: [self.counter[0], self.counter[1], index.wrapping_add(1), 0],
+            buf: [0; 4],
+            spent: 4,
         }
     }
 
@@ -474,14 +448,26 @@ impl Stream {
     /// an allocator, or a thread-local, which is the exact list §13.1 bans
     /// from a result-affecting path.
     ///
-    /// The counter wraps rather than saturating. Reaching 2^64 draws on one
-    /// stream would take longer than the simulation will ever run, and a
-    /// wrap repeats the sequence rather than panicking mid-run — which is the
-    /// right failure for something that cannot happen.
+    /// The block counter wraps rather than saturating. Exhausting it means
+    /// 2⁶⁶ draws on one stream, which the simulation will not reach; a wrap
+    /// repeats the sequence rather than panicking mid-run, which is the right
+    /// failure for something that cannot happen.
     #[inline]
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::as_conversions,
+        reason = "`spent` is invariantly 0..=4 — set to 4 at construction, reset to 0 on refill, \
+                  and incremented only after the branch above has forced it below 4; the widening \
+                  to usize is of a value that has just been bounded by 4"
+    )]
     pub const fn next_u64(&mut self) -> u64 {
-        let v = mix(self.key ^ mix(self.counter));
-        self.counter = self.counter.wrapping_add(1);
+        if self.spent >= 4 {
+            self.buf = philox4x64_10(self.counter, self.key);
+            self.counter[3] = self.counter[3].wrapping_add(1);
+            self.spent = 0;
+        }
+        let v = self.buf[self.spent as usize];
+        self.spent += 1;
         v
     }
 
@@ -765,36 +751,52 @@ mod tests {
         assert_ne!(f1.next_u64(), f3.next_u64());
     }
 
-    /// `mix(0) == 0`, so without the odd constant inside [`Stream::fork`] the
-    /// key of `fork(0)` is `mix(key)` — which is exactly the parent's own
-    /// first output. This asserts the separation rather than describing it,
-    /// because a comment saying "the constant is load-bearing" survives the
-    /// constant being deleted and this does not.
-    ///
-    /// **It has to compare the child's key against the parent's output, not
-    /// draw against draw.** The first draft compared first draws and passed
-    /// with the constant removed: the child's first output is `mix(key')`, one
-    /// further round than the parent's `mix(key)`, so the two never collide
-    /// even when the coupling is fully present. The collision is one level up,
-    /// and a test aimed one level below it proves nothing.
+    /// Forking writes `index` into the counter's third field, so distinct
+    /// fork indices are distinct counters and Philox's bijectivity does the
+    /// rest. The old design needed a hand-chosen odd constant here to stop
+    /// `fork(0)`'s key colliding with the parent's first output; that whole
+    /// class of concern is gone, because there is no key derivation left to
+    /// collide.
     #[test]
-    fn fork_zero_is_not_the_parents_first_draw() {
+    fn forks_are_distinct_from_the_parent_and_from_each_other() {
         let base = Stream::new(1, Domain::Fold, 0);
-        let child = base.fork(0);
-        let mut parent = base;
-        assert_ne!(
-            child.key,
-            parent.next_u64(),
-            "fork(0)'s key is bit-identical to the parent's first output — the odd \
-             constant in `fork` is what separates them"
+        let mut parent = base.clone();
+        let mut f0 = base.fork(0);
+        let mut f1 = base.fork(1);
+        let p = parent.next_u64();
+        let a = f0.next_u64();
+        let b = f1.next_u64();
+        assert_ne!(a, p, "fork(0) collides with the parent");
+        assert_ne!(a, b, "fork(0) and fork(1) collide");
+    }
+
+    /// **Forking is one level deep.** A fork of a fork overwrites the fork
+    /// coordinate rather than extending it, so two different chains can land
+    /// on the same counter. That is a documented limit, and it is pinned here
+    /// so it cannot be discovered the hard way by someone building a nested
+    /// anneal.
+    /// The one value the fork offset costs, pinned rather than left to be
+    /// discovered. See [`Stream::fork`] for why an alias is unavoidable.
+    #[test]
+    fn fork_of_u64_max_aliases_the_root() {
+        let base = Stream::new(1, Domain::Fold, 0);
+        let mut aliased = base.fork(u64::MAX);
+        let mut root = base;
+        assert_eq!(aliased.next_u64(), root.next_u64());
+    }
+
+    #[test]
+    fn forking_twice_is_not_a_second_level() {
+        let base = Stream::new(1, Domain::Fold, 0);
+        let mut via_nesting = base.fork(3).fork(7);
+        let mut direct = base.fork(7);
+        assert_eq!(
+            via_nesting.next_u64(),
+            direct.next_u64(),
+            "fork(3).fork(7) should be indistinguishable from fork(7) — if this now differs,              nesting has acquired a second level and the doc on `fork` must say so"
         );
     }
 
-    /// Ranges chosen to *break* the affine form, not to pass. `(-3.5, 2.25)`
-    /// — the only range the first draft tested — is provably immune on all
-    /// 2⁵³ grid points, so it would have passed against an implementation
-    /// that returned `hi` half the time. The narrow-at-large-offset rows are
-    /// the discriminator; the wide row is kept only to show it still works.
     #[test]
     fn floats_in_a_range_are_bounded() {
         const RANGES: &[(f64, f64)] = &[
@@ -930,11 +932,11 @@ mod tests {
     }
 
     const GOLDEN_RANGE_AND_NORMAL: [u64; 5] = [
-        13_838_359_919_419_983_661,
-        4_598_440_133_459_397_612,
-        4_642_742_934_248_969_050,
-        13_818_779_806_568_588_147,
-        4_600_412_696_514_022_319,
+        4_602_769_819_129_994_958,
+        4_605_768_476_265_832_909,
+        4_642_522_722_373_854_909,
+        4_599_707_269_504_212_671,
+        4_603_032_638_160_435_161,
     ];
 
     /// The golden pins the values; this pins that they are not all the *same*
@@ -1135,10 +1137,10 @@ mod tests {
     }
 
     const GOLDEN_UNIVERSE_0: [u64; 4] = [
-        3_746_585_686_858_627_171,
-        4_336_712_865_889_401_412,
-        2_674_033_460_618_070_975,
-        13_246_354_618_560_148_965,
+        213_000_021_201_967_259,
+        4_455_796_210_202_625_458,
+        2_055_444_239_878_205_049,
+        10_411_612_076_246_414_556,
     ];
 
     /// Adding a `Domain` variant must not perturb any existing stream.
@@ -1162,49 +1164,49 @@ mod tests {
         for domain in Domain::ALL {
             let want: [u64; 3] = match domain {
                 Domain::Universe => [
-                    9_457_681_971_551_545_159,
-                    12_936_856_684_392_112_231,
-                    6_926_625_805_525_389_621,
+                    3_929_780_809_458_279_810,
+                    14_808_739_883_066_402_667,
+                    6_821_936_907_122_725_605,
                 ],
                 Domain::Naming => [
-                    6_644_770_736_882_075_221,
-                    5_435_968_933_138_178_970,
-                    12_450_347_572_679_043_309,
+                    1_829_254_752_149_997_246,
+                    5_728_333_709_296_349_463,
+                    9_288_166_565_660_478_743,
                 ],
                 Domain::Molecule => [
-                    11_303_817_658_843_748_277,
-                    14_443_300_859_520_213_470,
-                    8_315_562_969_497_253_773,
+                    4_049_216_183_878_968_044,
+                    15_790_089_183_108_422_852,
+                    16_750_542_454_782_617_201,
                 ],
                 Domain::Fold => [
-                    3_323_771_546_716_290_601,
-                    2_332_186_771_234_600_492,
-                    12_978_889_248_107_649_555,
+                    2_306_140_887_577_208_375,
+                    11_691_205_199_486_685_485,
+                    2_911_623_241_027_970_606,
                 ],
                 Domain::Reaction => [
-                    16_203_379_500_996_458_828,
-                    5_972_989_317_398_903_782,
-                    7_171_348_452_277_123_823,
+                    17_766_946_860_710_959_347,
+                    6_927_189_939_051_538_356,
+                    13_202_956_210_144_916_749,
                 ],
                 Domain::Decay => [
-                    6_069_625_794_531_361_978,
-                    17_342_767_524_156_585_604,
-                    4_292_406_413_987_601_818,
+                    4_064_337_356_115_406_327,
+                    2_355_560_016_391_046_765,
+                    4_745_691_913_722_414_085,
                 ],
                 Domain::Beaker => [
-                    108_042_624_964_054_509,
-                    4_882_957_866_487_493_608,
-                    14_455_476_772_791_300_264,
+                    12_864_929_427_389_045_100,
+                    15_550_989_763_699_698_652,
+                    13_012_296_228_043_260_465,
                 ],
                 Domain::Shadow => [
-                    12_942_870_876_989_012_825,
-                    5_956_052_040_092_985_695,
-                    10_235_981_688_369_823_609,
+                    721_593_208_716_469_688,
+                    16_408_411_480_340_345_767,
+                    14_942_133_425_965_051_356,
                 ],
                 Domain::Hash => [
-                    5_891_565_877_906_749_992,
-                    1_669_817_140_753_560_370,
-                    17_555_392_361_777_784_652,
+                    543_525_597_416_629_224,
+                    15_581_591_749_131_607_509,
+                    11_412_060_199_028_555_773,
                 ],
             };
             let mut s = Stream::new(0x5EED, domain, 0);
