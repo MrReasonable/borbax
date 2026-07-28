@@ -111,11 +111,24 @@ an alias cannot splice them in.
 `borbax-cli` subcommands: `beaker`, `sweep`, `band`, `battery`, `render`, `goldens`.
 
 Transcendentals route through `crates/borbax-units/src/det_math.rs`, backed by
-the `libm` crate — rust-lang's pure-Rust MUSL port, no platform dispatch. It
-lives in `borbax-units` and nowhere else because `borbax-rng` and
+the `libm` crate — rust-lang's pure-Rust MUSL port. It lives in `borbax-units` and nowhere else because `borbax-rng` and
 `borbax-universe` both call it and both sit below `borbax-molecule` in the crate
 order; anywhere higher and the one file guaranteeing portability is unreachable
 from two crates that need it.
+
+**`libm` does dispatch on architecture, and "it doesn't" is the wrong reason to
+trust it.** Measured on the pinned 0.2.16: `arch` is a *default* feature, and it
+routes `sqrt`, `fma`, `rint`, `ceil` and `floor` to hardware — with `fma` on
+x86-64 doing **runtime CPU feature detection** between FMA3, FMA4 and soft. The
+only FMA instructions in our release binaries today are inside `libm::cbrt`.
+
+That is safe, and the correct statement of why: **libm dispatches only on
+operations IEEE-754 specifies exactly**, which is the same criterion
+`clippy.toml` already applies. Verified rather than assumed — `cbrt` hashed over
+2.4M inputs with and without the `arch` feature is bit-identical. The wrong
+reason matters because it would wave through a future libm that added an `exp`
+arch path; `exp` already has one for x86 without SSE2, invisible only because
+the §13.4 matrix has no 32-bit leg.
 
 Every `exp`, `ln`, `sin`, `cos` and `powf` in the workspace goes through it.
 `sqrt` and the four arithmetic operations stay native — IEEE-754 specifies those

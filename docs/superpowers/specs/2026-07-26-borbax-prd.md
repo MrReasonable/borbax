@@ -101,6 +101,16 @@ Each ingredient exists somewhere. The combination does not:
 3. **A multi-scale engine that moves compute toward novelty** — deep time made affordable by spending it selectively
 4. **An unbroken causal chain** from element generation to protocell, with no hand-authored layer anywhere in between
 
+**Independent corroboration of §8.3, from a substrate sharing no machinery with ours.** RBN-World (Faulconbridge, Stepney, Miller & Caves, "RBN-World: The Hunt for a Rich AChem", *Artificial Life XII*, MIT Press 2010, pp. 261–268) builds an artificial chemistry whose atoms *are* random Boolean networks. They enumerated eight families of bonding rule and put each through five tests — synthesis, self-synthesis, decomposition, substitution, catalysis. **Only the complementarity families survived**: `Total`/`Sum Zero`, which is `p(N_i) + p(N_j) = 0`, and its `Proportion`/`Sum One` rescaling. Every similarity-based alternative — 'equal', 'similar', 'different' — died.
+
+`Total`/`Sum Zero` **is** our §8.3 charge term. That kernel scores `−(a_A[i] + a_B[j])²`, maximised exactly when `a_A + a_B = 0`. A five-test filter over 200 chemistries on a completely unrelated substrate selected the rule this project's central mechanism already uses, which is the strongest external support §8.3 has.
+
+Two further transfers. Their other headline — that the substrate's own parameters "have little or no influence on the low-level properties of the chemistry", while the *bonding rule* decided richness — argues that Borbax's richness will be decided by §8.3 and not by the element table, which is worth remembering whenever the table looks like the problem. And **self-synthesis was by far their most discriminating test** (183 candidates down to 20, more than any other single test): a molecule binding a copy of itself. In Borbax that is self-complementarity under the 60-rotation search, non-trivial given §22.8's handedness — and §7.2's battery currently has no analogue of it. Adding one is cheap and the precedent says it discriminates.
+
+*Citation hygiene:* do not repeat that paper's own "less than 5%" survival figure. Its Table 5 lists 19 survivors of 200, which is 9.5%; the text contradicts the table.
+
+RBN-World is **not** an analogue of building atoms by packing a base unit — its atoms are Boolean networks. The resemblance is methodological, and it belongs against §7.2: it is the closest published precedent for a cheap low-level battery used to reject dead chemistries before running them.
+
 ### 2.7 Failure modes to design against
 
 The most valuable output of the survey. These are the documented reasons projects in this space stall, and each gets a specific countermeasure.
@@ -277,7 +287,7 @@ Each element carries:
 | `affinity` | Surface-interaction scalar in [−1, +1]. Drives complementarity. Trends across a period. |
 | `radius` | Steric size; contributes to shape extent |
 | `bond_energies` | Per-partner-group bond strength matrix |
-| `stability` | Decay probability. Unstable elements are both an energy source and a mutation source. |
+| `decay_rate` | Decay probability per world-year. Unstable elements are both an energy source and a mutation source. **Named for what it holds**: it is 0 at the binding-energy peak and rises toward the extremes, so calling it `stability` — as an earlier version did — inverted the sense of the field against its own description, in the quantity §9.4 calls the most sensitive parameter in the system. |
 | `catalytic_class` | Which reaction families this element promotes when exposed on a mineral surface |
 
 ### 7.2 Validation — is this universe worth simulating?
@@ -292,7 +302,21 @@ It runs a **beaker battery** — a few hundred thousand simulated reactions in a
 
   The ceiling is not symmetry for its own sake: **a gelled beaker passes the floor.** Simulated on a configuration model of 20 000 units at bond-conversion extent 0.3, with a valence distribution a packing-derived element table plausibly produces, **51% of all mass sits in a single connected component** — and seven molecules still exceed 20 units, so the floor passes. That is the sludge failure this section names in its own opening sentence, passing the test meant to catch it. The measurable form is a ceiling on the fraction of mass in the largest connected component.
 
-  The controlling quantity is the *realised* degree distribution's weighted functionality, `f_w = ⟨f²⟩/⟨f⟩`: a giant component appears at extent `p_c = 1/(f_w − 1)` (Molloy–Reed). So the battery must measure `f_w` in the beaker rather than reading nominal valences off the element table, because burial and shape complementarity make realised functionality lower than nominal. **A distribution dominated by f = 2 with f = 1 terminators and a thin high-valence tail is what produces chains; a broad or high-centred one produces a single cross-linked blob**, and the two are not distinguishable by any floor.
+  The controlling quantity is the *realised* degree distribution's weighted functionality, `f_w = ⟨f²⟩/⟨f⟩`: a giant component appears at extent `p_c = 1/(f_w − 1)`. **That threshold is Cohen, Erez, ben-Avraham & Havlin (*Phys. Rev. Lett.* 85:4626, 2000), independently Callaway et al. the same year, and in the polymer literature it is Stockmayer's 1944 gel point** — Molloy–Reed (1995) gives only the *existence* criterion `Σ i(i−2)λ_i > 0`, equivalently `f_w > 2`, which is a yes/no test rather than a threshold in an extent coordinate. An earlier version of this paragraph attributed the threshold to Molloy–Reed. The conditions travelling with it are tree-like connectivity, equal reactivity, no degree correlation, and N → ∞; the first of those cuts in our favour, since bonds spent closing a cycle are wasted for connectivity, so a finite cyclic system gels at or later than the mean-field prediction.
+
+  So the battery must measure `f_w` in the beaker rather than reading nominal valences off the element table.
+
+  **But it must not report `p_c` alone, and the reason overturns an earlier claim here.** This paragraph used to argue that burial and shape complementarity make realised functionality lower than nominal, so realised `p_c` is higher and any nominal figure is conservative. The arithmetic is right and the physics is not. Under degree-independent thinning at rate `q`, `f_w' = 1 + q(f_w − 1)` exactly, so `p_c' = p_c/q` — and simulation on a 60 000-node configuration model finds the beaker gels at **the same number of bonds per atom regardless of `q`** (0.4952 / 0.4957 / 0.4928 at q = 1.0 / 0.7 / 0.5). `p_c` rises only because the extent coordinate was rescaled; nothing became safer. Burial protects only as a hard cap, and only once it removes roughly 60–80% of nominal functionality — or if it is degree-*correlated*, preferentially occluding high-valence sites, which nothing here establishes. Shape complementarity moves `p_c` by ±5% with the sign depending on the split.
+
+  **The battery therefore reports bonds-per-node at gel alongside extent**, because that measure is invariant under exactly the rescaling that made the burial argument look like it worked. What actually keeps the beaker off the gel point is decay holding the steady-state bond density down, which is §9.4's band. **A distribution dominated by f = 2 with f = 1 terminators and a thin high-valence tail is what produces chains; a broad or high-centred one produces a single cross-linked blob**, and the two are not distinguishable by any floor. Reference points, stated here rather than left in a merged PR body:
+
+  | distribution | `f_w` | `p_c` |
+  |---|---|---|
+  | 30% f=1, 68% f=2, 2% f=8 | 2.36 | 0.730 |
+  | all f = 8 | 8.00 | 0.143 |
+  | uniform 6..10 | 8.25 | 0.138 |
+
+  **PR #8 quoted "centred near 8, `f_w` = 6.01, gels at 0.200" and no such distribution exists.** Cauchy–Schwarz gives `f_w = ⟨f²⟩/⟨f⟩ ≥ ⟨f⟩`, so anything with a mean near 8 has `f_w ≥ 8` and `p_c ≤ 1/7 = 0.143`. A `f_w` of 6.01 implies a mean of at most 6.01 and is therefore not centred near 8. The 0.73 row is sound.
 - **Shape diversity.** The realised shape signatures must spread across signature space rather than collapsing into a few clusters.
 - **Neutral-network structure.** Per §2.5 — the folding map must exhibit neutral networks and approximate shape-space covering. A universe whose folding map is close to one-to-one is rejected: it cannot support drift, and lineages in it will be brittle.
 - **Catalytic potential.** At least some folded polymers must produce cavities that complement common small molecules — and those cavities must be *enclosed* enough to be selective, not merely present.
@@ -500,12 +524,12 @@ Consistent with principle 1, there is no decay timer and there are no hitpoints.
 |---|---|---|
 | **Spontaneous cleavage** | Every bond carries a thermal breaking probability `k = A·exp(−E_bond/T)`. This is the Cleave class of §9.1 firing with no catalyst present. | Hot places destroy structure quickly, cold places preserve it. Vents are energy-rich *and* corrosive — the first real environmental trade-off. |
 | **Solvent attack** | The solvent binds exposed bonds by ordinary complementarity (§8.3) and cleaves them. A monomer's exposure is simply its count of empty lattice neighbours out of twelve. Same mechanism as everything else; nothing new is introduced. | **A molecule's shape determines its lifespan.** Compact folds that bury their backbone survive; sprawling ones are eaten. Folding therefore acquires a survival payoff for free, without us ever rewarding it — and in three dimensions a folded chain has a real interior for that burial to happen in (§8.4). |
-| **Radiogenic damage** | Unstable elements decay according to their `stability` (§7.1), destroying their host molecule and damaging neighbours. | One process serves as both the mutation source and a decay source. |
+| **Radiogenic damage** | Unstable elements decay according to their `decay_rate` (§7.1), destroying their host molecule and damaging neighbours. | One process serves as both the mutation source and a decay source. |
 | **Reactive by-products** | Some reactions yield small molecules with unusually *broad* complementarity — they bind almost anything and cleave it. | **Metabolism produces its own poison.** The harder a system runs, the faster it damages itself. |
 | **Photic damage** | High-energy input in the surface layer breaks bonds outright. | The photic zone is energy-rich and dangerous at once, which makes depth a genuine niche axis rather than just a coordinate. |
 | **Burial and dilution** | Sedimentation and diffusion physically remove material from the active volume. | Not destruction, but functionally identical — it leaves the system. |
 
-Note how little of this is new machinery. Solvent attack is the binding function from §8.3. Radiogenic damage is the `stability` property from §7.1. Reactive by-products are simply molecules whose signatures happen to be broad. Only burial is genuinely new, and it belongs to the world layer regardless.
+Note how little of this is new machinery. Solvent attack is the binding function from §8.3. Radiogenic damage is the `decay_rate` property from §7.1. Reactive by-products are simply molecules whose signatures happen to be broad. Only burial is genuinely new, and it belongs to the world layer regardless.
 
 **Decay also costs nothing per molecule**, which is worth spelling out because the obvious implementation — sweep every molecule every step and roll for each of its bonds — would dominate the loop entirely. It is unnecessary. Thermal cleavage is a Poisson process whose rate depends only on the species and the temperature, so the total propensity for a species is just its count multiplied by a precomputed per-species constant: one more channel in the same scheduler that handles every other reaction. Solvent attack is likewise a pure function of the species, resolved once at intern time (§8.6).
 
