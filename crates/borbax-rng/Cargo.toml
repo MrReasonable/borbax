@@ -1,0 +1,24 @@
+[package]
+name = "borbax-rng"
+edition.workspace = true
+# Same trap as `borbax-units` documents: `[workspace.package] rust-version` is
+# not inherited by a member that does not ask for it. Omitting this line means
+# the crate has no MSRV at all, and the toolchain pin is part of the
+# determinism contract (spec §18.1).
+rust-version.workspace = true
+license.workspace = true
+version = "0.1.0"
+publish = false
+
+# And the same trap again for lints: `[workspace.lints]` applies to nothing
+# without this, so `unsafe_code = "forbid"` would forbid nothing and the
+# §13.1 `disallowed_methods` deny — which this crate actually trips against,
+# via Box-Muller's `ln` and `cos` — would be inert.
+[lints]
+workspace = true
+
+# `borbax-units` only, for `det_math`. This is the dependency edge that forces
+# `det_math` to live at the bottom of the crate chain (spec §18.3): this crate
+# and `borbax-universe` both need it and both sit below `borbax-molecule`.
+[dependencies]
+borbax-units = { workspace = true }
