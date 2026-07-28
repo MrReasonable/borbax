@@ -93,20 +93,15 @@ fn lateral_coordination(cap: usize) -> f64 {
     6.0 - 12.0 / cap as f64
 }
 
-/// Unmade lateral contacts on the frontier of a partly-filled shell, divided
-/// by the lateral coordination — so the unit is "one absent neighbour's worth
-/// of surface", and the number is a count of docking notches.
+/// Unmade lateral contacts on the frontier of a partly-filled shell.
 ///
-/// **Derived, and every factor has a reason.** The canonical filling order is a
-/// compact spherical cap growing from one pole, so the frontier is a circle of
-/// latitude. A cap covering fraction `f` of a sphere subtends `cos(theta) =
-/// 1 - 2f`, so its boundary circle has radius `sin(theta) = 2*sqrt(f(1-f))` in
-/// units of the sphere radius. Site spacing on a shell of `cap` sites is
-/// `sqrt(4*pi/cap)` in the same units, so the boundary carries
-/// `2*pi*2*sqrt(f(1-f)) / sqrt(4*pi/cap) = 2*sqrt(pi*cap*f(1-f))` sites. Each
-/// boundary site on a triangulated surface points three of its six contacts
-/// outward into empty space. Divide the resulting `6*sqrt(pi*cap*f(1-f))` by
-/// the lateral coordination and the sixes cancel.
+/// The canonical filling order is a compact spherical cap growing from one
+/// pole, so the frontier is a circle of latitude and its length scales as
+/// `sqrt(cap*f(1-f))`. The **coefficient is fitted, not derived** — see
+/// [`FRONTIER_COEFF`], and the `exact` module for the three errors the
+/// derivation made. An earlier version of this comment carried that derivation
+/// under the heading "Derived, and every factor has a reason", including the
+/// "three of its six contacts outward" clause that measurement put at two.
 ///
 /// **It is exactly 0 at a closure, and *two* independent factors put it there.**
 /// The continuum's `f(1-f)` vanishes at both ends of a shell, and so does the
@@ -115,25 +110,27 @@ fn lateral_coordination(cap: usize) -> f64 {
 /// because the other still zeroes it.
 ///
 /// That makes the deletion test — `ptable.rs`'s argument for this property —
-/// **uninformative here**, and saying "delete the branch and nothing changes"
-/// would be claiming evidence this file cannot supply. What can be shown is
-/// continuity: a hardcoded `if closed { 0 }` sitting on top of a formula that
-/// returns something else at a closure produces a *jump*, and
-/// `valence_is_continuous_across_closures` measures the jump. That is the test
-/// that distinguishes a mechanism from a declaration, and it is the one Task 4
-/// should carry.
+/// **uninformative here**. Continuity was the proposed replacement and it is
+/// **also insufficient**: a review built a load-bearing declaration that passes
+/// every test in this file and produces a bit-identical table, because both
+/// neighbours of a closure are pinned at valence 1, so anything writing 0 sits
+/// inside the bound. In one case it actively rewards the branch.
+///
+/// Continuity survives as a cheap behavioural backstop — it does catch a
+/// declaration laid over a formula returning something *large*. The guarantee
+/// is a source-level check that no branch reads the closure predicate, because
+/// the claim is a property of the source and not of the output.
+///
+/// Note `compact_bound`'s own `a == 0` early return is such a branch, since
+/// `a = min(outer, cap - outer)`. It is a legitimate guard against
+/// `sqrt(12*0 - 3)`, and that is exactly why a source check has to name its
+/// exemptions rather than scan a whole file.
 fn unmade_lateral(cap: usize, outer: usize) -> f64 {
-    // **There is deliberately no `if outer == 0 { return 0.0 }` here, and a
-    // mutation probe is why.** One stood at the top of this function. With it
-    // in place, rewriting the continuum below to drop its `(1 - f)` factor —
-    // which is the whole reason a closed shell has no frontier — left
-    // `closed_shells_have_valence_zero_with_no_branch` *passing*. The branch
-    // was doing the work the formula was being credited for, which is the
-    // `if closed { 0 }` defect from `ptable.rs` wearing a different hat.
-    //
-    // It was also redundant: at `outer == 0` the continuum is 0 and `smaller`
-    // is 0, and at `outer == cap` both are 0 again. Deleting it changes no
-    // value and makes the zero a property of the arithmetic.
+    // **There is deliberately no `if outer == 0 { return 0.0 }` here.** One
+    // stood at the top of this function; a mutation probe showed the branch,
+    // not the formula, was doing the work the formula was credited for — the
+    // `if closed { 0 }` defect from `ptable.rs` in a different hat. It was also
+    // redundant: both factors below already vanish at a closure.
     let f = outer as f64 / cap as f64;
     // `sqrt` is native on purpose: IEEE-754 specifies it exactly, so it is
     // portable without `det_math`. See the criterion in `clippy.toml`.
@@ -141,14 +138,11 @@ fn unmade_lateral(cap: usize, outer: usize) -> f64 {
 
     // **The continuum form overestimates tiny patches, and the bound has to be
     // the *compact* one.** A patch of `a` sites laid out compactly — which is
-    // what a spherical-cap fill order means — has at least
-    // `floor(3a - sqrt(12a - 3))` internal bonds (Harborth's minimum-perimeter
-    // result for triangular-lattice animals), and each internal bond removes
-    // two from the `6a` a fully-dispersed patch would expose. An earlier
-    // version used a bare `6a` — the bound for a patch whose sites touch
-    // *nothing*, which is the opposite of the compactness the continuum
-    // assumes — and it returned valence 3 where the exact count gives 2 at
-    // `outer = 3`. By symmetry the same bound applies to the empty side.
+    // what a spherical-cap fill order means — exposes at most `6a` less twice
+    // Harborth's internal-bond count. An earlier version used a bare `6a`, the
+    // bound for a patch whose sites touch *nothing*, and it returned valence 3
+    // where the exact count gives 2 at `outer = 3`. By symmetry the same bound
+    // applies to the empty side.
     let smaller = if outer < cap - outer {
         outer
     } else {
@@ -162,36 +156,52 @@ fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     }
 }
 
+/// Unmade lateral contacts on the frontier, divided by the lateral
+/// coordination — so the unit is "one absent neighbour's worth of surface" and
+/// the number counts docking notches.
+fn frontier_notches(cap: usize, outer: usize) -> f64 {
+    unmade_lateral(cap, outer) / lateral_coordination(cap)
+}
+
 /// Continuum coefficient for the frontier length, **fitted to exact counts on
 /// real triangulated spheres** rather than derived — see the `exact` module.
 ///
-/// The derivation gives `6*sqrt(pi) = 10.635` and is wrong by 1.46x, for the
-/// two compounding reasons `exact` documents. Least-squares against exact
-/// counts puts it near 7.3, and an independent bond-cutting derivation gives
-/// 7.275. `frontier_matches_exact_counts` pins it against the real thing,
-/// because it was the derivation that failed.
-const FRONTIER_COEFF: f64 = 7.30;
+/// **The coefficient is cap-dependent and a single constant is a compromise.**
+/// Least-squares against exact counts gives 6.075 at D = 12, 7.078 at D = 42
+/// and 7.316 at D = 162: finite-size effects pull it down at small caps, where
+/// Euler's twelve pentagons are a large fraction of the shell.
+///
+/// **6.90, not the asymptotic ~7.28, because of which caps this table uses.**
+/// Over the drawn range `derive_table` uses caps of 8..128, and D = 12 and
+/// D = 42 are real shells (`shell_size(10, 1)`, `shell_size(10, 2)`) while
+/// D = 162 is not one of them. An earlier 7.30 was the D = 162 fit alone and
+/// its single-level gate admitted -22%/+29% — a band over which the valence
+/// series moves in up to 23 of 24 universes. 6.90 minimises the worst-case
+/// error across all three levels and is best on D = 42.
+///
+/// `frontier_matches_exact_counts_on_a_real_sphere` gates all three levels at
+/// 0.25, admitting [6.2, 7.2] — plus or minus 7%.
+const FRONTIER_COEFF: f64 = 6.90;
 
 /// Maximum unmade lateral contacts a *compact* patch of `a` sites can expose.
 ///
-/// Harborth's minimum-perimeter result: a compact `a`-site triangular-lattice
-/// animal has at least `floor(3a - sqrt(12a - 3))` internal bonds, and each
-/// one removes two from the `6a` a fully-dispersed patch would expose.
+/// Harborth's result gives the **maximum** internal bonds over all arrangements
+/// of `a` cells, `floor(3a - sqrt(12a - 3))`, attained by the compact ones — so
+/// it is an upper bound on internal bonds and a lower bound on exposure. An
+/// earlier version said "at least", which is true only for the compact case and
+/// reads as a universal bound.
+///
+/// Verified by brute force over every connected triangular-lattice animal for
+/// `a = 1..10`. The result is provably positive (`>= 2*sqrt(12a-3)`), so no
+/// clamp is written: a guard with no reachable case reads to a future
+/// maintainer as evidence the case exists.
 fn compact_bound(a: usize) -> f64 {
     if a == 0 {
         return 0.0;
     }
     let af = a as f64;
     let internal = (3.0 * af - (12.0 * af - 3.0).sqrt()).floor();
-    let raw = 6.0 * af - 2.0 * internal;
-    if raw > 0.0 { raw } else { 0.0 }
-}
-
-/// Unmade lateral contacts on the frontier, divided by the lateral
-/// coordination — so the unit is "one absent neighbour's worth of surface",
-/// and the number counts docking notches.
-fn frontier_notches(cap: usize, outer: usize) -> f64 {
-    unmade_lateral(cap, outer) / lateral_coordination(cap)
+    6.0 * af - 2.0 * internal
 }
 
 /// Lateral contacts *made* inside a partly-filled shell.
@@ -385,12 +395,16 @@ fn derive_table(c: Consts, n_elements: usize) -> Vec<Derived> {
         // finding already on record: a comment telling a future reader that the
         // wrong half is what protects them.
         let raw_defect = contacts * c.contact_defect;
-        // `round_ties_even`, matching `Mass::from_f64_quantised` four lines
-        // downstream. Both are IEEE-754-exact, so this is not a portability
-        // fix — it is that the two conventions disagree on reachable ties (13
-        // of them in the mass series, at N = 2, 3, 4, 7 among others, the
-        // lightest and most abundant elements). Two conventions for one grid
-        // means a later "consistency cleanup" silently moves a golden.
+        // `round_ties_even`, matching `Mass::from_f64_quantised`. Both are
+        // IEEE-754-exact, so this is not a portability fix — it is that two
+        // rounding conventions for one grid let a later "consistency cleanup"
+        // move a golden.
+        //
+        // An earlier version quoted "13 reachable ties at N = 2, 3, 4, 7".
+        // Those were measured against the pre-fix frontier coefficient and did
+        // not survive it. The convention still matters — one tie is enough and
+        // the count was never the argument — but a quoted number no test holds
+        // goes stale silently, which is this file's own recurring defect.
         let defect = (raw_defect * 1024.0).round_ties_even() / 1024.0;
         let mass = units as f64 * c.base_mass - defect;
 
@@ -416,9 +430,10 @@ fn derive_table(c: Consts, n_elements: usize) -> Vec<Derived> {
 
         // Valence: docking notches on the frontier. Zero at closure with no
         // branch — see `frontier_notches`.
-        // `round_ties_even` for the same reason: `notches` lands on an exact
-        // 2.5 at k=8 / outer=2 and k=8 / outer=8, and ties-away vs ties-even
-        // differ by a whole bonding slot there.
+        // `round_ties_even` for consistency with the mass quantiser above. An
+        // earlier comment claimed exact 2.5 ties at k=8/outer=2 and outer=8;
+        // measured, there are no exact half-integer notches anywhere, and even
+        // pre-fix the indices were wrong. Consistency is the whole reason.
         let valence = frontier_notches(cap, outer).round_ties_even() as u8;
 
         // Affinity: exposed fraction of the cluster, mapped to [-1, 1].
@@ -454,9 +469,14 @@ fn derive_table(c: Consts, n_elements: usize) -> Vec<Derived> {
         let energy_per_unit = c.eps * contacts / units as f64 - strain;
 
         // Abundance: fusion builds heavy clusters from light ones, so each
-        // extra unit costs a step and abundance falls geometrically. Clusters
-        // that bind better survive their surroundings longer, so the per-unit
-        // energy tilts it. Both halves are processes already in the model.
+        // extra unit costs a step and abundance falls geometrically. Constant
+        // per-step survival compounded over N sequential additions gives
+        // `r^N = exp(N ln r)`, and that is the whole law.
+        //
+        // Two honest caveats. The mechanism gives `r^(N-1)` and the code writes
+        // `r^N`, which normalises away. And "constant per-step survival" is an
+        // *assumption* stated as a consequence, in a file that computes a
+        // per-element decay rate a few lines above.
         // **The energy tilt is deleted, and that is a finding rather than a
         // simplification.** It read `+ 0.6 * energy_per_unit`, described as
         // "tilted by how well the cluster binds". Three things were wrong with
@@ -515,14 +535,23 @@ fn closures(k: usize, n: usize) -> Vec<usize> {
     }
 }
 
-/// Weighted functionality `f_w = <f^2>/<f>` and the Molloy-Reed gel extent.
+/// Weighted functionality `f_w = <f^2>/<f>` and the gel extent.
 ///
-/// §7.2 as amended: a giant component appears at bond-conversion extent
-/// `p_c = 1/(f_w - 1)`. A *high* `p_c` is the safe direction — the beaker has
-/// to be driven further before it gels. Terminators (`f <= 1`) are counted in
+/// `p_c = 1/(f_w - 1)` is **Cohen/Erez/ben-Avraham/Havlin (2000)** and the
+/// Flory-Stockmayer gel point, not Molloy-Reed — Molloy-Reed gives the
+/// *existence* criterion `f_w > 2`, a yes/no test rather than a threshold in an
+/// extent coordinate. An earlier version of this comment misattributed it, and
+/// the correction reached the spec before it reached here.
+///
+/// **A high `p_c` is not by itself "the safe direction".** `p_c` moves under
+/// any rescaling of the mean degree — bonds-per-node at gel is
+/// `p_c*<f>/2 = <f>/(2(f_w-1))` — and roughly 84% of what the `decay` sweep
+/// reports as a gain is that rescaling. Neither coordinate says where the
+/// beaker actually sits; that needs an operating point, which is §7.2's
+/// steady-state condition and Task 20's battery, not this file. Terminators (`f <= 1`) are counted in
 /// the averages because they are what stops chains, which is the whole reason
 /// the ceiling exists.
-fn gel_extent(weights: &[(u8, f64)]) -> (f64, f64) {
+fn gel_extent(weights: &[(u8, f64)]) -> (f64, f64, f64) {
     let total: f64 = weights.iter().map(|&(_, w)| w).sum();
     let mean: f64 = weights.iter().map(|&(f, w)| f64::from(f) * w / total).sum();
     let mean_sq: f64 = weights
@@ -530,13 +559,23 @@ fn gel_extent(weights: &[(u8, f64)]) -> (f64, f64) {
         .map(|&(f, w)| f64::from(f) * f64::from(f) * w / total)
         .sum();
     if mean <= 0.0 {
-        return (0.0, f64::INFINITY);
+        return (0.0, f64::INFINITY, f64::INFINITY);
     }
     let f_w = mean_sq / mean;
     if f_w <= 1.0 {
-        return (f_w, f64::INFINITY);
+        return (f_w, f64::INFINITY, f64::INFINITY);
     }
-    (f_w, 1.0 / (f_w - 1.0))
+    let p_c = 1.0 / (f_w - 1.0);
+    // Bonds per node at gel: `p_c * <f> / 2`. **The invariant coordinate** —
+    // under degree-independent thinning at rate q, `f_w' = 1 + q(f_w - 1)` so
+    // `p_c' = p_c/q`, and the q cancels here.
+    //
+    // It is **not** an operating point, and reporting it does not by itself fix
+    // what §7.2 was missing: the ratio of where-the-beaker-sits to
+    // where-it-gels is the same number in either coordinate. Where the beaker
+    // sits needs the steady-state condition from §9.1/§9.4's kinetics, which
+    // Task 4 has no rate constants for. Task 20's battery does.
+    (f_w, p_c, p_c * mean * 0.5)
 }
 
 fn main() {
@@ -559,8 +598,8 @@ fn main() {
     // -- Q2 and Q3, over drawn universes ----------------------------------
     println!("\n-- Q2/Q3: valence reach and the peak, over 24 drawn universes --\n");
     println!(
-        "{:>4} {:>3} {:>6} {:>8} {:>6} {:>6} {:>6} {:>8}",
-        "seed", "k", "maxval", "closures", "peak", "p@clos", "massOK", "gel p_c"
+        "{:>4} {:>3} {:>4} {:>7} {:>5} {:>5} {:>7} {:>8} {:>8}",
+        "seed", "k", "n", "max val", "clos", "peak", "p@clos", "mass OK", "gel p_c"
     );
     let mut peaks_on_closure = 0_usize;
     let mut all_masses_exact = true;
@@ -590,11 +629,11 @@ fn main() {
         }
 
         let weights: Vec<(u8, f64)> = table.iter().map(|e| (e.valence, e.abundance)).collect();
-        let (_, p_c) = gel_extent(&weights);
+        let (_, p_c, _) = gel_extent(&weights);
         gel_extents.push(p_c);
 
         println!(
-            "{seed:>4} {:>3} {:>4} {max_val:>7} {:>6} {peak:>6} {:>7} {:>7} {p_c:>8.3}",
+            "{seed:>4} {:>3} {:>4} {max_val:>7} {:>5} {peak:>5} {:>7} {:>8} {p_c:>8.3}",
             c.k,
             c.n_elements,
             clos.len(),
@@ -635,14 +674,14 @@ fn main() {
     println!("\n-- Q4: does abundance keep the beaker off the gel point? --\n");
     let mut rng = Stream::new(0xF0_51_00);
     let c = draw_consts(&mut rng);
-    let table = derive_table(c, 120);
+    let table = derive_table(c, c.n_elements);
     println!(
         "universe: k={} z={:.1} eps={:.2} sigma={:.3}",
         c.k, c.z, c.eps, c.sigma
     );
     println!(
         "closures: {:?}   peak: N={}\n",
-        closures(c.k, 120),
+        closures(c.k, c.n_elements),
         peak_of(&table)
     );
 
@@ -686,13 +725,19 @@ fn main() {
 
     let flat: Vec<(u8, f64)> = table.iter().map(|e| (e.valence, 1.0)).collect();
     let weighted: Vec<(u8, f64)> = table.iter().map(|e| (e.valence, e.abundance)).collect();
-    let (fw_flat, pc_flat) = gel_extent(&flat);
-    let (fw_w, pc_w) = gel_extent(&weighted);
+    let (fw_flat, pc_flat, bc_flat) = gel_extent(&flat);
+    let (fw_w, pc_w, bc_w) = gel_extent(&weighted);
     println!(
-        "\nunweighted (every element equally common):  f_w = {fw_flat:.3}  gels at extent {pc_flat:.3}"
+        "\nunweighted (every element equally common):  f_w = {fw_flat:.3}  extent {pc_flat:.3}  bonds/node {bc_flat:.3}"
     );
     println!(
-        "abundance-weighted:                          f_w = {fw_w:.3}  gels at extent {pc_w:.3}"
+        "abundance-weighted:                          f_w = {fw_w:.3}  extent {pc_w:.3}  bonds/node {bc_w:.3}"
+    );
+    println!(
+        "  -> extent moved {:+.1}%, bonds/node moved {:+.1}%. The gap between those two is\n     \
+         mean-degree rescaling, not a change in how close the beaker is to gelling.",
+        100.0 * (pc_w / pc_flat - 1.0),
+        100.0 * (bc_w / bc_flat - 1.0)
     );
     // -- The gel lever, swept ---------------------------------------------
     //
@@ -706,8 +751,8 @@ fn main() {
         c.k
     );
     println!(
-        "{:>7} {:>9} {:>9} {:>26}",
-        "decay", "f_w", "gel p_c", "mass on valence <= 2"
+        "{:>7} {:>9} {:>9} {:>11} {:>19}",
+        "decay", "f_w", "gel p_c", "bonds/node", "mass on val <= 2"
     );
     for step in 0..13_u64 {
         let decay = 0.04 + 0.01 * step as f64;
@@ -720,8 +765,8 @@ fn main() {
             .sum::<f64>()
             / tot;
         let w: Vec<(u8, f64)> = t.iter().map(|e| (e.valence, e.abundance)).collect();
-        let (fw, pc) = gel_extent(&w);
-        println!("{decay:>7.2} {fw:>9.3} {pc:>9.3} {low:>25.3}");
+        let (fw, pc, bc) = gel_extent(&w);
+        println!("{decay:>7.2} {fw:>9.3} {pc:>9.3} {bc:>11.3} {low:>19.3}");
     }
 
     // Sorted once, then read at three positions, because `f64::min`/`max` are
@@ -762,10 +807,19 @@ mod tests {
     ///
     /// - *"each boundary site points three of its six contacts outward"* is wrong.
     ///   Measured here, unmade-contacts-per-boundary-site converges to **2.000**.
-    ///   A boundary site in the top row of a filled patch on a triangular lattice
-    ///   has two in-row neighbours occupied and two below occupied, leaving two.
     /// - *site spacing `sqrt(4*pi/cap)`* treats the area per site as `s^2`. On a
     ///   triangular lattice it is `(sqrt(3)/2)*s^2`, so the spacing was 7.5% low.
+    /// - and a third, which the first correction of this comment missed: a lattice
+    ///   boundary **zig-zags**, passing through ~10% more sites than `L/s`.
+    ///   Measured boundary-site density near the equator at D = 162 is 3.61-3.64
+    ///   per `sqrt(cap*f(1-f))`, against the 3.299 the `L/s` route predicts.
+    ///
+    /// The first two alone compound to 1.61x and give 6.598, **not** the fitted
+    /// value — so a reader re-deriving from them would "fix" the constant
+    /// downward. The derivation that reproduces the measurement is Cauchy's
+    /// line-crossing formula with bond density `2*sqrt(3)/s^2` over
+    /// `L = 4*pi*sqrt(f(1-f))`: `16*sqrt(3)*sqrt(sqrt(3)/(8*pi))` = 7.2751. That
+    /// is asymptotic; see [`FRONTIER_COEFF`] for why the shipped constant is lower.
     ///
     /// Both errors inflate the count, valence ran ~46% high everywhere, and the
     /// two headline chemistry conclusions were consequences of the error rather
@@ -889,43 +943,51 @@ mod tests {
     #[test]
     fn frontier_matches_exact_counts_on_a_real_sphere() {
         use borbax_experiments::geodesic::Geodesic;
-        // `assert!`, not `panic!` in an else-branch: `clippy::panic` is denied
-        // workspace-wide and the test module's expect covers indexing, not this.
-        let built = Geodesic::<162>::build();
-        assert!(built.is_ok(), "geodesic failed to build");
-        let Ok(g) = built else { return };
-        let adj = exact::adjacency(&g);
 
-        // Euler: any triangulated sphere has exactly twelve degree-5 vertices.
-        // If this fails the adjacency threshold is wrong and every count below
-        // is meaningless.
-        let (d5, d6, other) = exact::degrees(&adj);
-        assert_eq!(
-            (d5, other),
-            (12, 0),
-            "degree histogram: 5s={d5} 6s={d6} other={other}"
-        );
+        // **All three levels, because the coefficient is cap-dependent.** An
+        // earlier version gated D = 162 alone — the one level `derive_table`
+        // never uses — and admitted -22%/+29% around the constant, a band over
+        // which the valence series moves in up to 23 of 24 universes. D = 12
+        // and D = 42 are real shells: `shell_size(10, 1)` and
+        // `shell_size(10, 2)`. Three legs at 0.25 admit [6.2, 7.2].
+        fn check<const D: usize>() -> (f64, usize) {
+            let built = Geodesic::<D>::build();
+            assert!(built.is_ok(), "geodesic D={D} failed to build");
+            let Ok(g) = built else { return (0.0, 0) };
+            let adj = exact::adjacency(&g);
 
-        let order = exact::cap_order(&g);
-        let (mut worst, mut worst_at) = (0.0_f64, 0);
-        for a in 1..162 {
-            let truth = exact::unmade(&adj, &order, a) as f64;
-            let formula = unmade_lateral(162, a);
-            // Relative error against the truth, away from the endpoints where
-            // both go to zero and a ratio is meaningless.
-            if truth > 0.0 {
-                let rel = (formula - truth).abs() / truth;
-                if rel > worst {
-                    worst = rel;
-                    worst_at = a;
+            // Euler: any triangulated sphere has exactly twelve degree-5
+            // vertices. If this fails the adjacency threshold is wrong and
+            // every count below is meaningless.
+            let (d5, _, other) = exact::degrees(&adj);
+            assert_eq!((d5, other), (12, 0), "D={D}: degree histogram is wrong");
+
+            let order = exact::cap_order(&g);
+            let (mut worst, mut worst_at) = (0.0_f64, 0);
+            for a in 1..D {
+                let truth = exact::unmade(&adj, &order, a) as f64;
+                if truth > 0.0 {
+                    let rel = (unmade_lateral(D, a) - truth).abs() / truth;
+                    if rel > worst {
+                        worst = rel;
+                        worst_at = a;
+                    }
                 }
             }
+            (worst, worst_at)
         }
-        assert!(
-            worst < 0.30,
-            "worst relative error {worst:.3} at outer={worst_at} \
-             — the formula has drifted from the geometry it approximates"
-        );
+
+        for (d, (worst, at)) in [
+            (12, check::<12>()),
+            (42, check::<42>()),
+            (162, check::<162>()),
+        ] {
+            assert!(
+                worst < 0.25,
+                "D={d}: worst relative error {worst:.4} at outer={at} \
+                 — the formula has drifted from the geometry it approximates"
+            );
+        }
     }
 
     /// The enclosing radius of a superset of units cannot be smaller. An
@@ -984,13 +1046,14 @@ mod tests {
         }
     }
 
-    /// The test that actually distinguishes a mechanism from a declaration.
+    /// A cheap behavioural backstop, **not** the guarantee.
     ///
-    /// Zero-at-closure is held by two independent factors here, so mutating
-    /// either leaves the zero intact and the deletion test proves nothing. A
-    /// declaration does not hide from *continuity*, though: an `if closed { 0 }`
-    /// laid over a formula that returns 5 at a closure makes valence jump by 5
-    /// in one element, and this measures that.
+    /// It catches a declaration laid over a formula returning something *large*
+    /// at a closure — `notches + 3` fails it. It does not catch one writing 0
+    /// over a formula returning ~1, because both neighbours of a closure are
+    /// pinned at valence 1 and the declaration then sits inside the bound.
+    /// Measured: a mutation putting every closure at valence 1 passes the whole
+    /// suite. The guarantee is the source-level check.
     #[test]
     fn valence_is_continuous_across_closures() {
         let c = consts();
@@ -1050,12 +1113,14 @@ mod tests {
     /// — the same "measured at a size the plan does not generate" defect that
     /// put two false claims into the plan's prose.
     ///
-    /// §7.2 wants a thin high-valence tail. What it gets is a ceiling of 7 at
-    /// best and 4 at worst.
+    /// §7.2 wants a thin high-valence tail. What it gets is a ceiling of 6 at
+    /// best and 4 at worst — and §7.2 asked for a *shape*, not a magnitude:
+    /// abundance at valence >= 3 spans 0.077..0.566 across universes, so the
+    /// shape it asked for is present in every one.
     /// Whether that is enough functionality is Task 5's battery to answer; it
     /// is not something this file may assert either way.
     #[test]
-    fn valence_ceiling_is_four_to_seven_over_the_drawn_range() {
+    fn valence_ceiling_is_four_to_six_over_the_drawn_range() {
         let mut seen = std::collections::BTreeSet::new();
         for seed in 0..48_u64 {
             let mut rng = Stream::new(0xF0_51_00 ^ seed);
@@ -1069,8 +1134,8 @@ mod tests {
             }
         }
         assert!(
-            seen.iter().all(|&v| (4..=7).contains(&v)),
-            "valence ceiling left 4..=7 over the drawn range: {seen:?}"
+            seen.iter().all(|&v| (4..=6).contains(&v)),
+            "valence ceiling left 4..=6 over the drawn range: {seen:?}"
         );
     }
 
@@ -1113,7 +1178,7 @@ mod tests {
         for seed in 0..24_u64 {
             let mut rng = Stream::new(0xF0_51_00 ^ seed);
             let c = draw_consts(&mut rng);
-            for e in derive_table(c, 120) {
+            for e in derive_table(c, c.n_elements) {
                 let scaled = e.mass * 1024.0;
                 assert!(
                     (scaled - scaled.round()).abs() < 1e-9,
@@ -1200,7 +1265,7 @@ mod tests {
         for seed in 0..24_u64 {
             let mut rng = Stream::new(0xF0_51_00 ^ seed);
             let c = draw_consts(&mut rng);
-            peaks.insert(peak_of(&derive_table(c, 120)));
+            peaks.insert(peak_of(&derive_table(c, c.n_elements)));
         }
         assert!(
             peaks.len() >= 6,
