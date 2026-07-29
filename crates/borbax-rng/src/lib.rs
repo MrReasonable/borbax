@@ -547,8 +547,9 @@ impl Stream {
     )]
     #[inline]
     pub fn next_f64(&mut self) -> f64 {
-        // 2^53, exact in f64. Spelled as a literal rather than `(1u64 << 53)
-        // as f64` so the scale factor needs no cast of its own.
+        // The denominator is 2^53, so SCALE is 2^-53 — both exact in f64.
+        // Spelled as a literal rather than `(1u64 << 53) as f64` so the scale
+        // factor needs no cast of its own.
         const SCALE: f64 = 1.0 / 9_007_199_254_740_992.0;
         (self.next_u64() >> 11) as f64 * SCALE
     }
@@ -817,6 +818,10 @@ mod tests {
         let (p, a, b) = (root.next_u64(), s0.next_u64(), s1.next_u64());
         assert_ne!(a, p, "sub(0) collides with the root");
         assert_ne!(a, b, "sub(0) and sub(1) collide");
+        // The name says "from the root and each other"; the first draft never
+        // checked sub(1) against the root, so a sub-stream colliding with it at
+        // any index but 0 would have passed.
+        assert_ne!(b, p, "sub(1) collides with the root");
     }
 
     /// **Which coordinate lives in which counter field is load-bearing, and

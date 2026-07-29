@@ -283,12 +283,20 @@ mod tests {
             [c0, out[0] ^ hi1 ^ key[0], c2, out[2] ^ hi0 ^ key[1]]
         };
 
+        // A cheap in-test stirrer; its statistical quality is irrelevant, but
+        // its *independence across words* is not. The first draft derived all
+        // six input words from one `s` by rotation and XOR, so 20 000 cases
+        // explored a one-parameter family of a 384-bit input space — an
+        // invertibility test that never varies the words independently is a
+        // much weaker test than its case count suggests.
         let mut s = 0x5EED_u64;
-        for _ in 0..20_000 {
-            // A cheap in-test stirrer; its quality is irrelevant, only coverage.
+        let mut stir = || {
             s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-            let ctr = [s, s ^ 0xAAAA, s.rotate_left(17), s.rotate_right(29)];
-            let key = [s ^ 0x1234, s.rotate_left(41)];
+            s ^ (s >> 31)
+        };
+        for _ in 0..20_000 {
+            let ctr = [stir(), stir(), stir(), stir()];
+            let key = [stir(), stir()];
             let out = philox4x64_10(ctr, key);
             // Walk the key schedule forward, then invert the rounds backward.
             let mut ks = [key; 10];
