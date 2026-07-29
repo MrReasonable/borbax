@@ -381,7 +381,12 @@ impl FoldWorkspace {
     /// conformation.
     #[must_use]
     pub fn fold_seed(p: &Polymer, u: &Universe) -> u64 {
-        let mut h = Stream::new(0xF0_1D_5EED ^ u.seed, Domain::Hash, 3);
+        // NOT `0xF0_1D_5EED ^ u.seed` — XOR into the seed IS a key derivation, and
+    // it reintroduces exactly the collision class Philox was adopted to
+    // remove: measured, two universes whose seeds differ by
+    // 0x0000_00B0_EBB7_0000 produce a bit-identical Domain::Hash stream, 8 of
+    // 8 words. It is also redundant, since these sites already differ by index.
+    let mut h = Stream::new(u.seed, Domain::Hash, 3);
         let mut acc = h.next_u64();
         for (i, &m) in p.units().iter().enumerate() {
             acc ^= u64::from(m).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left((i % 61) as u32);
@@ -920,8 +925,8 @@ pub struct FoldCache {
 /// as a hash function couples the two, so that adding a draw in folding would
 /// change cache keys.
 fn key_of(p: &Polymer, u: &Universe) -> u128 {
-    let mut a = Stream::new(0xB0_1BAA_5EED ^ u.seed, Domain::Hash, 1);
-    let mut b = Stream::new(0x5EED_B0_1BAA ^ u.seed, Domain::Hash, 2);
+    let mut a = Stream::new(u.seed, Domain::Hash, 1);
+    let mut b = Stream::new(u.seed, Domain::Hash, 2);
     let (mut ha, mut hb) = (a.next_u64(), b.next_u64());
     for (i, &u) in p.units().iter().enumerate() {
         ha ^= u64::from(u).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left((i % 61) as u32);
@@ -2804,13 +2809,33 @@ propensities, a free-slot list, and a `WorldYear` clock.
    reconstructing a run will otherwise assume.
 3. Draw `u2`, select a channel with `tree.sample(u2)`.
 
-   **Assert `tree.total()` is finite before sampling.** A single NaN propensity
-   anywhere in the tree makes `sample` return the **last** channel on every
-   call — measured, not predicted — so the beaker fires one reaction forever
-   and produces clean-looking, completely wrong output. No crash, nothing in
-   the state hash. This is the hazard `borbax-rng`'s `next_f64_range` doc used
-   to describe, wrongly attributed to that function and with the channel
-   inverted; it lives here because this is where it can actually happen.
+   **Validate propensities in `SegmentTree::set`, not here.** A single NaN
+   makes `sample` return *the same channel on every call regardless of `u`* —
+   which channel depends on tree shape, measured: the last when `cap == n` and
+   its leaf is positive, channel 0 when `cap > n` or that channel was freed.
+   Two review rounds each named a specific channel and each was right only for
+   one shape; do not name one.
+
+   Three corrections to the obvious remedy, all measured:
+
+   - **It belongs at step 1, not step 3.** `-ln(u1)/total` is evaluated first,
+     and `-ln(0.5)/NaN` is NaN — the *clock* is poisoned before sampling is
+     reached, and a NaN `WorldYear` propagates into every metric and the state
+     hash.
+   - **The existing `total == 0.0` guard does not catch it**, because
+     `NaN == 0.0` is false.
+   - **Finite is necessary, not sufficient.** A *negative* propensity leaves
+     `total` finite and breaks the descent invariant just as silently.
+     Validating at `set` (`is_finite() && >= 0.0`) is O(1), catches negatives,
+     and names the offending channel.
+
+   And settle the form: `borbax-rng`'s `next_range` doc justifies returning 0
+   for an empty range because "a panic inside a propensity loop kills an
+   overnight run". A hard `assert!` here contradicts that unless a NaN total is
+   held to be unrecoverable where an empty range is benign — which is
+   defensible, but say so. `debug_assert!` is *not* the compromise: CLAUDE.md
+   records a guard present under `cargo test` and absent from `goldens --emit`
+   as a defect this project has shipped twice.
 4. Apply it: decrement reactant counts, increment product counts. Products
    were resolved when the channel was created (spec §8.6), so no
    canonicalisation happens here.
@@ -3280,10 +3305,14 @@ argument does not need the keyframe format to exist:
   not on contested statistics, and is the decisive reason.
 - Supporting, not load-bearing: keying would also throw away common random
   numbers across parameter settings, the standard variance-reduction device
-  for a config sweep. Stated as "keeps the option open" rather than "obtains",
-  because 25 lines below this same note says CRN's value here is unmeasured
-  and must be settled by measurement — an argument cannot be decisive here and
-  contested there.
+  for a config sweep. Stated as "keeps the option open" rather than "obtains" —
+  though **not** for the reason an earlier draft gave. That draft said an
+  argument cannot be decisive here and contested for the shadow below; the two
+  are different Glasserman & Yao categories. A config sweep is **III**,
+  sensitivity analysis, where their guarantees are strongest; `run − shadow` is
+  **II**, structural comparison, at a large perturbation, where they are
+  weakest. CRN-for-sweeps is *better* supported, not equally contested. It is
+  demoted because the lead reason is decisive alone, not because it is weak.
 - A config change that reaches the arithmetic already changes the run, so it
   does not additionally need different draws. (True only of physics-affecting
   entries; keyframe interval and output settings change nothing, which is why
@@ -3301,6 +3330,16 @@ the failure mode, and it is silent.
 Recorded as a decision taken on reasoning, before the keyframe format exists.
 If that format later makes config part of the world seed upstream, this becomes
 moot rather than wrong.
+
+**One half of this is genuinely unresolved, and should not read as settled.**
+The refusal is keyed to *keyframe restore*. Sharing a seed pair with someone
+whose physics-affecting config differs involves no keyframe, so no refusal
+fires and §13.4's promise quietly fails. Closing it needs the list of config
+fields that reach the arithmetic, which does not exist yet — so this is open,
+not decided. And note the trap on the other side: if anyone later adds a
+`replicate: u32` to config expecting N independent runs at one seed, this
+decision makes all N bit-identical. That knob is a seed and belongs in
+`key[1]`.
 
 Fork from a keyframe with decay rates **equalised**, not disabled (§15.3). The
 common rate is set so total removal flux matches the focal run at the fork
@@ -3322,10 +3361,15 @@ not prove)" it, and notes the time to full decoupling is "quite large" in his
 example. Those decoupling results are for infinitesimal parameter
 perturbations, though Glasserman & Yao's are not; `run - shadow` is selection
 on versus off, a large structural difference, which is the regime where
-coupling decays fastest. Glasserman & Yao also give the one usable *positive*
-test — their guarantees rest on **monotonicity and continuity**, so ask whether
-the shadow's output is monotone in the perturbation before spending the
-budget.
+coupling decays fastest. Glasserman & Yao also give the one usable *positive* test, and it is not the
+obvious one. Their monotonicity is of **event epochs in the driving variates**,
+not of output in the perturbation, and their stated guideline is to *"look at
+what happens when events change order"*. Their precondition —
+**noninterruption**, "the occurrence of one event never interrupts the clock of
+another" — fails by construction in a low-copy-number beaker, since firing a
+reaction that exhausts a reactant removes every channel needing it. So the
+guarantee does not apply here and the guideline points pessimistic. Note that
+before spending the budget, not after.
 
 **Settle it by measurement, not argument:** run both indexings at fixed budget
 and compare the variance of the paired difference. If CRN's is not lower, use
