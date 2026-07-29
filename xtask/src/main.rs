@@ -419,10 +419,32 @@ fn read_pin(path: &Path, key: &str) -> Result<Option<String>, String> {
 /// `self_seed` as a parameter name and on a block comment describing the
 /// forbidden shape — and a guard that fires on correct code gets deleted.
 ///
-/// Both failures were one kind: a matcher covers the shapes someone thought to
-/// probe. On an AST the receiver, the return type and the enclosing `impl` are
-/// structural facts, so the evasions are closed by construction rather than by
-/// enumeration.
+/// The first AST version then failed a third time, and the diagnosis is worth
+/// keeping: `syn` performs **no name resolution**, so matching the bare
+/// identifier `Stream` was still enumeration — of *type* spellings rather than
+/// of *signature* spellings. One line, `type Child = Stream;`, defeated it and
+/// compiled clean under `-D warnings`. It also gated the whole check on the
+/// enclosing `impl` being `Stream`, so a method on any other type taking a
+/// `&Stream` and returning one was invisible; and it read `Self::Item` as a
+/// stream, so `impl Iterator for Stream` — an ordinary thing to want from an
+/// RNG — was a false positive.
+///
+/// **What is enforced now, stated as a bound rather than as "by
+/// construction".** Local aliases (`type X = Stream`, `use .. as X`) are
+/// resolved one level; `Self` is resolved three ways (on `Stream`, on another
+/// type, or unknowable in a trait declaration); the return type counts wherever
+/// a stream is mentioned, including inside `Option`, tuples, arrays and
+/// `impl Trait`; free functions and trait methods are walked; items declared
+/// inside function bodies are walked; and anything the AST cannot read — a
+/// macro invocation, a verbatim item — is **reported**, because silence must
+/// mean "looked and it was clean" rather than "did not look".
+///
+/// **Known open**, and named rather than implied: a function that mutates a
+/// stream in place instead of returning one (`fn rekey(&mut self, sub: u64)`)
+/// is outside this framing entirely, and is arguably worse than `fork` — it
+/// converts a stream mid-use, so a caller that drew three words and then
+/// rekeyed silently aliases a fresh sub-stream at offset 3. An alias of an
+/// alias is also unresolved.
 ///
 /// `Clone` is exempt and must be: it duplicates a stream rather than deriving a
 /// different one, and `!Copy` exists to make that duplication visible at the
@@ -467,28 +489,79 @@ fn check_no_stream_deriving_method(root: &Path, failures: &mut Vec<String>) -> R
 /// shipped enforcing far less than its own doc claimed.
 fn scan_for_derived_streams(rel: &str, text: &str) -> Result<Vec<String>, String> {
     let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
+    // `Stream` can be renamed. Collect every local name for it first, because
+    // the check is otherwise defeated by one line — `type Child = Stream;` —
+    // which compiles clean under `-D warnings`. `syn` does no name resolution,
+    // so matching the bare identifier was still enumeration: of *type*
+    // spellings rather than of *signature* spellings, which is the same class
+    // one level up.
+    let mut names: Vec<String> = alloc_stream_names(&file.items);
+    names.push("Stream".to_owned());
     let mut out = Vec::new();
-    collect_derived_streams(rel, &file.items, &mut out);
+    collect_derived_streams(rel, &file.items, &names, SelfTy::Unknown, &mut out);
     out.sort();
+    out.dedup();
     Ok(out)
 }
 
-/// Does this type mention `Stream` or `Self` anywhere inside it?
+/// Local aliases for `Stream`: `type X = Stream;` and `use ... Stream as X;`.
 ///
-/// Anywhere is the operative word: `-> Option<Self>`, `-> (Stream, Stream)`,
-/// `-> [Self; 4]`, `-> Box<Self>` and `-> impl Iterator<Item = Stream>` all
-/// hand back a derived stream, and every one of them evaded a matcher keyed on
-/// the literal `-> Self`.
-fn mentions_stream(ty: &syn::Type) -> bool {
-    // Token-level, so nesting costs nothing: a type's token stream contains
-    // every identifier in it however deeply wrapped.
-    quote_tokens(ty)
-        .into_iter()
-        .any(|t| t == "Stream" || t == "Self")
+/// One pass, not transitive — an alias of an alias is rare enough that the
+/// residual is worth naming rather than solving. It is named in
+/// [`check_no_stream_deriving_method`]'s doc.
+fn alloc_stream_names(items: &[syn::Item]) -> Vec<String> {
+    fn walk_use(tree: &syn::UseTree, out: &mut Vec<String>) {
+        match tree {
+            syn::UseTree::Rename(r) if r.ident == "Stream" => out.push(r.rename.to_string()),
+            syn::UseTree::Path(p) => walk_use(&p.tree, out),
+            syn::UseTree::Group(g) => {
+                for t in &g.items {
+                    walk_use(t, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            syn::Item::Type(t) if idents_of(&t.ty).iter().any(|i| i == "Stream") => {
+                out.push(t.ident.to_string());
+            }
+            syn::Item::Use(u) => walk_use(&u.tree, &mut out),
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    out.extend(alloc_stream_names(inner));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
-/// The identifiers appearing in a type, via its token stream.
-fn quote_tokens(ty: &syn::Type) -> Vec<String> {
+/// What `Self` means in the item being inspected.
+///
+/// Three states, not two. The previous version had `Option<&[String]>` and
+/// treated "not an impl on `Stream`" as "stop looking", which missed every
+/// method on *another* type that takes a `&Stream` and returns one —
+/// `impl Nursery { pub fn child(&self, p: &Stream) -> Stream }` — and
+/// false-positived on `impl Iterator for Stream`, where `Self::Item` is a
+/// `u64`, and on any trait declaration with `-> Self`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelfTy {
+    /// Inside `impl .. for Stream`: a receiver is a stream and `Self` is one.
+    Stream,
+    /// Inside `impl .. for` anything else: neither is.
+    Other,
+    /// A trait declaration or a free function: `Self` is unknowable, so only a
+    /// literal `Stream` (or alias) counts. A receiver still counts, because a
+    /// trait can be implemented *for* `Stream`.
+    Unknown,
+}
+
+/// Every identifier appearing in a type, via its token stream.
+fn idents_of(ty: &syn::Type) -> Vec<String> {
     fn walk_tt(tt: proc_macro2::TokenTree, out: &mut Vec<String>) {
         match tt {
             proc_macro2::TokenTree::Ident(i) => out.push(i.to_string()),
@@ -507,77 +580,205 @@ fn quote_tokens(ty: &syn::Type) -> Vec<String> {
     out
 }
 
-/// Walk every item, recursing through modules, and flag any function that both
-/// receives a `Stream` and returns one.
-fn collect_derived_streams(rel: &str, items: &[syn::Item], out: &mut Vec<String>) {
+/// Does this type hand back a stream?
+///
+/// `Self` is counted only where it means one. A bare `Self` inside a
+/// *projection* — `Self::Item` — does not, which is what lets `Stream`
+/// implement `Iterator<Item = u64>` without tripping the guard.
+fn yields_stream(ty: &syn::Type, names: &[String], self_ty: SelfTy) -> bool {
+    let toks = idents_of(ty);
+    if toks.iter().any(|t| names.iter().any(|n| n == t)) {
+        return true;
+    }
+    // `Self` means a stream only inside `impl .. for Stream`. In a trait
+    // *declaration* it is the implementor and is unconstrained, so
+    // `pub trait Reset { fn reset(&self) -> Self; }` must not fire — a literal
+    // `Stream` in that position still does.
+    if self_ty != SelfTy::Stream {
+        return false;
+    }
+    // `Self` counts only where it is the WHOLE type. `Self::Item` and
+    // `<Self as Keyed>::Key` are projections to something that is not a
+    // stream, which is what lets `Stream` implement `Iterator<Item = u64>`.
+    // Checked structurally: a string test on the rendered form got
+    // `<Self as Keyed>::Key` wrong, because the `::` is not adjacent to `Self`.
+    bare_self(ty)
+}
+
+/// Is `Self` used as a complete type anywhere in `ty`, rather than as the
+/// qualifier of a projection?
+fn bare_self(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(p) => {
+            // A qualified path `<Self as Trait>::Assoc` is a projection.
+            if p.qself.is_some() {
+                return false;
+            }
+            if p.path.segments.len() == 1 && p.path.is_ident("Self") {
+                return true;
+            }
+            // `Self::Item` — more than one segment — is also a projection.
+            if p.path.segments.first().is_some_and(|s| s.ident == "Self") {
+                return false;
+            }
+            p.path.segments.iter().any(|seg| match &seg.arguments {
+                syn::PathArguments::AngleBracketed(a) => a.args.iter().any(|arg| match arg {
+                    syn::GenericArgument::Type(t) => bare_self(t),
+                    syn::GenericArgument::AssocType(t) => bare_self(&t.ty),
+                    _ => false,
+                }),
+                syn::PathArguments::Parenthesized(a) => {
+                    a.inputs.iter().any(|t| bare_self(&t.ty))
+                        || match &a.output {
+                            syn::ReturnType::Type(_, t) => bare_self(t),
+                            syn::ReturnType::Default => false,
+                        }
+                }
+                syn::PathArguments::None => false,
+            })
+        }
+        syn::Type::Tuple(t) => t.elems.iter().any(bare_self),
+        syn::Type::Array(a) => bare_self(&a.elem),
+        syn::Type::Slice(s) => bare_self(&s.elem),
+        syn::Type::Reference(r) => bare_self(&r.elem),
+        syn::Type::Ptr(p) => bare_self(&p.elem),
+        syn::Type::Paren(p) => bare_self(&p.elem),
+        syn::Type::Group(g) => bare_self(&g.elem),
+        syn::Type::ImplTrait(i) => i.bounds.iter().any(|b| match b {
+            syn::TypeParamBound::Trait(t) => t.path.segments.iter().any(|seg| {
+                matches!(&seg.arguments, syn::PathArguments::AngleBracketed(a)
+                if a.args.iter().any(|arg| match arg {
+                    syn::GenericArgument::Type(t) => bare_self(t),
+                    syn::GenericArgument::AssocType(t) => bare_self(&t.ty),
+                    _ => false,
+                }))
+            }),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
+/// Walk every item, recursing through modules and function bodies, and flag any
+/// function that both receives a `Stream` and hands one back.
+fn collect_derived_streams(
+    rel: &str,
+    items: &[syn::Item],
+    names: &[String],
+    outer: SelfTy,
+    out: &mut Vec<String>,
+) {
     for item in items {
         match item {
             syn::Item::Mod(m) => {
                 if let Some((_, inner)) = &m.content {
-                    collect_derived_streams(rel, inner, out);
+                    collect_derived_streams(rel, inner, names, SelfTy::Unknown, out);
                 }
             }
-            // A free function taking `&Stream` and returning one is the same
-            // hazard wearing no receiver, and is what someone reaches for once
-            // the method form is gone.
             syn::Item::Fn(f) => {
-                check_sig(rel, &f.sig, None, out);
+                check_sig(rel, &f.sig, names, outer, out);
+                collect_derived_streams(rel, &block_items(&f.block), names, outer, out);
             }
             syn::Item::Impl(i) => {
-                let self_ty = quote_tokens(&i.self_ty);
+                let on = if idents_of(&i.self_ty)
+                    .iter()
+                    .any(|t| names.iter().any(|n| n == t))
+                {
+                    SelfTy::Stream
+                } else {
+                    SelfTy::Other
+                };
                 for it in &i.items {
-                    if let syn::ImplItem::Fn(f) = it {
-                        check_sig(rel, &f.sig, Some(&self_ty), out);
+                    match it {
+                        syn::ImplItem::Fn(f) => {
+                            check_sig(rel, &f.sig, names, on, out);
+                            collect_derived_streams(rel, &block_items(&f.block), names, on, out);
+                        }
+                        syn::ImplItem::Macro(m) => out.push(unanalysable(rel, &m.mac.path)),
+                        _ => {}
                     }
                 }
             }
-            // Trait *declarations* matter: a method is spelled `fn`, never
-            // `pub fn`, so a matcher keyed on `pub fn` never sees an extension
-            // trait — which is the idiomatic way to add a method in Rust and so
-            // the most likely reinstatement, not the least.
+            // A trait method is spelled `fn`, never `pub fn`, so a matcher
+            // keyed on visibility never saw an extension trait — the idiomatic
+            // way to add a method in Rust, and so the most likely
+            // reinstatement rather than the least.
             syn::Item::Trait(t) => {
                 for it in &t.items {
                     if let syn::TraitItem::Fn(f) = it {
-                        check_sig(rel, &f.sig, None, out);
+                        check_sig(rel, &f.sig, names, SelfTy::Unknown, out);
                     }
                 }
             }
+            // "There is code here I cannot read" must not be silence. The
+            // missing-directory branch above already resolves that same
+            // situation this way.
+            syn::Item::Macro(m) => out.push(unanalysable(rel, &m.mac.path)),
+            syn::Item::Verbatim(_) => out.push(unanalysable_at(rel, "verbatim item")),
             _ => {}
         }
     }
 }
 
+/// The `syn::Item`s declared directly inside a function body.
+fn block_items(block: &syn::Block) -> Vec<syn::Item> {
+    block
+        .stmts
+        .iter()
+        .filter_map(|s| match s {
+            syn::Stmt::Item(i) => Some(i.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn unanalysable(rel: &str, path: &syn::Path) -> String {
+    let name = path
+        .segments
+        .last()
+        .map_or_else(|| "?".to_owned(), |s| s.ident.to_string());
+    unanalysable_at(rel, &format!("`{name}!` expansion"))
+}
+
+fn unanalysable_at(rel: &str, what: &str) -> String {
+    format!(
+        "§13.1: {what} in {rel} cannot be checked for stream derivation — this guard reads the \
+         AST and does not expand macros, so silence here would mean \"did not look\" rather than \
+         \"looked and it was clean\". Write the impl out, or move it outside borbax-rng."
+    )
+}
+
 /// Flag `sig` if a `Stream` goes in and a `Stream` comes out.
-///
-/// `self_ty` is the enclosing `impl`'s type when there is one. It is what stops
-/// the check firing on `Domain::next(&self) -> Self` or on any builder — the
-/// false-positive class that gets a guard deleted.
-fn check_sig(rel: &str, sig: &syn::Signature, self_ty: Option<&[String]>, out: &mut Vec<String>) {
+fn check_sig(
+    rel: &str,
+    sig: &syn::Signature,
+    names: &[String],
+    self_ty: SelfTy,
+    out: &mut Vec<String>,
+) {
     let syn::ReturnType::Type(_, ret) = &sig.output else {
         return;
     };
-    if !mentions_stream(ret) {
-        return;
-    }
-    // `Self` only means a stream inside `impl ... for Stream`.
-    let on_stream = self_ty.is_none_or(|t| t.iter().any(|s| s == "Stream"));
-    if !on_stream {
+    if !yields_stream(ret, names, self_ty) {
         return;
     }
     let takes_stream = sig.inputs.iter().any(|arg| match arg {
         // Any receiver spelling — `self`, `&self`, `&mut self`, `self: &Self`,
-        // `&'a self`. The first version matched `&self` only.
-        syn::FnArg::Receiver(_) => true,
-        syn::FnArg::Typed(t) => mentions_stream(&t.ty),
+        // `&'a self` — but only where the receiver *is* a stream.
+        syn::FnArg::Receiver(_) => self_ty != SelfTy::Other,
+        syn::FnArg::Typed(t) => idents_of(&t.ty)
+            .iter()
+            .any(|i| names.iter().any(|n| n == i)),
     });
     if !takes_stream {
         return;
     }
+    let line = syn::spanned::Spanned::span(sig).start().line;
     let name = &sig.ident;
     out.push(format!(
-        "§13.1: `fn {name}` in {rel} takes a Stream and returns one — that is how a second \
-         sub-level silently returns a duplicate of an unrelated sibling. Sub-streams are \
-         constructed (`Stream::sub`), not derived."
+        "§13.1: `fn {name}` at {rel}:{line} takes a Stream and returns one — that is how a \
+         second sub-level silently returns a duplicate of an unrelated sibling. Sub-streams \
+         are constructed (`Stream::sub`), not derived."
     ));
 }
 
@@ -1110,6 +1311,78 @@ mod tests {
         }
     }
 
+    /// Shapes found by four independent sources *after* the AST rewrite
+    /// shipped: `CodeRabbit` (aliases), and three review lanes (methods on other
+    /// types, macro items, items in function bodies). Every row here passed
+    /// the guard when it was written.
+    #[test]
+    fn shapes_found_after_the_ast_rewrite_are_caught() {
+        const FORBIDDEN: &[(&str, &str)] = &[
+            (
+                "type alias hides the return",
+                "type Child = Stream;\nimpl Stream { pub fn c(&self) -> Child { todo!() } }",
+            ),
+            (
+                "renamed import hides the return",
+                "use crate::Stream as Rng;\npub fn child(p: &Rng) -> Rng { todo!() }",
+            ),
+            (
+                "alias on both sides",
+                "type Rng = Stream;\nimpl Rng { pub fn c(&self) -> Rng { todo!() } }",
+            ),
+            (
+                "method on another type",
+                "impl Nursery { pub fn child(&self, p: &Stream, i: u64) -> Stream { todo!() } }",
+            ),
+            (
+                "method on another type, wrapped return",
+                "impl Nursery { pub fn brood(&self, p: &Stream) -> Vec<Stream> { todo!() } }",
+            ),
+            (
+                "trait impl on another type",
+                "impl Spawn for Nursery { fn child(&self, p: &Stream) -> Stream { todo!() } }",
+            ),
+            (
+                "generic type",
+                "impl<T> Factory<T> { pub fn child(&self, p: &Stream) -> Stream { todo!() } }",
+            ),
+            (
+                "item inside a function body",
+                "pub fn outer() { impl Stream { pub fn c(&self) -> Self { todo!() } } }",
+            ),
+            (
+                "free fn inside a function body",
+                "pub fn outer() { pub fn c(p: &Stream) -> Stream { todo!() } }",
+            ),
+        ];
+        for (label, src) in FORBIDDEN {
+            assert_eq!(hits(src).len(), 1, "{label}: not caught\n{src}");
+        }
+    }
+
+    /// Code the AST cannot read must be reported, not skipped.
+    ///
+    /// The missing-directory branch already resolves the same situation the
+    /// same way: silence has to mean "looked and it was clean", never "did not
+    /// look".
+    #[test]
+    fn unreadable_code_is_reported_rather_than_skipped() {
+        for (label, src) in [
+            ("macro item", "define_stream_ext!();"),
+            (
+                "macro inside an impl",
+                "impl Stream { derive_children!(); }",
+            ),
+        ] {
+            let h = hits(src);
+            assert_eq!(h.len(), 1, "{label}: not reported\n{src}");
+            assert!(
+                h.first().is_some_and(|m| m.contains("cannot be checked")),
+                "{label}: wrong message"
+            );
+        }
+    }
+
     /// The control set, and it matters as much as the corpus above.
     ///
     /// A guard that fires on correct code gets an `#[allow]` and then a
@@ -1167,6 +1440,34 @@ mod tests {
             (
                 "Domain::ALL",
                 "impl Domain { pub const ALL: [Self; 9] = [todo!(); 9]; }",
+            ),
+            // Found firing wrongly by two lanes after the AST rewrite. An RNG
+            // implementing Iterator<Item = u64> is entirely ordinary, and
+            // `Self::Item` is a projection to something that is not a stream.
+            (
+                "impl Iterator for Stream",
+                "impl Iterator for Stream { type Item = u64; fn next(&mut self) -> Option<Self::Item> { todo!() } }",
+            ),
+            (
+                "associated-type projection",
+                "impl Stream { pub fn k(&self) -> <Self as Keyed>::Key { todo!() } }",
+            ),
+            // In a trait *declaration* `Self` is the implementor, unconstrained.
+            (
+                "trait declaration returning Self",
+                "pub trait Reset { fn reset(&self) -> Self; }",
+            ),
+            (
+                "builder trait declaration",
+                "pub trait Builder { fn with(&self, x: u64) -> Self; }",
+            ),
+            (
+                "other type's builder returning Self",
+                "impl Nursery { pub fn tuned(&self, x: u64) -> Self { todo!() } }",
+            ),
+            (
+                "Debug impl on Stream",
+                "impl Debug for Stream { fn fmt(&self, f: &mut Formatter) -> Result { todo!() } }",
             ),
         ];
         for (label, src) in ALLOWED {
