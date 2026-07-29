@@ -3250,13 +3250,42 @@ Validate on a null trajectory of pure multinomial noise: it must score ~0.
 
 - [ ] **Step 3: The neutral shadow** (`shadow.rs`)
 
-**A `Stream`'s position cannot currently be saved or restored, and this step is
-the first thing that needs it.** `Stream` exposes no accessor for its block
-counter or intra-block offset and derives no `serde`, so "fork from a keyframe"
-has no route as written. Two options, and the choice is not free:
+**A `Stream`'s position cannot be saved or restored, and this step is the first
+thing that needs it. Decided: drive the counter from the logical simulation
+state — option 2 below — and never serialise a `Stream`.**
 
-1. **Expose position.** Keeps the 4x-amortised block buffer, and makes
-   `(counter[3], spent)` part of the §13.2 contract. `Stream` stores position
+Salmon et al. recommend exactly this, one sentence after the `(key, counter)`
+warning this plan already quotes: *"If the PRNG were driven by the logical
+simulation state, such errors would be far less common."* They are describing a
+published bug caused by a failed PRNG checkpoint.
+
+Three reasons it wins here, beyond the citation:
+
+- **The trap in option 1 is measured, not hypothetical.** `Stream` stores
+  position twice — as `counter[3]` and as `spent` into a `buf` that must match
+  the previous block — and nothing in the type enforces the correspondence, so
+  a field-wise constructor gets it wrong two different ways (see below). Option
+  2 removes the state rather than documenting the trap.
+- **It protects the seed barrier.** A field-wise `Serialize` exposes `key[0]`
+  by definition, and `key[0]` is the universe seed — which is what stops a
+  routine holding only a `&Stream` from minting a per-molecule sub-stream
+  (§8.6). A derived `Debug` already leaked it once; the crate now redacts it.
+  If `Stream` is never serialised, that whole class cannot reopen.
+- **The keyframe gets smaller and simpler.** An event index is O(1) state the
+  scheduler already has, against 88 bytes of opaque generator state per live
+  stream.
+
+The cost is real and should be stated: a fresh `Stream::sub(seed,
+Domain::Beaker, patch, event_index)` per event discards 2 of every 4 words,
+since the direct method uses two draws. That is a 2× inflation in Philox calls
+on the scheduler's hot path, against a kernel already measured at ~1.55 ns/draw
+at its port limit. Take it; a keyframe that silently rewinds three draws is not
+worth the saving.
+
+The rejected option is kept because the trap in it is worth knowing:
+
+1. **Expose position — REJECTED.** Keeps the 4x-amortised block buffer, and
+   makes `(counter[3], spent)` part of the §13.2 contract. `Stream` stores position
    *twice* — as `counter[3]` and as `spent` into a `buf` that must match the
    previous block — and nothing in the type enforces the correspondence, so a
    field-wise constructor gets it wrong. **Two different ways**, which the
@@ -3279,8 +3308,8 @@ has no route as written. Two options, and the choice is not free:
    leaf frame. A field-wise `Serialize`/`Deserialize` exposes `key` by
    definition and hands that barrier away. Pin it with a consumer-crate probe:
    `s.seed()` must not compile.
-2. **Drive the counter from the logical simulation state** — Salmon et al.'s
-   own recommendation, and the paper names this exact failure: "the error
+2. **Drive the counter from the logical simulation state — CHOSEN.** The paper
+   names this exact failure: "the error
    identified by [5] arose because of a failure to properly checkpoint and
    restore the PRNG's state." A fresh `Stream::sub(seed, Domain::Beaker, ...,
    event_index)` per event is O(1) state, not the per-molecule state §8.6
@@ -3371,9 +3400,31 @@ reaction that exhausts a reactant removes every channel needing it. So the
 guarantee does not apply here and the guideline points pessimistic. Note that
 before spending the budget, not after.
 
-**Settle it by measurement, not argument:** run both indexings at fixed budget
-and compare the variance of the paired difference. If CRN's is not lower, use
-independent streams and spend the budget on replicates instead.
+**Decided: independent streams — `Domain::Shadow` as built — and spend the
+budget on replicates.** The theory withholds its guarantee for precisely this
+regime, so there is nothing to trade away:
+
+- Glasserman & Yao's guarantees rest on **noninterruption**, "the occurrence of
+  one event never interrupts the clock of another". That fails *by
+  construction* in a low-copy-number beaker: firing a reaction that exhausts a
+  reactant removes every channel needing it. Abiogenesis at low counts is the
+  regime, not an edge case.
+- `run − shadow` is their category **II** (structural comparison) at a large
+  perturbation — selection on versus off — which is their weakest case, not the
+  category III sensitivity analysis where CRN is strongest.
+- Anderson (2012) predicts both CRP and Gillespie+CRN converge to crude
+  Monte Carlo variance over long times.
+
+So CRN here would buy an unmeasured benefit for real implementation cost —
+shared draw coordinates across two runs, and a partial-CRN hazard if any draw
+on the shadow path is missed. Independent streams are already built, already
+correct, and make the two runs trivially separable.
+
+**This is a decision, not a deferral, and here is what would reopen it:** a
+measurement showing the variance of the paired `run − shadow` difference is
+materially lower under CRN at fixed budget. That measurement is cheap and
+remains available — but it is an optimisation against a working default, not a
+prerequisite, and the default is independent.
 
 **Whatever is chosen must apply to every draw on the shadow path.** Mixing
 `Shadow` and `Beaker` draws gives partial CRN, silently — the worst of the
