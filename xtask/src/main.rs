@@ -1604,9 +1604,16 @@ fn extract_const_value(src: &str, name: &str) -> Option<String> {
     for raw in src.lines() {
         let code = strip_comments_and_literals(raw, &mut lex);
         let t = code.trim();
+        // Visibility-agnostic. An earlier version enumerated `const ` and
+        // `pub const `, the two spellings that happened to be in front of me,
+        // and broke the moment `packing` was narrowed to `pub(crate)`. It failed
+        // *loudly* — "not found in packing.rs — renamed, or inlined" — which is
+        // the only reason it cost two minutes instead of shipping as a silent
+        // pass, and is the whole argument for the missing-target failures above.
         let Some(rest) = t
-            .strip_prefix("const ")
-            .or_else(|| t.strip_prefix("pub const "))
+            .split_once("const ")
+            .filter(|(before, _)| before.is_empty() || before.trim_end().starts_with("pub"))
+            .map(|(_, rest)| rest)
         else {
             continue;
         };
@@ -1813,6 +1820,24 @@ mod tests {
             extract_const_value(lib, "FRONTIER_COEFF"),
             extract_const_value(probe, "FRONTIER_COEFF")
         );
+    }
+
+    /// Every visibility spelling is a declaration. Enumerating the two I had in
+    /// front of me broke the moment `packing` was narrowed to `pub(crate)`.
+    #[test]
+    fn a_constant_is_found_under_any_visibility() {
+        for src in [
+            "const FRONTIER_COEFF: f64 = 6.90;\n",
+            "pub const FRONTIER_COEFF: f64 = 6.90;\n",
+            "pub(crate) const FRONTIER_COEFF: f64 = 6.90;\n",
+            "pub(super) const FRONTIER_COEFF: f64 = 6.90;\n",
+        ] {
+            assert_eq!(
+                extract_const_value(src, "FRONTIER_COEFF").as_deref(),
+                Some("6.90"),
+                "missed a visibility spelling: {src}"
+            );
+        }
     }
 
     /// A constant named only in prose must not be taken for the declaration.
