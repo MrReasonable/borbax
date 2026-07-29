@@ -302,7 +302,19 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         // with "burial makes realised functionality lower, so realised p_c is
         // higher" — §7.2 carried that argument and it is wrong: under
         // degree-independent thinning the beaker gels at the same bonds per atom
-        // regardless, and only the coordinate was rescaled. Report nominal f_w
+        // regardless, and only the coordinate was rescaled. Verified exactly by
+        // binomial convolution: `f_w' = 1 + q(f_w - 1)`, `p_c' = p_c/q`, and
+        // bonds-per-node at gel invariant to every printed digit.
+        //
+        // **Only the *mechanism* is retracted, not the conclusion** — and §7.2
+        // restores the conclusion by a different route, so a reader of this file
+        // alone would otherwise conclude the opposite of a reader of §7.2 alone.
+        // The route that survives is the operating point: §9.1's bimolecular
+        // Condense against §9.4's unimolecular Cleave, where the margin between
+        // `q = 1.0` and `q = 0.5` is `F(R) = 2*p_ss(R)/p_ss(2R)`, in which `p_c`
+        // and `f_w` cancel, leaving it bounded in (2, 4) and monotone. Burial
+        // does move the beaker away from gel; the old argument simply was not
+        // why. Report nominal f_w
         // and bonds-per-node at gel as diagnostics; the gate is Task 20's
         // battery, on `p_ss / p_c`.
         let abundance = det_math::exp(-(units as f64) * decay);
@@ -837,19 +849,49 @@ mod tests {
     /// a sawtooth. If a change smooths the series across closures this fails,
     /// which is the point: the predecessor's minimum was the distance from a
     /// typed-in constant and looked identical from outside.
+    ///
+    /// **Enumerated, not sampled.** The doc above this test used to claim "zero
+    /// failures across the full `(k, eps, sigma)` product" while the body ran
+    /// `table(3)` — one seed. The claim is true (measured: 2268 closure cells
+    /// over 972 universes, 0 non-maximal), and the product is 9 x 9 x 12 = 972
+    /// cells costing milliseconds, so there is no reason to sample it. This file
+    /// argues exactly that 140 lines up, about the valence ceiling: raising a
+    /// seed count shrinks a probability where enumeration removes it.
+    ///
+    /// `eps` and `sigma` are reconstructed from their draw expressions in
+    /// `generate_elements`; keep them in step.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "loop indices reconstructing the drawn constant grid"
+    )]
     #[test]
     fn energy_per_unit_is_locally_maximal_at_every_closure() {
-        let (shell, els) = table(3);
-        for &c in shell.closures.iter().filter(|&&c| c > 1) {
-            let (lo, at, hi) = (els.get(c - 2), els.get(c - 1), els.get(c));
-            if let (Some(lo), Some(at), Some(hi)) = (lo, at, hi) {
-                assert!(
-                    at.energy_per_unit > lo.energy_per_unit
-                        && at.energy_per_unit > hi.energy_per_unit,
-                    "closure {c} is not a local energy maximum"
-                );
+        let mut cells = 0_usize;
+        for k in 6..=14_usize {
+            let pack = packing::PackingConsts::new(k);
+            for ei in 0..9_usize {
+                for si in 0..12_usize {
+                    let eps = 0.8 + 0.05 * ei as f64;
+                    let sigma = 0.02 + 0.01 * si as f64;
+                    let energy = |units: usize| {
+                        eps * packing::contacts_upto(pack, units) / units as f64
+                            - sigma * det_math::cbrt((units * units) as f64)
+                    };
+                    for c in packing::closures(k, 120).into_iter().filter(|&c| c > 1) {
+                        if c + 1 > 120 {
+                            continue;
+                        }
+                        cells += 1;
+                        assert!(
+                            energy(c) > energy(c - 1) && energy(c) > energy(c + 1),
+                            "k={k} eps={eps} sigma={sigma}: closure {c} is not a local maximum"
+                        );
+                    }
+                }
             }
         }
+        assert!(cells > 2000, "the enumeration shrank to {cells} cells");
     }
 
     /// `peak` is an output. If it took only one value across universes it

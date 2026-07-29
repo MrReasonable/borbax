@@ -691,6 +691,14 @@ mod tests {
     /// is cap-dependent and D = 162 is the one level this table never uses.
     /// Nothing else in this file can catch a drift in [`FRONTIER_COEFF`],
     /// because every other test compares the formula against itself.
+    ///
+    /// **One margin worth knowing, measured rather than assumed.** A break that
+    /// displaces every fill fraction by half a site — `f -> f + 0.5/cap` — scores
+    /// 0.2449 against this 0.25 gate. It passes, by 2% of tolerance, on the only
+    /// test in the crate that compares against real geometry.
+    /// `the_continuum_frontier_vanishes_as_a_square_root` catches it outright, so
+    /// the pair covers it; neither leg does alone, and this gate must not be
+    /// tightened to try (the healthy continuum branch already sits at 0.1951).
     #[expect(
         clippy::as_conversions,
         clippy::cast_precision_loss,
