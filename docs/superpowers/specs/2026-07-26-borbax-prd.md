@@ -688,32 +688,54 @@ It is deliberately conservative about one thing: it will never demote a patch co
 
 Bit-for-bit reproducibility given `(universe_seed, world_seed, config_hash)`.
 
-**`config_hash` is the physics version §13.3 writes as `@n`, under a second
-name, and nothing else in configuration may reach the arithmetic.** That
-resolution is forced rather than chosen: §13.3 promises that sharing
-`U-7F3A21C9@1 / W-0004` gets the recipient a bit-identical planet, and that
-promise fails the moment a *fourth* value can change results while sitting
-outside the address. Either a setting changes the physics — in which case it
-mints a new version, is carried in the address, and a recipient with a
-different one can see that they differ — or it cannot change results, in which
-case it does not belong in a reproducibility tuple at all.
+**`config_hash` is the physics version §6 writes as `@n`, under a second name,
+and nothing else in configuration may reach the arithmetic.** That resolution
+is forced rather than chosen: §6 promises that sharing `U-7F3A21C9@1 / W-0004`
+gets the recipient a bit-identical planet, and that promise fails the moment a
+*fourth* value can change results while sitting outside the address. Either a
+setting changes the physics — in which case it mints a new version, is carried
+in the address, and a recipient with a different one can see that they differ —
+or it cannot change results, in which case it does not belong in a
+reproducibility tuple at all.
 
-So configuration splits in two, and the split is a rule rather than a
-convention:
+So configuration splits **three** ways, and the split is a rule rather than a
+convention. An earlier version of this section named only the first two, which
+had the effect of forbidding two of §23's own V0 exit criteria — `borbax sweep
+--resolutions` (criterion 3) and `borbax band --sweep decay_scale`
+(criterion 4). A rule that outlaws the exit criteria is the wrong rule, not a
+discovery about the criteria.
 
-- **Runtime knobs** — keyframe interval, output paths, tier-promotion
-  thresholds, thread count. These must not reach any arithmetic that produces a
-  simulation value. A knob that would is not a knob.
-- **Physics** — anything that changes what the laws *are*. Sweeping such a
-  value is legitimate (§22.2 sweeps and then **locks** the geodesic resolution),
-  but the locked value becomes a constant under a version, not a field that
-  travels with a run.
+- **Runtime knobs** — keyframe interval, output paths, thread count. These must
+  not reach any arithmetic that produces a simulation value. A knob that would
+  is not a knob.
+- **Locked physics** — anything that changes what the laws *are*, after it has
+  been fixed. The locked value is a constant under a version `@n`, not a field
+  that travels with a run.
+- **Physics under sweep** — a physics value legitimately being varied *before*
+  it is locked (§22.2 sweeps and then locks the geodesic resolution; §22.4
+  sweeps the decay band). The obligation here is not that the value cannot
+  reach the arithmetic — it must, that is the point of the sweep — but that
+  **a run using any non-default value in this category cannot emit a shareable
+  address.** The sweep harness prints its results; it does not mint
+  `U-xxxxxxxx@n`. When the sweep concludes, the chosen value moves into the
+  category above and mints a version. This is what lets §23's criteria run
+  without putting a hole in §6's promise.
+
+**Tier-promotion thresholds are physics, not a runtime knob**, and an earlier
+version of this list filed them as one. §12.4 has the governor tuning them from
+wall-clock measurements, and §12.2 states that promotion between tiers is
+**lossy** — so a threshold selects between representations of different
+fidelity and therefore reaches the arithmetic by construction. The consequence
+is not abstract: a nascent RAF sitting in the "other" aggregate of the bulk
+tier cannot form at all until something promotes it. A wall-clock-driven knob
+that decides whether life can appear is not a knob. Reconciling §12.4's
+governor with this rule is Task 20's problem and is recorded there.
 
 The failure this closes: a keyframe-restore check on `config_hash` only fires
 on restore. Two people sharing a seed pair and starting fresh never restore
 anything, so nothing would have caught a physics-affecting knob that differed
 between them. Putting physics in the address rather than in a side-channel is
-what makes the §13.3 promise true instead of merely stated.
+what makes the §6 promise true instead of merely stated.
 
 This requires discipline the engine must enforce structurally:
 
