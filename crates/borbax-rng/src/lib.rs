@@ -30,7 +30,7 @@
 //! **Stream identity is a 256-bit counter, not a hash, and that is the whole
 //! determinism argument.** Draws come from Philox 4x64-10 (see `philox`), a
 //! bijection of its counter for any fixed key. Every coordinate gets its own
-//! 64-bit field — `[domain, index, fork, block]` — so distinct coordinates are
+//! 64-bit field — `[domain, index, sub, block]` — so distinct coordinates are
 //! **provably** distinct streams rather than improbably-colliding ones.
 //!
 //! That is a change of kind, not degree, and it is worth recording why. The
@@ -357,7 +357,7 @@ pub struct Stream {
     /// force those to be compressed together — which is exactly the hashing
     /// that produced permanent stream collisions in the first design.
     key: [u64; 2],
-    /// `[domain, index, fork, block]` — one 64-bit field each, no packing.
+    /// `[domain, index, sub, block]` — one 64-bit field each, no packing.
     /// Because Philox is a bijection of the counter, distinct coordinates
     /// give distinct output *by construction*.
     counter: [u64; 4],
@@ -392,8 +392,8 @@ impl Stream {
     /// unassailable in practice (2²² seeds at a fixed counter give 2²²
     /// distinct blocks, and adjacent seed pairs share none of 14 400 words),
     /// but it is the "improbable" kind, and this file draws a sharp line
-    /// between the two. [`Stream::fork`] has two documented exceptions of its
-    /// own.
+    /// between the two. [`Stream::sub`] documents the one exception of its
+    /// own: `sub(.., u64::MAX)` aliases the root.
     ///
     /// This is still the property the first design did not have, and its
     /// absence was not theoretical: hashing the same coordinates into a
@@ -413,77 +413,51 @@ impl Stream {
         }
     }
 
-    /// Derive a child stream. Used where a fixed number of sub-streams is
-    /// needed — one per fold attempt, one per species — without threading a
-    /// mutable parent through the call graph.
+    /// Open a sub-stream of `(seed, domain, index)` — one per fold attempt,
+    /// one per species — without disturbing the parent.
     ///
-    /// **Not one per molecule at the bulk or stochastic tiers.** To call
-    /// `fork(i)` per molecule you need a stable `i` per molecule, and stable
-    /// means stored — which is per-molecule state arriving disguised as "just
-    /// an index", the shape §8.6's regression always takes. §9.5 makes all
+    /// **This is a constructor rather than a method on [`Stream`], and that is
+    /// what makes nesting impossible instead of merely forbidden.** The
+    /// earlier design was `fork(&self, index) -> Stream`, an operation on a
+    /// stream returning a stream, so `base.fork(a).fork(b)` type-checked — and
+    /// was measured bit-identical to `base.fork(b)` for every `a`, because the
+    /// child *overwrote* its parent's sub-coordinate rather than extending it.
+    /// That is a duplicate stream, precisely the hazard this design exists to
+    /// remove, and it shipped with a test asserting it as the contract.
+    ///
+    /// There is no operation here that takes a `Stream` and yields a `Stream`,
+    /// so the second level cannot be written down. The alternative —
+    /// `Stream<const FORKED: bool>` — would have made every downstream
+    /// function that merely *draws* generic over depth, since the ordinary
+    /// pattern is to hand a sub-stream to a routine that anneals. Removing the
+    /// operation costs one type parameter, one `debug_assert` and one test,
+    /// and buys a stronger guarantee.
+    ///
+    /// **Not one per molecule at the bulk or stochastic tiers.** To call this
+    /// per molecule you need a stable `sub` per molecule, and stable means
+    /// stored — which is per-molecule state arriving disguised as "just an
+    /// index", the shape §8.6's regression always takes. §9.5 makes all
     /// molecules of a species interchangeable precisely so none needs
     /// individual state, and a per-molecule index turns a keyframe from
     /// O(species) into O(molecules). V1's molecular tier (§12.1) is the one
     /// place a per-molecule stream is legitimate; V0 has no per-molecule
     /// representation at all.
     ///
-    /// **`fork` is a pure function of the parent's key, not of its state.**
-    /// It deliberately ignores the parent's counter — the path-indexed style,
-    /// which is the right choice for a §13.1 that forbids results depending on
-    /// draw order. The cost is that `parent.fork(0)` called at two different
-    /// points returns the *same* child, so two call sites forking the same
-    /// parent with overlapping index ranges silently share a sequence. That is
-    /// a duplicate stream arriving through the one door `!Copy` does not
-    /// guard. Give each call site a disjoint index range, or a domain.
+    /// **One sub-level is enough for §13.1**, which asks for a stream per
+    /// subsystem, per patch, per time index — `domain`, `index`, `sub`, with
+    /// `block` left as the draw counter. A further level needs its own
+    /// [`Domain`], or its two indices composed before the call.
     ///
-    /// **Forking is one level deep. That limit is inherent, and a second fork
-    /// is now rejected rather than silently honoured.**
-    ///
-    /// The child writes `index` into the counter's third field, so a fork of a
-    /// fork *replaces* its parent's fork coordinate instead of extending it —
-    /// measured, `base.fork(a).fork(b)` was bit-identical to `base.fork(b)`
-    /// for every `a`, which is a duplicate stream and precisely the hazard
-    /// this whole design removes. It cannot be made to work: there is exactly
-    /// one spare counter word, and hashing a fork *path* into it would
-    /// reintroduce the collisions Philox was adopted to eliminate.
-    ///
-    /// One level is enough for §13.1, which asks for a stream per subsystem,
-    /// per patch, per time index — that is `domain`, `index`, `fork`, with
-    /// `block` left as the draw counter. A second level needs its own
-    /// `Domain`, or its two indices composed before the first fork.
-    ///
-    /// **Type-state was considered and rejected on cost.** Making the second
-    /// call a compile error means `Stream<const FORKED: bool>`, which makes
-    /// every downstream function that merely *draws* generic over fork depth —
-    /// viral across eight crates, to forbid a call nobody has yet written. The
-    /// `debug_assert` catches it in any test run; `forking_a_fork_is_rejected`
-    /// explains why that is the right trade and what it does not buy.
-    ///
-    /// **Fork coordinates are offset by one, because the root occupies zero.**
-    /// The first draft wrote `index` directly, so `fork(0)` produced the
-    /// parent's own counter — a duplicate stream, which is the precise hazard
-    /// this whole design exists to remove. Its own test caught it immediately.
-    /// The offset costs one value: `fork(u64::MAX)` wraps back onto the root.
-    /// Sixty-four bits cannot hold 2⁶⁴ forks *and* a distinct root, so some
-    /// aliasing is unavoidable; stating which is better than an unqualified
-    /// claim. Pinned in `fork_of_u64_max_aliases_the_root`.
+    /// Sub-coordinates are offset by one because the root occupies zero. That
+    /// costs exactly one value: `sub(.., u64::MAX)` wraps onto the root, since
+    /// 64 bits cannot hold 2⁶⁴ sub-streams *and* a distinct root. Pinned in
+    /// `sub_of_u64_max_aliases_the_root`.
     #[inline]
     #[must_use]
-    pub const fn fork(&self, index: u64) -> Self {
-        // A root has `counter[2] == 0`; a fork never does (the offset below is
-        // why). So this fires exactly when someone forks a fork — which cannot
-        // be made to work, and until now failed by silently returning a
-        // duplicate of an unrelated sibling.
-        debug_assert!(
-            self.counter[2] == 0,
-            "fork is one level deep: forking a fork would overwrite the fork \
-             coordinate rather than extend it, silently duplicating another \
-             stream. Give the second level its own Domain, or compose the two \
-             indices before the first fork."
-        );
+    pub const fn sub(seed: u64, domain: Domain, index: u64, sub: u64) -> Self {
         Self {
-            key: self.key,
-            counter: [self.counter[0], self.counter[1], index.wrapping_add(1), 0],
+            key: [seed, 0],
+            counter: [domain.discriminant(), index, sub.wrapping_add(1), 0],
             buf: [0; 4],
             spent: 4,
         }
@@ -806,48 +780,45 @@ mod tests {
     }
 
     #[test]
-    fn forking_is_deterministic_and_independent() {
-        let base = Stream::new(1, Domain::Fold, 0);
-        let mut f1 = base.fork(3);
-        let mut f2 = base.fork(3);
-        let mut f3 = base.fork(4);
+    fn sub_streams_are_deterministic_and_independent() {
+        let mut f1 = Stream::sub(1, Domain::Fold, 0, 3);
+        let mut f2 = Stream::sub(1, Domain::Fold, 0, 3);
+        let mut f3 = Stream::sub(1, Domain::Fold, 0, 4);
         assert_eq!(f1.next_u64(), f2.next_u64());
         assert_ne!(f1.next_u64(), f3.next_u64());
     }
 
-    /// Forking writes `index` into the counter's third field, so distinct
-    /// fork indices are distinct counters and Philox's bijectivity does the
-    /// rest. The old design needed a hand-chosen odd constant here to stop
-    /// `fork(0)`'s key colliding with the parent's first output; that whole
-    /// class of concern is gone, because there is no key derivation left to
-    /// collide.
+    /// A sub-stream writes `sub + 1` into the counter's third field, so
+    /// distinct sub-coordinates are distinct counters and Philox's bijectivity
+    /// does the rest. The old design needed a hand-chosen odd constant to stop
+    /// `fork(0)`'s derived key colliding with the parent's first output; that
+    /// whole class of concern is gone, because there is no key derivation left
+    /// to collide.
     #[test]
-    fn forks_are_distinct_from_the_parent_and_from_each_other() {
-        let base = Stream::new(1, Domain::Fold, 0);
-        let mut parent = base.clone();
-        let mut f0 = base.fork(0);
-        let mut f1 = base.fork(1);
-        let p = parent.next_u64();
-        let a = f0.next_u64();
-        let b = f1.next_u64();
-        assert_ne!(a, p, "fork(0) collides with the parent");
-        assert_ne!(a, b, "fork(0) and fork(1) collide");
+    fn sub_streams_are_distinct_from_the_root_and_each_other() {
+        let mut root = Stream::new(1, Domain::Fold, 0);
+        let mut s0 = Stream::sub(1, Domain::Fold, 0, 0);
+        let mut s1 = Stream::sub(1, Domain::Fold, 0, 1);
+        let (p, a, b) = (root.next_u64(), s0.next_u64(), s1.next_u64());
+        assert_ne!(a, p, "sub(0) collides with the root");
+        assert_ne!(a, b, "sub(0) and sub(1) collide");
     }
 
     /// **Which coordinate lives in which counter field is load-bearing, and
     /// four mutations of it passed all 38 tests before this existed.**
     /// Measured, each silently catastrophic and each invisible:
     ///
-    /// - `fork` writing field 3: `fork(j)` *is* the parent advanced 4(j+1)
-    ///   draws — `fork(0)` and `fork(1)` shared 36 of their first 40 words.
-    /// - `fork` dropping `counter[1]`: every index in a domain shares one fork
+    /// - the sub-coordinate written to field 3: a sub-stream *is* the root
+    ///   advanced 4(j+1) draws — `sub 0` and `sub 1` shared 36 of their first
+    ///   40 words.
+    /// - `counter[1]` dropped: every index in a domain shares one sub-stream
     ///   family, 40 of 40 words identical.
     /// - `new` writing index into field 2: `new(s, Fold, 3)` *is*
-    ///   `new(s, Fold, 0).fork(2)` — the index and fork axes become one.
+    ///   `sub(s, Fold, 0, 1)` — the index and sub axes become one.
     /// - `new` writing index into field 3: every index stream is a bit-exact
     ///   *suffix* of index 0's.
     ///
-    /// The old fork tests all survived because they used `index = 0` and
+    /// The old sub-stream tests all survived because they used `index = 0` and
     /// asserted a single-word `assert_ne!`. The consequence of the last one is
     /// the sharpest: `Domain::Molecule` indexed by species means species *k*
     /// draws numbers species 0 already used, signatures correlate along the
@@ -864,12 +835,11 @@ mod tests {
         let mut total = 0_usize;
         for domain in [Domain::Universe, Domain::Fold, Domain::Molecule] {
             for index in 0..6_u64 {
-                let base = Stream::new(0x5EED, domain, index);
-                for fork in 0..5_u64 {
-                    let mut s = if fork == 0 {
-                        base.clone()
+                for sub in 0..5_u64 {
+                    let mut s = if sub == 0 {
+                        Stream::new(0x5EED, domain, index)
                     } else {
-                        base.fork(fork - 1)
+                        Stream::sub(0x5EED, domain, index, sub - 1)
                     };
                     for _ in 0..16 {
                         seen.insert(s.next_u64());
@@ -881,48 +851,21 @@ mod tests {
         assert_eq!(
             seen.len(),
             total,
-            "{} of {total} words are shared between distinct (domain, index, fork) streams — \
+            "{} of {total} words are shared between distinct (domain, index, sub) streams — \
              a counter coordinate has been transposed or dropped",
             total - seen.len()
         );
     }
 
-    /// The one value the fork offset costs, pinned rather than left to be
-    /// discovered. Sixty-four bits cannot hold 2⁶⁴ forks *and* a distinct
+    /// The one value the sub-coordinate offset costs, pinned rather than left
+    /// to be discovered. Sixty-four bits cannot hold 2⁶⁴ sub-streams *and* a distinct
     /// root, so some aliasing is unavoidable; stating which is better than an
-    /// unqualified claim. See [`Stream::fork`].
+    /// unqualified claim. See [`Stream::sub`].
     #[test]
-    fn fork_of_u64_max_aliases_the_root() {
-        let base = Stream::new(1, Domain::Fold, 0);
-        let mut aliased = base.fork(u64::MAX);
-        let mut root = base;
+    fn sub_of_u64_max_aliases_the_root() {
+        let mut aliased = Stream::sub(1, Domain::Fold, 0, u64::MAX);
+        let mut root = Stream::new(1, Domain::Fold, 0);
         assert_eq!(aliased.next_u64(), root.next_u64());
-    }
-
-    /// A second fork is a programming error and now says so.
-    ///
-    /// **The test this replaces asserted the bug as the contract.** It pinned
-    /// `base.fork(3).fork(7) == base.fork(7)` and passed green, which converts
-    /// a silent duplicate-stream defect into a documented guarantee — far
-    /// harder to withdraw than code. Its deletion is the discriminator: a fix
-    /// that leaves it passing is cosmetic.
-    ///
-    /// `debug_assert!` rather than a hard panic, because `clippy::panic` is
-    /// `deny` in library code and a panic inside a propensity loop kills an
-    /// overnight run. That is the right trade for a *caller* error — it cannot
-    /// arise from data, so any test run reaches it, and CI runs the debug leg.
-    /// A release build still collapses silently; the honest statement is that
-    /// this catches the mistake during development rather than making it
-    /// impossible.
-    ///
-    /// Gated on `debug_assertions` because CI also runs `--release`, where
-    /// nothing panics and an ungated `should_panic` would fail.
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "fork is one level deep")]
-    fn forking_a_fork_is_rejected() {
-        let base = Stream::new(1, Domain::Fold, 0);
-        let _ = base.fork(3).fork(7);
     }
 
     /// Ranges chosen to *break* the affine form, not to pass. `(-3.5, 2.25)`
@@ -1469,18 +1412,18 @@ mod tests {
         }
     }
 
-    /// `fork` ignores the parent's counter, so the same index gives the same
-    /// child however far the parent has advanced. That is the correct
-    /// path-indexed behaviour and also a duplicate-stream hazard, so it is
-    /// pinned as a decision rather than left to be rediscovered.
+    /// A sub-stream takes no parent, so the parent's draw position cannot
+    /// influence it — the path-indexed property the old `fork` documented, now
+    /// true by construction rather than by care. Kept as a regression test
+    /// because a future `sub` that consulted a parent would reintroduce
+    /// draw-order dependence, which §13.1 forbids.
     #[test]
-    fn fork_is_a_function_of_the_key_not_the_parents_position() {
-        let base = Stream::new(1, Domain::Fold, 0);
-        let early = base.fork(3).next_u64();
-        let mut advanced = base;
+    fn a_sub_stream_is_unaffected_by_how_far_the_root_has_advanced() {
+        let early = Stream::sub(1, Domain::Fold, 0, 3).next_u64();
+        let mut root = Stream::new(1, Domain::Fold, 0);
         for _ in 0..1000 {
-            let _ = advanced.next_u64();
+            let _ = root.next_u64();
         }
-        assert_eq!(advanced.fork(3).next_u64(), early);
+        assert_eq!(Stream::sub(1, Domain::Fold, 0, 3).next_u64(), early);
     }
 }
