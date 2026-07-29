@@ -193,13 +193,19 @@ pub enum Domain {
     /// does not remove* that — Anderson (2012) "predicted (though did not
     /// prove)" that both converge to crude Monte Carlo variance over long
     /// times, and notes the time to full decoupling is "quite large" in his
-    /// example.
+    /// example — and, for his Example 1 specifically, that "the full
+    /// decoupling of the CRP method described here does not seem to take
+    /// place". That last clause cuts against the pessimistic reading and is
+    /// included for that reason.
     ///
     /// **The decoupling results are for infinitesimal parameter
     /// perturbations** — Anderson's and the common-reaction-path work, though
     /// *not* Glasserman and Yao's, who treat system comparison generally.
     /// `run − shadow` is selection on versus off, a large structural
-    /// difference, which is the regime where those couplings decay fastest.
+    /// difference — which is, by extrapolation from the mechanism rather than
+    /// from any measurement in those papers, the regime where those couplings
+    /// decay fastest. Anderson tests ε ∈ {1/100, 1/40, 1/20} and never a
+    /// structural perturbation.
     /// Their positive result is the more useful half and goes unused here: the
     /// guarantees rest on **monotonicity and continuity**, which is a test you
     /// can apply before spending the measurement budget.
@@ -475,8 +481,10 @@ impl Stream {
     /// and yield a `Stream` — an earlier version of this sentence said nothing
     /// does, which is false and checkable. It duplicates rather than extends,
     /// `!Copy` exists to make that duplication visible at the call site, and
-    /// `xtask` enforces the real invariant: no `pub fn` in this crate takes
-    /// `&self` and returns `Self`.) The alternative —
+    /// `xtask` enforces the real invariant on the AST: nothing in this crate
+    /// takes a `Stream` and returns one — any receiver, any return position
+    /// including `Option`, tuples, arrays and `impl Trait`, free functions and
+    /// trait methods included.) The alternative —
     /// `Stream<const FORKED: bool>` — would have made every downstream
     /// function that merely *draws* generic over depth, since the ordinary
     /// pattern is to hand a sub-stream to a routine that anneals. Removing the
@@ -514,8 +522,10 @@ impl Stream {
     /// honest cost of it: `fork` at least required a `&Stream` in hand, so
     /// provenance was structural. A constructor lets anything holding the seed
     /// mint any sub-stream for any `(domain, index)`. Measured consolation:
-    /// transposing `index` and `sub` is a bijection on the pair, so it moves
-    /// every golden loudly rather than aliasing two streams silently.
+    /// transposing `index` and `sub` is a bijection on the pair, so it fails
+    /// loudly rather than aliasing two streams silently. Not *every* word
+    /// moves — `(0, 0)` is a fixed point, so 3 of `GOLDEN_SUB_STREAMS`' 9 are
+    /// unchanged and 6 move. The test still fails; the protection is real.
     ///
     /// Sub-coordinates are offset by one because the root occupies zero. That
     /// costs exactly one value: `sub(.., u64::MAX)` wraps onto the root, since
@@ -534,23 +544,32 @@ impl Stream {
 
     /// The next raw 64 bits.
     ///
-    /// **Cost: about 3.7 ns per draw on aarch64 release, in every loop shape
-    /// measured.** An earlier version of this comment carried four figures
-    /// that do not reproduce, and one of them — 1.639 ns — is below the
-    /// **3.098 ns single-stream latency floor** and so was never achievable:
-    /// a Philox block is ten sequential rounds, each gated on a 4-cycle
-    /// `umulh`, and a 4-word buffer never has two blocks in flight. The
-    /// companion claims that a `black_box`-per-draw shape costs 2.6× (it is
-    /// 2.2% *faster*) and that the kernel sits at 94.5% of the multiplier-port
-    /// limit (it is 41.8%; the binding constraint is round-to-round latency,
-    /// not port throughput) were artifacts of the same harness — whose noise
-    /// floor was never measured, and which reported a **+18.9% regression at
-    /// p = 0.00 on a byte-identical rebuild**.
+    /// **Cost: no fixed figure, deliberately.** Three review rounds put three
+    /// different per-draw numbers in this comment and all three were wrong, so
+    /// what is recorded here is the bound and the variable rather than a
+    /// fourth number.
     ///
-    /// The lesson is kept rather than the numbers: a microbenchmark of a
-    /// cheap function measures the harness as much as the function, and the
-    /// first benchmarks in a fresh process land on an efficiency core and read
-    /// 3× slow.
+    /// The hardware bound is the **multiply port**: 40 multiply µops per block
+    /// over two pipes is 20 cycles/block ≈ **1.55 ns/draw** on an M1 Pro
+    /// P-core. It is not a latency chain — successive blocks of one stream
+    /// differ only in `counter[3]`, which no block's output feeds, so they
+    /// overlap. Measured, making blocks independent is 17–20% faster, which
+    /// only overlap can explain.
+    ///
+    /// The variable that dominated every disagreement is **whether this
+    /// function inlines into the caller's loop**, worth about 2.5× (~1.5 ns
+    /// inlined against ~3.8 out-of-line), and decided by how many call sites
+    /// the *calling* crate has — LLVM declines to inline a 210-instruction
+    /// body into many. So no number here can be right for callers that do not
+    /// exist yet, and Task 18's Gillespie loop is exactly where it will
+    /// matter. Measure in the hot loop that cares.
+    ///
+    /// Two rounds of wrong diagnosis are worth more than the numbers were: the
+    /// first asserted figures from a harness whose noise floor was never
+    /// measured, and the second explained them away with a *physical floor*
+    /// that does not exist — which is the more expensive error, because
+    /// "measured wrong" invites re-measurement while "physically impossible"
+    /// closes the question.
     ///
     /// `const` is not for the sake of const contexts — a stream is drawn from
     /// at runtime. It is a cheap guardrail: a `const fn` cannot reach a clock,
@@ -743,9 +762,10 @@ impl Stream {
     /// which is where that guarantee is implemented and tested.
     ///
     /// **`#[inline]` here was a 12% regression against the five-line mixer and
-    /// is a 3–5% win against Philox** — measured in both profiles, twice each,
-    /// after the rewrite. The attribute set is kept matching its evidence
-    /// rather than its history.
+    /// is a win against Philox** — +4.7% in dev (10/10 paired runs), and
+    /// inside the noise floor in release, where thin LTO inlines it anyway.
+    /// An earlier version claimed 3–5% "in both profiles"; only the dev figure
+    /// is resolvable. The attribute is justified on that alone.
     ///
     /// The two draws are bound to locals rather than passed inline. Rust does
     /// specify left-to-right argument evaluation, so the inline form would be
@@ -1019,19 +1039,27 @@ mod tests {
     /// of that one line would silently regenerate every fold trajectory ever
     /// produced — observable only as "the folds got worse".
     ///
+    /// **Keep an odd `sub` in the list.** `s ^ 1 == s + 1` for every even `s`,
+    /// so an all-even row set is *provably blind* to `sub ^ 1` as an encoding —
+    /// computed, it produces byte-identical goldens. Row `(0, 3)` is the only
+    /// one of the three that separates them, and it carries 3 of the 9 words.
+    /// Same shape as the `(-3.5, 2.25)` note on `floats_in_a_range_are_bounded`
+    /// and for the same reason: keep the number.
+    ///
     /// A failure here means the same thing as any other moved golden.
     #[test]
     fn sub_streams_are_pinned() {
-        let mut got = [0_u64; 9];
-        let mut w = got.iter_mut();
-        for (index, sub) in [(0_u64, 0_u64), (0, 3), (7, 2)] {
-            let mut s = Stream::sub(0x5EED, Domain::Fold, index, sub);
-            for _ in 0..3 {
-                if let Some(slot) = w.next() {
-                    *slot = s.next_u64();
-                }
-            }
-        }
+        // Collected rather than written through an iterator: the first draft
+        // used `if let Some(slot) = w.next()`, so adding a fourth coordinate
+        // silently discarded its draws and the test still passed — broadening
+        // the golden's coverage would have broadened nothing.
+        let got: Vec<u64> = [(0_u64, 0_u64), (0, 3), (7, 2)]
+            .into_iter()
+            .flat_map(|(index, sub)| {
+                let mut s = Stream::sub(0x5EED, Domain::Fold, index, sub);
+                core::iter::repeat_with(move || s.next_u64()).take(3)
+            })
+            .collect();
         assert_eq!(got, GOLDEN_SUB_STREAMS);
     }
 
@@ -1067,6 +1095,48 @@ mod tests {
         assert_ne!(b, p, "sub(1) collides with the root");
     }
 
+    /// The counter-based property itself, asserted directly rather than
+    /// through constants.
+    ///
+    /// **This is strictly stronger than lengthening a golden, and it is what a
+    /// golden cannot do.** `GOLDEN_UNIVERSE_0` exercises the block-advance
+    /// function only at the blocks it happens to span — at 8 words that was
+    /// `g(0)` alone, which let a mutation giving every stream period 8 pass;
+    /// at 12 it is `g(0)` and `g(1)`. A reviewer then found a survivor even at
+    /// 12: `counter[3] += 1 + counter[2]`, identical to the real generator for
+    /// the root and so invisible to every golden. Lengthening the constant
+    /// only moves that boundary.
+    ///
+    /// The defining property of a counter-based generator is that block `k` is
+    /// computable *directly*, without having produced blocks `0..k`. Asserting
+    /// that pins the advance for every `k` at once, with no constants to
+    /// regenerate and nothing to go stale.
+    #[test]
+    fn draws_are_the_direct_block_function_of_their_position() {
+        for (seed, domain, index, sub) in [
+            (0_u64, Domain::Universe, 0_u64, None),
+            (0x5EED, Domain::Fold, 7, None),
+            (0x5EED, Domain::Fold, 7, Some(3_u64)),
+        ] {
+            let mut s = sub.map_or_else(
+                || Stream::new(seed, domain, index),
+                |v| Stream::sub(seed, domain, index, v),
+            );
+            let sub_field = sub.map_or(0, |v| v.wrapping_add(1));
+            for k in 0..20_u64 {
+                let want =
+                    philox::philox4x64_10([domain.discriminant(), index, sub_field, k], [seed, 0]);
+                for (j, expected) in want.iter().enumerate() {
+                    assert_eq!(
+                        s.next_u64(),
+                        *expected,
+                        "block {k} word {j} is not the direct block function's output"
+                    );
+                }
+            }
+        }
+    }
+
     /// **Which coordinate lives in which counter field is load-bearing, and
     /// four mutations of it passed all 38 tests before this existed.**
     /// Measured, each silently catastrophic and each invisible:
@@ -1077,7 +1147,7 @@ mod tests {
     /// - `counter[1]` dropped: every index in a domain shares one sub-stream
     ///   family, 40 of 40 words identical.
     /// - `new` writing index into field 2: `new(s, Fold, 3)` *is*
-    ///   `sub(s, Fold, 0, 1)` — the index and sub axes become one.
+    ///   `sub(s, Fold, 0, 2)` — the index and sub axes become one.
     /// - `new` writing index into field 3: every index stream is a bit-exact
     ///   *suffix* of index 0's.
     ///
@@ -1230,7 +1300,8 @@ mod tests {
     /// asserted an algebraic identity between two inline expressions and would
     /// have passed with the function deleted. Confirmed: it survived every
     /// degenerate mutation, including "always return `lo`". Same shape as the
-    /// `fork_zero` first draft this crate already had to repair once.
+    /// `fork_zero_is_not_the_parents_first_draw` first draft this crate had to
+    /// repair before `fork` was removed.
     ///
     /// The equality also needs `hi > f64::MIN_POSITIVE`, which the original
     /// claim omitted: below that the affine form returns `hi` and the clamp
@@ -1437,13 +1508,23 @@ mod tests {
     /// real clamp from a merely-total one is that `u1 == 0` is
     /// *indistinguishable from the edge of the reachable support*.
     ///
-    /// **Discriminator, stated accurately after measurement.** This fails at
-    /// any floor *below* 2⁻⁵³ — verified at `f64::MIN_POSITIVE`, `1e-300` and
-    /// `2⁻⁵⁴`. It does **not** catch floors above: at `f64::EPSILON` (2⁻⁵²),
-    /// `1e-3` and `0.9` it passes vacuously, because for any floor ≥ 2⁻⁵³ both
-    /// arguments clamp to the same value and the equality is trivial. An
-    /// earlier version of this comment claimed it caught "any other floor",
-    /// which is the same defect it was written to repair.
+    /// **Discriminator, with its resolution.** This fails at any floor more
+    /// than about 1e-14 relatively *below* 2⁻⁵³ — verified at
+    /// `f64::MIN_POSITIVE`, `1e-300` and `2⁻⁵⁴`. Two blind spots, both
+    /// measured, both covered elsewhere:
+    ///
+    /// - Floors **above** 2⁻⁵³ pass vacuously — at `f64::EPSILON`, `1e-3` and
+    ///   `0.9` both arguments clamp to the same value and the equality is
+    ///   trivial. `the_normal_support_is_bounded_at_the_documented_sigma`
+    ///   catches those, which is why neither test is redundant.
+    /// - The nearest **~90 representable floats** below 2⁻⁵³ also pass, because
+    ///   `sqrt(-2 ln u)` compresses a relative change in `u` by roughly
+    ///   1/(2·8.57): a 1-ulp move in the floor is ~2.6e-17 against an ulp of
+    ///   1.78e-15 at 8.5717. Nothing plausible lands there.
+    ///
+    /// Two earlier versions of this sentence overstated it — first "any other
+    /// floor", then "any floor below". Both were written to repair an
+    /// overstatement of exactly this kind.
     ///
     /// Floors *above* 2⁻⁵³ are caught by
     /// `the_normal_support_is_bounded_at_the_documented_sigma` — a floor of 0.9
@@ -1526,8 +1607,9 @@ mod tests {
     /// at word 8, exactly one past the end. Measured: `counter[3] ^= 1`, which
     /// gives every stream **period 8**, and `counter[3] = 2c+1` both agree with
     /// the real generator on blocks 0 and 1 and diverge at word 8. Neither was
-    /// caught by any golden; a period-8 generator was caught only by fixed-seed
-    /// statistical thresholds, which is exactly the evidence `philox.rs` argues
+    /// caught by any golden; a period-8 generator was caught only by
+    /// `distinct_coordinates_share_no_words` and by fixed-seed statistical
+    /// thresholds, the latter being exactly the evidence `philox.rs` argues
     /// cannot tell a correct implementation from a wrong one. Twelve words
     /// covers blocks 0, 1 and 2. Do not shorten this.
     const GOLDEN_UNIVERSE_0: [u64; 12] = [
@@ -1691,10 +1773,13 @@ mod tests {
     /// asserts only the range — it would pass against a non-power-of-two
     /// `SCALE` that made every multiply inexact. This is the assertion that
     /// claim actually needs.
-    /// **The grid assertion alone is not enough, measured.** Setting
-    /// `SCALE = 1/(2⁵³+1)` — which makes every multiply inexact — still leaves
-    /// `f * 2⁵³` landing on an integer, so a `trunc()` check passes against
-    /// the very defect it names. The discriminating assertion compares the
+    /// **The grid assertion alone is not enough.** A `trunc()` check passes
+    /// against a scale that makes every multiply inexact — verified with
+    /// `SCALE = 1/(2⁵³+2)`, the nearest scale the f64 grid actually contains.
+    /// (An earlier version of this comment cited `1/(2⁵³+1)`; `2⁵³+1` is not
+    /// representable, so that literal *is* `2⁻⁵³` and the mutation is a no-op.
+    /// A reader reproducing it saw "survived" and would have concluded the
+    /// test was weak.) The discriminating assertion compares the
     /// produced bits against the raw draw divided by 2⁵³: division by a power
     /// of two is exact, so that is the value `next_f64` must produce, computed
     /// by a different operation than the one under test.

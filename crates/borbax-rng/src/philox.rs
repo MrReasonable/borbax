@@ -45,8 +45,10 @@
 //! counter — two seeds and four coordinates, each in its own word. (An earlier
 //! version of this paragraph counted §13.1's `config_hash` as a third key
 //! element; it is not a stream coordinate. The conclusion is unaffected — two
-//! seeds alone do not fit 4x32 — but the premise was overstated by one.) It also emits four `u64` per block rather than
-//! two, which halves the number of Philox *invocations* per draw — not the
+//! seeds alone do not fit 4x32 — but the premise was overstated by one.)
+//!
+//! It also emits four `u64` per block rather than two, which halves the number
+//! of Philox *invocations* per draw — not the
 //! time: the paper's Table 2 puts 4x64-10 at 3.2 cpB against 2x64-10's 4.3,
 //! which is 26% cheaper per byte, not 50%.
 //!
@@ -141,13 +143,20 @@ const fn round(ctr: [u64; 4], key: [u64; 2]) -> [u64; 4] {
 /// Stateless and pure: the whole point is that block `n` is computable
 /// directly, without having produced blocks `0..n`.
 ///
-/// **No `#[inline]`, deliberately and measurably.** [`super::Stream::next_u64`]
-/// carries one and wants it (+34.5% dev without); this does not. Measured:
-/// `#[inline]` here is 8.1% worse on the fold-step shape, and
-/// `#[inline(always)]` is 17.1% worse on bulk draws — the body is 200
-/// instructions with all ten rounds unrolled, so inlining it at every call
-/// site costs more in code size than it saves in call overhead. Recorded so
-/// the next reviewer does not re-run that afternoon.
+/// **No `#[inline]`, deliberately — and the numbers that were here are
+/// withdrawn.** A bare `#[inline]` produces a **byte-identical binary**
+/// (sha256 verified, 63 019 lines of disassembly identical), because this
+/// function is *already* fully inlined into [`super::Stream::next_u64`] at
+/// every optimisation level the workspace uses. The attribute is inert, so the
+/// "8.1% worse" once recorded here was measuring nothing.
+///
+/// `#[inline(always)]` is a real regression but a small one: **+3.35%**, not
+/// the 17.1% once claimed, and the stated mechanism was backwards — it
+/// produces 198 instructions against 210, so it is *smaller* and slower, which
+/// makes the cost scheduling or register pressure rather than code size.
+///
+/// Keep the attribute off. Just on the +3.35%, and on the fact that the
+/// compiler has already made the decision.
 #[must_use]
 #[expect(
     clippy::redundant_pub_crate,
