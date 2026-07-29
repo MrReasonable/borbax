@@ -420,23 +420,74 @@ fn read_pin(path: &Path, key: &str) -> Result<Option<String>, String> {
 /// a different one, `!Copy` exists to make that duplication visible at the
 /// call site, and it is a derive rather than a `pub fn`.
 fn check_no_stream_deriving_method(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
-    let path = root.join("crates/borbax-rng/src/lib.rs");
-    if !path.exists() {
+    let dir = root.join("crates/borbax-rng/src");
+    if !dir.is_dir() {
+        // A silent `Ok` here is a disabled guarantee that survives a rename or
+        // a crate move. If the check cannot run, that is itself the failure.
+        failures.push(format!(
+            "§13.1: {} is missing — the no-derived-stream check cannot run",
+            dir.display()
+        ));
         return Ok(());
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    for (i, line) in text.lines().enumerate() {
-        let code = line.split("//").next().unwrap_or("").trim();
-        if !code.starts_with("pub fn") && !code.starts_with("pub const fn") {
+    for path in walk(&dir)? {
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
-        if code.contains("&self") && (code.contains("-> Self") || code.contains("-> Stream")) {
-            failures.push(format!(
-                "§13.1: `{code}` at crates/borbax-rng/src/lib.rs:{} derives a Stream from a \
-                 Stream — that is how a second sub-level silently returns a duplicate of an \
-                 unrelated sibling. Sub-streams are constructed, not derived.",
-                i + 1
-            ));
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+
+        // Signatures wrap: rustfmt breaks past 100 columns, and `sub`'s is
+        // already close. Accumulate from `pub fn` until the body opens.
+        let mut signature = String::new();
+        let mut start_line = 0_usize;
+        for (i, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("").trim();
+            if signature.is_empty() {
+                if !code.starts_with("pub fn") && !code.starts_with("pub const fn") {
+                    continue;
+                }
+                start_line = i + 1;
+            }
+            if !signature.is_empty() {
+                signature.push(' ');
+            }
+            signature.push_str(code);
+            // `contains('{')`, not `ends_with`: a one-line `pub fn f() -> Self
+            // { .. }` ends with `}`, so an `ends_with` flush never fires and the
+            // signature accumulates into the *next* one. The first version of
+            // this check did that, and caught its probes only by accident —
+            // when a later `pub fn` happened to flush a blob containing both.
+            if !code.contains('{') && !code.ends_with(';') {
+                continue;
+            }
+
+            // Any receiver counts. `&mut self` is the *more* natural shape for
+            // a reinstated `fork` — it would consume a draw — and the first
+            // version of this check matched `&self` only, so it caught exactly
+            // the one variant it had been probed against.
+            let args = signature
+                .split_once('(')
+                .map_or(signature.as_str(), |(_, rest)| rest);
+            let takes_self = args.trim_start().starts_with("self")
+                || args.trim_start().starts_with("&self")
+                || args.trim_start().starts_with("&mut self")
+                || args.trim_start().starts_with("mut self");
+            let yields_stream = signature.contains("-> Self") || signature.contains("-> Stream");
+            if takes_self && yields_stream {
+                failures.push(format!(
+                    "§13.1: `{}` at {rel}:{start_line} derives a Stream from a Stream — that is \
+                     how a second sub-level silently returns a duplicate of an unrelated \
+                     sibling. Sub-streams are constructed, not derived.",
+                    signature.trim_end_matches('{').trim()
+                ));
+            }
+            signature.clear();
         }
     }
     Ok(())
