@@ -71,11 +71,22 @@ use borbax_units::det_math;
 /// but not equal-sphere packings. In an invented chemistry the base unit need
 /// not be a sphere, so this is a documentation point rather than a defect.
 ///
-/// `k = 10` recovers `10n^2 + 2` — the Mackay icosahedral numbers, which are
-/// **real**, observed in rare-gas cluster mass spectra. That is one member of
-/// the family and it is a coincidence of `k`, not a construction. Most drawn
-/// `k` have no real counterpart at all, which is the G3 argument: the family is
-/// invented and one member happens to coincide.
+/// `k = 10` recovers `10n^2 + 2` = 12, 42, 92, the shell populations of the
+/// Mackay icosahedral packing (A. L. Mackay, 1962). **The magic numbers seen
+/// experimentally are the *cumulative* sizes 13, 55, 147 — not these.** An
+/// earlier version attached the real-world observation to the shell
+/// populations, silently swapping the two quantities the rest of this comment
+/// correctly distinguishes.
+///
+/// **This is not corroboration and must never be read as any.** `10n^2 + 2` is
+/// the vertex count of the nth icosahedral geodesic subdivision, forced by
+/// Euler's formula with twelve five-fold vertices — the same formula that
+/// generates this project's own sampling family `D` in {12, 42, 162}. The shell
+/// law is re-deriving a consequence of `chi = 2` the codebase needed anyway,
+/// not reaching toward anything real. Nothing may ever bias the draw toward
+/// `k = 10` on account of the coincidence, and no claim here depends on the
+/// experiment: delete the sentence naming it and everything above still holds
+/// (G3; see the task preamble for the full position).
 ///
 /// Defined for `n >= 1`. `shell_size(0)` would return 2 and is meaningless —
 /// shell 0 is the single central unit, and every caller special-cases it.
