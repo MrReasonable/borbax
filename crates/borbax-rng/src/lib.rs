@@ -436,13 +436,28 @@ impl Stream {
     /// a duplicate stream arriving through the one door `!Copy` does not
     /// guard. Give each call site a disjoint index range, or a domain.
     ///
-    /// **Forking is one level deep, and that is a real limit rather than an
-    /// oversight.** The child writes `index` into the counter's third field,
-    /// so a fork of a fork replaces its parent's fork coordinate instead of
-    /// extending it — two different fork chains could then land on the same
-    /// counter. If a second level is ever needed, it needs its own field or
-    /// its own `Domain`; it does not get one by nesting. Pinned in
-    /// `forking_twice_is_not_a_second_level`.
+    /// **Forking is one level deep. That limit is inherent, and a second fork
+    /// is now rejected rather than silently honoured.**
+    ///
+    /// The child writes `index` into the counter's third field, so a fork of a
+    /// fork *replaces* its parent's fork coordinate instead of extending it —
+    /// measured, `base.fork(a).fork(b)` was bit-identical to `base.fork(b)`
+    /// for every `a`, which is a duplicate stream and precisely the hazard
+    /// this whole design removes. It cannot be made to work: there is exactly
+    /// one spare counter word, and hashing a fork *path* into it would
+    /// reintroduce the collisions Philox was adopted to eliminate.
+    ///
+    /// One level is enough for §13.1, which asks for a stream per subsystem,
+    /// per patch, per time index — that is `domain`, `index`, `fork`, with
+    /// `block` left as the draw counter. A second level needs its own
+    /// `Domain`, or its two indices composed before the first fork.
+    ///
+    /// **Type-state was considered and rejected on cost.** Making the second
+    /// call a compile error means `Stream<const FORKED: bool>`, which makes
+    /// every downstream function that merely *draws* generic over fork depth —
+    /// viral across eight crates, to forbid a call nobody has yet written. The
+    /// `debug_assert` catches it in any test run; `forking_a_fork_is_rejected`
+    /// explains why that is the right trade and what it does not buy.
     ///
     /// **Fork coordinates are offset by one, because the root occupies zero.**
     /// The first draft wrote `index` directly, so `fork(0)` produced the
@@ -455,6 +470,17 @@ impl Stream {
     #[inline]
     #[must_use]
     pub const fn fork(&self, index: u64) -> Self {
+        // A root has `counter[2] == 0`; a fork never does (the offset below is
+        // why). So this fires exactly when someone forks a fork — which cannot
+        // be made to work, and until now failed by silently returning a
+        // duplicate of an unrelated sibling.
+        debug_assert!(
+            self.counter[2] == 0,
+            "fork is one level deep: forking a fork would overwrite the fork \
+             coordinate rather than extend it, silently duplicating another \
+             stream. Give the second level its own Domain, or compose the two \
+             indices before the first fork."
+        );
         Self {
             key: self.key,
             counter: [self.counter[0], self.counter[1], index.wrapping_add(1), 0],
@@ -808,11 +834,6 @@ mod tests {
         assert_ne!(a, b, "fork(0) and fork(1) collide");
     }
 
-    /// **Forking is one level deep.** A fork of a fork overwrites the fork
-    /// coordinate rather than extending it, so two different chains can land
-    /// on the same counter. That is a documented limit, and it is pinned here
-    /// so it cannot be discovered the hard way by someone building a nested
-    /// anneal.
     /// **Which coordinate lives in which counter field is load-bearing, and
     /// four mutations of it passed all 38 tests before this existed.**
     /// Measured, each silently catastrophic and each invisible:
@@ -867,7 +888,9 @@ mod tests {
     }
 
     /// The one value the fork offset costs, pinned rather than left to be
-    /// discovered. See [`Stream::fork`] for why an alias is unavoidable.
+    /// discovered. Sixty-four bits cannot hold 2⁶⁴ forks *and* a distinct
+    /// root, so some aliasing is unavoidable; stating which is better than an
+    /// unqualified claim. See [`Stream::fork`].
     #[test]
     fn fork_of_u64_max_aliases_the_root() {
         let base = Stream::new(1, Domain::Fold, 0);
@@ -876,17 +899,30 @@ mod tests {
         assert_eq!(aliased.next_u64(), root.next_u64());
     }
 
+    /// A second fork is a programming error and now says so.
+    ///
+    /// **The test this replaces asserted the bug as the contract.** It pinned
+    /// `base.fork(3).fork(7) == base.fork(7)` and passed green, which converts
+    /// a silent duplicate-stream defect into a documented guarantee — far
+    /// harder to withdraw than code. Its deletion is the discriminator: a fix
+    /// that leaves it passing is cosmetic.
+    ///
+    /// `debug_assert!` rather than a hard panic, because `clippy::panic` is
+    /// `deny` in library code and a panic inside a propensity loop kills an
+    /// overnight run. That is the right trade for a *caller* error — it cannot
+    /// arise from data, so any test run reaches it, and CI runs the debug leg.
+    /// A release build still collapses silently; the honest statement is that
+    /// this catches the mistake during development rather than making it
+    /// impossible.
+    ///
+    /// Gated on `debug_assertions` because CI also runs `--release`, where
+    /// nothing panics and an ungated `should_panic` would fail.
     #[test]
-    fn forking_twice_is_not_a_second_level() {
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "fork is one level deep")]
+    fn forking_a_fork_is_rejected() {
         let base = Stream::new(1, Domain::Fold, 0);
-        let mut via_nesting = base.fork(3).fork(7);
-        let mut direct = base.fork(7);
-        assert_eq!(
-            via_nesting.next_u64(),
-            direct.next_u64(),
-            "fork(3).fork(7) should be indistinguishable from fork(7) — if this now differs, \
-             nesting has acquired a second level and the doc on `fork` must say so"
-        );
+        let _ = base.fork(3).fork(7);
     }
 
     /// Ranges chosen to *break* the affine form, not to pass. `(-3.5, 2.25)`
