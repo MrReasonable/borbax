@@ -1085,6 +1085,80 @@ mod tests {
         }
     }
 
+    /// **A permutation guard, and the only test in this crate that can see a
+    /// bit-level change to any output.**
+    ///
+    /// Every constant in `generate_elements` comes from one sequential stream,
+    /// so transposing two `next_range` calls — or inserting one anywhere but the
+    /// end — rewrites every universe while leaving each constant inside its own
+    /// drawn range. Nothing else here could see that: `generation_is_deterministic`
+    /// compares a table to itself and its own comment says so, and every other
+    /// assertion is a range, a shape or a set. Measured before this existed:
+    /// swapping the `eps` and `sigma` draws moved seed 0's last
+    /// `energy_per_unit` from 4.295755047544661 to 4.481116661947341 with 254
+    /// tests and `cargo xtask` green.
+    ///
+    /// It matters because the failure is between *versions of this repository*,
+    /// not between machines: a seed someone shared before a refactor names a
+    /// different periodic table afterwards, with nothing announcing it. That is
+    /// the hazard `borbax_rng`'s `Domain` doc calls grim, and the doctrine was
+    /// applied to the `Domain` enum and not to the draw sequence inside one
+    /// stream. `borbax-cli` does not exist yet, so §13.6's matrix has nothing to
+    /// compare and the state hash is Tasks 20–21 — roughly sixteen tasks during
+    /// which any silent bit-mover would be green, after which the golden is
+    /// minted from whatever the code says *then* and the drift is baked in.
+    ///
+    /// **`to_bits()`, not a formatted float**, so it also pins the accumulation
+    /// order in `contacts_upto`: fusing its two `total +=` statements into one
+    /// sum moves 167 of 1080 `(k, N)` cells by up to 1.14e-13, which no printed
+    /// figure would show.
+    ///
+    /// When this moves, say which of §18.1's three it is — an intended physics
+    /// change, a `.prototools` bump, or a bug. "Regenerated it" is the failure
+    /// mode.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_sign_loss,
+        reason = "hashing raw bit patterns and small counts; every value is pinned by \
+                  the assertion itself"
+    )]
+    #[test]
+    fn the_universe_digest_is_pinned() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |x: u64| {
+            h ^= x;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        };
+        for seed in 0..64 {
+            let (sp, els) = table(seed);
+            mix(sp.k as u64);
+            mix(sp.peak as u64);
+            mix(sp.fallback_symbols as u64);
+            for c in &sp.closures {
+                mix(*c as u64);
+            }
+            for e in &els {
+                mix(e.mass.raw() as u64);
+                mix(u64::from(e.valence));
+                mix(u64::from(e.period));
+                mix(u64::from(e.group));
+                mix(u64::from(e.outer_fill_band));
+                mix(e.affinity.to_bits());
+                mix(e.radius.0.to_bits());
+                mix(e.energy_per_unit.to_bits());
+                mix(e.decay_rate.to_bits());
+                mix(e.abundance.to_bits());
+                for b in e.symbol.bytes().chain(e.name.bytes()) {
+                    mix(u64::from(b));
+                }
+            }
+        }
+        assert_eq!(
+            h, 0x9041_670f_d0f6_e431,
+            "the universe digest moved — say which of §18.1's three this is"
+        );
+    }
+
     #[test]
     fn table_size_is_workable() {
         for seed in 0..30 {

@@ -350,7 +350,19 @@ impl PackingConsts {
 /// `cap = shell_size(k, 1) = z`, so this is exactly 1.0, and dividing by `take`
 /// would give a lone unit the core's *entire* outward budget.
 ///
-/// Accumulation is in shell order and must stay that way (§13.4).
+/// **Accumulation order is pinned twice over, and only one of them is forced.**
+/// *Shell order* is structural — `prev_cap`, `prev_z_lat` and `prev_inward`
+/// carry forward, so no fold, iterator or parallel rewrite can reorder shells
+/// without changing the recursion. An earlier version of this line pinned that
+/// axis and nothing else, which protects nothing.
+///
+/// *The two `total +=` inside a shell are not forced*, and that is the one a
+/// refactor can move: `(total + inward) + lateral` is not
+/// `total + (inward + lateral)`. Measured, fusing them into a single sum moves
+/// **167 of the 1080 `(k, N)` cells** the table reaches, worst 1.14e-13 — mass
+/// is untouched (0 of 4320 cells change `defect_sub`) but `energy_per_unit`,
+/// `peak` and every `decay_rate` are not. `the_universe_digest_is_pinned` is
+/// what fails if it moves; nothing else would. Do not tidy (§13.4).
 #[must_use]
 #[expect(
     clippy::as_conversions,
@@ -373,6 +385,8 @@ pub(crate) fn contacts_upto(c: PackingConsts, units: usize) -> f64 {
         let outward_budget = prev_cap as f64 * (c.z - prev_z_lat - prev_inward);
         let inward_per_site = outward_budget / cap as f64;
 
+        // Two statements, not one sum. See the doc: §13.4, load-bearing, and
+        // the digest is what catches it.
         total += inward_per_site * take as f64;
         total += lateral_made(cap, take);
 
