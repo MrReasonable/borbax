@@ -326,6 +326,19 @@ const fn rejection_zone(n: u64) -> u64 {
     u64::MAX - (u64::MAX % n)
 }
 
+/// Whether a raw draw falls in the accepted region for `zone`.
+///
+/// One comparison, split out for the same reason as [`rejection_zone`] itself
+/// and pinned by `the_accept_boundary_is_strict`: the boundary is the only
+/// input that distinguishes it from `v <= zone`, and sampling reaches `zone`
+/// with probability 2⁻⁶⁴. Getting it wrong puts `zone % n == 0` back into the
+/// accepted set one time too many — a 6.5e-19 relative excess on residue 0 at
+/// `n = 12`, which is unbiased for every practical purpose and wrong for
+/// exactly the reason the rejection loop exists at all.
+const fn accepts(v: u64, zone: u64) -> bool {
+    v < zone
+}
+
 /// Place a uniform draw `u ∈ [0, 1)` into `[lo, hi)`.
 ///
 /// Split out from [`Stream::next_f64_range`] for the same reason as
@@ -495,7 +508,8 @@ impl Stream {
     /// subsystem, per patch, per time index — `domain`, `index`, `sub`, with
     /// `block` left as the draw counter. A further level needs its own
     /// [`Domain`], or its two indices **packed injectively** before the call —
-    /// a 32|32 shift, not a hash. Measured, a 64-bit hash of two coordinates
+    /// a 32|32 shift, not a hash. [`Stream::packed_index`] is that shift.
+    /// Measured, a 64-bit hash of two coordinates
     /// collides only about 4e-7 of the time at 4e6 pairs, so it is nothing
     /// like the original defect; but it silently moves the guarantee from
     /// provably distinct to improbably colliding, and this file's whole
@@ -530,6 +544,46 @@ impl Stream {
             buf: [0; 4],
             spent: 4,
         }
+    }
+
+    /// Combine two 32-bit coordinates into one `index`, injectively.
+    ///
+    /// This is the "32|32 shift, not a hash" [`Stream::sub`] asks for, written
+    /// once so the two halves cannot drift apart between call sites. `major`
+    /// takes the high word, `minor` the low; distinct pairs give distinct
+    /// results by construction, with no collision probability to quote.
+    ///
+    /// **It exists now for a consumer that does not exist yet, and that is the
+    /// point.** §15.3's neutral shadow needs a *replicate* coordinate: a
+    /// shadow run drawn from `(seed, Domain::Shadow, patch, event)` is fully
+    /// determined by its fork point, so N replicates of it are bit-identical.
+    /// Measured consequence — zero variance across replicates, which makes
+    /// every difference between run and shadow read as significant, on a
+    /// metric whose whole job is to say which differences are not. The fix is
+    /// an axis to vary, and `index = packed_index(patch, branch)` is it.
+    ///
+    /// **`packed_index(0, 0) == 0`**, so adopting this convention in V0 — one
+    /// beaker, one shadow, no patches — moves no golden and changes no
+    /// number. That is the entire argument for reserving it today rather than
+    /// when the second replicate appears: at that point every stream
+    /// coordinate downstream of a patch has to move, and the goldens with
+    /// them. The cost now is one function and one test.
+    ///
+    /// It is deliberately *not* wired into [`Stream::new`] or [`Stream::sub`]
+    /// as a separate pair of parameters. Most domains index by a single thing
+    /// — a species, an element, a fold attempt — and a two-word signature
+    /// would invite callers to invent a meaningless second coordinate. Callers
+    /// that genuinely have two say so at the call site.
+    #[inline]
+    #[must_use]
+    #[expect(
+        clippy::as_conversions,
+        reason = "u32 -> u64 is a widening conversion and cannot lose a bit; that losslessness \
+                  is exactly what makes the packing injective, and is asserted in \
+                  packed_index_is_injective"
+    )]
+    pub const fn packed_index(major: u32, minor: u32) -> u64 {
+        ((major as u64) << 32) | (minor as u64)
     }
 
     /// The next raw 64 bits.
@@ -655,7 +709,7 @@ impl Stream {
         let zone = rejection_zone(n);
         loop {
             let v = self.next_u64();
-            if v < zone {
+            if accepts(v, zone) {
                 return v % n;
             }
         }
@@ -925,32 +979,65 @@ mod tests {
     /// at `n` just above `u64::MAX / 2` the zone is `n` itself, so nearly half
     /// of all draws are rejected and the stream advances by more than one.
     ///
-    /// Asserted as "sometimes more than one", not "always", because rejection
-    /// is inherently probabilistic — but over 200 draws at a 50% rejection
-    /// rate, seeing none would be a 1-in-2²⁰⁰ event.
+    /// **Asserted as "some call took at least three draws", not "some call
+    /// took more than one".** The weaker form was the first draft, and it
+    /// proves only that retrying happens — a *bounded* retry passes it.
+    /// Measured survivors of the weak assertion: `if v < zone { v % n } else {
+    /// self.next_u64() % n }` (one retry, then take whatever comes) and a
+    /// two-attempt bound. Both reintroduce exactly the bias the loop exists to
+    /// remove, and both are the natural shape someone reaches for when
+    /// "unbounded loop in a simulation step" looks like a hazard worth
+    /// capping.
+    ///
+    /// The number that makes it work: at `n = 2⁶³ + 1` the shipped code
+    /// consumes 393 draws over 200 calls, and **51 of those 200 calls need
+    /// three or more**. P(a given call needs ≥3) is 1/4, so P(never seeing one
+    /// across 200 calls) is 0.75²⁰⁰ ≈ 1e-25.
+    ///
+    /// This test carries the loop alone, and that is not an oversight:
+    /// `GOLDEN_RANGE` is *provably* blind to rejection, its eight rows having
+    /// measured rejection probabilities between 5.4e-20 and 3.3e-17. Neither
+    /// test is redundant with the other.
     #[test]
     fn next_range_actually_rejects() {
         // Zone is `n` itself here, so P(reject) is just under 1/2.
         let n = u64::MAX / 2 + 2;
         let mut probe = Stream::new(3, Domain::Reaction, 0);
         let mut plain = Stream::new(3, Domain::Reaction, 0);
-        let mut extra_draws = 0_u32;
+        let mut most_rejections = 0_u32;
         for _ in 0..200 {
             let _ = probe.next_range(n);
             // Advance the reference by one and count how far probe has gone
             // past it by comparing the next value each would produce.
             let _ = plain.next_u64();
+            let mut rejections = 0_u32;
             while plain.clone().next_u64() != probe.clone().next_u64() {
                 let _ = plain.next_u64();
-                extra_draws += 1;
-                assert!(extra_draws < 10_000, "runaway resync");
+                rejections += 1;
+                assert!(rejections < 10_000, "runaway resync");
             }
+            most_rejections = most_rejections.max(rejections);
         }
         assert!(
-            extra_draws > 0,
-            "next_range consumed exactly one draw in 200 calls at a ~50% rejection rate — \
-             the `if v < zone` branch is dead and modulo bias is unguarded"
+            most_rejections >= 2,
+            "no call to next_range took three or more draws in 200 tries at a ~50% rejection \
+             rate — the retry is bounded rather than a loop, and modulo bias is only partly \
+             guarded (saw at most {most_rejections} rejection(s) in one call)"
         );
+    }
+
+    /// The accept boundary is strict, pinned at the three inputs that decide it.
+    ///
+    /// `v <= zone` instead of `v < zone` is unreachable by sampling — `zone`
+    /// comes up once in 2⁶⁴ draws — so no golden, no statistical test and no
+    /// draw-count test can distinguish it. It is a real defect: `zone` is a
+    /// multiple of `n`, so admitting it adds one extra hit to residue 0.
+    #[test]
+    fn the_accept_boundary_is_strict() {
+        let zone = rejection_zone(12);
+        assert!(accepts(zone - 1, zone), "rejected the last accepted value");
+        assert!(!accepts(zone, zone), "accepted the zone boundary itself");
+        assert!(!accepts(zone + 1, zone), "accepted a value above the zone");
     }
 
     /// The seed must not be recoverable from a `Stream` by any route.
@@ -959,25 +1046,38 @@ mod tests {
     /// full attack: format, parse `key[0]`, call `Stream::sub`, get identical
     /// draws. The named probe at the time — `s.seed()` must not compile —
     /// passed while that route was open, which is why this asserts on the
-    /// rendered string rather than on the type system.
+    /// rendered output rather than on the type system.
+    ///
+    /// **Asserted as independence, not as absence of four substrings**, and
+    /// the difference is five measured leaks. The first draft searched the
+    /// rendering for the seed in decimal, lower hex, upper hex and `{:#x}`;
+    /// `swap_bytes()`, `to_le_bytes()`, `rotate_left(1)`, `{:o}` and
+    /// `& 0xFFFF_FFFF` all pass it while printing the key. `to_le_bytes()` is
+    /// the one to picture: it renders `key: [52, 18, 254, 202, 239, 190, 173,
+    /// 222]` — the seed's own bytes, in order, for a caller holding nothing
+    /// but a `&Stream` to read off and feed back to [`Stream::sub`]. Two of
+    /// the four probes were redundant anyway, since `{secret:#x}` contains
+    /// `{secret:x}` as a substring.
+    ///
+    /// Independence covers every encoding at once: if the rendering is the
+    /// same for three different seeds, it carries no information about which
+    /// one produced it.
     #[test]
-    fn debug_does_not_leak_the_seed() {
-        let secret: u64 = 0xDEAD_BEEF_CAFE_1234;
-        let rendered = std::format!("{:?}", Stream::new(secret, Domain::Fold, 7));
-        for probe in [
-            std::format!("{secret}"),
-            std::format!("{secret:x}"),
-            std::format!("{secret:X}"),
-            std::format!("{secret:#x}"),
-        ] {
-            assert!(
-                !rendered.contains(&probe),
-                "Debug leaked the seed as {probe}: {rendered}"
+    fn debug_is_independent_of_the_seed() {
+        // Same domain, same index, same draw position — so the *only* thing
+        // that differs between these is the key.
+        let reference = std::format!("{:?}", Stream::new(0, Domain::Fold, 7));
+        for seed in [1, 0xDEAD_BEEF_CAFE_1234, u64::MAX] {
+            let rendered = std::format!("{:?}", Stream::new(seed, Domain::Fold, 7));
+            assert_eq!(
+                rendered, reference,
+                "Debug output varies with the seed, so it encodes it: seed {seed:#x} rendered \
+                 {rendered}, seed 0 rendered {reference}"
             );
         }
         // The counter is deliberately still visible — it is what a diagnostic
         // wants, and it cannot reconstruct the key.
-        assert!(rendered.contains("counter"), "Debug lost its useful half");
+        assert!(reference.contains("counter"), "Debug lost its useful half");
     }
 
     /// The mean of many uniform draws should sit near 0.5. This is a smoke
@@ -1106,7 +1206,23 @@ mod tests {
         for (seed, domain, index, sub) in [
             (0_u64, Domain::Universe, 0_u64, None),
             (0x5EED, Domain::Fold, 7, None),
+            // **Keep this row.** It is the only one with an odd `sub`, and the
+            // only thing that catches `counter[3] += 1 + counter[2]` — a block
+            // advance that agrees with the real generator whenever `counter[2]`
+            // is zero, which is every root stream.
             (0x5EED, Domain::Fold, 7, Some(3_u64)),
+            // **Keep these two rows too, for the axis one below them.** Every
+            // other row here, and every index anywhere else in this suite, sits
+            // in `0..8`. Measured before they existed: `index as u32 as u64` in
+            // `new`, the same in `sub`, `index & 0xFF`, `index & 0x7`, and
+            // `counter[3] += 1 + (counter[1] >> 3)` — five mutations, all five
+            // green against the whole suite. The sub axis was already probed at
+            // `u64::MAX` by `sub_of_u64_max_aliases_the_root`; the index axis
+            // had no equivalent, and `Stream::sub`'s own doc *recommends*
+            // packing two indices into it, which produces exactly the large
+            // values nothing else here reaches.
+            (0x5EED, Domain::Molecule, (1_u64 << 32) + 9, None),
+            (0x5EED, Domain::Molecule, u64::MAX, Some(2)),
         ] {
             let mut s = sub.map_or_else(
                 || Stream::new(seed, domain, index),
@@ -1178,6 +1294,89 @@ mod tests {
              a counter coordinate has been transposed or dropped",
             total - seen.len()
         );
+    }
+
+    /// The index axis is 64 bits wide, and before this test nothing in the
+    /// suite reached past 7.
+    ///
+    /// `distinct_coordinates_share_no_words` sweeps the domain and sub axes
+    /// densely at small index; this sweeps index sparsely and far. Both are
+    /// needed, and the asymmetry that motivated it is that the *sub* axis was
+    /// already probed at `u64::MAX` while the index axis — the one
+    /// [`Stream::sub`] tells callers to pack two coordinates into — was not.
+    ///
+    /// The consequence worth holding on to is the mask, not the truncation.
+    /// Under `index & 0xFF`, `Stream::new(seed, Molecule, 256)` emits the
+    /// identical sequence to index 0. [`Domain::Molecule`] is indexed by
+    /// species, so a beaker reaching 300 species has species 256..300 drawing
+    /// numbers species 0..44 already used: signatures correlate along the
+    /// index axis and the periodic table's diversity collapses. That surfaces
+    /// as "this universe was a dud", with the decay band blamed first, exactly
+    /// as CLAUDE.md predicts — and `distinct_coordinates_share_no_words`
+    /// names that same failure while sweeping `0..6` and being unable to see it.
+    #[test]
+    fn the_index_axis_is_sixty_four_bits_wide() {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut total = 0_usize;
+        for index in [
+            0,
+            1,
+            7,
+            8,
+            255,
+            256,
+            1_u64 << 32,
+            (1_u64 << 32) + 7,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            // Both constructors: the truncation was measured surviving in each
+            // of them independently, so probing one would have caught half.
+            for sub in [None, Some(0_u64)] {
+                let mut s = sub.map_or_else(
+                    || Stream::new(0x5EED, Domain::Molecule, index),
+                    |v| Stream::sub(0x5EED, Domain::Molecule, index, v),
+                );
+                for _ in 0..8 {
+                    seen.insert(s.next_u64());
+                    total += 1;
+                }
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            total,
+            "{} of {total} words are shared between streams differing only in `index` — the \
+             index axis is truncated or masked somewhere below 64 bits",
+            total - seen.len()
+        );
+    }
+
+    /// The packing is injective, and `(0, 0)` is 0.
+    ///
+    /// The second half is what makes adopting the convention in V0 free: a
+    /// caller with one patch and one replicate passes `packed_index(0, 0)`,
+    /// which is the `index = 0` it already passes, so no stream moves. If that
+    /// ever stops holding, adopting it becomes a golden regeneration instead
+    /// of a no-op — which is the whole reason it is reserved now.
+    #[test]
+    fn packed_index_is_injective() {
+        assert_eq!(Stream::packed_index(0, 0), 0, "the V0 coordinate moved");
+        let corners = [0_u32, 1, 2, 0xFFFF, 0xFFFF_FFFE, u32::MAX];
+        let mut seen = std::collections::BTreeSet::new();
+        for major in corners {
+            for minor in corners {
+                assert!(
+                    seen.insert(Stream::packed_index(major, minor)),
+                    "packed_index({major}, {minor}) collides with an earlier pair"
+                );
+            }
+        }
+        // The two arguments are not symmetric. This pins that they are
+        // *distinguished*, not which one takes the high word — swapping the
+        // halves is still injective and still sends `(0, 0)` to 0, so nothing
+        // here or downstream can tell, and the doc claims no more than that.
+        assert_ne!(Stream::packed_index(1, 0), Stream::packed_index(0, 1));
     }
 
     /// The one value the sub-coordinate offset costs, pinned rather than left
@@ -1584,24 +1783,30 @@ mod tests {
         assert_eq!(got, GOLDEN_UNIVERSE_0);
     }
 
-    /// **The length is load-bearing.** Philox emits four `u64` per block, so
-    /// a four-draw golden sits entirely inside block 0 and pins nothing about
-    /// how the block counter advances. Measured: changing
-    /// `counter[3].wrapping_add(1)` to `add(2)` — still a bijection, still
-    /// statistically clean, and it changes every number in the project — was
-    /// caught by exactly one test, and only because that test happened to take
-    /// seven draws.
+    /// **The length was load-bearing, and it no longer is — the job moved.**
+    /// Philox emits four `u64` per block, so a four-draw golden sits inside
+    /// block 0 and pins nothing about how the block counter advances; the
+    /// length went 4 → 8 → 12 chasing that, because eight words is two block
+    /// *fills* but only one *transition*, and `counter[3] ^= 1` (period 8) and
+    /// `counter[3] = 2c+1` both agree with the real generator through word 7.
+    /// Twelve covers blocks 0, 1 and 2 — and a reviewer then found a survivor
+    /// even at twelve, `counter[3] += 1 + counter[2]`, which no length of
+    /// golden can reach because it is identical for every root stream.
     ///
-    /// **Twelve, not eight, and the arithmetic matters.** Eight words is two
-    /// block *fills* but only one *transition* — the second transition happens
-    /// at word 8, exactly one past the end. Measured: `counter[3] ^= 1`, which
-    /// gives every stream **period 8**, and `counter[3] = 2c+1` both agree with
-    /// the real generator on blocks 0 and 1 and diverge at word 8. Neither was
-    /// caught by any golden; a period-8 generator was caught only by
-    /// `distinct_coordinates_share_no_words` and by fixed-seed statistical
-    /// thresholds, the latter being exactly the evidence `philox.rs` argues
-    /// cannot tell a correct implementation from a wrong one. Twelve words
-    /// covers blocks 0, 1 and 2. Do not shorten this.
+    /// `draws_are_the_direct_block_function_of_their_position` now pins the
+    /// advance for **every** `k`, with no constants at all, which is what
+    /// ended that chase. Measured: with this test `#[ignore]`d, a 29-mutation
+    /// battery has an **identical** catch set — this golden is the sole
+    /// catcher of nothing.
+    ///
+    /// **Kept anyway, and for a reason that is not inertia.** It is a second,
+    /// independently-recorded evaluation of the kernel: the direct-block test
+    /// checks the crate against `philox4x64_10`, and if that function is wrong
+    /// they agree with each other. These twelve words were reproduced from an
+    /// independent Python re-derivation of the paper. That is the same role
+    /// `matches_the_published_known_answer_vectors` plays one level down, and
+    /// it costs twelve lines. Do not extend it; there is nothing left for
+    /// length to buy.
     const GOLDEN_UNIVERSE_0: [u64; 12] = [
         213_000_021_201_967_259,
         4_455_796_210_202_625_458,
@@ -1763,16 +1968,26 @@ mod tests {
     /// asserts only the range — it would pass against a non-power-of-two
     /// `SCALE` that made every multiply inexact. This is the assertion that
     /// claim actually needs.
-    /// **The grid assertion alone is not enough.** A `trunc()` check passes
-    /// against a scale that makes every multiply inexact — verified with
-    /// `SCALE = 1/(2⁵³+2)`, the nearest scale the f64 grid actually contains.
-    /// (An earlier version of this comment cited `1/(2⁵³+1)`; `2⁵³+1` is not
-    /// representable, so that literal *is* `2⁻⁵³` and the mutation is a no-op.
-    /// A reader reproducing it saw "survived" and would have concluded the
-    /// test was weak.) The discriminating assertion compares the
-    /// produced bits against the raw draw divided by 2⁵³: division by a power
-    /// of two is exact, so that is the value `next_f64` must produce, computed
-    /// by a different operation than the one under test.
+    /// **What actually fails to discriminate is the range check, and a
+    /// `trunc()` check is not in that category.** Measured against
+    /// `SCALE = 1/(2⁵³+2)` — the nearest inexact scale the f64 grid contains —
+    /// over 200,000 draws: the range assertion passes on all of them, while
+    /// `(v * 2⁵³).trunc() == v * 2⁵³` **fails on 75,034**, so a trunc check
+    /// would catch that mutation inside the first block. Two earlier versions
+    /// of this sentence said the opposite. The first cited `1/(2⁵³+1)`, and
+    /// `2⁵³+1` is not representable — that literal *is* `2⁻⁵³`, so the
+    /// mutation was a no-op and a reader reproducing it saw "survived" and
+    /// would have concluded the test was weak. The second fixed the literal
+    /// but kept the claim, which was false for the different reason above.
+    /// It is written out rather than deleted because "a trunc check is
+    /// inadequate here" is precisely the kind of sentence that outlives its
+    /// evidence and gets cited to reject a perfectly adequate assertion
+    /// somewhere else.
+    ///
+    /// The bit comparison is still the right test, for a reason that never
+    /// depended on any of that: it computes the expected value by a *different
+    /// operation* — exact division by a power of two — rather than re-deriving
+    /// it from the value under test.
     #[test]
     fn floats_land_exactly_on_the_53_bit_grid() {
         let mut raws = Stream::new(77, Domain::Reaction, 0);
