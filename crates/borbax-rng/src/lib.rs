@@ -73,8 +73,9 @@
 //   the `f64` primitive contributed by `std`, and `std` is still in the crate
 //   graph because `borbax-units` links it; rustc collects primitive inherent
 //   impls from every loaded crate regardless of this attribute. So the one
-//   §13.1 hazard this crate actually trips — `ln`/`cos` in `normal_from` — is
-//   NOT protected here. `clippy::disallowed_methods` remains the sole
+//   §13.1 hazard this crate is most able to trip — `ln`/`cos` in `normal_from`,
+//   which route through `det_math` and so do not trip it today — is NOT
+//   protected here. `clippy::disallowed_methods` remains the sole
 //   authority, exactly as it was before.
 //
 // One inversion worth recording: `f64::sqrt` resolves here *because*
@@ -590,8 +591,16 @@ impl Stream {
     /// bound down is that an unqualified guarantee becomes folklore, and the
     /// next caller asserts on it.
     ///
-    /// **Non-finite bounds are swallowed, deliberately and dangerously.**
-    /// `hi = NaN` returns `lo`; `hi = +inf` returns `f64::MAX` for every draw.
+    /// **A non-finite `hi` is swallowed, deliberately and dangerously; a
+    /// non-finite `lo` is not.** Measured, and the asymmetry is the part worth
+    /// knowing: `hi = NaN` returns `lo`; `hi = +inf` returns `f64::MAX` for
+    /// every draw; but **`lo = -inf` with finite `hi` returns `-inf` on every
+    /// draw**, because the fallback returns `lo` and `lo` is what is broken.
+    /// (`lo = -inf, hi = +inf` is finite, at `f64::MAX` — the endpoint clamp
+    /// catches the `NaN` that `-inf + inf` produces.) Tightening the guard to
+    /// demand finite bounds does *not* fix this: the fallback still returns
+    /// `lo`. There is no honest value to return for a non-finite `lo`, so the
+    /// behaviour is pinned rather than invented.
     /// This function is named below as the shape a Gillespie channel selection
     /// over `[0, total_propensity)` would use — so a single NaN rate anywhere
     /// in that sum makes this return `0.0` forever and the scheduler picks
@@ -1055,16 +1064,38 @@ mod tests {
     /// Pinned so it is a documented decision: a NaN `total_propensity` reaching
     /// a Gillespie channel selection would otherwise silently select channel 0
     /// for the rest of the run.
+    ///
+    /// **The `lo` rows were missing and a non-finite `lo` does *not* behave
+    /// like a non-finite `hi`.** `lo = -inf` with a finite `hi` returns `-inf`
+    /// on every draw, because the fallback returns `lo`. That is asserted here
+    /// as known behaviour rather than as a bound that holds — there is no
+    /// honest value to return — and it is why the doc on
+    /// [`Stream::next_f64_range`] scopes its swallowing claim to `hi`.
     #[test]
     fn non_finite_bounds_are_swallowed_not_propagated() {
+        // A non-finite `hi` is absorbed.
         assert_eq!(range_from(0.5, 0.0, f64::NAN).to_bits(), 0.0_f64.to_bits());
-        assert_eq!(range_from(0.5, f64::NAN, 1.0).to_bits(), f64::NAN.to_bits());
         for u in [0.0, 0.5, 1.0 - f64::EPSILON] {
             assert_eq!(
                 range_from(u, 0.0, f64::INFINITY).to_bits(),
                 f64::MAX.to_bits()
             );
         }
+        // A non-finite `lo` is not: the fallback hands it straight back.
+        assert_eq!(range_from(0.5, f64::NAN, 1.0).to_bits(), f64::NAN.to_bits());
+        for u in [0.0, 0.5, 1.0 - f64::EPSILON] {
+            assert!(
+                range_from(u, f64::NEG_INFINITY, 1.0).is_infinite(),
+                "if a non-finite lo now yields a finite value, the doc on \
+                 next_f64_range must lose its asymmetry caveat"
+            );
+        }
+        // ...except against an infinite `hi`, where the endpoint clamp catches
+        // the NaN that `-inf + inf` produces.
+        assert_eq!(
+            range_from(0.5, f64::NEG_INFINITY, f64::INFINITY).to_bits(),
+            f64::MAX.to_bits()
+        );
     }
 
     /// `next_normal` needs a distributional check, not just a support bound.

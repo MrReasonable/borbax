@@ -2621,8 +2621,9 @@ stops scheduling, with no panic and nothing in the state hash.
 Write it as `-det_math::ln(1.0 - u)`, which is total over the whole reachable
 domain and truncates at 36.7368 — a cap on the waiting time rather than an
 infinity, and the omitted tail has mass 2^-53. **Test it at the value**, not by
-sampling: `u == 0.0` is unreachable by sampling at 2^-53 but is exactly the
-input that breaks the naive form. `borbax-rng`'s `next_f64` doc carries the
+sampling: `u == 0.0` is **reachable**, with probability 2^-53, and is exactly
+the input that breaks the naive form — so a sampling test will never find it
+and a direct one always will. `borbax-rng`'s `next_f64` doc carries the
 same warning, and `normal_from` is the worked example of clamping rather than
 redrawing.
 
@@ -3243,14 +3244,35 @@ has no route as written. Two options, and the choice is not free:
    forbids. Its cost is the block buffer: the direct method uses 2 words per
    event, so 2 of every 4 are discarded.
 
-**Related, and cheapest to settle now:** §13.1's reproducibility tuple is
-`(universe_seed, world_seed, config_hash)`, and `config_hash` has **no home**.
-Philox 4x64 gives six 64-bit words; `borbax-rng` allocates all six as
-`key = [universe_seed, reserved]` and `counter = [domain, index, sub, block]`.
-Either it folds into `universe_seed` upstream, or a config mismatch simply
-refuses to load a keyframe and it is never a stream coordinate — but decide
-which, because "compressed in with another word" is the failure Task 3
-eliminated.
+**Related, and settled here rather than deferred again:** §13.1's
+reproducibility tuple is `(universe_seed, world_seed, config_hash)`, and
+`config_hash` has **no home** in the generator. Philox 4x64 gives six 64-bit
+words and `borbax-rng` allocates all six — `key = [universe_seed, reserved]`,
+`counter = [domain, index, sub, block]`.
+
+**`config_hash` belongs in keyframe identity, not in stream keying**, and the
+argument does not need the keyframe format to exist:
+
+- A config change already changes the physics, so the run already differs. It
+  does not additionally need different *draws* to differ.
+- Keying on it would actively destroy something wanted. Two configs sharing
+  seeds would then draw different numbers — throwing away common random
+  numbers across parameter settings, which is the standard variance-reduction
+  device for exactly the comparison a config sweep makes, and which Step 3
+  above is separately trying to obtain for the shadow.
+- The real hazard is replaying a keyframe under a *different* config and
+  silently getting a different trajectory. That is a load-time check, not a
+  keying problem.
+
+So: hash the config into keyframe identity and **refuse the restore on
+mismatch**. `Stream` keeps its six words. The test that makes this real is a
+keyframe written under one config and a load attempted under another, asserting
+a refusal rather than a divergent replay — a load that succeeds and diverges is
+the failure mode, and it is silent.
+
+Recorded as a decision taken on reasoning, before the keyframe format exists.
+If that format later makes config part of the world seed upstream, this becomes
+moot rather than wrong.
 
 Fork from a keyframe with decay rates **equalised**, not disabled (§15.3). The
 common rate is set so total removal flux matches the focal run at the fork
