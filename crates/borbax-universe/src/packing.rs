@@ -50,7 +50,7 @@
 /// geodesic rung at all and 162 is a different point set (mismatch 2.29e-2, 8%
 /// of the neighbour spacing). Right at 12 and 42, silently wrong at 162.
 #[must_use]
-pub const fn shell_size(k: usize, n: usize) -> usize {
+pub(crate) const fn shell_size(k: usize, n: usize) -> usize {
     k * n * n + 2
 }
 
@@ -65,7 +65,7 @@ pub const fn shell_size(k: usize, n: usize) -> usize {
     clippy::cast_precision_loss,
     reason = "`cap` is a shell capacity, bounded by 14*4^2+2 = 226 over the drawn range"
 )]
-pub fn lateral_coordination(cap: usize) -> f64 {
+pub(crate) fn lateral_coordination(cap: usize) -> f64 {
     6.0 - 12.0 / cap as f64
 }
 
@@ -133,7 +133,7 @@ pub fn lateral_coordination(cap: usize) -> f64 {
     clippy::cast_precision_loss,
     reason = "`cap` and `outer` are bounded shell counts, at most 226 over the drawn range"
 )]
-pub fn unmade_lateral(cap: usize, outer: usize) -> f64 {
+pub(crate) fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     let f = outer as f64 / cap as f64;
     let continuum = continuum_at(cap, f);
     let smaller = if outer < cap - outer {
@@ -171,7 +171,7 @@ pub fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     clippy::cast_precision_loss,
     reason = "`cap` is a bounded shell count, at most 226 over the drawn range"
 )]
-pub fn continuum_at(cap: usize, f: f64) -> f64 {
+pub(crate) fn continuum_at(cap: usize, f: f64) -> f64 {
     FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt()
 }
 
@@ -186,7 +186,7 @@ pub fn continuum_at(cap: usize, f: f64) -> f64 {
 /// measuring a *different expression* from the one the table uses. The probe
 /// has always had this function and calls it at its own valence site.
 #[must_use]
-pub fn frontier_notches(cap: usize, outer: usize) -> f64 {
+pub(crate) fn frontier_notches(cap: usize, outer: usize) -> f64 {
     unmade_lateral(cap, outer) / lateral_coordination(cap)
 }
 
@@ -217,7 +217,7 @@ pub fn frontier_notches(cap: usize, outer: usize) -> f64 {
 /// does not arise. An earlier version
 /// gated D = 162 alone and admitted -22%/+29% — a band over which the valence
 /// series moves in up to 23 of 24 universes.
-pub const FRONTIER_COEFF: f64 = 6.90;
+pub(crate) const FRONTIER_COEFF: f64 = 6.90;
 
 /// **Minimum** unmade lateral contacts a patch of `a` sites can expose.
 ///
@@ -245,7 +245,7 @@ pub const FRONTIER_COEFF: f64 = 6.90;
     clippy::cast_precision_loss,
     reason = "`a` is at most a shell capacity, 226 over the drawn range"
 )]
-pub fn compact_bound(a: usize) -> f64 {
+pub(crate) fn compact_bound(a: usize) -> f64 {
     if a == 0 {
         return 0.0;
     }
@@ -276,7 +276,7 @@ pub fn compact_bound(a: usize) -> f64 {
 /// later "simplify the clamp away" fails a test instead of silently adding
 /// spurious made contacts while every valence still reads plausibly.
 #[must_use]
-pub fn lateral_made(cap: usize, outer: usize) -> f64 {
+pub(crate) fn lateral_made(cap: usize, outer: usize) -> f64 {
     let raw = lateral_made_raw(cap, outer);
     if raw > 0.0 { raw } else { 0.0 }
 }
@@ -290,13 +290,13 @@ pub fn lateral_made(cap: usize, outer: usize) -> f64 {
     clippy::cast_precision_loss,
     reason = "`outer` is at most a shell capacity, 226 over the drawn range"
 )]
-pub fn lateral_made_raw(cap: usize, outer: usize) -> f64 {
+pub(crate) fn lateral_made_raw(cap: usize, outer: usize) -> f64 {
     (lateral_coordination(cap) * outer as f64 - unmade_lateral(cap, outer)) * 0.5
 }
 
 /// The packing constants of one universe.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PackingConsts {
+pub(crate) struct PackingConsts {
     k: usize,
     z: f64,
 }
@@ -318,23 +318,11 @@ impl PackingConsts {
         clippy::cast_precision_loss,
         reason = "`shell_size(k, 1)` is `k + 2`, at most 16 over the drawn range"
     )]
-    pub const fn new(k: usize) -> Self {
+    pub(crate) const fn new(k: usize) -> Self {
         Self {
             k,
             z: shell_size(k, 1) as f64,
         }
-    }
-
-    /// Sites per unit area of shell — the drawn part of the shell law.
-    #[must_use]
-    pub const fn k(self) -> usize {
-        self.k
-    }
-
-    /// Bulk coordination of the base unit.
-    #[must_use]
-    pub const fn z(self) -> f64 {
-        self.z
     }
 }
 
@@ -369,7 +357,7 @@ impl PackingConsts {
     clippy::cast_precision_loss,
     reason = "`prev_cap`, `cap` and `take` are bounded shell counts; `units` is at most 120"
 )]
-pub fn contacts_upto(c: PackingConsts, units: usize) -> f64 {
+pub(crate) fn contacts_upto(c: PackingConsts, units: usize) -> f64 {
     if units <= 1 {
         return 0.0;
     }
@@ -401,7 +389,7 @@ pub fn contacts_upto(c: PackingConsts, units: usize) -> f64 {
 ///
 /// `1` is always the first: a single unit is a closed cluster with no frontier.
 #[must_use]
-pub fn closures(k: usize, n: usize) -> Vec<usize> {
+pub(crate) fn closures(k: usize, n: usize) -> Vec<usize> {
     let mut out = vec![1_usize];
     let (mut total, mut shell) = (1_usize, 0_usize);
     loop {
@@ -1049,7 +1037,7 @@ mod tests {
             a < b && b < d,
             "contacts per unit did not rise: {a} {b} {d}"
         );
-        assert!(d < c.z() / 2.0, "contacts per unit passed the bulk bound");
+        assert!(d < c.z / 2.0, "contacts per unit passed the bulk bound");
     }
 
     /// Two units share exactly one contact, whatever the shell law says.

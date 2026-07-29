@@ -9,7 +9,7 @@
 //! of this header claimed "every property below" was, which the file's own
 //! later text contradicts: `abundance` is a function of the fusion *process*
 //! (one drawn constant and the unit count, with no packing quantity in it), and
-//! `catalytic_class` is not derived at all.
+//! `outer_fill_band` is not derived at all.
 //!
 //! See Task 4's preamble in the plan for what is claimed and, more importantly,
 //! what is not: there is no shape-diversity advantage, only the measured
@@ -32,7 +32,22 @@ pub struct ElementId(pub u8);
 
 /// One generated element: a cluster of [`Element::units`] base units, and the
 /// properties that follow from how they pack.
+///
+/// **`#[non_exhaustive]`, so every field stays readable and none of it is
+/// constructible outside this crate.** The coupling here is tighter than
+/// `PackingConsts`'s — given `k`, all of `period`, `group`, `valence`, `radius`,
+/// `affinity`, `outer_fill_band` and `mass` are functions of `units` alone, so
+/// `Element { units: 3, valence: 4, .. }` is geometrically impossible and would
+/// compile. Thirteen accessors on a record read field-by-field is boilerplate
+/// that loses an argument later; this is the stdlib answer to "read freely,
+/// construct never".
+///
+/// Timing is the whole argument: there is no downstream consumer today, so it
+/// costs nothing. After Task 5 writes fixtures against it, it is a breaking
+/// change — and a fixture the generator can never emit lets Task 5's tests pass
+/// on states that do not exist.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Element {
     /// Index into the universe's table.
     pub id: ElementId,
@@ -90,7 +105,16 @@ pub struct Element {
     /// Relative abundance. **The gel lever** (§7.2) — see [`generate_elements`].
     pub abundance: f64,
     /// Which band of outer-shell occupancy this element exposes — `floor(fill ×
-    /// n_catalytic)`.
+    /// n_bands)`.
+    ///
+    /// **Renamed from `catalytic_class`, and the rename is the point.** §7.1
+    /// calls the field *reserved*, but a `pub` field named for catalysis on a
+    /// `pub` struct is not reserved, it is available — and the only thing
+    /// standing between it and a rate bonus keyed on a species label was a doc
+    /// comment saying "do not". §8.5 says catalysis is two cavities and nothing
+    /// else; §8.3 says one mechanism. A name that promises chemistry the value
+    /// does not carry is the standing invitation for a second one, so the name
+    /// now says what the value is.
     ///
     /// **Not derived, and this doc is what `cargo doc` renders.** An earlier
     /// version said "coordination class of the frontier sites"; no coordination
@@ -101,17 +125,30 @@ pub struct Element {
     /// Measured over 2000 universes: 54161 collisions keyed on `group` alone,
     /// **0** keyed on `(period, group)`. Nothing downstream may branch on it as
     /// though it carried chemistry.
-    pub catalytic_class: u8,
+    pub outer_fill_band: u8,
 }
 
 /// The derived shape of one universe's table.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ShellPattern {
     /// The drawn part of the shell law: shell `n` holds `k*n^2 + 2` units.
     pub k: usize,
     /// Cumulative unit counts at which a shell closes. Derived from `k`, not
     /// drawn — this replaces the predecessor's drawn table of period lengths.
     pub closures: Vec<usize>,
+    /// How many symbols came from `naming::mint`'s exhaustion fallback rather
+    /// than its grammar.
+    ///
+    /// **Zero for every table this scheme draws, and the point is that it is
+    /// checkable at runtime.** `mint` computes `Provenance` and the only
+    /// production call site used to drop it into `_`. A `Fallback` symbol
+    /// violates [`Element::symbol`]'s own 1–2 character contract, so the day
+    /// someone raises the element cap past the 165-symbol space the contract
+    /// breaks *silently* — the signal existed and was discarded at the one place
+    /// it could be seen. Keeping the fallback crude is right; discarding the
+    /// fact that it fired is not.
+    pub fallback_symbols: usize,
     /// Where the per-unit binding energy peaks. **Read off the finished
     /// series, never passed in** — that is the property distinguishing this
     /// from the predecessor, in which `peak` was an argument whose value was
@@ -150,7 +187,7 @@ pub const fn stream(seed: u64) -> Stream {
               than asserted here — three clauses of an earlier version of this string \
               were wrong, which is what a bound stated only in prose is worth. \
               Measured over k in 6..=14, units 1..=120: `period` <= 3, `group` <= 73, \
-              `cap` <= 130, `valence` in 0..=6, `catalytic_class` <= 5, mass sub-units \
+              `cap` <= 130, `valence` in 0..=6, `outer_fill_band` <= 5, mass sub-units \
               in 1024..=215040. `out.len()` and `units` are <= `n_elements` <= 120"
 )]
 pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
@@ -182,11 +219,12 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
     let sigma = 0.02 + 0.01 * rng.next_range(12) as f64;
     let decay = 0.04 + 0.01 * rng.next_range(13) as f64;
     let n_elements = 60 + rng.next_range(61) as usize; // 60..=120
-    let n_catalytic = 3 + rng.next_range(4) as u8;
+    let n_bands = 3 + rng.next_range(4) as u8;
 
     let mut naming_rng = Stream::new(seed, Domain::Naming, 0);
     let mut taken = Vec::new();
     let mut out: Vec<Element> = Vec::with_capacity(n_elements);
+    let mut fallback_symbols = 0_usize;
 
     for units in 1..=n_elements {
         // Which shell is filling, and how far into it.
@@ -199,7 +237,10 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         let cap = packing::shell_size(k, shell + 1);
         let contacts = packing::contacts_upto(pack, units);
 
-        let (symbol, name, _) = naming::mint(&mut naming_rng, &mut taken);
+        let (symbol, name, provenance) = naming::mint(&mut naming_rng, &mut taken);
+        if provenance == naming::Provenance::Fallback {
+            fallback_symbols += 1;
+        }
 
         // Mass, in sub-units of 1/1024, so the grid is a property of the
         // construction rather than a claim about it. `base_mass` is drawn on a
@@ -322,8 +363,8 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         // Catalytic class: which band of outer-shell occupancy this element
         // exposes.
         //
-        // **This is a rebinning of `(period, group)`, and the claim is narrowed
-        // to say so.** A draft's comment here said Euler's twelve five-coordinate sites
+        // **This is a rebinning of `(period, group)`, and both the claim and the
+        // field name are narrowed to say so.** A draft's comment here said Euler's twelve five-coordinate sites
         // mean a sparsely-filled shell exposes a different coordination mix from
         // a nearly-full one, "and that mix is what a mineral surface presents".
         // The code computed no such mix. It takes exactly one value per
@@ -341,8 +382,8 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         // though it carried chemistry.
         //
         // `outer < cap` by loop construction and `cap >= 8`, so this lands in
-        // `0..n_catalytic` with neither a `max(1)` nor a trailing modulo.
-        let catalytic_class = ((outer * usize::from(n_catalytic)) / cap) as u8;
+        // `0..n_bands` with neither a `max(1)` nor a trailing modulo.
+        let outer_fill_band = ((outer * usize::from(n_bands)) / cap) as u8;
 
         out.push(Element {
             id: ElementId(out.len() as u8),
@@ -358,7 +399,7 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
             energy_per_unit,
             decay_rate: 0.0, // filled below, once the peak is known
             abundance,
-            catalytic_class,
+            outer_fill_band,
         });
     }
 
@@ -475,6 +516,7 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
     let shell = ShellPattern {
         k,
         closures: packing::closures(k, n_elements),
+        fallback_symbols,
         peak,
     };
     (shell, out)
@@ -1006,19 +1048,41 @@ mod tests {
         let (mut min_raw, mut max_raw) = (i64::MAX, i64::MIN);
         for seed in 0..400 {
             for e in &table(seed).1 {
-                max_class = max_class.max(e.catalytic_class);
+                max_class = max_class.max(e.outer_fill_band);
                 min_raw = min_raw.min(e.mass.raw());
                 max_raw = max_raw.max(e.mass.raw());
             }
         }
         assert!(
             max_class <= 5,
-            "`catalytic_class` exceeded n_catalytic - 1: {max_class}"
+            "`outer_fill_band` exceeded n_bands - 1: {max_class}"
         );
         assert!(
             (1024..=215_040).contains(&min_raw) && (1024..=215_040).contains(&max_raw),
             "mass sub-units {min_raw}..={max_raw} left the stated range"
         );
+    }
+
+    /// The naming margin, observable from a caller rather than only from a test
+    /// that calls `mint` directly.
+    ///
+    /// `Provenance` was computed and dropped into `_` at the only production
+    /// call site, so a `Fallback` symbol — which violates `Element::symbol`'s
+    /// 1–2 character contract — would have been silent. The margin is 165
+    /// symbols against a cap of 120; this is what fires if someone raises the
+    /// cap without widening `ONSETS`.
+    #[test]
+    fn no_drawn_table_falls_back_to_a_minted_symbol() {
+        for seed in 0..64 {
+            let (shell, els) = table(seed);
+            assert_eq!(
+                shell.fallback_symbols,
+                0,
+                "seed {seed}: {} of {} symbols came from the exhaustion fallback",
+                shell.fallback_symbols,
+                els.len()
+            );
+        }
     }
 
     #[test]
