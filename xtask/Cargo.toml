@@ -23,3 +23,20 @@ publish = false
 workspace = true
 
 [dependencies]
+# Parsing Rust to enforce §13.1's no-derived-stream rule. Build tooling only —
+# `xtask` cannot affect simulation output, so this is the cheap side of the
+# dependency asymmetry CLAUDE.md draws, the same tier as `insta` or `criterion`.
+# It needs no pin beyond the lockfile and no determinism review.
+#
+# It is also free: `syn` is already in `Cargo.lock` via `thiserror-impl`, so
+# this adds zero crates to the tree.
+#
+# Hand-rolling was tried twice and failed twice — the first version caught one
+# signature shape of six, the second six of fifteen, and it false-positived on
+# a block comment that merely *described* the forbidden method. Both failures
+# were the same kind: a textual matcher covers the shapes someone thought to
+# probe. An AST makes the receiver, the return type and the enclosing `impl`
+# structural facts rather than substrings.
+syn = { version = "3", features = ["full", "parsing", "printing"] }
+quote = "1"
+proc-macro2 = "1"
