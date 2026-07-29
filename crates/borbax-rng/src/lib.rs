@@ -365,7 +365,7 @@ fn range_from(u: f64, lo: f64, hi: f64) -> f64 {
 /// duplication visible at the call site, and dropping `Copy` surfaces every
 /// existing accidental by-value duplication as a compile error — which is the
 /// whole point of the change.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Stream {
     /// `[universe_seed, reserved]`. The second word is deliberately unused and
     /// deliberately present: it is the world seed's home, and a 64-bit key
@@ -385,6 +385,34 @@ pub struct Stream {
     /// pure field assignment and the first draw pays for the first block —
     /// `Stream::new` does no Philox work at all.
     spent: u32,
+}
+
+/// Redacts the key.
+///
+/// **The derived `Debug` printed `key[0]` — the universe seed — verbatim, and
+/// that was a live breach of a barrier this crate documents as holding.**
+/// Demonstrated by a reviewer: format a `&Stream`, parse the seed out of the
+/// string, call [`Stream::sub`], and the drawn words match
+/// `Stream::sub(SECRET, ..)` exactly. So a routine holding only a `&Stream`
+/// could mint a per-molecule sub-stream — the §8.6 regression that
+/// [`Stream::sub`]'s own doc says is blocked at every leaf frame, and that
+/// Task 20b's keyframe note names as the reason a field-wise `Serialize` must
+/// never be added.
+///
+/// `E0599` on `s.seed()` verifies only that no *accessor* exists. It says
+/// nothing about `Debug`, which is why the barrier needs this impl rather than
+/// a note.
+///
+/// The counter and position stay visible: they are what a diagnostic actually
+/// wants, and neither can reconstruct the key.
+impl core::fmt::Debug for Stream {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Stream")
+            .field("key", &"<redacted>")
+            .field("counter", &self.counter)
+            .field("spent", &self.spent)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Stream {
@@ -833,6 +861,113 @@ mod tests {
             assert_eq!(zone % n, 0, "zone for n = {n} is not a multiple of n");
             assert!(zone > 0, "zone for n = {n} rejects every draw");
         }
+    }
+
+    /// **`next_range` was the last public draw method pinned by nothing, and
+    /// six mutations survived the whole suite** — including Lemire's method,
+    /// which changes 91.7% of every integer draw and is *the* optimisation
+    /// `rand` 0.9.0 shipped that broke value stability, cited by name in this
+    /// crate's own module doc as the reason it is hand-rolled. Also surviving:
+    /// `(v ^ 1) % n` (100% of draws), `n - 1 - (v % n)` (100%),
+    /// `v.swap_bytes() % n` (75%), `(v >> 1) % n` (91.6%), and removing the
+    /// rejection entirely.
+    ///
+    /// Every one stays uniform — all residues present, counts within 5σ over
+    /// 200 000 draws — so no statistical test can see them.
+    /// `the_rejection_zone_is_a_whole_number_of_classes` tests the *helper*'s
+    /// arithmetic; nothing tested that `next_range` uses it, or how the
+    /// accepted value is folded. The plans call this for FCC neighbour
+    /// selection, element ids, valence, masses, radii and decay constants — a
+    /// changed fold would be a different periodic table for every seed, with
+    /// the suite green.
+    #[test]
+    fn ranged_draws_are_pinned() {
+        let mut s = Stream::new(0x5EED, Domain::Reaction, 0);
+        let got = [
+            s.next_range(1),
+            s.next_range(2),
+            s.next_range(6),
+            s.next_range(12),
+            s.next_range(60),
+            s.next_range(1000),
+            s.next_range(u64::MAX / 3),
+            s.next_range(u64::MAX),
+        ];
+        assert_eq!(got, GOLDEN_RANGE);
+    }
+
+    const GOLDEN_RANGE: [u64; 8] = [
+        0,
+        0,
+        1,
+        8,
+        21,
+        539,
+        417_892_413_605_005_757,
+        12_312_119_947_423_759_239,
+    ];
+
+    /// The property no golden can express: that the rejection loop is *live*.
+    ///
+    /// Deleting `if v < zone` changes no value for any small `n` — the zone
+    /// covers all but ~2⁻⁶⁴ of the space — so a golden cannot distinguish
+    /// rejection from no rejection. What distinguishes them is *draw count*:
+    /// at `n` just above `u64::MAX / 2` the zone is `n` itself, so nearly half
+    /// of all draws are rejected and the stream advances by more than one.
+    ///
+    /// Asserted as "sometimes more than one", not "always", because rejection
+    /// is inherently probabilistic — but over 200 draws at a 50% rejection
+    /// rate, seeing none would be a 1-in-2²⁰⁰ event.
+    #[test]
+    fn next_range_actually_rejects() {
+        // Zone is `n` itself here, so P(reject) is just under 1/2.
+        let n = u64::MAX / 2 + 2;
+        let mut probe = Stream::new(3, Domain::Reaction, 0);
+        let mut plain = Stream::new(3, Domain::Reaction, 0);
+        let mut extra_draws = 0_u32;
+        for _ in 0..200 {
+            let _ = probe.next_range(n);
+            // Advance the reference by one and count how far probe has gone
+            // past it by comparing the next value each would produce.
+            let _ = plain.next_u64();
+            while plain.clone().next_u64() != probe.clone().next_u64() {
+                let _ = plain.next_u64();
+                extra_draws += 1;
+                assert!(extra_draws < 10_000, "runaway resync");
+            }
+        }
+        assert!(
+            extra_draws > 0,
+            "next_range consumed exactly one draw in 200 calls at a ~50% rejection rate — \
+             the `if v < zone` branch is dead and modulo bias is unguarded"
+        );
+    }
+
+    /// The seed must not be recoverable from a `Stream` by any route.
+    ///
+    /// A derived `Debug` printed it verbatim, and a reviewer demonstrated the
+    /// full attack: format, parse `key[0]`, call `Stream::sub`, get identical
+    /// draws. The named probe at the time — `s.seed()` must not compile —
+    /// passed while that route was open, which is why this asserts on the
+    /// rendered string rather than on the type system.
+    #[test]
+    fn debug_does_not_leak_the_seed() {
+        let secret: u64 = 0xDEAD_BEEF_CAFE_1234;
+        let rendered = std::format!("{:?}", Stream::new(secret, Domain::Fold, 7));
+        for probe in [
+            std::format!("{secret}"),
+            std::format!("{secret:x}"),
+            std::format!("{secret:X}"),
+            std::format!("{secret:#x}"),
+        ] {
+            assert!(
+                !rendered.contains(&probe),
+                "Debug leaked the seed as {probe}: {rendered}"
+            );
+        }
+        // The counter is deliberately still visible — it is what a diagnostic
+        // wants, and it cannot reconstruct the key.
+        assert!(rendered.contains("counter"), "Debug lost its useful half");
     }
 
     /// The mean of many uniform draws should sit near 0.5. This is a smoke

@@ -393,32 +393,41 @@ fn read_pin(path: &Path, key: &str) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// §13.1 — no method in `borbax-rng` may derive one `Stream` from another.
+/// §13.1 — nothing in `borbax-rng` may derive one `Stream` from another.
 ///
 /// **This is the only enforcement of the crate's central duplicate-stream
-/// guarantee, and a doctest provably cannot do the job.** `Stream::sub` is a
-/// constructor precisely so that `base.sub(a).sub(b)` — which silently
-/// returned a duplicate of an unrelated sibling under the old `fork` — has no
-/// spelling. But that held only because nobody had written the method:
-/// reinstating it verbatim under any other name passes the whole suite and
-/// `clippy -D warnings`, measured.
+/// guarantee.** `Stream::sub` is a constructor precisely so that
+/// `base.sub(a).sub(b)` — which under the old `fork` silently returned a
+/// duplicate of an unrelated sibling — has no spelling. That held only because
+/// nobody had written the method: reinstating it verbatim under any other name
+/// passes the whole suite and `clippy -D warnings`, measured.
 ///
-/// Two things rule out the obvious alternative. A `compile_fail` doctest naming
-/// `sub` cannot catch a regression that arrives as `child` or `derive` — and
-/// `sub` cannot be both an associated function and a method (`E0592`), so it
-/// *must* arrive under a different name. And `compile_fail,E0599` does not
-/// enforce the error code on the pinned toolchain, so such a block passes when
-/// it fails for an unrelated reason. `borbax-units` records that measurement
-/// already.
+/// A `compile_fail` doctest provably cannot do this job. `sub` cannot be both
+/// an associated function and a method (`E0592`), so a regression *must* arrive
+/// under a different name than any doctest could spell — and
+/// `compile_fail,E0599` does not enforce the error code on the pinned
+/// toolchain, so such a block passes when it fails for an unrelated reason.
+/// `borbax-units` records that second measurement already.
 ///
-/// So the check is textual and structural: no `pub fn` in that crate takes
-/// `&self` and returns `Self`. Same shape and same reason as the rayon guard —
-/// a one-word change that compiles, typechecks, passes clippy, and is
-/// invisible in review.
+/// **Why `syn` and not a matcher.** Hand-rolled textual versions were written
+/// twice. The first caught one signature shape of six; the second, built from
+/// the enumerated list of the first's misses, caught six of fifteen — it was
+/// blind to `-> (Self, Self)` (which `clippy::use_self` actively pushes authors
+/// toward), `-> Option<Self>`, `-> [Stream; 2]`, `-> impl Iterator<Item =
+/// Stream>`, free functions, and trait methods (which are spelled `fn`, never
+/// `pub fn`, so the scanner never even started). It also *false*-positived on
+/// `self_seed` as a parameter name and on a block comment describing the
+/// forbidden shape — and a guard that fires on correct code gets deleted.
 ///
-/// `Clone` is exempt and must be: it duplicates a stream rather than deriving
-/// a different one, `!Copy` exists to make that duplication visible at the
-/// call site, and it is a derive rather than a `pub fn`.
+/// Both failures were one kind: a matcher covers the shapes someone thought to
+/// probe. On an AST the receiver, the return type and the enclosing `impl` are
+/// structural facts, so the evasions are closed by construction rather than by
+/// enumeration.
+///
+/// `Clone` is exempt and must be: it duplicates a stream rather than deriving a
+/// different one, and `!Copy` exists to make that duplication visible at the
+/// call site. A *hand-written* `impl Clone` is not exempt, because it could
+/// derive rather than duplicate.
 fn check_no_stream_deriving_method(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
     let dir = root.join("crates/borbax-rng/src");
     if !dir.is_dir() {
@@ -441,56 +450,135 @@ fn check_no_stream_deriving_method(root: &Path, failures: &mut Vec<String>) -> R
             .unwrap_or(&path)
             .display()
             .to_string();
-
-        // Signatures wrap: rustfmt breaks past 100 columns, and `sub`'s is
-        // already close. Accumulate from `pub fn` until the body opens.
-        let mut signature = String::new();
-        let mut start_line = 0_usize;
-        for (i, line) in text.lines().enumerate() {
-            let code = line.split("//").next().unwrap_or("").trim();
-            if signature.is_empty() {
-                if !code.starts_with("pub fn") && !code.starts_with("pub const fn") {
-                    continue;
-                }
-                start_line = i + 1;
-            }
-            if !signature.is_empty() {
-                signature.push(' ');
-            }
-            signature.push_str(code);
-            // `contains('{')`, not `ends_with`: a one-line `pub fn f() -> Self
-            // { .. }` ends with `}`, so an `ends_with` flush never fires and the
-            // signature accumulates into the *next* one. The first version of
-            // this check did that, and caught its probes only by accident —
-            // when a later `pub fn` happened to flush a blob containing both.
-            if !code.contains('{') && !code.ends_with(';') {
-                continue;
-            }
-
-            // Any receiver counts. `&mut self` is the *more* natural shape for
-            // a reinstated `fork` — it would consume a draw — and the first
-            // version of this check matched `&self` only, so it caught exactly
-            // the one variant it had been probed against.
-            let args = signature
-                .split_once('(')
-                .map_or(signature.as_str(), |(_, rest)| rest);
-            let takes_self = args.trim_start().starts_with("self")
-                || args.trim_start().starts_with("&self")
-                || args.trim_start().starts_with("&mut self")
-                || args.trim_start().starts_with("mut self");
-            let yields_stream = signature.contains("-> Self") || signature.contains("-> Stream");
-            if takes_self && yields_stream {
-                failures.push(format!(
-                    "§13.1: `{}` at {rel}:{start_line} derives a Stream from a Stream — that is \
-                     how a second sub-level silently returns a duplicate of an unrelated \
-                     sibling. Sub-streams are constructed, not derived.",
-                    signature.trim_end_matches('{').trim()
-                ));
-            }
-            signature.clear();
+        for f in scan_for_derived_streams(&rel, &text)? {
+            failures.push(f);
         }
     }
     Ok(())
+}
+
+/// The predicate behind [`check_no_stream_deriving_method`], split out so it
+/// takes `(&str, &str)` and can be unit-tested against a string.
+///
+/// That shape is the point. `scan_rust_source` has this signature and carries
+/// twenty-odd tests; the first two versions of this check took `(root,
+/// failures)`, could only be exercised against the real crate — which by
+/// construction produces no failures and therefore tests nothing — and each
+/// shipped enforcing far less than its own doc claimed.
+fn scan_for_derived_streams(rel: &str, text: &str) -> Result<Vec<String>, String> {
+    let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
+    let mut out = Vec::new();
+    collect_derived_streams(rel, &file.items, &mut out);
+    out.sort();
+    Ok(out)
+}
+
+/// Does this type mention `Stream` or `Self` anywhere inside it?
+///
+/// Anywhere is the operative word: `-> Option<Self>`, `-> (Stream, Stream)`,
+/// `-> [Self; 4]`, `-> Box<Self>` and `-> impl Iterator<Item = Stream>` all
+/// hand back a derived stream, and every one of them evaded a matcher keyed on
+/// the literal `-> Self`.
+fn mentions_stream(ty: &syn::Type) -> bool {
+    // Token-level, so nesting costs nothing: a type's token stream contains
+    // every identifier in it however deeply wrapped.
+    quote_tokens(ty)
+        .into_iter()
+        .any(|t| t == "Stream" || t == "Self")
+}
+
+/// The identifiers appearing in a type, via its token stream.
+fn quote_tokens(ty: &syn::Type) -> Vec<String> {
+    fn walk_tt(tt: proc_macro2::TokenTree, out: &mut Vec<String>) {
+        match tt {
+            proc_macro2::TokenTree::Ident(i) => out.push(i.to_string()),
+            proc_macro2::TokenTree::Group(g) => {
+                for inner in g.stream() {
+                    walk_tt(inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for tt in quote::ToTokens::to_token_stream(ty) {
+        walk_tt(tt, &mut out);
+    }
+    out
+}
+
+/// Walk every item, recursing through modules, and flag any function that both
+/// receives a `Stream` and returns one.
+fn collect_derived_streams(rel: &str, items: &[syn::Item], out: &mut Vec<String>) {
+    for item in items {
+        match item {
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    collect_derived_streams(rel, inner, out);
+                }
+            }
+            // A free function taking `&Stream` and returning one is the same
+            // hazard wearing no receiver, and is what someone reaches for once
+            // the method form is gone.
+            syn::Item::Fn(f) => {
+                check_sig(rel, &f.sig, None, out);
+            }
+            syn::Item::Impl(i) => {
+                let self_ty = quote_tokens(&i.self_ty);
+                for it in &i.items {
+                    if let syn::ImplItem::Fn(f) = it {
+                        check_sig(rel, &f.sig, Some(&self_ty), out);
+                    }
+                }
+            }
+            // Trait *declarations* matter: a method is spelled `fn`, never
+            // `pub fn`, so a matcher keyed on `pub fn` never sees an extension
+            // trait — which is the idiomatic way to add a method in Rust and so
+            // the most likely reinstatement, not the least.
+            syn::Item::Trait(t) => {
+                for it in &t.items {
+                    if let syn::TraitItem::Fn(f) = it {
+                        check_sig(rel, &f.sig, None, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Flag `sig` if a `Stream` goes in and a `Stream` comes out.
+///
+/// `self_ty` is the enclosing `impl`'s type when there is one. It is what stops
+/// the check firing on `Domain::next(&self) -> Self` or on any builder — the
+/// false-positive class that gets a guard deleted.
+fn check_sig(rel: &str, sig: &syn::Signature, self_ty: Option<&[String]>, out: &mut Vec<String>) {
+    let syn::ReturnType::Type(_, ret) = &sig.output else {
+        return;
+    };
+    if !mentions_stream(ret) {
+        return;
+    }
+    // `Self` only means a stream inside `impl ... for Stream`.
+    let on_stream = self_ty.is_none_or(|t| t.iter().any(|s| s == "Stream"));
+    if !on_stream {
+        return;
+    }
+    let takes_stream = sig.inputs.iter().any(|arg| match arg {
+        // Any receiver spelling — `self`, `&self`, `&mut self`, `self: &Self`,
+        // `&'a self`. The first version matched `&self` only.
+        syn::FnArg::Receiver(_) => true,
+        syn::FnArg::Typed(t) => mentions_stream(&t.ty),
+    });
+    if !takes_stream {
+        return;
+    }
+    let name = &sig.ident;
+    out.push(format!(
+        "§13.1: `fn {name}` in {rel} takes a Stream and returns one — that is how a second \
+         sub-level silently returns a duplicate of an unrelated sibling. Sub-streams are \
+         constructed (`Stream::sub`), not derived."
+    ));
 }
 
 /// G1 — no real chemistry data enters the repository.
@@ -865,6 +953,237 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
 /// each way it could miscount gets a test.
 #[cfg(test)]
 mod tests {
+    use super::scan_for_derived_streams;
+
+    #[expect(
+        clippy::expect_used,
+        reason = "CLAUDE.md: tests may unwrap freely — a probe that does not parse is a broken \
+                  test, and panicking says so at the point of the mistake"
+    )]
+    fn hits(src: &str) -> Vec<String> {
+        scan_for_derived_streams("probe.rs", src).expect("probe must parse")
+    }
+
+    /// Every shape that reintroduces a derived stream must be caught.
+    ///
+    /// **This corpus is the whole point of the check having a test.** Two
+    /// hand-rolled versions shipped before it existed: the first caught one of
+    /// these, the second six. Each was built from the list of misses the
+    /// previous round happened to enumerate, so each was blind to whatever
+    /// nobody probed. Every row below was found by a reviewer, not by the
+    /// author — including `-> (Self, Self)`, which `clippy::use_self` actively
+    /// pushes an author toward, and the trait method, which is spelled `fn`
+    /// and so was invisible to a `pub fn` matcher.
+    #[test]
+    fn every_derived_stream_shape_is_caught() {
+        const FORBIDDEN: &[(&str, &str)] = &[
+            (
+                "&self -> Self",
+                "impl Stream { pub fn c(&self, i: u64) -> Self { todo!() } }",
+            ),
+            (
+                "&mut self",
+                "impl Stream { pub fn c(&mut self, i: u64) -> Self { todo!() } }",
+            ),
+            (
+                "self by value",
+                "impl Stream { pub fn c(self, i: u64) -> Self { todo!() } }",
+            ),
+            (
+                "mut self",
+                "impl Stream { pub fn c(mut self, i: u64) -> Self { todo!() } }",
+            ),
+            (
+                "self: &Self",
+                "impl Stream { pub fn c(self: &Self, i: u64) -> Self { todo!() } }",
+            ),
+            (
+                "-> Stream",
+                "impl Stream { pub fn c(&self, i: u64) -> Stream { todo!() } }",
+            ),
+            (
+                "-> crate::Stream",
+                "impl Stream { pub fn c(&self) -> crate::Stream { todo!() } }",
+            ),
+            (
+                "-> (Self, Self)",
+                "impl Stream { pub fn split(&self) -> (Self, Self) { todo!() } }",
+            ),
+            (
+                "-> Option<Self>",
+                "impl Stream { pub fn c(&self) -> Option<Self> { todo!() } }",
+            ),
+            (
+                "-> Result<Self, ()>",
+                "impl Stream { pub fn c(&self) -> Result<Self, ()> { todo!() } }",
+            ),
+            (
+                "-> [Self; 4]",
+                "impl Stream { pub fn q(&self) -> [Self; 4] { todo!() } }",
+            ),
+            (
+                "-> Vec<Self>",
+                "impl Stream { pub fn c(&self) -> Vec<Self> { todo!() } }",
+            ),
+            (
+                "-> Box<Self>",
+                "impl Stream { pub fn c(&self) -> Box<Self> { todo!() } }",
+            ),
+            (
+                "-> impl Iterator<Item = Stream>",
+                "impl Stream { pub fn c(&self) -> impl Iterator<Item = Stream> { todo!() } }",
+            ),
+            (
+                "pub(crate)",
+                "impl Stream { pub(crate) fn c(&self) -> Self { todo!() } }",
+            ),
+            (
+                "private fn",
+                "impl Stream { fn c(&self) -> Self { todo!() } }",
+            ),
+            (
+                "free fn",
+                "pub fn derive_child(p: &Stream, i: u64) -> Stream { todo!() }",
+            ),
+            (
+                "inside a module",
+                "mod inner { impl Stream { pub fn c(&self) -> Self { todo!() } } }",
+            ),
+            (
+                "wrapped signature",
+                "impl Stream {\n pub fn c(\n &self,\n i: u64,\n ) -> Self { todo!() }\n}",
+            ),
+            (
+                "generic with parens",
+                "impl Stream { pub fn c<F: Fn(u64) -> u64>(&self, f: F) -> Self { todo!() } }",
+            ),
+            (
+                "async",
+                "impl Stream { pub async fn c(&self) -> Self { todo!() } }",
+            ),
+        ];
+        for (label, src) in FORBIDDEN {
+            assert_eq!(hits(src).len(), 1, "{label}: not caught\n{src}");
+        }
+    }
+
+    /// The item shapes that carry a derivation, split from the signature
+    /// shapes above only to stay under `clippy::too_many_lines`.
+    #[test]
+    fn every_derived_stream_item_shape_is_caught() {
+        const FORBIDDEN: &[(&str, &str)] = &[
+            (
+                "free fn",
+                "pub fn derive_child(p: &Stream, i: u64) -> Stream { todo!() }",
+            ),
+            (
+                "extension trait decl",
+                "pub trait Ext { fn child(&self, i: u64) -> Stream; }",
+            ),
+            (
+                "trait impl for Stream",
+                "impl Ext for Stream { fn child(&self, i: u64) -> Self { todo!() } }",
+            ),
+            (
+                "hand-written Clone",
+                "impl Clone for Stream { fn clone(&self) -> Self { todo!() } }",
+            ),
+            (
+                "inside a module",
+                "mod inner { impl Stream { pub fn c(&self) -> Self { todo!() } } }",
+            ),
+            (
+                "pub(crate)",
+                "impl Stream { pub(crate) fn c(&self) -> Self { todo!() } }",
+            ),
+            (
+                "private fn",
+                "impl Stream { fn c(&self) -> Self { todo!() } }",
+            ),
+            (
+                "async",
+                "impl Stream { pub async fn c(&self) -> Self { todo!() } }",
+            ),
+        ];
+        for (label, src) in FORBIDDEN {
+            assert_eq!(hits(src).len(), 1, "{label}: not caught\n{src}");
+        }
+    }
+
+    /// The control set, and it matters as much as the corpus above.
+    ///
+    /// A guard that fires on correct code gets an `#[allow]` and then a
+    /// deletion, taking the guarantee with it. Two of these — `self_seed` as a
+    /// parameter name, and a block comment *describing* the forbidden shape —
+    /// were live false positives in the textual version, in a crate that
+    /// documents its invariants at length.
+    #[test]
+    fn legitimate_code_is_not_flagged() {
+        const ALLOWED: &[(&str, &str)] = &[
+            (
+                "the real constructors",
+                "impl Stream {\n pub const fn new(seed: u64, domain: Domain, index: u64) -> Self { todo!() }\n pub const fn sub(seed: u64, domain: Domain, index: u64, sub: u64) -> Self { todo!() }\n}",
+            ),
+            (
+                "a draw",
+                "impl Stream { pub const fn next_u64(&mut self) -> u64 { todo!() } }",
+            ),
+            (
+                "self_seed param",
+                "impl Stream { pub fn from_parts(self_seed: u64) -> Self { todo!() } }",
+            ),
+            (
+                "selfish param",
+                "impl Stream { pub fn of(selfish: bool) -> Self { todo!() } }",
+            ),
+            (
+                "Domain builder",
+                "impl Domain { pub fn next(&self) -> Self { todo!() } }",
+            ),
+            (
+                "other type's builder",
+                "impl Key { pub fn with_round(&self, r: u64) -> Self { todo!() } }",
+            ),
+            (
+                "fn-typed argument",
+                "impl Stream { pub fn f(&mut self, make: fn(u64) -> Self) -> u64 { todo!() } }",
+            ),
+            (
+                "block comment describing the ban",
+                "/* pub fn child(&self) -> Self {} */\npub fn ok() -> u64 { 0 }",
+            ),
+            (
+                "doc comment describing the ban",
+                "/// `pub fn child(&self) -> Self` is banned.\npub fn ok() -> u64 { 0 }",
+            ),
+            (
+                "string literal",
+                "pub fn ok() -> &'static str { \"pub fn child(&self) -> Self\" }",
+            ),
+            (
+                "derived Clone",
+                "#[derive(Clone)]\npub struct Stream { k: u64 }",
+            ),
+            (
+                "Domain::ALL",
+                "impl Domain { pub const ALL: [Self; 9] = [todo!(); 9]; }",
+            ),
+        ];
+        for (label, src) in ALLOWED {
+            assert!(
+                hits(src).is_empty(),
+                "{label}: false positive\n{src}\n{:?}",
+                hits(src)
+            );
+        }
+    }
+
+    /// Unparseable source must fail loudly rather than scan to nothing.
+    #[test]
+    fn a_file_that_does_not_parse_is_an_error() {
+        assert!(scan_for_derived_streams("probe.rs", "fn broken( {").is_err());
+    }
+
     use super::{BANNED_CALLS, scan_rust_source};
 
     fn scan(src: &str) -> Vec<String> {
