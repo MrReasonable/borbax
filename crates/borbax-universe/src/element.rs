@@ -1,8 +1,12 @@
 //! The generated periodic table (spec §7.1).
 //!
-//! **Element `N` is `N` copies of one base unit, packed.** Every property below
-//! is a function of that packing rather than a curve chosen because it looked
-//! plausible — which is principle 2 applied to the file that defines what an
+//! **Element `N` is `N` copies of one base unit, packed.** `mass`, `period`,
+//! `group`, `valence`, `radius`, `affinity` and `energy_per_unit` are functions
+//! of that packing rather than curves chosen because they looked plausible.
+//! `abundance` is a function of the fusion *process* — one drawn constant and
+//! the unit count, with no packing quantity in it — and `catalytic_class` is
+//! not derived at all. An earlier version of this sentence said "every property
+//! below", which the file's own later text contradicts — which is principle 2 applied to the file that defines what an
 //! atom is. See Task 4's preamble in the plan for what is claimed and, more
 //! importantly, what is not: there is no shape-diversity advantage, only the
 //! measured finding that a fusion-derived radius series costs nothing.
@@ -86,9 +90,12 @@ pub struct Element {
     ///
     /// **Not derived, and this doc is what `cargo doc` renders.** An earlier
     /// version said "coordination class of the frontier sites"; no coordination
-    /// mix is computed anywhere, and enumerated across all `k`, `n_catalytic`
-    /// and `N` this takes exactly one value per `(outer, cap)` pair — zero
-    /// information beyond `group`. Nothing downstream may branch on it as
+    /// mix is computed anywhere. It takes exactly one value per `(outer, cap)`
+    /// pair, and since `cap = shell_size(k, period + 1)` it is a function of
+    /// **`(period, group)`** within a universe — *not* of `group` alone, which
+    /// is what an earlier version of this sentence and of §7.1 both said.
+    /// Measured over 2000 universes: 54161 collisions keyed on `group` alone,
+    /// **0** keyed on `(period, group)`. Nothing downstream may branch on it as
     /// though it carried chemistry.
     pub catalytic_class: u8,
 }
@@ -134,14 +141,13 @@ pub const fn stream(seed: u64) -> Stream {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    reason = "every narrowing here is bounded by construction and the bound is the \
-              point: `out.len()` and `units` are < `n_elements` <= 120; `shell` <= 3 \
-              because the fourth shell opens past N = 189 for every drawn `k`; \
-              `outer` < `cap` <= 226; `valence` is `frontier_notches` rounded, pinned \
-              to 4..=6 by `valence_ceiling_is_four_to_six_over_the_drawn_range`; \
-              `catalytic_class` < `n_catalytic` <= 6; the sub-unit products are \
-              exact integers well under 2^31 (see \
-              `every_mass_is_inside_the_range_from_raw_does_not_check`)"
+    reason = "every narrowing here is bounded by construction, and every bound is \
+              *computed* by `the_bounds_named_in_the_expect_reason_are_measured` rather \
+              than asserted here — three clauses of an earlier version of this string \
+              were wrong, which is what a bound stated only in prose is worth. \
+              Measured over k in 6..=14, units 1..=120: `period` <= 3, `group` <= 73, \
+              `cap` <= 130, `valence` in 0..=6, `catalytic_class` <= 5, mass sub-units \
+              in 1024..=215040. `out.len()` and `units` are <= `n_elements` <= 120"
 )]
 pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
     let mut rng = stream(seed);
@@ -300,13 +306,18 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         // Catalytic class: which band of outer-shell occupancy this element
         // exposes.
         //
-        // **This is a rebinning of `group`, and the claim is narrowed to say
-        // so.** A draft's comment here said Euler's twelve five-coordinate sites
+        // **This is a rebinning of `(period, group)`, and the claim is narrowed
+        // to say so.** A draft's comment here said Euler's twelve five-coordinate sites
         // mean a sparsely-filled shell exposes a different coordination mix from
         // a nearly-full one, "and that mix is what a mineral surface presents".
-        // The code computed no such mix. Enumerated across all k, n_catalytic
-        // and N, this takes exactly one value per `(outer, cap)` pair — zero
-        // information beyond `group`. Two reviewers found it independently.
+        // The code computed no such mix. It takes exactly one value per
+        // `(outer, cap)` pair, and `cap` follows the period — so it is a
+        // function of `(period, group)`, not of `group` alone. The "zero
+        // information beyond `group`" gloss was itself wrong, measured: 54161
+        // collisions keyed on `group`, 0 keyed on `(period, group)`. That is
+        // the third incorrect claim to stand in this block, which is the
+        // signal — two earlier reviewers found a "coordination mix" the code
+        // never computed.
         //
         // So Task 4's headline is five §7.1 properties derived, plus
         // `abundance` — and this one honest rebinning, named as such.
@@ -381,11 +392,17 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
     for e in &mut out {
         // `f64::max` is disallowed — it returns either input on a tie and
         // measured `(+0.0).max(-0.0)` differs between aarch64 and x86-64.
+        // `f64::EPSILON` is the *relative* spacing at 1.0, not an absolute
+        // magnitude, so using it bare as a floor on an energy is a category
+        // error. Harmless here only because `peak_energy` is the series maximum
+        // and is O(1) over the drawn grid — named so the guard says what scale
+        // it is relative to rather than leaving the next reader to assume.
+        const MIN_ENERGY_SCALE: f64 = f64::EPSILON;
         let scale = peak_energy.abs();
-        let scale = if scale > f64::EPSILON {
+        let scale = if scale > MIN_ENERGY_SCALE {
             scale
         } else {
-            f64::EPSILON
+            MIN_ENERGY_SCALE
         };
         let deficit = (peak_energy - e.energy_per_unit) / scale;
         // **Cap at 1.0, and the 0.9 it replaces was never argued.** `decay_rate`
@@ -541,8 +558,11 @@ mod tests {
     /// **Its stated cause is not its cause**, and the correction is worth
     /// keeping: the valence is 1 by rounding `6/(6 - 12/cap)` in [1.14, 1.33],
     /// not because a lone site has "all six lateral contacts unmade" — the
-    /// shell offers 4.5 to 5.9. Margin to 1.5 is comfortable, so the family
-    /// holds.
+    /// shell offers 4.5 to 5.9. Over the caps actually reached the ratio spans
+    /// **[1.0156, 1.3333]**; an earlier "[1.14, 1.33]" was the range over
+    /// shell-1 caps only, while this test iterates `closures`, which reaches
+    /// shells 2 and 3 and caps to 130. Margin to 1.5 is comfortable either way,
+    /// so the family holds.
     #[test]
     fn elements_one_past_a_closure_all_have_valence_one() {
         for seed in 0..12 {
@@ -768,6 +788,108 @@ mod tests {
             patterns.len() > 5,
             "shell patterns barely vary: {}",
             patterns.len()
+        );
+    }
+
+    /// **Every numeric bound named in `generate_elements`'s `#[expect]` reason,
+    /// computed rather than asserted in prose.**
+    ///
+    /// Three of those clauses were wrong, found by three separate lanes. A
+    /// bound stated only in a reason string is the stale-figure class with a
+    /// compiler-shaped alibi: it is what the next reader trusts *instead of*
+    /// re-deriving, and nothing fails when a draw range moves. So the reason
+    /// now cites this test and this test computes the numbers.
+    ///
+    /// The shell walk mirrors `generate_elements` exactly; keep them in step.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "`frontier_notches` is non-negative and this test's own assertion bounds it"
+    )]
+    #[test]
+    fn the_bounds_named_in_the_expect_reason_are_measured() {
+        let (mut max_shell, mut max_cap, mut max_outer) = (0_usize, 0_usize, 0_usize);
+        let mut valences = std::collections::BTreeSet::new();
+        for k in 6..=14_usize {
+            for units in 1..=120_usize {
+                let (mut shell, mut filled) = (0_usize, 1_usize);
+                while filled + packing::shell_size(k, shell + 1) <= units {
+                    shell += 1;
+                    filled += packing::shell_size(k, shell);
+                }
+                let cap = packing::shell_size(k, shell + 1);
+                let outer = units - filled;
+                max_shell = max_shell.max(shell);
+                max_cap = max_cap.max(cap);
+                max_outer = max_outer.max(outer);
+                valences.insert(packing::frontier_notches(cap, outer).round_ties_even() as u8);
+            }
+        }
+        assert_eq!(max_shell, 3, "`period` no longer fits the stated bound");
+        assert_eq!(max_cap, 130, "`cap` moved — the reason string says 130");
+        assert_eq!(max_outer, 73, "`group` moved — the reason string says 73");
+        assert_eq!(
+            valences,
+            [0, 1, 2, 3, 4, 5, 6]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<u8>>(),
+            "the attained valence set moved; note this is the set of *values*, where \
+             `valence_ceiling_is_four_to_six_over_the_drawn_range` asserts the set of \
+             per-table *maxima* — conflating the two is what made the reason string wrong"
+        );
+
+        // The fourth shell *completes* at 189 (k = 6) and later for larger `k`,
+        // which is why `period` stops at 3 — but its *capacity* is in use from
+        // N = 92, which is why `cap` reaches 130 inside the drawn range. The
+        // reason string said "the fourth shell opens past N = 189" and was
+        // ambiguous between the two; a reader raising the element cap would
+        // have taken 189 as the safe ceiling.
+        let mut fourth_completes = usize::MAX;
+        let mut fourth_starts_filling = usize::MAX;
+        for k in 6..=14_usize {
+            let (mut shell, mut filled) = (0_usize, 1_usize);
+            for units in 1..=400_usize {
+                while filled + packing::shell_size(k, shell + 1) <= units {
+                    shell += 1;
+                    filled += packing::shell_size(k, shell);
+                }
+                if shell == 3 && units > filled && fourth_starts_filling == usize::MAX {
+                    // `units > filled` is `outer > 0`: at N = 91 shell 3 *closes*
+                    // and the fourth shell holds nothing yet.
+                    fourth_starts_filling = units;
+                }
+                if shell == 4 {
+                    fourth_completes = fourth_completes.min(units);
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            fourth_completes, 189,
+            "the fourth shell's completion point moved"
+        );
+        assert_eq!(
+            fourth_starts_filling, 92,
+            "the fourth shell's first fill moved"
+        );
+
+        let mut max_class = 0_u8;
+        let (mut min_raw, mut max_raw) = (i64::MAX, i64::MIN);
+        for seed in 0..400 {
+            for e in &table(seed).1 {
+                max_class = max_class.max(e.catalytic_class);
+                min_raw = min_raw.min(e.mass.raw());
+                max_raw = max_raw.max(e.mass.raw());
+            }
+        }
+        assert!(
+            max_class <= 5,
+            "`catalytic_class` exceeded n_catalytic - 1: {max_class}"
+        );
+        assert!(
+            (1024..=215_040).contains(&min_raw) && (1024..=215_040).contains(&max_raw),
+            "mass sub-units {min_raw}..={max_raw} left the stated range"
         );
     }
 

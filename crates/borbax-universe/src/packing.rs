@@ -77,8 +77,16 @@ pub fn lateral_coordination(cap: usize) -> f64 {
 /// for the `cap - a` empty sites, so the smaller side binds.
 ///
 /// Measured, the discrete branch is taken iff `compact_bound(a) < COEFF*sqrt(a)`,
-/// which at 6.90 is true only at `a = 1`: 54 of the 1287 `(cap, outer)` cells
-/// the table reaches, all at `min(outer, cap-outer) == 1`.
+/// which at 6.90 is true only at `a = 1`: **51 of the 1080 `(cap, outer)` cells
+/// the table reaches** (`k` in 6..=14, `units` 1..=120), all at
+/// `min(outer, cap-outer) == 1`.
+///
+/// The figure this replaces, "54 of 1287", was a **splice of two different
+/// enumerations** and neither produces it: 54 is the bind count over
+/// `k x shells 1..3 x outer 0..=cap` (1341 cells), while 1287 is the cell count
+/// at `units 1..=143`, where the count is 53. The `shells 1..4` sweep the tests
+/// use is 72 of 2808. Quote an enumeration with every figure, or the next
+/// reader re-splices it.
 ///
 /// **It does not by itself stop `lateral_made` going negative** — an earlier
 /// version of this comment implied it did. `compact_bound(1) = 6` exceeds
@@ -139,10 +147,10 @@ pub fn frontier_notches(cap: usize, outer: usize) -> f64 {
 /// spheres** rather than derived.
 ///
 /// **Cap-dependent, so a single constant is a compromise.** Least-squares
-/// against exact counts gives 6.075 at D = 12, 7.078 at D = 42 and 7.316 at
+/// against exact counts gives 6.075 at D = 12, 7.078 at D = 42 and 7.306 at
 /// D = 162 — finite-size effects pull it down at small caps, where Euler's
 /// twelve pentagons are a large fraction of the shell. This table's caps run
-/// 8..128, and D = 12 and D = 42 are real shells (`shell_size(10,1)`,
+/// 8..130 (`shell_size(8, 4)`, reached at `units = 120`), and D = 12 and D = 42 are real shells (`shell_size(10,1)`,
 /// `shell_size(10,2)`); D = 162 is not one of them. 6.90 minimises worst-case
 /// error across all three.
 ///
@@ -156,7 +164,10 @@ pub fn frontier_notches(cap: usize, outer: usize) -> f64 {
 /// formula: `16*sqrt(3)*sqrt(sqrt(3)/(8*pi))` = 7.2751, asymptotic.
 ///
 /// `frontier_matches_exact_counts_on_a_real_sphere` holds this to the geometry
-/// at **all three levels** at 0.25, admitting [6.2, 7.2]. An earlier version
+/// at **all three levels** at 0.25. The gate edges, bisected, are
+/// **[6.132767, 7.216878]**; `[6.2, 7.2]` is that band rounded inward, and it is
+/// the only form quoted anywhere so the two-numbers-for-one-quantity problem
+/// does not arise. An earlier version
 /// gated D = 162 alone and admitted -22%/+29% — a band over which the valence
 /// series moves in up to 23 of 24 universes.
 pub const FRONTIER_COEFF: f64 = 6.90;

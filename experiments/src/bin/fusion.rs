@@ -146,9 +146,11 @@ fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     // **Where it actually binds, measured.** The discrete branch is taken iff
     // `compact_bound(a) < FRONTIER_COEFF*sqrt(a)`, which at 6.90 holds only at
     // `a = 1`: at `a = 2` it is 9.76 against 10, at `a = 3` 11.95 against 12,
-    // and `a = 7` would need `cap > 254` where the table's caps run 8..128.
-    // Confirmed over every `(cap, outer)` the table reaches — 54 of 1287 cells,
-    // all at `min(outer, cap-outer) == 1`.
+    // and `a = 7` would need `cap > 254` where the table's caps run 8..130.
+    // Confirmed over every `(cap, outer)` the table reaches — **51 of 1080**
+    // cells (`k` in 6..=14, `units` 1..=120), all at
+    // `min(outer, cap-outer) == 1`. The "54 of 1287" this replaces spliced two
+    // different enumerations and neither produces it.
     //
     // So the justification this comment used to give — "it returned valence 3
     // where the exact count gives 2 at `outer = 3`" — is **stale by two
@@ -181,7 +183,7 @@ fn frontier_notches(cap: usize, outer: usize) -> f64 {
 ///
 /// **The coefficient is cap-dependent and a single constant is a compromise.**
 /// Least-squares against exact counts gives 6.075 at D = 12, 7.078 at D = 42
-/// and 7.316 at D = 162: finite-size effects pull it down at small caps, where
+/// and 7.306 at D = 162: finite-size effects pull it down at small caps, where
 /// Euler's twelve pentagons are a large fraction of the shell.
 ///
 /// **6.90, not the asymptotic ~7.28, because of which caps this table uses.**
@@ -193,7 +195,9 @@ fn frontier_notches(cap: usize, outer: usize) -> f64 {
 /// error across all three levels and is best on D = 42.
 ///
 /// `frontier_matches_exact_counts_on_a_real_sphere` gates all three levels at
-/// 0.25, admitting [6.2, 7.2] — plus or minus 7%.
+/// 0.25. Bisected, the edges are [6.132767, 7.216878]; [6.2, 7.2] is that band
+/// rounded inward. (An earlier "plus or minus 7%" was wrong: [6.2, 7.2] around
+/// 6.90 is -10.1%/+4.3%.)
 const FRONTIER_COEFF: f64 = 6.90;
 
 /// **Minimum** unmade lateral contacts a patch of `a` sites can expose.
