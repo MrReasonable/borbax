@@ -116,6 +116,17 @@ pub fn lateral_coordination(cap: usize) -> f64 {
 /// because two independent factors hold the zero, and continuity was shown
 /// defeatable. [`crate::element`]'s continuity assertion is a backstop, not the
 /// guarantee.
+///
+/// **Which factor returns the zero at a closure is not a detail.** At
+/// `outer == 0` and `outer == cap` both the continuum and the discrete bound are
+/// `+0.0`, and `continuum < discrete` is false — so the value returned is
+/// [`compact_bound`] at `a == 0`'s literal, the branch `xtask` exempts by name. The
+/// continuum vanishes too, but it is never the value. Measured: poisoning
+/// `compact_bound(0)` to return `NaN` makes `unmade_lateral(cap, 0)` return
+/// `NaN` at every cap, while a continuum that does *not* vanish at `f = 0`
+/// leaves it at exactly `0.0`. Anyone reasoning about the zero must reason about
+/// `compact_bound`; `the_zero_at_a_closure_comes_from_the_discrete_bound` is
+/// what stops the two being confused again.
 #[must_use]
 #[expect(
     clippy::as_conversions,
@@ -124,9 +135,7 @@ pub fn lateral_coordination(cap: usize) -> f64 {
 )]
 pub fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     let f = outer as f64 / cap as f64;
-    // `sqrt` stays native: IEEE-754 specifies it exactly, so it is portable
-    // without `det_math`. See the criterion in `clippy.toml`.
-    let continuum = FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt();
+    let continuum = continuum_at(cap, f);
     let smaller = if outer < cap - outer {
         outer
     } else {
@@ -138,6 +147,32 @@ pub fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     } else {
         discrete
     }
+}
+
+/// The continuum frontier length as a function of the fill *fraction*, split out
+/// so it can be evaluated off-lattice by
+/// `the_continuum_frontier_vanishes_as_a_square_root`.
+///
+/// **`cap as f64 * f * (1.0 - f)` associates left and must stay written that
+/// way.** Rust emits no fast-math flags and no FMA contraction, so no compiler
+/// will move this — but a reader will. Measured: rewriting it as
+/// `cap as f64 * (f * (1.0 - f))` moves **315 of the 2808 `(cap, outer)` cells**
+/// the table reaches and **18 of 1080** `contacts_upto` values, by 1 ulp. `peak`
+/// is a strict-`>` argmax over `energy_per_unit` ([`crate::element`]), so one ulp
+/// can relocate it by a whole element and change every `decay_rate` below it.
+/// `the_split_is_bit_exact_on_the_integer_domain` pins it.
+///
+/// `sqrt` stays native: IEEE-754 specifies it exactly, so it is portable without
+/// `det_math`. See the criterion in `clippy.toml`.
+#[must_use]
+#[inline]
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    reason = "`cap` is a bounded shell count, at most 226 over the drawn range"
+)]
+pub fn continuum_at(cap: usize, f: f64) -> f64 {
+    FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt()
 }
 
 /// Unmade lateral contacts on the frontier, divided by the lateral
@@ -746,6 +781,152 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// **What is observable about the zero at a closure — and what is not.**
+    ///
+    /// At `outer == 0` and `outer == cap` the continuum and the discrete bound
+    /// are *both* `+0.0`, so `continuum < discrete` is false and the value
+    /// returned comes from [`compact_bound`] at `a == 0` — the branch `xtask` exempts by
+    /// name. Verified by poisoning: making `compact_bound(0)` return `NaN` makes
+    /// `unmade_lateral(cap, 0)` return `NaN` at every cap, while a continuum that
+    /// does *not* vanish at `f = 0` still leaves it exactly `0.0`.
+    ///
+    /// **That provenance is not testable from behaviour, and the first draft of
+    /// this test pretended otherwise.** It asserted
+    /// `unmade_lateral(cap, 0).to_bits() == compact_bound(0).to_bits()`, which
+    /// holds tautologically — poison `compact_bound` and both sides move
+    /// together, `NaN == NaN` bitwise, green. Two expressions that agree over the
+    /// domain the test covers is the exact defect this project keeps recording.
+    /// Because the two factors *coincide* at a closure, no behavioural assertion
+    /// can separate them there. That is the whole reason the guarantee lives in
+    /// a source check.
+    ///
+    /// So this asserts the three things that *are* observable and do
+    /// discriminate: each factor vanishes exactly, and where the two genuinely
+    /// differ — `outer == 1` — the discrete arm is the one selected.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "`cap` is a bounded shell count"
+    )]
+    #[test]
+    fn each_factor_vanishes_exactly_and_the_discrete_arm_wins_at_a_lone_site() {
+        for k in 6..=14 {
+            for shell in 1..=4 {
+                let cap = shell_size(k, shell);
+                // Each factor vanishes on its own terms, bit-exactly.
+                assert_eq!(
+                    continuum_at(cap, 0.0).to_bits(),
+                    0.0_f64.to_bits(),
+                    "cap={cap}"
+                );
+                assert_eq!(
+                    continuum_at(cap, 1.0).to_bits(),
+                    0.0_f64.to_bits(),
+                    "cap={cap}"
+                );
+                assert_eq!(compact_bound(0).to_bits(), 0.0_f64.to_bits());
+                assert_eq!(
+                    unmade_lateral(cap, 0).to_bits(),
+                    0.0_f64.to_bits(),
+                    "cap={cap}"
+                );
+                assert_eq!(
+                    unmade_lateral(cap, cap).to_bits(),
+                    0.0_f64.to_bits(),
+                    "cap={cap}"
+                );
+                // Where they differ, the smaller must win and it must be the
+                // discrete one — this is the cell that pins the `min`'s direction.
+                let (c, d) = (continuum_at(cap, 1.0 / cap as f64), compact_bound(1));
+                assert!(
+                    c > d,
+                    "cap={cap}: continuum {c} no longer exceeds the bound {d}"
+                );
+                assert_eq!(unmade_lateral(cap, 1).to_bits(), d.to_bits(), "cap={cap}");
+            }
+        }
+    }
+
+    /// The split of [`continuum_at`] out of [`unmade_lateral`] must not move a
+    /// single bit on the integer domain.
+    ///
+    /// The reference is the pre-split expression written inline and verbatim.
+    /// The hazard is not the compiler — Rust emits no fast-math and no FMA
+    /// contraction — it is a reader tidying `cap * f * (1-f)` into
+    /// `cap * (f * (1-f))`, which moves 315 of these 2808 cells by 1 ulp.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "`cap` and `outer` are bounded shell counts"
+    )]
+    #[test]
+    fn the_split_is_bit_exact_on_the_integer_domain() {
+        for k in 6..=14 {
+            for shell in 1..=4 {
+                let cap = shell_size(k, shell);
+                for outer in 0..=cap {
+                    let f = outer as f64 / cap as f64;
+                    let reference = FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt();
+                    assert_eq!(
+                        continuum_at(cap, f).to_bits(),
+                        reference.to_bits(),
+                        "k={k} cap={cap} outer={outer}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The continuum's `f -> 0` asymptotics, and **not** a declaration guard.
+    ///
+    /// **Named for what it covers.** It was proposed as the replacement for the
+    /// `xtask` source check, on the reasoning that a point-declaration fires at
+    /// one lattice point and an off-lattice limit would step around it. Measured,
+    /// that does not hold: `if outer == 0 { return 0.0 }` passes this, and so
+    /// does `if f == 0.0 { return 0.0 }` — the sweep runs strictly between 0 and
+    /// `1/cap` and neither branch fires inside it. A *redundant* declaration is
+    /// observationally equivalent by definition, so no behavioural test can
+    /// reach it; that is a theorem, not a shortcoming of this one.
+    ///
+    /// What it does cover is otherwise uncovered, which is why it is here: four
+    /// arithmetic breaks of the continuum slip past
+    /// `frontier_matches_exact_counts_on_a_real_sphere`'s 0.25 gate and fail
+    /// here — an additive floor at +0.001 and +0.01, an exponent of 0.45 instead
+    /// of 0.5, and a half-site shift in `f`. And that gate cannot be tightened to
+    /// take over: the continuum branch already sits at 0.1951 against 0.25.
+    ///
+    /// The ratio is analytically `2*sqrt((1-f)/(1-f/4))`, free of both `cap` and
+    /// [`FRONTIER_COEFF`], so sweeping caps repeats one check rather than
+    /// widening coverage. Swept anyway, cheaply; claim no coverage from it.
+    ///
+    /// Note the sweep sits entirely below `outer = 1`, where the discrete bound
+    /// is what `unmade_lateral` actually returns — so this tests an
+    /// extrapolation of a branch the shipped function does not use there. That
+    /// is deliberate and is the reason it is not the guard.
+    #[test]
+    fn the_continuum_frontier_vanishes_as_a_square_root() {
+        for k in 6..=14 {
+            for shell in 1..=4 {
+                let cap = shell_size(k, shell);
+                let mut f = 1e-2;
+                for _ in 0..5 {
+                    let ratio = continuum_at(cap, f) / continuum_at(cap, f / 4.0);
+                    assert!(
+                        (ratio - 2.0).abs() < 0.01,
+                        "k={k} cap={cap} f={f:e}: ratio {ratio} is not the square-root law"
+                    );
+                    f /= 100.0;
+                }
+                // The tail must be tight, or an additive floor survives.
+                let tail = continuum_at(cap, 1e-10) / continuum_at(cap, 2.5e-11);
+                assert!(
+                    (tail - 2.0).abs() < 5e-4,
+                    "k={k} cap={cap}: tail ratio {tail} — the continuum does not vanish as sqrt(f)"
+                );
             }
         }
     }

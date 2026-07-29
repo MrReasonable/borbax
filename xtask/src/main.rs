@@ -1211,19 +1211,86 @@ const CLOSURE_PREDICATE_FILES: &[&str] = &[
 /// `contacts_upto` was poisoned.
 const CLOSURE_PREDICATE_EXEMPT_FNS: &[&str] = &["compact_bound"];
 
-/// Textual shapes that read the closure predicate directly.
-const CLOSURE_PREDICATE_PATTERNS: &[&str] = &[
-    "outer == 0",
-    "outer != 0",
-    "outer < 1",
-    "outer == cap",
-    "outer >= cap",
-    "match outer",
-    "a == 0",
-    "fill == 0.0",
-    "take == cap",
-    "is_closed",
+/// Variables that name the fill count on the frontier path.
+const FRONTIER_VARS: &[&str] = &["outer", "a", "take", "fill", "filled", "f", "smaller"];
+
+/// Values that mean "this shell is closed".
+const CLOSURE_SENTINELS: &[&str] = &[
+    "0", "0.0", "0_usize", "0.0_f64", "1", "cap", "capacity", "units",
 ];
+
+/// Comparison operators, longest first so `<=` is never read as `<`.
+const COMPARISONS: &[&str] = &["==", "!=", "<=", ">=", "<", ">"];
+
+/// True if a comparison ending at `after` is the *whole* predicate rather than a
+/// subexpression.
+///
+/// Without this, `if outer < cap - outer` — the legitimate `smaller` computation
+/// in `unmade_lateral` — matches `outer < cap`. It was the only false positive in
+/// the prototype, so it is the thing to keep a test on.
+fn terminates(code: &str, after: usize) -> bool {
+    code.get(after..)
+        .and_then(|rest| rest.trim_start().chars().next())
+        .is_none_or(|c| matches!(c, '{' | '}' | ';' | ')' | ',' | '&' | '|'))
+}
+
+/// The trailing identifier on `left`, if any.
+fn last_token(left: &str) -> &str {
+    let t = left.trim_end();
+    let start = t
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .map_or(0, |i| i + 1);
+    t.get(start..).unwrap_or("")
+}
+
+/// The leading identifier on `right`, if any.
+fn first_token(right: &str) -> &str {
+    let t = right.trim_start();
+    let end = t
+        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .unwrap_or(t.len());
+    t.get(..end).unwrap_or("")
+}
+
+/// A closure-predicate comparison on `code`, in **either operand order**.
+///
+/// **Operand order, not another pattern.** The fixed-string list this replaces
+/// matched `outer == 0` and missed `0 == outer` — the same predicate with its
+/// operands swapped — and the emergence auditor demonstrated end to end that the
+/// Yoda spelling walks past every gate while a load-bearing declaration sits
+/// behind it. Measured: `rustfmt` normalises the *spacing* (`outer==0` becomes
+/// `outer == 0`) but never reorders operands, so that bypass was permanently
+/// fmt-clean. Matching a comparison between one [`FRONTIER_VARS`] entry and one
+/// [`CLOSURE_SENTINELS`] entry, in either position, closes it once rather than
+/// one spelling at a time.
+fn closure_predicate_hit(code: &str) -> Option<String> {
+    for op in COMPARISONS {
+        let mut from = 0;
+        while let Some(rel) = code.get(from..).and_then(|c| c.find(op)) {
+            let at = from + rel;
+            let after = at + op.len();
+            // `<` and `>` must not fire inside `<=`, `>=`, `==`, `!=`.
+            let bytes = code.as_bytes();
+            let glued = (op.len() == 1 && bytes.get(after) == Some(&b'='))
+                || (at > 0 && matches!(bytes.get(at - 1), Some(b'=' | b'!' | b'<' | b'>')));
+            if glued {
+                from = after;
+                continue;
+            }
+            let (lhs, rhs) = (
+                last_token(code.get(..at).unwrap_or("")),
+                first_token(code.get(after..).unwrap_or("")),
+            );
+            let pair_ok = (FRONTIER_VARS.contains(&lhs) && CLOSURE_SENTINELS.contains(&rhs))
+                || (CLOSURE_SENTINELS.contains(&lhs) && FRONTIER_VARS.contains(&rhs));
+            if pair_ok && terminates(code, after + rhs.len() + 1) {
+                return Some(format!("{lhs} {op} {rhs}"));
+            }
+            from = after;
+        }
+    }
+    None
+}
 
 /// §7.1 — no branch in the frontier path may read the closure predicate.
 ///
@@ -1306,22 +1373,20 @@ fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
             let current = pending_fn
                 .as_deref()
                 .unwrap_or_else(|| fn_stack.last().map_or("", |(_, n)| n.as_str()));
-            if !CLOSURE_PREDICATE_EXEMPT_FNS.contains(&current) {
-                for pat in CLOSURE_PREDICATE_PATTERNS {
-                    if code.contains(pat) {
-                        failures.push(format!(
-                            "§7.1: {rel}:{} branches on the closure predicate ({pat:?}) \
-                             inside `{}` — zero at a closure must be arithmetic, not a \
-                             declaration",
-                            i + 1,
-                            if current.is_empty() {
-                                "<file scope>"
-                            } else {
-                                current
-                            },
-                        ));
-                    }
-                }
+            if !CLOSURE_PREDICATE_EXEMPT_FNS.contains(&current)
+                && let Some(pat) = closure_predicate_hit(&code)
+            {
+                failures.push(format!(
+                    "§7.1: {rel}:{} branches on the closure predicate ({pat:?}) \
+                         inside `{}` — zero at a closure must be arithmetic, not a \
+                         declaration",
+                    i + 1,
+                    if current.is_empty() {
+                        "<file scope>"
+                    } else {
+                        current
+                    },
+                ));
             }
         }
 
@@ -1432,6 +1497,7 @@ const SHARED_PACKING_FNS: &[&str] = &[
     "shell_size",
     "lateral_coordination",
     "unmade_lateral",
+    "continuum_at",
     "frontier_notches",
     "compact_bound",
     "lateral_made",
@@ -1646,6 +1712,39 @@ mod tests {
     fn extraction_stops_at_the_end_of_the_function() {
         let body = extract_fn_body("fn f() { 6.0 } fn g() { 9.9 }\n", "f");
         assert_eq!(body.as_deref(), Some("{ 6.0 }"));
+    }
+
+    /// **The Yoda spelling was a permanently fmt-clean bypass**, demonstrated
+    /// end to end by the emergence auditor: `if 0 == outer` walked past the
+    /// fixed-string list while a load-bearing declaration sat behind it and all
+    /// six gate legs stayed green. It is not another pattern, it is the same
+    /// predicate with its operands swapped.
+    #[test]
+    fn the_predicate_is_matched_in_either_operand_order() {
+        for src in [
+            "fn f(cap: usize, outer: usize) -> f64 { if outer == 0 { return 0.0; } 1.0 }",
+            "fn f(cap: usize, outer: usize) -> f64 { if 0 == outer { return 0.0; } 1.0 }",
+            "fn f(cap: usize, outer: usize) -> f64 { if 0 >= outer { return 0.0; } 1.0 }",
+            "fn f(cap: usize, outer: usize) -> f64 { if outer <= 0 { return 0.0; } 1.0 }",
+            "fn f(cap: usize, outer: usize) -> f64 { if cap == outer { return 0.0; } 1.0 }",
+            "fn f(cap: usize, outer: usize) -> f64 { let done = 0 == outer; 1.0 }",
+        ] {
+            assert_eq!(closure_hits(src).len(), 1, "missed a spelling: {src}");
+        }
+    }
+
+    /// ...and must not fire on the legitimate lines of the real file. The
+    /// `smaller` computation is the one that matters: without the
+    /// whole-predicate check, `outer < cap - outer` matches `outer < cap`.
+    #[test]
+    fn the_matcher_does_not_fire_on_legitimate_frontier_code() {
+        for src in [
+            "fn f(cap: usize, outer: usize) -> usize { let smaller = if outer < cap - outer { outer } else { cap - outer }; smaller }",
+            "fn f(remaining: usize, cap: usize) -> usize { let take = if remaining < cap { remaining } else { cap }; take }",
+            "fn f(continuum: f64, discrete: f64) -> f64 { if continuum < discrete { continuum } else { discrete } }",
+        ] {
+            assert!(closure_hits(src).is_empty(), "false positive on: {src}");
+        }
     }
 
     /// A nested item inside an exempt function must not inherit the exemption.
