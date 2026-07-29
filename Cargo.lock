@@ -26,6 +26,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "borbax-universe"
+version = "0.1.0"
+dependencies = [
+ "borbax-rng",
+ "borbax-units",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
