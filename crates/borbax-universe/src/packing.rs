@@ -423,7 +423,7 @@ mod tests {
 
         /// The twelve icosahedron vertices, from the golden ratio — the cyclic
         /// permutations of `(0, ±1, ±φ)`.
-        fn icosahedron() -> Vec<Vec3> {
+        pub(super) fn icosahedron() -> Vec<Vec3> {
             #[expect(
                 clippy::manual_midpoint,
                 reason = "this is the closed form of the golden ratio; the rewrite hides \
@@ -505,9 +505,15 @@ mod tests {
         /// triangulation, and an arbitrarily-ordered triangulation is still a
         /// correct one.
         pub(super) fn geodesic(level: u32) -> Vec<Vec3> {
-            let base = icosahedron();
-            let mut verts = base.clone();
-            let mut faces = faces_of(&base);
+            geodesic_from(&icosahedron(), level)
+        }
+
+        /// [`geodesic`] from an explicit base, so a test can permute it and
+        /// check that the result depends on the point set and not on the order
+        /// the subdivision loop happened to visit it in.
+        pub(super) fn geodesic_from(base: &[Vec3], level: u32) -> Vec<Vec3> {
+            let mut verts = base.to_vec();
+            let mut faces = faces_of(base);
             for _ in 0..level {
                 let mut next = Vec::with_capacity(faces.len() * 4);
                 for f in &faces {
@@ -671,6 +677,53 @@ mod tests {
                 "D={d}: worst relative error {worst:.4} at outer={at} \
                  — the formula has drifted from the geometry it approximates"
             );
+        }
+    }
+
+    /// The canonical sort in [`exact::geodesic`] is load-bearing and, until this
+    /// test, was protected by nothing — neutralising the `sort_by` left all 28
+    /// crate tests passing. That is CLAUDE.md's "present, believed, inert" shape,
+    /// committed in the same change that documented why the sort mattered.
+    ///
+    /// **The guard is the sort's own stated purpose**, tested directly: the
+    /// result must be a function of the point set, not of the build loop. So
+    /// rebuild from a permuted base icosahedron and compare bit patterns.
+    ///
+    /// Deliberately independent of [`FRONTIER_COEFF`]. Tightening the 0.25 gate
+    /// in `frontier_matches_exact_counts_on_a_real_sphere` would also catch the
+    /// unsorted variant, but only by re-coupling this guarantee to the constant
+    /// it exists to hold steady — and at the shipped 6.90 the unsorted variant
+    /// passes that gate at all three levels anyway (0.2000 / 0.1401 / 0.1869),
+    /// which is precisely why nothing caught it.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`k` ranges over 0..3 and both operands are `[f64; 3]`"
+    )]
+    #[test]
+    fn the_canonical_sort_makes_the_sphere_a_function_of_the_point_set() {
+        let base = exact::icosahedron();
+        for level in 0..=2 {
+            let reference = exact::geodesic_from(&base, level);
+            for shift in 1..base.len() {
+                let mut permuted = base.clone();
+                permuted.rotate_left(shift);
+                let got = exact::geodesic_from(&permuted, level);
+                assert_eq!(
+                    got.len(),
+                    reference.len(),
+                    "level {level} shift {shift}: vertex count"
+                );
+                for (i, (a, b)) in got.iter().zip(&reference).enumerate() {
+                    for k in 0..3 {
+                        assert_eq!(
+                            a[k].to_bits(),
+                            b[k].to_bits(),
+                            "level {level} shift {shift}: vertex {i} coordinate {k} \
+                             depends on the order the base was visited in"
+                        );
+                    }
+                }
+            }
         }
     }
 

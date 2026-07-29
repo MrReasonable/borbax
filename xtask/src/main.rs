@@ -1297,7 +1297,15 @@ fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
         }
 
         if test_region.is_none() {
-            let current = fn_stack.last().map_or("", |(_, n)| n.as_str());
+            // A line that *declares* a function is attributed to that function,
+            // not to its parent. Otherwise a single-line nested item —
+            // `#[inline] fn inner(outer) { if outer == 0 { .. } }` inside
+            // `compact_bound` — is scanned under the parent's frame and
+            // inherits its exemption, because the frame is only pushed when the
+            // brace is processed at the end of the line.
+            let current = pending_fn
+                .as_deref()
+                .unwrap_or_else(|| fn_stack.last().map_or("", |(_, n)| n.as_str()));
             if !CLOSURE_PREDICATE_EXEMPT_FNS.contains(&current) {
                 for pat in CLOSURE_PREDICATE_PATTERNS {
                     if code.contains(pat) {
@@ -1348,35 +1356,76 @@ fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
             }
         }
     }
+
+    // **The end-of-scan assertion, inherited from `scan_for_derived_streams`
+    // and missing here for one review round.** `strip_comments_and_literals`
+    // does not handle *nested* block comments, which Rust accepts. One placed
+    // inside the `#[cfg(test)]` module inflates `depth`, so the module's
+    // closing brace never matches `test_region`, the region stays latched, and
+    // every subsequent line goes unscanned — reporting zero findings and zero
+    // failures. Same outcome for an unterminated string.
+    //
+    // That function's own doc claims such a construct "trips the end-of-file
+    // assertion, which is loud and survivable". Without this block that
+    // sentence was false for this caller.
+    if depth != 0 || !lex.is_clean() {
+        failures.push(format!(
+            "§7.1: {rel} could not be reliably scanned (end depth {depth}, \
+             lexer {}) — the closure-predicate check did not look at the whole file",
+            if lex.is_clean() {
+                "clean"
+            } else {
+                "left a string or block comment open"
+            }
+        ));
+    }
 }
 
 /// The name in a `fn NAME(` declaration on `line`, if there is one.
+///
+/// **A rejection rule, not an accept-list of modifiers.** The first version
+/// accepted only `pub`, `)`, `const`, `async`, `unsafe` and `extern` before the
+/// `fn`, which silently declined to register anything it had not heard of —
+/// `#[inline] fn` among them. Failing to register is normally safe, because an
+/// unregistered function leaves the scan at file scope, which is not exempt.
+/// It is unsafe in exactly one direction: a nested item inside an *exempt*
+/// function inherits the exemption. Measured, `#[inline] fn inner(outer) { if
+/// outer == 0 ... }` nested inside `compact_bound` produced zero findings.
+///
+/// So anything at a word boundary counts as a declaration unless it is plainly
+/// a type (`-> fn(..)`, `: fn(..)`), and a declaration whose name cannot be
+/// parsed still opens a frame under [`UNNAMED_FN`] — which is not exempt.
 fn fn_name_of(line: &str) -> Option<String> {
-    let idx = line.find("fn ")?;
-    // Reject `.fn` and identifiers ending in `fn`; a declaration has `fn` at
-    // the start or preceded by a modifier keyword.
-    if idx > 0 {
+    let mut search = 0;
+    loop {
+        let idx = line.get(search..)?.find("fn ")? + search;
+        let prev = line.get(..idx).and_then(|s| s.chars().next_back());
+        if prev.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            // `sfn `, `my_fn ` — an identifier that happens to end in `fn`.
+            search = idx + 3;
+            continue;
+        }
         let before = line.get(..idx)?.trim_end();
-        let ok = before.is_empty()
-            || before.ends_with("pub")
-            || before.ends_with(')')
-            || before.ends_with("const")
-            || before.ends_with("async")
-            || before.ends_with("unsafe")
-            || before.ends_with("extern");
-        if !ok {
+        if before.ends_with("->") || before.ends_with(':') {
+            // A function *type*, not a declaration.
             return None;
         }
-    }
-    let rest = line.get(idx + 3..)?;
-    let end = rest.find(['(', '<', ' '])?;
-    let name = rest.get(..end)?.trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_owned())
+        let rest = line.get(idx + 3..)?;
+        let name = rest
+            .find(['(', '<', ' ', '\r'])
+            .and_then(|end| rest.get(..end))
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || c == '_'));
+        return Some(name.map_or_else(|| UNNAMED_FN.to_owned(), str::to_owned));
     }
 }
+
+/// Frame name for a `fn` whose declaration parsed but whose name did not.
+///
+/// Deliberately not a valid Rust identifier, so it can never collide with an
+/// entry in [`CLOSURE_PREDICATE_EXEMPT_FNS`] and therefore never inherits an
+/// exemption.
+const UNNAMED_FN: &str = "<unnamed fn>";
 
 /// The probe and `packing.rs` share these function bodies verbatim.
 const SHARED_PACKING_FNS: &[&str] = &[
@@ -1388,6 +1437,18 @@ const SHARED_PACKING_FNS: &[&str] = &[
     "lateral_made",
     "lateral_made_raw",
 ];
+
+/// Constants the probe and `packing.rs` must hold in common.
+///
+/// **Bodies are not enough, and this is the gap two lanes found independently.**
+/// `unmade_lateral`'s body reads `FRONTIER_COEFF` *by name*, so the two copies
+/// can hold different values while their texts stay identical. Measured: with
+/// `packing.rs` at 6.50 and the probe at 6.90 — a 6% divergence in the constant
+/// that sets every element's valence — `cargo xtask` reported all checks passed
+/// and all 28 crate tests passed. 7.20 is caught, but only incidentally, by
+/// `valence_ceiling_is_four_to_six_over_the_drawn_range`; roughly [6.4, 7.1] was
+/// caught by nothing at all.
+const SHARED_PACKING_CONSTS: &[&str] = &["FRONTIER_COEFF"];
 
 /// Step 8d — pin `packing.rs` to the probe it was measured from.
 ///
@@ -1429,6 +1490,22 @@ fn check_packing_matches_probe(root: &Path, failures: &mut Vec<String>) -> Resul
     let a = std::fs::read_to_string(&ours).map_err(|e| e.to_string())?;
     let b = std::fs::read_to_string(&probe).map_err(|e| e.to_string())?;
 
+    for name in SHARED_PACKING_CONSTS {
+        match (extract_const_value(&a, name), extract_const_value(&b, name)) {
+            (Some(x), Some(y)) if x == y => {}
+            (Some(x), Some(y)) => failures.push(format!(
+                "Step 8d: `{name}` has diverged from the probe.\n         \
+                 packing.rs: {x}\n         fusion.rs : {y}"
+            )),
+            (None, _) => failures.push(format!(
+                "Step 8d: const `{name}` not found in packing.rs — renamed, or inlined"
+            )),
+            (_, None) => failures.push(format!(
+                "Step 8d: const `{name}` not found in fusion.rs — the probe has dropped it"
+            )),
+        }
+    }
+
     for name in SHARED_PACKING_FNS {
         match (extract_fn_body(&a, name), extract_fn_body(&b, name)) {
             (Some(x), Some(y)) if x == y => {}
@@ -1447,35 +1524,85 @@ fn check_packing_matches_probe(root: &Path, failures: &mut Vec<String>) -> Resul
     Ok(())
 }
 
+/// The right-hand side of `const NAME: ... = ...;` in `src`.
+///
+/// Comment- and literal-stripped before searching, for the same reason
+/// [`extract_fn_body`] is: a `const NAME` mentioned in prose must not be
+/// mistaken for the declaration.
+///
+/// Named constants only. A value inlined as a literal into a body is compared
+/// by [`extract_fn_body`] instead; a value that is neither is invisible to this
+/// check, and that is the honest limit of it.
+fn extract_const_value(src: &str, name: &str) -> Option<String> {
+    let mut lex = LexState::default();
+    for raw in src.lines() {
+        let code = strip_comments_and_literals(raw, &mut lex);
+        let t = code.trim();
+        let Some(rest) = t
+            .strip_prefix("const ")
+            .or_else(|| t.strip_prefix("pub const "))
+        else {
+            continue;
+        };
+        let Some(after) = rest.strip_prefix(name) else {
+            continue;
+        };
+        if !after.trim_start().starts_with(':') {
+            continue;
+        }
+        let value = after.split_once('=')?.1.trim().trim_end_matches(';').trim();
+        return Some(value.to_owned());
+    }
+    None
+}
+
 /// The body of `fn name` in `src`, normalised for comparison.
 ///
 /// Normalisation removes exactly the differences that are legitimate between a
 /// library and a single-file probe — `pub`/`pub(super)`, `#[must_use]`, comments
 /// and whitespace — and nothing else.
+///
+/// **Strip first, then search. The reverse order made this check pass
+/// vacuously.** The first version located both `fn NAME(` and its opening brace
+/// on *raw* source and lexed only what followed, so a `{` appearing in a
+/// comment between the two silently redefined "the body". Because the two files
+/// are deliberate near-copies *including their prose*, it redefined it
+/// identically in both: two functions differing only in their bodies extracted
+/// to the same string and compared equal. That is the fifth divergence, missed
+/// by the check written to stop the first four.
+///
+/// **`None` on imbalance, never a truncated body.** Unbalanced braces mean the
+/// extraction failed and the caller has a branch that says so; returning `Some`
+/// of whatever was read makes that branch unreachable and silently compares two
+/// wrong strings.
 fn extract_fn_body(src: &str, name: &str) -> Option<String> {
-    let needle = format!("fn {name}(");
-    let at = src.find(&needle)?;
-    let open = src.get(at..)?.find('{')? + at;
-
     let mut lex = LexState::default();
+    let flat: String = src
+        .lines()
+        .map(|raw| strip_comments_and_literals(raw, &mut lex))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let at = flat.find(&format!("fn {name}("))?;
+    let open = flat.get(at..)?.find('{')? + at;
+
     let mut depth = 0_i64;
-    let mut out = String::new();
-    for (n, raw) in src.get(open..)?.lines().enumerate() {
-        let code = strip_comments_and_literals(raw, &mut lex);
-        for c in code.chars() {
-            match c {
-                '{' => depth += 1,
-                '}' => depth -= 1,
-                _ => {}
+    let mut end = None;
+    for (i, c) in flat.get(open..)?.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(open + i + 1);
+                    break;
+                }
             }
-        }
-        out.push(' ');
-        out.push_str(&code);
-        if depth <= 0 && n > 0 || (depth == 0 && n == 0) {
-            break;
+            _ => {}
         }
     }
-    Some(out.split_whitespace().collect::<Vec<_>>().join(" "))
+    let body = flat.get(open..end?)?;
+    Some(body.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// The §13.1 scanner is the only piece of logic here that can fail *quietly* —
@@ -1485,7 +1612,119 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::scan_for_derived_streams;
-    use super::{extract_fn_body, scan_closure_predicates};
+    use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
+
+    /// A `{` inside a comment between `fn NAME(` and the real body must not be
+    /// mistaken for the body brace. The two files are near-copies including
+    /// their prose, so the mistake lands identically in both and two differing
+    /// bodies compare equal — the check passing vacuously.
+    #[test]
+    fn a_brace_in_a_comment_does_not_become_the_body() {
+        let lib = "/// Mirrors `fn f(a)`; see the {7.2} note.\n\
+                   pub fn f(a: usize) -> f64 { 6.0 * (a as f64) }\n";
+        let probe = "/// Mirrors `fn f(a)`; see the {7.2} note.\n\
+                     fn f(a: usize) -> f64 { 1.0 * (a as f64) }\n";
+        assert_ne!(
+            extract_fn_body(lib, "f"),
+            extract_fn_body(probe, "f"),
+            "a comment brace was taken for the body, so two different bodies compared equal"
+        );
+    }
+
+    /// Unbalanced braces mean extraction failed. Returning `Some` of whatever
+    /// was read makes the caller's "the extractor is wrong" branch unreachable.
+    #[test]
+    fn an_unterminated_body_extracts_to_none() {
+        assert_eq!(
+            extract_fn_body("fn f(a: usize) -> f64 {\n    6.0\n", "f"),
+            None
+        );
+    }
+
+    /// ...and extraction must stop at its own closing brace, not run on.
+    #[test]
+    fn extraction_stops_at_the_end_of_the_function() {
+        let body = extract_fn_body("fn f() { 6.0 } fn g() { 9.9 }\n", "f");
+        assert_eq!(body.as_deref(), Some("{ 6.0 }"));
+    }
+
+    /// A nested item inside an exempt function must not inherit the exemption.
+    #[test]
+    fn a_nested_item_does_not_inherit_the_exemption() {
+        let hits = closure_hits(
+            "fn compact_bound(a: usize) -> f64 {\n\
+             \x20   #[inline] fn inner(outer: usize) -> f64 { if outer == 0 { 0.0 } else { 1.0 } }\n\
+             \x20   inner(a)\n}\n",
+        );
+        assert_eq!(
+            hits.len(),
+            1,
+            "the exemption leaked into a nested item: {hits:?}"
+        );
+    }
+
+    /// An identifier ending in `fn` is not a declaration.
+    #[test]
+    fn an_identifier_ending_in_fn_is_not_a_declaration() {
+        assert_eq!(super::fn_name_of("let my_fn = 1;"), None);
+        assert_eq!(
+            super::fn_name_of("fn shell_size(k: usize)"),
+            Some("shell_size".to_owned())
+        );
+        assert_eq!(
+            super::fn_name_of("#[inline] fn inner(a: usize)"),
+            Some("inner".to_owned())
+        );
+        assert_eq!(
+            super::fn_name_of("pub(crate) fn f(a: usize)"),
+            Some("f".to_owned())
+        );
+    }
+
+    /// A construct the lexer cannot follow must be reported, not silently
+    /// swallow the rest of the file. Nested block comments are valid Rust and
+    /// `strip_comments_and_literals` does not handle them.
+    #[test]
+    fn an_unscannable_file_is_reported_rather_than_skipped() {
+        let hits = closure_hits(
+            "#[cfg(test)]\nmod tests {\n\
+             \x20   /* a /* nested */ {{{ */\n\
+             \x20   fn t() {}\n}\n\
+             fn frontier_notches(cap: usize, outer: usize) -> f64 {\n\
+             \x20   if outer == 0 { return 0.0; }\n\
+             \x20   1.0\n}\n",
+        );
+        assert!(
+            !hits.is_empty(),
+            "a nested block comment latched the test region and the rest of the file went unscanned"
+        );
+    }
+
+    /// A constant read by name inside a pinned body is invisible to a body
+    /// comparison, so it needs its own check.
+    #[test]
+    fn a_divergent_constant_is_extracted_and_compared() {
+        let lib = "pub const FRONTIER_COEFF: f64 = 6.90;\n";
+        let probe = "const FRONTIER_COEFF: f64 = 6.50;\n";
+        assert_eq!(
+            extract_const_value(lib, "FRONTIER_COEFF").as_deref(),
+            Some("6.90")
+        );
+        assert_ne!(
+            extract_const_value(lib, "FRONTIER_COEFF"),
+            extract_const_value(probe, "FRONTIER_COEFF")
+        );
+    }
+
+    /// A constant named only in prose must not be taken for the declaration.
+    #[test]
+    fn a_constant_named_in_a_comment_is_not_the_declaration() {
+        let src = "/// See FRONTIER_COEFF for why.\nconst FRONTIER_COEFF: f64 = 6.90;\n";
+        assert_eq!(
+            extract_const_value(src, "FRONTIER_COEFF").as_deref(),
+            Some("6.90")
+        );
+    }
 
     fn closure_hits(src: &str) -> Vec<String> {
         let mut f = Vec::new();
