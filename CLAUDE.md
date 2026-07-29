@@ -61,7 +61,7 @@ green, linear history, no force-push, `enforce_admins` on. Bypassing is a
 deliberate, visible act:
 `gh api -X DELETE repos/MrReasonable/borbax/branches/main/protection/enforce_admins`.
 
-Next action if starting fresh: **Task 3** — `borbax-rng`, counter-based deterministic streams.
+Next action if starting fresh: **Task 5** — bond energies and the assembled `Universe`.
 
 ## Commands
 
