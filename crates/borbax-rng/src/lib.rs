@@ -521,8 +521,16 @@ impl Stream {
     /// `!Copy` exists to make that duplication visible at the call site, and
     /// `xtask` enforces the real invariant on the AST: nothing in this crate
     /// takes a `Stream` and returns one — any receiver, any return position
-    /// including `Option`, tuples, arrays and `impl Trait`, free functions and
-    /// trait methods included.) The alternative —
+    /// including `Option`, tuples, arrays and `impl Trait`, free functions,
+    /// trait methods, `impl` blocks on other types, and items nested in any
+    /// function body including a trait method's default body. Names are
+    /// resolved through `type` aliases and renamed imports within the file.
+    /// **What it cannot see**, stated because three earlier versions of this
+    /// sentence claimed coverage the code did not have: anything produced by
+    /// macro expansion, and any alias imported from another module. Both are
+    /// *reported* as unanalysable rather than passed over in silence, so the
+    /// gate still fails — but it fails saying "did not look", not "looked and
+    /// it was clean".) The alternative —
     /// `Stream<const FORKED: bool>` — would have made every downstream
     /// function that merely *draws* generic over depth, since the ordinary
     /// pattern is to hand a sub-stream to a routine that anneals. Removing the
@@ -595,7 +603,7 @@ impl Stream {
     /// Measured consequence — zero variance across replicates, which makes
     /// every difference between run and shadow read as significant, on a
     /// metric whose whole job is to say which differences are not. The fix is
-    /// an axis to vary, and `index = packed_index(patch, branch)` is it.
+    /// an axis to vary, and `index = packed_index(patch, replicate)` is it.
     ///
     /// **`packed_index(0, 0) == 0`**, so adopting this convention in V0 — one
     /// beaker, one shadow, no patches — moves no golden and changes no

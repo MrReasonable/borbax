@@ -3464,7 +3464,7 @@ shadow run drawn from `Stream::sub(seed, Domain::Shadow, patch, event)` is
 fully determined by its fork point, so N replicates of it are bit-identical:
 zero measured variance, and every `run - shadow` difference reads as
 significant on the metric whose entire job is to say which differences are not.
-Use `Stream::packed_index(patch, branch)` as the `index`. In V0 both are 0 and
+Use `Stream::packed_index(patch, replicate)` as the `index`. In V0 both are 0 and
 the packed value is 0, so nothing moves; the reason to write it now rather than
 when the second replicate appears is that at that point every stream coordinate
 downstream of a patch moves, and the goldens with them.

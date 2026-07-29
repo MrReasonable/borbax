@@ -695,6 +695,9 @@ fn collect_derived_streams(
                             collect_derived_streams(rel, &block_items(&f.block), names, on, out);
                         }
                         syn::ImplItem::Macro(m) => out.push(unanalysable(rel, &m.mac.path)),
+                        syn::ImplItem::Verbatim(_) => {
+                            out.push(unanalysable_at(rel, "verbatim impl item"));
+                        }
                         _ => {}
                     }
                 }
@@ -705,8 +708,32 @@ fn collect_derived_streams(
             // reinstatement rather than the least.
             syn::Item::Trait(t) => {
                 for it in &t.items {
-                    if let syn::TraitItem::Fn(f) = it {
-                        check_sig(rel, &f.sig, names, SelfTy::Unknown, out);
+                    match it {
+                        syn::TraitItem::Fn(f) => {
+                            check_sig(rel, &f.sig, names, SelfTy::Unknown, out);
+                            // **A default body is a function body.** It can
+                            // declare items, and those items can derive
+                            // streams — measured, a `fn derive(&Stream) ->
+                            // Stream` nested in one produced zero findings.
+                            // `Item::Fn` and `ImplItem::Fn` were both already
+                            // recursed into; this arm checked the signature
+                            // and stopped, which is the same enumeration
+                            // mistake one variant further along.
+                            if let Some(block) = &f.default {
+                                collect_derived_streams(
+                                    rel,
+                                    &block_items(block),
+                                    names,
+                                    SelfTy::Unknown,
+                                    out,
+                                );
+                            }
+                        }
+                        syn::TraitItem::Macro(m) => out.push(unanalysable(rel, &m.mac.path)),
+                        syn::TraitItem::Verbatim(_) => {
+                            out.push(unanalysable_at(rel, "verbatim trait item"));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1354,6 +1381,21 @@ mod tests {
                 "free fn inside a function body",
                 "pub fn outer() { pub fn c(p: &Stream) -> Stream { todo!() } }",
             ),
+            // A trait *default body* is a function body, and this arm used to
+            // check the signature and stop — so a derivation nested one level
+            // inside produced zero findings against the real crate. `Item::Fn`
+            // and `ImplItem::Fn` were both already recursed into; this is the
+            // same enumeration mistake one variant further along, found by
+            // CodeRabbit after three earlier rounds of repairing this guard.
+            (
+                "free fn inside a trait default body",
+                "pub trait Ext { fn spawn(&self) { pub fn c(p: &Stream) -> Stream { todo!() } } }",
+            ),
+            (
+                "impl block inside a trait default body",
+                "pub trait Ext { fn spawn(&self) { impl Stream { pub fn c(&self) -> Self { \
+                 todo!() } } } }",
+            ),
         ];
         for (label, src) in FORBIDDEN {
             assert_eq!(hits(src).len(), 1, "{label}: not caught\n{src}");
@@ -1372,6 +1414,12 @@ mod tests {
             (
                 "macro inside an impl",
                 "impl Stream { derive_children!(); }",
+            ),
+            // `ImplItem::Macro` was covered and `TraitItem::Macro` was not —
+            // the two sit in sibling enums and were fixed one round apart.
+            (
+                "macro inside a trait",
+                "pub trait Ext { derive_children!(); }",
             ),
         ] {
             let h = hits(src);
