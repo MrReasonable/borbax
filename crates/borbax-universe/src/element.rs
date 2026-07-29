@@ -2,14 +2,18 @@
 //!
 //! **Element `N` is `N` copies of one base unit, packed.** `mass`, `period`,
 //! `group`, `valence`, `radius`, `affinity` and `energy_per_unit` are functions
-//! of that packing rather than curves chosen because they looked plausible.
-//! `abundance` is a function of the fusion *process* — one drawn constant and
-//! the unit count, with no packing quantity in it — and `catalytic_class` is
-//! not derived at all. An earlier version of this sentence said "every property
-//! below", which the file's own later text contradicts — which is principle 2 applied to the file that defines what an
-//! atom is. See Task 4's preamble in the plan for what is claimed and, more
-//! importantly, what is not: there is no shape-diversity advantage, only the
-//! measured finding that a fusion-derived radius series costs nothing.
+//! of that packing rather than curves chosen because they looked plausible —
+//! principle 2, applied to the file that defines what an atom is.
+//!
+//! Two properties are **not** functions of the packing, and an earlier version
+//! of this header claimed "every property below" was, which the file's own
+//! later text contradicts: `abundance` is a function of the fusion *process*
+//! (one drawn constant and the unit count, with no packing quantity in it), and
+//! `catalytic_class` is not derived at all.
+//!
+//! See Task 4's preamble in the plan for what is claimed and, more importantly,
+//! what is not: there is no shape-diversity advantage, only the measured
+//! finding that a fusion-derived radius series costs nothing.
 //!
 //! Periodicity is a *consequence* here. A shell closes when it fills, and the
 //! elements at and around a closure form families with a cause: a closed shell
@@ -731,6 +735,55 @@ mod tests {
     )]
     #[test]
     fn affinity_is_in_range_and_continuous() {
+        // **Assert the attained range, both sides.** The predecessor asserted
+        // `affinity > -1.0`, which has 1.14 of slack and cannot fire — the
+        // defect class this file names 65 lines further down. `affinity` is a
+        // pure function of `(k, units)` (no drawn constant enters it), so the
+        // space is enumerable and the attained bounds are exact.
+        //
+        // **The lower bound being positive is a finding, not a target.** §8.3's
+        // charge term `-(a_A + a_B)^2` is maximised at zero when the two
+        // affinities are *opposite*, so a strictly positive range degenerates it
+        // from a complementarity test into a monotone penalty on total surface
+        // affinity, and §5's membrane mechanism — one flank positive, the
+        // opposite negative — is unreachable. How `a` is summed from element
+        // affinities is Task 7's code and is not written yet, so the fix may
+        // belong there; what must not happen is the range being inherited by
+        // default. This assertion makes it fail loudly the moment it moves.
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for k in 6..=14_usize {
+            for units in 1..=120_usize {
+                let (mut shell, mut filled) = (0_usize, 1_usize);
+                while filled + packing::shell_size(k, shell + 1) <= units {
+                    shell += 1;
+                    filled += packing::shell_size(k, shell);
+                }
+                let cap = packing::shell_size(k, shell + 1);
+                let shell_units = if shell == 0 {
+                    1
+                } else {
+                    packing::shell_size(k, shell)
+                };
+                let inner = filled - shell_units;
+                let outer = units - filled;
+                let covered = shell_units as f64 * outer as f64 / cap as f64;
+                let surface = units as f64 - (inner as f64 + covered);
+                let a = 2.0 * (surface / units as f64) - 1.0;
+                if a < lo {
+                    lo = a;
+                }
+                if a > hi {
+                    hi = a;
+                }
+            }
+        }
+        assert!(
+            (lo - 0.140_476).abs() < 1e-6 && (hi - 1.0).abs() < 1e-12,
+            "the attained affinity range moved: {lo:.6}..={hi:.6}. It has never \
+             reached the negative half, which §8.3's charge term needs — see the \
+             comment above before widening this."
+        );
+
         for seed in 0..12 {
             let (_, els) = table(seed);
             assert!(els.iter().all(|e| e.affinity > -1.0 && e.affinity <= 1.0));
