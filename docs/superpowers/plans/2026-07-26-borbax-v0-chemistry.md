@@ -2616,6 +2616,22 @@ pub fn find_raf(
 - Consumes: `Interner`, `Reaction`, `decay_channels`, `Universe`, `Stream`
 - Produces: `SegmentTree::{with_capacity, set, total, sample}`, `Beaker::{new, step, time, counts, species_count}`, `ChannelId(u32)`
 
+**`Beaker` stores `(seed, event_index)`, never a `Stream`.** Task 20b settles
+this and the reasoning is there; it is repeated here because this is the task
+that writes the struct, and a doc comment in another task is not read while
+implementing this one. Each event mints a fresh
+`Stream::sub(seed, Domain::Beaker, patch, event_index)` and increments the
+index. Storing a live `Stream` puts `(counter[3], spent)` into the §13.2
+keyframe contract — position held *twice*, with nothing in the type enforcing
+the correspondence — and the failure mode is a restore that silently rewinds up
+to three draws. It also puts `key[0]`, the universe seed, into anything that
+serialises the beaker, handing away the §8.6 barrier that stops a routine
+holding a `&Stream` from minting a per-molecule sub-stream.
+
+The cost is stated rather than hidden: the direct method uses two draws per
+event, so a fresh 4-word block per event discards half of them — a 2× inflation
+in Philox calls against a kernel measured at ~1.55 ns/draw. Take it.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
@@ -3360,15 +3376,28 @@ Recorded as a decision taken on reasoning, before the keyframe format exists.
 If that format later makes config part of the world seed upstream, this becomes
 moot rather than wrong.
 
-**One half of this is genuinely unresolved, and should not read as settled.**
-The refusal is keyed to *keyframe restore*. Sharing a seed pair with someone
-whose physics-affecting config differs involves no keyframe, so no refusal
-fires and §13.4's promise quietly fails. Closing it needs the list of config
-fields that reach the arithmetic, which does not exist yet — so this is open,
-not decided. And note the trap on the other side: if anyone later adds a
+**The half that was unresolved is now closed, in the spec rather than here.**
+The refusal above is keyed to *keyframe restore*, so sharing a seed pair with
+someone whose physics-affecting config differs involves no keyframe, no refusal
+fires, and §13.4's promise quietly fails. That needed the list of config fields
+allowed to reach the arithmetic, which did not exist. §13.1 now gives the rule
+that generates it: configuration splits **three** ways — runtime knobs (may not
+reach arithmetic at all), locked physics (a constant under `@n`, not a config
+field), and **physics under sweep** (may reach the arithmetic, but a run using
+a non-default value in this category cannot emit a shareable `U-…@n / W-…`
+address). The sharing hole closes because the only config that can change
+results either mints a new version or forfeits the address. And note the trap on the other side: if anyone later adds a
 `replicate: u32` to config expecting N independent runs at one seed, this
-decision makes all N bit-identical. That knob is a seed and belongs in
-`key[1]`.
+decision makes all N bit-identical.
+
+**That knob is *not* a seed and must not go in `key[1]`**, which an earlier
+version of this paragraph asserted. The key reaches every domain, so replicate
+*n* would draw a different periodic table — and the entire point of a replicate
+is to vary the run while holding the chemistry fixed. It goes in the `index`,
+as `Stream::packed_index(patch, replicate)`, where `Domain::Universe` never
+sees it. `packed_index(0, 0) == 0`, so adopting it costs no golden today.
+`key[1]` is spoken for by the world seed and is over-subscribed already; the
+budget is in `borbax-rng`'s module doc.
 
 Fork from a keyframe with decay rates **equalised**, not disabled (§15.3). The
 common rate is set so total removal flux matches the focal run at the fork
@@ -3379,64 +3408,66 @@ Note in the module header that this is a drift control on *persistence only*:
 catalysis produces differential formation rates, which is also selection, and
 equalising it would destroy the chemistry.
 
-**Which `Domain` the shadow draws from is undecided, and both steps below
-depend on it.** `Domain::Shadow` exists but its doc explicitly declines to
-settle the question: a paired `run - shadow` difference *can* have far lower
-variance under common random numbers, but Glasserman & Yao (1992) find the
-class where CRN is provably advantageous "rather limited", CRN decouples in a
-Gillespie setting as the integrated intensities diverge, and per-channel
-indexing reduces without removing that — Anderson (2012) "predicted (though did
-not prove)" it, and notes the time to full decoupling is "quite large" in his
-example. Those decoupling results are for infinitesimal parameter
-perturbations, though Glasserman & Yao's are not; `run - shadow` is selection
-on versus off, a large structural difference, which is the regime where
-coupling decays fastest. Glasserman & Yao also give the one usable *positive* test, and it is not the
-obvious one. Their monotonicity is of **event epochs in the driving variates**,
-not of output in the perturbation, and their stated guideline is to *"look at
-what happens when events change order"*. Their precondition —
-**noninterruption**, "the occurrence of one event never interrupts the clock of
-another" — fails by construction in a low-copy-number beaker, since firing a
-reaction that exhausts a reactant removes every channel needing it. So the
-guarantee does not apply here and the guideline points pessimistic. Note that
-before spending the budget, not after.
+**Decided: the shadow draws from its own streams — `Domain::Shadow` as
+built.** An earlier draft of this note left the question open and then answered
+it badly; both the open version and the answer are replaced here, because the
+reasoning in them was wrong in a way that would have been reused.
 
-**Decided: independent streams — `Domain::Shadow` as built — and spend the
-budget on replicates.** The theory withholds its guarantee for precisely this
-regime, so there is nothing to trade away:
+**What was wrong.** The case against common random numbers rested on three
+legs, and a review refuted all three. Glasserman & Yao's **noninterruption**
+precondition is a property of GSMP *clocks* and is structurally inapplicable to
+the common-reaction-path method, which is what this architecture would actually
+implement. `run - shadow` was filed as their category **II**; it is category
+**I**. And "spend the budget on replicates" framed CRN as a budget trade, which
+it is not — CRN costs no extra samples. Worse, the prize was real and the note
+called it unmeasured: CRP measures a **variance ratio of 0.0007 at T = 400** —
+about 1400x — on *cumulative* statistics, which §15.2 makes the load-bearing
+ones. Anderson (2012) "predicted (though did not prove)" the long-time
+decoupling, and the qualifier belongs in any future citation of it.
 
-- Glasserman & Yao's guarantees rest on **noninterruption**, "the occurrence of
-  one event never interrupts the clock of another". That fails *by
-  construction* in a low-copy-number beaker: firing a reaction that exhausts a
-  reactant removes every channel needing it. Abiogenesis at low counts is the
-  regime, not an edge case.
-- `run − shadow` is their category **II** (structural comparison) at a large
-  perturbation — selection on versus off — which is their weakest case, not the
-  category III sensitivity analysis where CRN is strongest.
-- Anderson (2012) predicts both CRP and Gillespie+CRN converge to crude
-  Monte Carlo variance over long times.
+**The argument that does hold is architectural.** CRN requires draw *k* of
+channel *c* in one run to correspond to draw *k* of channel *c* in the other.
+In Borbax the channel set is not fixed: **a new species mints new reaction
+channels**, and selection on versus off is precisely a difference in which
+species arise and when. So a channel present in both runs was born at different
+simulation times after different numbers of draws, and a channel present in
+only one has no counterpart at all. There is no canonical Poisson index to
+share. That obstruction needs no literature, survives any choice of coupling,
+and is why the default is independent streams.
 
-So CRN here would buy an unmeasured benefit for real implementation cost —
-shared draw coordinates across two runs, and a partial-CRN hazard if any draw
-on the shadow path is missed. Independent streams are already built, already
-correct, and make the two runs trivially separable.
+**This is a decision, not a deferral, and here is what would reopen it** — and
+at 1400x it is worth someone's time: a channel correspondence that is stable
+across both runs. A shared species-ID space minted from a shared stream is the
+obvious candidate. If that exists, CRP becomes implementable and the remaining
+cost is only the partial-CRN hazard below.
 
-**This is a decision, not a deferral, and here is what would reopen it:** a
-measurement showing the variance of the paired `run − shadow` difference is
-materially lower under CRN at fixed budget. That measurement is cheap and
-remains available — but it is an optimisation against a working default, not a
-prerequisite, and the default is independent.
-
-**Whatever is chosen must apply to every draw on the shadow path.** Mixing
-`Shadow` and `Beaker` draws gives partial CRN, silently — the worst of the
-options.
+**Every draw on the shadow path must come from `Domain::Shadow`, and the
+failure mode is worse than the "partial CRN" an earlier draft named.** Under
+the decided design a `Beaker` draw on the shadow path is not a weak coupling —
+it is a **coordinate collision**. Counter-based streams are a pure function of
+`(seed, domain, index)`, so the shadow and the live run reading
+`Stream::new(seed, Domain::Beaker, i)` get *bit-identical* values: a duplicate
+stream, which is the single defect this crate is built to make unrepresentable.
+It is silent, it makes the shadow partly a copy of the run it is meant to be a
+control for, and no test downstream of it can tell.
 
 Steps 3 and 4 do **not** want opposite things, and an earlier draft of this
 note said they did. Step 4's permutation is already immune to the live run's
 draw count: a stream is a pure function of `(seed, domain, index)`, so nothing
 any other stream does can move it. That is `borbax-rng`'s headline property.
 What Step 4 needs from Step 3 is only a **disjoint coordinate range** — an
-allocation question, not a CRN one. The single open question is Step 3's:
-whether the shadow should share the live run's draw *values*.
+allocation question, not a CRN one. Step 3's question — whether the shadow
+shares the live run's draw *values* — is settled above: it does not.
+
+**Step 3 does have a live requirement, and it is the replicate coordinate.** A
+shadow run drawn from `Stream::sub(seed, Domain::Shadow, patch, event)` is
+fully determined by its fork point, so N replicates of it are bit-identical:
+zero measured variance, and every `run - shadow` difference reads as
+significant on the metric whose entire job is to say which differences are not.
+Use `Stream::packed_index(patch, branch)` as the `index`. In V0 both are 0 and
+the packed value is 0, so nothing moves; the reason to write it now rather than
+when the second replicate appears is that at that point every stream coordinate
+downstream of a patch moves, and the goldens with them.
 
 - [ ] **Step 4: Randomised-catalysis control** (`shadow.rs`)
 

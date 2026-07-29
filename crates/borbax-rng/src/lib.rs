@@ -55,12 +55,48 @@
 //! number, with potentially dire consequences for simulation accuracy."
 //!
 //! The 128-bit key is half-used on purpose: word 0 is the universe seed, word
-//! 1 is reserved for the world seed. **Two words, two seeds** — §13.1's third
-//! element, `config_hash`, is deliberately *not* a stream coordinate at all.
+//! 1 is reserved for the world seed. **Two words, two seeds** — but the
+//! reservation needs one qualifier it did not have, and four things had been
+//! promised those two words at once. The budget, stated once:
+//!
+//! | Coordinate | Home | Status |
+//! |---|---|---|
+//! | universe seed | `key[0]` | settled |
+//! | world seed | `key[1]`, **universe-scoped domains excepted** | see below |
+//! | `config_hash` | not a coordinate — it is `@n` | settled |
+//! | replicate | `index`, via [`Stream::packed_index`] | settled, see below |
+//! | branch sub-seed (§13.3) | **unallocated** | V1's problem, named below |
+//!
+//! **The world seed cannot reach universe-scoped domains.** `universe_gen` is
+//! generated once per universe seed and cached; two worlds under one universe
+//! share a periodic table by construction. So keying [`Domain::Universe`],
+//! [`Domain::Naming`], [`Domain::Molecule`], [`Domain::Fold`] and
+//! [`Domain::Hash`] on `[universe, world]` would regenerate the chemistry for
+//! every planet, which is the architecture inverted. `key[1]` is zero for
+//! those domains. An unqualified "word 1 is the world seed" was the earlier
+//! reservation and it is not safe to implement literally.
+//!
+//! **A replicate is not a key, and putting it in `key[1]` would be a defect
+//! rather than a contested choice.** A plan note once said that knob "is a
+//! seed and belongs in `key[1]`". It cannot: the key reaches *every* domain,
+//! so replicate *n* would draw a different periodic table — and the whole
+//! purpose of replicates is to vary the run while holding the chemistry fixed.
+//! It goes in the `index`, packed, where `Domain::Universe` never sees it.
+//!
+//! **The branch sub-seed has no home yet, and this is the honest state.**
+//! §13.3 forks a keyframe with a new sub-seed; the two available shapes are a
+//! third `index` field (there is no spare counter word — all four are spoken
+//! for) or displacing the world seed in `key[1]` for world-scoped domains
+//! only. Both are V1 decisions that need the keyframe format, which does not
+//! exist. What must not happen is a fifth consumer quietly assuming `key[1]`
+//! is free.
+//!
+//! §13.1's third element,
+//! `config_hash`, is deliberately *not* a stream coordinate at all.
 //! Keying on it would make universe generation config-dependent, so changing a
 //! keyframe interval would regenerate the periodic table and break §13.4's
 //! promise that a shared `U-…/W-…` pair means the same planet. It belongs in
-//! the *physics version* — §13.1's `config_hash` and §13.3's `@n` are the same
+//! the *physics version* — §13.1's `config_hash` and §6's `@n` are the same
 //! thing under two names, so it travels in the shared world address rather than
 //! beside it, and a recipient with different physics has a visibly different
 //! address. Runtime knobs (keyframe interval, output, thread count) may not
@@ -127,7 +163,7 @@ use philox::philox4x64_10;
 /// `next_f64` call to universe generation would shift every subsequent draw
 /// in that stream, so every existing seed would silently generate a
 /// *different* periodic table. Worlds shared as `U-7F3A21C9` would stop
-/// meaning what they meant (§13.3), and nothing would announce it.
+/// meaning what they meant (§6), and nothing would announce it.
 ///
 /// Two rules follow, and both are cheap:
 ///
@@ -175,46 +211,43 @@ pub enum Domain {
     Beaker = 7,
     /// The neutral shadow run (§2.7, §15.3).
     ///
-    /// **Its earlier justification — "must not consume the live run's draws" —
-    /// was vacuous, and the correction matters.** A `Stream` is a value with
-    /// its own counter and `next_u64` takes `&mut self`, so a shadow drawing
-    /// from its own `Stream` is *arithmetically incapable* of advancing the
-    /// live run's, whatever domain it uses. That guarantee is delivered by the
-    /// counter-based construction for every domain and buys this variant
-    /// nothing.
+    /// **The shadow draws from its own streams rather than sharing the live
+    /// run's. Decided — and not for either reason this comment gave before.**
     ///
-    /// What this variant does is make the shadow's draws *different* from the
-    /// live run's — and **that is now the decided behaviour, not an open
-    /// question.** §15.3 makes every emergence claim a `run − shadow`
-    /// difference, and common random numbers would in principle reduce the
-    /// variance of that difference. The theory withholds its guarantee here:
+    /// Common random numbers are the alternative, and the prize is not small:
+    /// a common-reaction-path coupling measures a **variance ratio of 0.0007
+    /// at T = 400** on *cumulative* statistics, which §15.2 makes the
+    /// load-bearing ones. Any argument that dismisses CRN as speculative is
+    /// wrong, and this comment made it twice — once from a
+    /// **noninterruption** failure, which is a property of GSMP clocks and
+    /// structurally inapplicable to CRP; once by filing `run − shadow` as
+    /// Glasserman & Yao category II when it is category **I**.
     ///
-    /// - Glasserman and Yao's results rest on **noninterruption** — "the
-    ///   occurrence of one event never interrupts the clock of another" —
-    ///   which fails *by construction* in a low-copy-number beaker, since
-    ///   firing a reaction that exhausts a reactant removes every channel
-    ///   needing it. That is the abiogenesis regime, not an edge case.
-    /// - `run − shadow` is their **structural-comparison** category at a large
-    ///   perturbation, their weakest case, not the sensitivity analysis where
-    ///   CRN is strongest.
-    /// - Anderson (2012) predicts both the common-reaction-path method and
-    ///   Gillespie+CRN converge to crude Monte Carlo variance over long times,
-    ///   noting the time to full decoupling is "quite large" in his example
-    ///   and that for that example "the full decoupling ... does not seem to
-    ///   take place".
+    /// **The obstruction is that the pairing CRN needs does not exist here.**
+    /// A new species mints new reaction channels, and CRN requires draw *k* of
+    /// channel *c* in one run to correspond to draw *k* of channel *c* in the
+    /// other. Selection on versus off is *precisely* a difference in which
+    /// species arise and when — so a channel present in both runs was born at
+    /// different times after different numbers of draws, and a channel present
+    /// in only one has no counterpart at all. There is no canonical Poisson
+    /// index to share. That is an architectural obstruction rather than a
+    /// variance claim, and unlike the two it replaces it needs no literature
+    /// and cannot be refuted by a better-chosen coupling.
     ///
-    /// So CRN would buy an unmeasured benefit for real cost — shared draw
-    /// coordinates across two runs, and silent *partial* CRN if any draw on the
-    /// shadow path were missed. Independent streams are simpler and separable.
-    /// Task 20b carries what would reopen it: a measurement that the paired
-    /// difference's variance is materially lower under CRN at fixed budget.
+    /// Task 20b carries what would reopen it, and given the measured 1400×
+    /// it should be looked at: a channel correspondence stable across both
+    /// runs — a shared species-ID space minted from a shared stream is the
+    /// obvious candidate — after which the remaining cost is the partial-CRN
+    /// hazard of missing a draw on the shadow path.
     ///
     /// The variant's *original* justification — "must not consume the live
     /// run's draws" — was vacuous and is retracted. A `Stream` is a value with
-    /// its own counter, so a shadow drawing from its own stream is
-    /// arithmetically incapable of advancing the live run's, whatever domain it
-    /// uses. That guarantee is delivered by the counter-based construction for
-    /// every domain and buys this variant nothing.
+    /// its own counter, so a shadow drawing from its own stream cannot advance
+    /// the live run's whatever domain it uses; every domain gets that from the
+    /// counter-based construction.
+    ///
+    /// See [`Stream::packed_index`] for the replicate coordinate this run
+    /// needs and does not yet use.
     Shadow = 8,
     /// Hashing only — cache keys and content digests. Separated from the live
     /// domains so that using a `Stream` as a hash function cannot couple to
@@ -377,10 +410,13 @@ fn range_from(u: f64, lo: f64, hi: f64) -> f64 {
 #[derive(Clone)]
 pub struct Stream {
     /// `[universe_seed, reserved]`. The second word is deliberately unused and
-    /// deliberately present: it is the world seed's home, and a 64-bit key
-    /// would force the two seeds together — exactly the hashing that produced
-    /// permanent stream collisions in the first design. §13.1's third element,
-    /// `config_hash`, is not a stream coordinate; see the module doc.
+    /// deliberately present: it is the world seed's home for world-scoped
+    /// domains, and a 64-bit key would force the two seeds together — exactly
+    /// the hashing that produced permanent stream collisions in the first
+    /// design. It stays zero for universe-scoped domains, or one universe's
+    /// chemistry would vary by planet. §13.1's third element, `config_hash`,
+    /// is not a stream coordinate. The full key/counter budget, including the
+    /// one coordinate that still has no home, is in the module doc.
     key: [u64; 2],
     /// `[domain, index, sub, block]` — one 64-bit field each, no packing.
     /// Because Philox is a bijection of the counter, distinct coordinates
