@@ -409,9 +409,38 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
             MIN_ENERGY_SCALE
         };
         let deficit = (peak_energy - e.energy_per_unit) / scale;
-        // **Cap at 1.0, and the 0.9 it replaces was never argued.** `decay_rate`
-        // is a probability per world-year (§7.1), so 1.0 is the value the type
-        // implies and needs no defence. 0.9 does need one, and had none —
+        // **Cap at 1.0 — and the reason this comment used to give was wrong.
+        // Left standing deliberately; Task 15 owns the fix.** It said
+        // `decay_rate` is a probability per world-year (§7.1), so 1.0 "is the
+        // value the type implies and needs no defence". §7.1 does say that —
+        // and Task 15 hands this quantity to the scheduler as a **Gillespie
+        // propensity**, which is a rate constant: inverse time, defined on an
+        // infinitesimal interval, and *unbounded above* (Gillespie 2007, Eq. 2,
+        // `a_j(x) = c_j x_1` for the unimolecular case). Against that consumer a
+        // ceiling is not a saturation but a category error, and 200 summed
+        // per-interval probabilities for a `MAX_POLYMER` chain is not a
+        // probability of anything.
+        //
+        // **Deferred, not overlooked.** Deleting the cap costs 0.7% of the
+        // abundance-weighted mean decay and *gains* 2.1% of the table's
+        // max/median ratio spread — which is the quantity §9.4's differential
+        // persistence is actually about. It is not applied here because it
+        // shares a fix with two larger items now written into Task 15 as
+        // requirements 4 and 5: the radiogenic channel carries no scale constant
+        // and so dominates cleave by 10^3..10^7, and §7.1's documented *type* is
+        // what has to change. One golden regeneration, not three.
+        //
+        // **The cause is upstream of the cap.** `contacts_upto` returns 0 at
+        // `units <= 1`, so `energy_per_unit(1) = -sigma` exactly and
+        // `deficit(1) = 1 + sigma/peak_energy > 1` in **every** universe —
+        // measured, the monomer's `decay_rate` takes exactly one value across
+        // 20 000 universes. The strain term charges a lone unit the full
+        // per-site penalty of a lattice whose own comment above says "each shell
+        // is stretched over a larger radius than the one below", and at N = 1
+        // there is no shell below. Same root cause as the open `N^(2/3)` item.
+        //
+        // **The 0.9 this replaced was still worse, and that measurement
+        // stands** —
         // measured over the 2916-universe grid it binds on 1.19% of elements
         // but on **at least one element in every universe**, and those elements
         // sit at median position N/n_elements = 0.011: it is the monomer, the
@@ -423,7 +452,11 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         //
         // If a future measurement wants the monomer to persist longer, that is
         // a physics claim about feedstock and belongs in §9.4 with the
-        // measurement attached, not in a magic number here.
+        // measurement attached, not in a magic number here. And the feedstock
+        // defence does not hold in V0 regardless: there is no inflow — the
+        // `Beaker` API is `{new, step, time, counts, species_count}` and §11's
+        // open boundaries are V1 — so a closed beaker losing its most abundant
+        // element does not turn over, it empties.
         e.decay_rate = if deficit > 1.0 { 1.0 } else { deficit };
     }
 
