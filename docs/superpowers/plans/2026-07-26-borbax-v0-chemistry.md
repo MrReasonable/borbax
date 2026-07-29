@@ -2611,27 +2611,6 @@ pub fn find_raf(
 - Consumes: `Interner`, `Reaction`, `decay_channels`, `Universe`, `Stream`
 - Produces: `SegmentTree::{with_capacity, set, total, sample}`, `Beaker::{new, step, time, counts, species_count}`, `ChannelId(u32)`
 
-**Before Step 1 — the waiting-time draw, settled in Task 3 and easy to get
-wrong here.** Gillespie's direct method takes `tau = (1/a0) * ln(1/r1)`, which
-needs `r1 > 0`. `Stream::next_f64` returns `[0, 1)` — **closed at zero and open
-at one, the wrong half-open direction for this**. So `-det_math::ln(s.next_f64())`
-is `+inf` once in 2^53 draws: the clock jumps to infinity and the run silently
-stops scheduling, with no panic and nothing in the state hash.
-
-Write it as `-det_math::ln(1.0 - u)`, which is total over the whole reachable
-domain and truncates at 36.7368 — a cap on the waiting time rather than an
-infinity, and the omitted tail has mass 2^-53. **Test it at the value**, not by
-sampling: `u == 0.0` is **reachable**, with probability 2^-53, and is exactly
-the input that breaks the naive form — so a sampling test will never find it
-and a direct one always will. `borbax-rng`'s `next_f64` doc carries the
-same warning, and `normal_from` is the worked example of clamping rather than
-redrawing.
-
-**Also settle the draw-count contract here.** `next_range` rejection-samples,
-so a step's draw count is value-dependent — stream position is therefore *not*
-a function of the event count, which anything reconstructing a run will
-otherwise assume.
-
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
@@ -2804,11 +2783,34 @@ propensities, a free-slot list, and a `WorldYear` clock.
 1. Compute `total = tree.total()`. If zero, the beaker is dead — return.
 2. Draw `u1`, advance the clock by `-ln(u1) / total` (via `det_math::ln`).
 
-   **Guard `u1 == 0`.** `next_f64` is uniform on `[0, 1)`, so zero is
-   reachable, and `ln(0)` is `-inf` — the clock would jump to infinity and the
-   run would end silently. Draw from `(0, 1]` by using `1.0 - u1`; Exp(1) is
-   invariant either way. This wants its own test.
+   **Guard `u1 == 0`.** `next_f64` is uniform on `[0, 1)` — closed at zero and
+   open at one, the wrong half-open direction for this — so zero is reachable
+   with probability 2^-53, and `ln(0)` is `-inf`: the clock jumps to infinity
+   and the run silently stops scheduling, with no panic and nothing in the
+   state hash. Draw from `(0, 1]` by using `1.0 - u1`; Exp(1) is invariant
+   either way, and `-ln(1 - u)` is total, truncating at 36.7368 — a cap on the
+   waiting time rather than an infinity, with the omitted tail at mass 2^-53.
+   (`1.0 - u` is exact for every `u` on the 2^-53 grid, which is what makes
+   36.7368 a true bound rather than an approximation.)
+
+   **Test it at the value.** `u == 0.0` is reachable but only at 2^-53, so a
+   sampling test will never find it and a direct one always will. `borbax-rng`'s
+   `normal_from` is the worked example: it is private precisely so its boundary
+   can be called directly.
+
+   **And pin the draw-count contract while you are here.** `next_range`
+   rejection-samples, so a step's draw count is value-dependent — stream
+   position is therefore *not* a function of the event count, which anything
+   reconstructing a run will otherwise assume.
 3. Draw `u2`, select a channel with `tree.sample(u2)`.
+
+   **Assert `tree.total()` is finite before sampling.** A single NaN propensity
+   anywhere in the tree makes `sample` return the **last** channel on every
+   call — measured, not predicted — so the beaker fires one reaction forever
+   and produces clean-looking, completely wrong output. No crash, nothing in
+   the state hash. This is the hazard `borbax-rng`'s `next_f64_range` doc used
+   to describe, wrongly attributed to that function and with the channel
+   inverted; it lives here because this is where it can actually happen.
 4. Apply it: decrement reactant counts, increment product counts. Products
    were resolved when the channel was created (spec §8.6), so no
    canonicalisation happens here.
@@ -3229,13 +3231,29 @@ counter or intra-block offset and derives no `serde`, so "fork from a keyframe"
 has no route as written. Two options, and the choice is not free:
 
 1. **Expose position.** Keeps the 4x-amortised block buffer, and makes
-   `(counter[3], spent)` part of the §13.2 contract. Note the trap measured in
-   Task 3: `Stream` stores position *twice*, and a field-wise constructor —
-   the obvious `Stream::at(seed, domain, index, n)`, or a `#[derive(Default)]`,
-   or a field-wise `Deserialize` — emits `4 - n%4` zeros and then **skips a
-   block**. The discriminating test is every `n` in `0..=16`, not just
-   multiples of four; a test that checks only `n % 4 == 0` passes against
-   precisely the broken implementation.
+   `(counter[3], spent)` part of the §13.2 contract. `Stream` stores position
+   *twice* — as `counter[3]` and as `spent` into a `buf` that must match the
+   previous block — and nothing in the type enforces the correspondence, so a
+   field-wise constructor gets it wrong. **Two different ways**, which the
+   test must cover both of:
+
+   - one emits `4 - n%4` zeros and skips a block — caught at every `n`,
+     including multiples of four;
+   - one keeps `spent = 4`, emits no zeros at all, and silently truncates `n`
+     down to a multiple of four — **invisible to a multiples-of-four test**.
+
+   So the discriminating test is every `n` in `0..=16`. An implementer who
+   tests `n ∈ {0,4,8}`, sees no zeros, and concludes the trap did not fire has
+   shipped the second variant, and every keyframe restore silently rewinds up
+   to three draws.
+
+   **If position is exposed, expose position only.** `key[0]` is the universe
+   seed, and it is not recoverable from a `Stream` today — verified, `E0599`.
+   That is what makes a per-molecule sub-stream impossible to mint inside a
+   routine that merely holds a `&Stream`, which is §8.6's barrier at every
+   leaf frame. A field-wise `Serialize`/`Deserialize` exposes `key` by
+   definition and hands that barrier away. Pin it with a consumer-crate probe:
+   `s.seed()` must not compile.
 2. **Drive the counter from the logical simulation state** — Salmon et al.'s
    own recommendation, and the paper names this exact failure: "the error
    identified by [5] arose because of a failure to properly checkpoint and
@@ -3253,13 +3271,23 @@ words and `borbax-rng` allocates all six — `key = [universe_seed, reserved]`,
 **`config_hash` belongs in keyframe identity, not in stream keying**, and the
 argument does not need the keyframe format to exist:
 
-- A config change already changes the physics, so the run already differs. It
-  does not additionally need different *draws* to differ.
-- Keying on it would actively destroy something wanted. Two configs sharing
-  seeds would then draw different numbers — throwing away common random
-  numbers across parameter settings, which is the standard variance-reduction
-  device for exactly the comparison a config sweep makes, and which Step 3
-  above is separately trying to obtain for the shadow.
+- **Keying on it would make universe generation config-dependent.**
+  `Stream::new(universe_seed, Domain::Universe, i)` generates the periodic
+  table, so folding config into the key means changing a keyframe interval or
+  an output setting regenerates the chemistry. That breaks §13.4's promise that
+  a shared `U-…/W-…` pair means the same planet — the same argument `Domain`'s
+  own doc already makes for append-only discriminants. This rests on the spec,
+  not on contested statistics, and is the decisive reason.
+- Supporting, not load-bearing: keying would also throw away common random
+  numbers across parameter settings, the standard variance-reduction device
+  for a config sweep. Stated as "keeps the option open" rather than "obtains",
+  because 25 lines below this same note says CRN's value here is unmeasured
+  and must be settled by measurement — an argument cannot be decisive here and
+  contested there.
+- A config change that reaches the arithmetic already changes the run, so it
+  does not additionally need different draws. (True only of physics-affecting
+  entries; keyframe interval and output settings change nothing, which is why
+  this is not the lead reason.)
 - The real hazard is replaying a keyframe under a *different* config and
   silently getting a different trajectory. That is a load-time check, not a
   keying problem.
@@ -3289,10 +3317,15 @@ settle the question: a paired `run - shadow` difference *can* have far lower
 variance under common random numbers, but Glasserman & Yao (1992) find the
 class where CRN is provably advantageous "rather limited", CRN decouples in a
 Gillespie setting as the integrated intensities diverge, and per-channel
-indexing reduces without removing that (Anderson 2012). All of that literature
-is for infinitesimal parameter perturbations; `run - shadow` is selection on
-versus off, a large structural difference, which is the regime where coupling
-decays fastest.
+indexing reduces without removing that — Anderson (2012) "predicted (though did
+not prove)" it, and notes the time to full decoupling is "quite large" in his
+example. Those decoupling results are for infinitesimal parameter
+perturbations, though Glasserman & Yao's are not; `run - shadow` is selection
+on versus off, a large structural difference, which is the regime where
+coupling decays fastest. Glasserman & Yao also give the one usable *positive*
+test — their guarantees rest on **monotonicity and continuity**, so ask whether
+the shadow's output is monotone in the perturbation before spending the
+budget.
 
 **Settle it by measurement, not argument:** run both indexings at fixed budget
 and compare the variance of the paired difference. If CRN's is not lower, use
@@ -3300,10 +3333,15 @@ independent streams and spend the budget on replicates instead.
 
 **Whatever is chosen must apply to every draw on the shadow path.** Mixing
 `Shadow` and `Beaker` draws gives partial CRN, silently — the worst of the
-options. Note also that Steps 3 and 4 want *opposite* things: the persistence
-shadow wants the live run's draws where it can get them; the randomised-
-catalysis control needs a permutation that does **not** move when the live
-run's draw count changes, and may want its own `Domain`.
+options.
+
+Steps 3 and 4 do **not** want opposite things, and an earlier draft of this
+note said they did. Step 4's permutation is already immune to the live run's
+draw count: a stream is a pure function of `(seed, domain, index)`, so nothing
+any other stream does can move it. That is `borbax-rng`'s headline property.
+What Step 4 needs from Step 3 is only a **disjoint coordinate range** — an
+allocation question, not a CRN one. The single open question is Step 3's:
+whether the shadow should share the live run's draw *values*.
 
 - [ ] **Step 4: Randomised-catalysis control** (`shadow.rs`)
 

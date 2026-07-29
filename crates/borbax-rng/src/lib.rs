@@ -55,8 +55,14 @@
 //! number, with potentially dire consequences for simulation accuracy."
 //!
 //! The 128-bit key is half-used on purpose: word 0 is the universe seed, word
-//! 1 is reserved for the world seed, so §13.1's `(universe_seed, world_seed,
-//! config_hash)` tuple never has to be compressed into one word.
+//! 1 is reserved for the world seed. **Two words, two seeds** — §13.1's third
+//! element, `config_hash`, is deliberately *not* a stream coordinate at all.
+//! Keying on it would make universe generation config-dependent, so changing a
+//! keyframe interval would regenerate the periodic table and break §13.4's
+//! promise that a shared `U-…/W-…` pair means the same planet. It belongs in
+//! keyframe identity, with a load-time refusal on mismatch; see Task 20b
+//! Step 3. An earlier version of this paragraph implied the key accommodates
+//! all three, which is three values in two words.
 
 #![no_std]
 
@@ -184,13 +190,19 @@ pub enum Domain {
     /// "rather limited". Against that, common random numbers decouple in a
     /// Gillespie setting as the integrated intensities diverge; indexing draws
     /// per reaction channel (the common-reaction-path method) *reduces but
-    /// does not remove* that, and Anderson (2012) shows it decouples too.
+    /// does not remove* that — Anderson (2012) "predicted (though did not
+    /// prove)" that both converge to crude Monte Carlo variance over long
+    /// times, and notes the time to full decoupling is "quite large" in his
+    /// example.
     ///
-    /// **And the whole literature is for infinitesimal parameter
-    /// perturbations.** `run − shadow` is selection on versus selection off, a
-    /// large structural difference — the regime where every one of these
-    /// couplings decays fastest. The pessimistic side of this is understated
-    /// above, not overstated.
+    /// **The decoupling results are for infinitesimal parameter
+    /// perturbations** — Anderson's and the common-reaction-path work, though
+    /// *not* Glasserman and Yao's, who treat system comparison generally.
+    /// `run − shadow` is selection on versus off, a large structural
+    /// difference, which is the regime where those couplings decay fastest.
+    /// Their positive result is the more useful half and goes unused here: the
+    /// guarantees rest on **monotonicity and continuity**, which is a test you
+    /// can apply before spending the measurement budget.
     ///
     /// §15.3 also defines a *second* control that this variant will be read as
     /// covering and does not: randomising which molecule catalyses which
@@ -355,11 +367,11 @@ fn range_from(u: f64, lo: f64, hi: f64) -> f64 {
 /// whole point of the change.
 #[derive(Debug, Clone)]
 pub struct Stream {
-    /// `[universe_seed, reserved]`. The second word is deliberately unused
-    /// and deliberately present: §13.1's reproducibility tuple is
-    /// `(universe_seed, world_seed, config_hash)`, and a 64-bit key would
-    /// force those to be compressed together — which is exactly the hashing
-    /// that produced permanent stream collisions in the first design.
+    /// `[universe_seed, reserved]`. The second word is deliberately unused and
+    /// deliberately present: it is the world seed's home, and a 64-bit key
+    /// would force the two seeds together — exactly the hashing that produced
+    /// permanent stream collisions in the first design. §13.1's third element,
+    /// `config_hash`, is not a stream coordinate; see the module doc.
     key: [u64; 2],
     /// `[domain, index, sub, block]` — one 64-bit field each, no packing.
     /// Because Philox is a bijection of the counter, distinct coordinates
@@ -401,8 +413,9 @@ impl Stream {
     ///
     /// This is still the property the first design did not have, and its
     /// absence was not theoretical: hashing the same coordinates into a
-    /// 64-bit key produced five permanent seed-independent collisions below
-    /// index 2³⁰.
+    /// 64-bit key produced permanent seed-independent collisions — five below
+    /// index 2³⁰ against 1.125 expected, which the module doc records as a
+    /// local fluctuation rather than structure.
     ///
     /// `Stream::new` does no Philox work — it is field assignment, and the
     /// first draw pays for the first block.
@@ -418,7 +431,7 @@ impl Stream {
     }
 
     /// Open a sub-stream of `(seed, domain, index)` — one per fold attempt,
-    /// one per species — without disturbing the parent.
+    /// one per species.
     ///
     /// **This is a constructor rather than a method on [`Stream`], and that is
     /// what makes nesting impossible instead of merely forbidden.** The
@@ -429,8 +442,13 @@ impl Stream {
     /// That is a duplicate stream, precisely the hazard this design exists to
     /// remove, and it shipped with a test asserting it as the contract.
     ///
-    /// There is no operation here that takes a `Stream` and yields a `Stream`,
-    /// so the second level cannot be written down. The alternative —
+    /// No operation here *derives a different* stream from an existing one, so
+    /// the second level cannot be written down. (`Clone` does take a `&Stream`
+    /// and yield a `Stream` — an earlier version of this sentence said nothing
+    /// does, which is false and checkable. It duplicates rather than extends,
+    /// `!Copy` exists to make that duplication visible at the call site, and
+    /// `xtask` enforces the real invariant: no `pub fn` in this crate takes
+    /// `&self` and returns `Self`.) The alternative —
     /// `Stream<const FORKED: bool>` — would have made every downstream
     /// function that merely *draws* generic over depth, since the ordinary
     /// pattern is to hand a sub-stream to a routine that anneals. Removing the
@@ -450,7 +468,26 @@ impl Stream {
     /// **One sub-level is enough for §13.1**, which asks for a stream per
     /// subsystem, per patch, per time index — `domain`, `index`, `sub`, with
     /// `block` left as the draw counter. A further level needs its own
-    /// [`Domain`], or its two indices composed before the call.
+    /// [`Domain`], or its two indices **packed injectively** before the call —
+    /// a 32|32 shift, not a hash. Measured, a 64-bit hash of two coordinates
+    /// collides only about 4e-7 of the time at 4e6 pairs, so it is nothing
+    /// like the original defect; but it silently moves the guarantee from
+    /// provably distinct to improbably colliding, and this file's whole
+    /// argument is that those are different.
+    ///
+    /// **A sub-index range is owned by exactly one call site.** This warning
+    /// existed on `fork` and was deleted with it; the hazard was not. Two sites
+    /// both drawing `Stream::sub(seed, Domain::Fold, 7, 0..k)` share a
+    /// sequence — a duplicate stream arriving through the one door `!Copy`
+    /// cannot guard, and the only such door left. Give each call site a
+    /// disjoint sub-range, or its own [`Domain`].
+    ///
+    /// The refactor made this **more** reachable, not less, and that is the
+    /// honest cost of it: `fork` at least required a `&Stream` in hand, so
+    /// provenance was structural. A constructor lets anything holding the seed
+    /// mint any sub-stream for any `(domain, index)`. Measured consolation:
+    /// transposing `index` and `sub` is a bijection on the pair, so it moves
+    /// every golden loudly rather than aliasing two streams silently.
     ///
     /// Sub-coordinates are offset by one because the root occupies zero. That
     /// costs exactly one value: `sub(.., u64::MAX)` wraps onto the root, since
@@ -469,15 +506,23 @@ impl Stream {
 
     /// The next raw 64 bits.
     ///
-    /// **Cost, both shapes, because reporting only one of them misleads.**
-    /// Against the mixer this replaced, release: 1.544 → 1.639 ns in a
-    /// 1000-draw accumulator loop (**+6.2%**), and 79.2 → 96.7 µs over a
-    /// 20 000-step fold anneal (**+22%**). Put a `black_box` on every single
-    /// draw and it reads 1.37 → 3.52 ns (2.6×) — a correct measurement of a
-    /// serialised pipeline that no caller doing work between draws will pay,
-    /// and the number this commit originally reported on its own. The kernel
-    /// sits at 94.5% of the hardware multiplier-port limit, so there is
-    /// essentially nothing left to win here.
+    /// **Cost: about 3.7 ns per draw on aarch64 release, in every loop shape
+    /// measured.** An earlier version of this comment carried four figures
+    /// that do not reproduce, and one of them — 1.639 ns — is below the
+    /// **3.098 ns single-stream latency floor** and so was never achievable:
+    /// a Philox block is ten sequential rounds, each gated on a 4-cycle
+    /// `umulh`, and a 4-word buffer never has two blocks in flight. The
+    /// companion claims that a `black_box`-per-draw shape costs 2.6× (it is
+    /// 2.2% *faster*) and that the kernel sits at 94.5% of the multiplier-port
+    /// limit (it is 41.8%; the binding constraint is round-to-round latency,
+    /// not port throughput) were artifacts of the same harness — whose noise
+    /// floor was never measured, and which reported a **+18.9% regression at
+    /// p = 0.00 on a byte-identical rebuild**.
+    ///
+    /// The lesson is kept rather than the numbers: a microbenchmark of a
+    /// cheap function measures the harness as much as the function, and the
+    /// first benchmarks in a fresh process land on an efficiency core and read
+    /// 3× slow.
     ///
     /// `const` is not for the sake of const contexts — a stream is drawn from
     /// at runtime. It is a cheap guardrail: a `const fn` cannot reach a clock,
@@ -596,17 +641,28 @@ impl Stream {
     /// non-finite `lo` is not.** Measured, and the asymmetry is the part worth
     /// knowing: `hi = NaN` returns `lo`; `hi = +inf` returns `f64::MAX` for
     /// every draw; but **`lo = -inf` with finite `hi` returns `-inf` on every
-    /// draw**, because the fallback returns `lo` and `lo` is what is broken.
+    /// draw** — and *not* via the fallback, which is the mechanism an earlier
+    /// version of this comment named. `-inf < hi` is true, so the guard
+    /// **passes** and the convex combination produces it: `lo * (1.0 - u)` is
+    /// `-inf` for every reachable `u`, since `1 - u > 0` always.
     /// (`lo = -inf, hi = +inf` is finite, at `f64::MAX` — the endpoint clamp
     /// catches the `NaN` that `-inf + inf` produces.) Tightening the guard to
     /// demand finite bounds does *not* fix this: the fallback still returns
-    /// `lo`. There is no honest value to return for a non-finite `lo`, so the
-    /// behaviour is pinned rather than invented.
-    /// This function is named below as the shape a Gillespie channel selection
-    /// over `[0, total_propensity)` would use — so a single NaN rate anywhere
-    /// in that sum makes this return `0.0` forever and the scheduler picks
-    /// channel 0 for the rest of the run, with no crash and nothing in the
-    /// state hash. Pinned in `non_finite_bounds_are_swallowed_not_propagated`
+    /// `lo`. Worse, it would **regress three cases that currently return
+    /// finite in-range values** — `(0.0, +inf)` and `(1.0, +inf)` from
+    /// `f64::MAX` to `lo`, and `(-inf, +inf)` from `f64::MAX` to `-inf` — and
+    /// the suite has teeth here: applying it fails
+    /// `non_finite_bounds_are_swallowed_not_propagated`. There is no honest
+    /// value to return for a non-finite `lo`, so the behaviour is pinned
+    /// rather than invented.
+    /// **The consumer this once named does not exist.** Task 18's selector is
+    /// `SegmentTree::sample(u)` with `u` from `next_f64`, and the propensity
+    /// multiply happens inside `sample`; `next_f64_range` appears in the plans
+    /// only with literal constant bounds. Measured, the real hazard also
+    /// inverts: a single NaN rate makes `sample` pick the **last** channel
+    /// forever, not channel 0. That belongs to Task 18 — `total()` must be
+    /// asserted finite before `sample` — and is written there rather than
+    /// here. Pinned in `non_finite_bounds_are_swallowed_not_propagated`
     /// so the behaviour is a decision rather than an accident; the caller is
     /// responsible for not building a non-finite bound.
     ///
@@ -795,14 +851,66 @@ mod tests {
         assert!((mean - 0.5).abs() < 0.01, "mean was {mean}");
     }
 
+    /// **The first draft compared mismatched positions** — `f1.next_u64()`
+    /// against `f3.next_u64()` *after* `f1` had already been advanced by the
+    /// equality check, so it tested `f1`'s word 1 against `f3`'s word 0. That
+    /// passes with the `sub` argument ignored entirely: measured, a mutation
+    /// writing a constant into `counter[2]` (making every sub-stream the same
+    /// stream) left it green, because `w1 != w0` holds with probability
+    /// 1 - 2^-64 whatever the streams are. It was renamed from its `fork`
+    /// ancestor rather than repaired. Compare position for position.
     #[test]
     fn sub_streams_are_deterministic_and_independent() {
         let mut f1 = Stream::sub(1, Domain::Fold, 0, 3);
         let mut f2 = Stream::sub(1, Domain::Fold, 0, 3);
         let mut f3 = Stream::sub(1, Domain::Fold, 0, 4);
-        assert_eq!(f1.next_u64(), f2.next_u64());
-        assert_ne!(f1.next_u64(), f3.next_u64());
+        let a: Vec<u64> = (0..8).map(|_| f1.next_u64()).collect();
+        let b: Vec<u64> = (0..8).map(|_| f2.next_u64()).collect();
+        let c: Vec<u64> = (0..8).map(|_| f3.next_u64()).collect();
+        assert_eq!(a, b, "the same sub-coordinate gave different streams");
+        assert_ne!(a, c, "different sub-coordinates gave the same stream");
     }
+
+    /// **`Stream::sub`'s encoding was pinned by nothing, and the gap was not
+    /// theoretical.** Measured: replacing `sub.wrapping_add(1)` with `!sub`
+    /// survives all 38 other tests, because `!` is a bijection (so injectivity
+    /// holds) and `!u64::MAX == 0` (so the root alias holds) — the only two
+    /// properties the `sub`-named tests check. It changes every sub-stream in
+    /// every universe: 0 of the first 4 words survive. `Stream::new` carried
+    /// two goldens and `Stream::sub` carried none, with nothing explaining the
+    /// asymmetry.
+    ///
+    /// Fold attempts and per-species work draw from sub-streams, so a tidy-up
+    /// of that one line would silently regenerate every fold trajectory ever
+    /// produced — observable only as "the folds got worse".
+    ///
+    /// A failure here means the same thing as any other moved golden.
+    #[test]
+    fn sub_streams_are_pinned() {
+        let mut got = [0_u64; 9];
+        let mut w = got.iter_mut();
+        for (index, sub) in [(0_u64, 0_u64), (0, 3), (7, 2)] {
+            let mut s = Stream::sub(0x5EED, Domain::Fold, index, sub);
+            for _ in 0..3 {
+                if let Some(slot) = w.next() {
+                    *slot = s.next_u64();
+                }
+            }
+        }
+        assert_eq!(got, GOLDEN_SUB_STREAMS);
+    }
+
+    const GOLDEN_SUB_STREAMS: [u64; 9] = [
+        14_164_468_725_724_755_671,
+        12_873_852_386_610_874_040,
+        7_495_883_468_757_775_053,
+        9_018_786_775_305_268_180,
+        3_890_255_439_183_115_723,
+        11_443_634_209_256_710_128,
+        9_659_346_300_237_333_348,
+        3_948_479_596_175_888_705,
+        2_411_997_774_858_210_089,
+    ];
 
     /// A sub-stream writes `sub + 1` into the counter's third field, so
     /// distinct sub-coordinates are distinct counters and Philox's bijectivity
@@ -1089,9 +1197,14 @@ mod tests {
         // A non-finite `lo` is not: the fallback hands it straight back.
         assert_eq!(range_from(0.5, f64::NAN, 1.0).to_bits(), f64::NAN.to_bits());
         for u in [0.0, 0.5, 1.0 - f64::EPSILON] {
-            assert!(
-                range_from(u, f64::NEG_INFINITY, 1.0).is_infinite(),
-                "if a non-finite lo now yields a finite value, the doc on \
+            // `.to_bits()`, not `is_infinite()`: the first draft accepted
+            // `+inf` too, which would violate the function's own `[lo, hi)`
+            // postcondition. A planted mutation returning `+inf` passed all
+            // 38 tests. Pin what the doc claims, exactly.
+            assert_eq!(
+                range_from(u, f64::NEG_INFINITY, 1.0).to_bits(),
+                f64::NEG_INFINITY.to_bits(),
+                "if a non-finite lo now yields anything else, the doc on \
                  next_f64_range must lose its asymmetry caveat"
             );
         }
@@ -1261,7 +1374,7 @@ mod tests {
     #[test]
     fn golden_sequence_is_pinned() {
         let mut s = Stream::new(0, Domain::Universe, 0);
-        let got: Vec<u64> = (0..8).map(|_| s.next_u64()).collect();
+        let got: Vec<u64> = (0..12).map(|_| s.next_u64()).collect();
         assert_eq!(got, GOLDEN_UNIVERSE_0);
     }
 
@@ -1271,8 +1384,18 @@ mod tests {
     /// `counter[3].wrapping_add(1)` to `add(2)` — still a bijection, still
     /// statistically clean, and it changes every number in the project — was
     /// caught by exactly one test, and only because that test happened to take
-    /// seven draws. Eight words spans two boundaries. Do not shorten this.
-    const GOLDEN_UNIVERSE_0: [u64; 8] = [
+    /// seven draws.
+    ///
+    /// **Twelve, not eight, and the arithmetic matters.** Eight words is two
+    /// block *fills* but only one *transition* — the second transition happens
+    /// at word 8, exactly one past the end. Measured: `counter[3] ^= 1`, which
+    /// gives every stream **period 8**, and `counter[3] = 2c+1` both agree with
+    /// the real generator on blocks 0 and 1 and diverge at word 8. Neither was
+    /// caught by any golden; a period-8 generator was caught only by fixed-seed
+    /// statistical thresholds, which is exactly the evidence `philox.rs` argues
+    /// cannot tell a correct implementation from a wrong one. Twelve words
+    /// covers blocks 0, 1 and 2. Do not shorten this.
+    const GOLDEN_UNIVERSE_0: [u64; 12] = [
         213_000_021_201_967_259,
         4_455_796_210_202_625_458,
         2_055_444_239_878_205_049,
@@ -1281,6 +1404,10 @@ mod tests {
         10_634_814_581_434_429_480,
         1_598_446_939_479_630_672,
         11_723_492_092_571_950_057,
+        16_006_495_525_962_256_124,
+        11_263_462_740_154_766_164,
+        18_401_285_607_914_570_996,
+        16_002_093_844_216_690_389,
     ];
 
     /// Adding a `Domain` variant must not perturb any existing stream.

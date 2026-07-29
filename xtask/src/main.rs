@@ -282,6 +282,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_blocklist_present(root, &mut failures)?;
     check_toolchain_pins_agree(root, &mut failures)?;
     check_no_platform_transcendentals(root, &mut failures)?;
+    check_no_stream_deriving_method(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -390,6 +391,55 @@ fn read_pin(path: &Path, key: &str) -> Result<Option<String>, String> {
         return Ok(rhs.trim().trim_matches('"').to_owned().into());
     }
     Ok(None)
+}
+
+/// §13.1 — no method in `borbax-rng` may derive one `Stream` from another.
+///
+/// **This is the only enforcement of the crate's central duplicate-stream
+/// guarantee, and a doctest provably cannot do the job.** `Stream::sub` is a
+/// constructor precisely so that `base.sub(a).sub(b)` — which silently
+/// returned a duplicate of an unrelated sibling under the old `fork` — has no
+/// spelling. But that held only because nobody had written the method:
+/// reinstating it verbatim under any other name passes the whole suite and
+/// `clippy -D warnings`, measured.
+///
+/// Two things rule out the obvious alternative. A `compile_fail` doctest naming
+/// `sub` cannot catch a regression that arrives as `child` or `derive` — and
+/// `sub` cannot be both an associated function and a method (`E0592`), so it
+/// *must* arrive under a different name. And `compile_fail,E0599` does not
+/// enforce the error code on the pinned toolchain, so such a block passes when
+/// it fails for an unrelated reason. `borbax-units` records that measurement
+/// already.
+///
+/// So the check is textual and structural: no `pub fn` in that crate takes
+/// `&self` and returns `Self`. Same shape and same reason as the rayon guard —
+/// a one-word change that compiles, typechecks, passes clippy, and is
+/// invisible in review.
+///
+/// `Clone` is exempt and must be: it duplicates a stream rather than deriving
+/// a different one, `!Copy` exists to make that duplication visible at the
+/// call site, and it is a derive rather than a `pub fn`.
+fn check_no_stream_deriving_method(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    let path = root.join("crates/borbax-rng/src/lib.rs");
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    for (i, line) in text.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or("").trim();
+        if !code.starts_with("pub fn") && !code.starts_with("pub const fn") {
+            continue;
+        }
+        if code.contains("&self") && (code.contains("-> Self") || code.contains("-> Stream")) {
+            failures.push(format!(
+                "§13.1: `{code}` at crates/borbax-rng/src/lib.rs:{} derives a Stream from a \
+                 Stream — that is how a second sub-level silently returns a duplicate of an \
+                 unrelated sibling. Sub-streams are constructed, not derived.",
+                i + 1
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// G1 — no real chemistry data enters the repository.
