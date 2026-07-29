@@ -283,6 +283,8 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_toolchain_pins_agree(root, &mut failures)?;
     check_no_platform_transcendentals(root, &mut failures)?;
     check_no_stream_deriving_method(root, &mut failures)?;
+    check_no_closure_predicate_branch(root, &mut failures)?;
+    check_packing_matches_probe(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -836,7 +838,17 @@ fn check_no_data_files(root: &Path, failures: &mut Vec<String>) -> Result<(), St
 fn check_blocklist_present(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
     let path = root.join("crates/borbax-universe/src/naming.rs");
     if !path.exists() {
-        // Not yet written — Task 4 creates it. Not a failure before then.
+        // **Loud, not `Ok(())`.** This returned success for a missing target
+        // until Task 4 created the file, on the reasoning that the file did not
+        // exist yet. That reasoning expired the moment it did, and what it
+        // leaves behind is a check reporting green for a path that is wrong or
+        // a file that has been split — the state the G2 blocklist is least able
+        // to afford.
+        failures.push(
+            "G2: crates/borbax-universe/src/naming.rs is missing, so the blocklist \
+             check did not look"
+                .into(),
+        );
         return Ok(());
     }
     let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -1175,6 +1187,297 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
+/// Files whose frontier path must not branch on the closure predicate.
+const CLOSURE_PREDICATE_FILES: &[&str] = &[
+    "crates/borbax-universe/src/packing.rs",
+    "crates/borbax-universe/src/element.rs",
+];
+
+/// Functions exempted from [`scan_closure_predicates`], **by name and with a
+/// reason**.
+///
+/// `compact_bound` contains `if a == 0`, and `a = min(outer, cap - outer)`, so
+/// that *is* a branch on the closure predicate. It is a legitimate guard
+/// against `sqrt(12*0 - 3)`, and measured, it alone holds zero-at-closure when
+/// the other factor is broken. A whole-file grep either flags it forever or is
+/// switched off and stops seeing the real thing.
+///
+/// The exemption is bounded by *output* as well as by name:
+/// `unmade_lateral_is_finite_and_non_negative_everywhere` asserts the frontier
+/// count is finite and non-negative for every `(cap, outer)` the table reaches.
+/// Without that, `NaN` and negatives escape the `min` in `unmade_lateral` and
+/// both saturate to 0 through `round_ties_even() as u8` — so
+/// `closed_shells_have_valence_zero` would read a correct zero while
+/// `contacts_upto` was poisoned.
+const CLOSURE_PREDICATE_EXEMPT_FNS: &[&str] = &["compact_bound"];
+
+/// Textual shapes that read the closure predicate directly.
+const CLOSURE_PREDICATE_PATTERNS: &[&str] = &[
+    "outer == 0",
+    "outer != 0",
+    "outer < 1",
+    "outer == cap",
+    "outer >= cap",
+    "match outer",
+    "a == 0",
+    "fill == 0.0",
+    "take == cap",
+    "is_closed",
+];
+
+/// §7.1 — no branch in the frontier path may read the closure predicate.
+///
+/// The claim this protects is that zero-valence-at-closure is *arithmetic*,
+/// not a declaration. Neither behavioural test can establish it: deletion is
+/// uninformative, because two independent factors hold the zero and mutating
+/// either alone leaves a zero-at-closure assertion passing; and continuity was
+/// shown defeatable by a load-bearing `if outer == 0` that passed every test in
+/// both files while producing a bit-identical table. So the property is checked
+/// where it lives — in the source.
+///
+/// **This is a tripwire, not a proof, and the class it enumerates is textual
+/// shapes that name the frontier variables.** Outside that class, and therefore
+/// invisible here: a predicate computed into a differently-named binding
+/// (`let done = outer == 0` is caught, `let done = k_outer(); if done` is not),
+/// a branch reached through a helper, a `const` comparison written as
+/// `outer.eq(&0)`, and — most importantly — a change to the *formula* rather
+/// than an added branch. A mutation that breaks `f(1-f)` produces no new
+/// branch and this check stays green.
+///
+/// That paragraph is the point of the step. The previous three repairs to the
+/// §13.1 guard each moved to a more principled-*looking* mechanism without
+/// naming what the new mechanism decides, and each shipped enforcing less than
+/// its doc claimed. Pair this with `closed_shells_have_valence_zero`, which
+/// guards the output; neither substitutes for the other.
+fn check_no_closure_predicate_branch(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    for rel in CLOSURE_PREDICATE_FILES {
+        let path = root.join(rel);
+        // **Loudly, not `Ok(())`.** `check_blocklist_present` returned success
+        // for a missing target, which reports green for a path that is wrong or
+        // a file that has been split — worse than no check at all.
+        if !path.exists() {
+            failures.push(format!(
+                "§7.1: {rel} is missing, so the closure-predicate check did not look"
+            ));
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        scan_closure_predicates(rel, &src, failures);
+    }
+    Ok(())
+}
+
+/// Report every closure-predicate branch in `src` outside an exempt function
+/// and outside `#[cfg(test)]`.
+///
+/// Function scoping is by the innermost `fn` name at the current brace depth,
+/// which is what lets `compact_bound` be exempted without switching the check
+/// off for the file it lives in.
+fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
+    let mut lex = LexState::default();
+    let mut depth: i64 = 0;
+    let mut test_region: Option<i64> = None;
+    let mut pending_cfg_test = false;
+    // (depth at which the fn body opened, name).
+    let mut fn_stack: Vec<(i64, String)> = Vec::new();
+    let mut pending_fn: Option<String> = None;
+
+    for (i, raw) in src.lines().enumerate() {
+        let code = strip_comments_and_literals(raw, &mut lex);
+        let trimmed = code.trim();
+
+        if test_region.is_none() && trimmed.starts_with("#[cfg(test)]") {
+            pending_cfg_test = true;
+        }
+        if let Some(name) = fn_name_of(trimmed) {
+            pending_fn = Some(name);
+        }
+
+        if test_region.is_none() {
+            let current = fn_stack.last().map_or("", |(_, n)| n.as_str());
+            if !CLOSURE_PREDICATE_EXEMPT_FNS.contains(&current) {
+                for pat in CLOSURE_PREDICATE_PATTERNS {
+                    if code.contains(pat) {
+                        failures.push(format!(
+                            "§7.1: {rel}:{} branches on the closure predicate ({pat:?}) \
+                             inside `{}` — zero at a closure must be arithmetic, not a \
+                             declaration",
+                            i + 1,
+                            if current.is_empty() {
+                                "<file scope>"
+                            } else {
+                                current
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        for c in code.chars() {
+            match c {
+                '{' => {
+                    depth += 1;
+                    if pending_cfg_test && test_region.is_none() {
+                        test_region = Some(depth);
+                        pending_cfg_test = false;
+                    }
+                    if let Some(name) = pending_fn.take() {
+                        fn_stack.push((depth, name));
+                    }
+                }
+                '}' => {
+                    if test_region == Some(depth) {
+                        test_region = None;
+                    }
+                    if fn_stack.last().is_some_and(|(d, _)| *d == depth) {
+                        fn_stack.pop();
+                    }
+                    depth -= 1;
+                }
+                ';' => {
+                    // `#[cfg(test)] use ..;` and a bodyless `fn f();` never
+                    // open a block, so a pending marker must not survive.
+                    pending_cfg_test = false;
+                    pending_fn = None;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The name in a `fn NAME(` declaration on `line`, if there is one.
+fn fn_name_of(line: &str) -> Option<String> {
+    let idx = line.find("fn ")?;
+    // Reject `.fn` and identifiers ending in `fn`; a declaration has `fn` at
+    // the start or preceded by a modifier keyword.
+    if idx > 0 {
+        let before = line.get(..idx)?.trim_end();
+        let ok = before.is_empty()
+            || before.ends_with("pub")
+            || before.ends_with(')')
+            || before.ends_with("const")
+            || before.ends_with("async")
+            || before.ends_with("unsafe")
+            || before.ends_with("extern");
+        if !ok {
+            return None;
+        }
+    }
+    let rest = line.get(idx + 3..)?;
+    let end = rest.find(['(', '<', ' '])?;
+    let name = rest.get(..end)?.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_owned())
+    }
+}
+
+/// The probe and `packing.rs` share these function bodies verbatim.
+const SHARED_PACKING_FNS: &[&str] = &[
+    "shell_size",
+    "lateral_coordination",
+    "unmade_lateral",
+    "frontier_notches",
+    "compact_bound",
+    "lateral_made",
+    "lateral_made_raw",
+];
+
+/// Step 8d — pin `packing.rs` to the probe it was measured from.
+///
+/// **Every number Task 4 asserts was measured in `experiments/src/bin/fusion.rs`,
+/// and the two copies have already diverged four times.** `compact_bound`
+/// carried a clamp in one and not the other under a doc saying no clamp is
+/// written; `unmade_lateral` bound `compact_bound(smaller)` twice where the
+/// probe binds it once; the strain comment kept a defence the probe had
+/// deleted; and the boundary-contact clause said "three of six" after the probe
+/// said two. None of these is visible to a compiler, a test, or a reviewer
+/// reading one file.
+///
+/// **Text, not numbers.** Comparing outputs would pass for two implementations
+/// that agree on the sampled domain and differ off it — the defect shape this
+/// project keeps hitting, most recently a proposed fix whose replacement and
+/// original were the same function over the tested domain (rho = 1.0000). The
+/// text is the artefact that drifts, so the text is what is checked.
+///
+/// **What this does not see, stated rather than implied:** comments are
+/// stripped before comparison, so the *third* historical divergence — a comment
+/// keeping a defence the probe deleted — would not be caught. Bodies only, and
+/// only for the functions named in [`SHARED_PACKING_FNS`]; `contacts_upto` is
+/// excluded because the two take different constant types.
+///
+/// When the probe is retired, delete this check in the same commit and say so —
+/// a check silently passing because its input vanished is the missing-file
+/// failure in a different hat.
+fn check_packing_matches_probe(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    let ours = root.join("crates/borbax-universe/src/packing.rs");
+    let probe = root.join("experiments/src/bin/fusion.rs");
+    for (label, path) in [("packing.rs", &ours), ("fusion.rs", &probe)] {
+        if !path.exists() {
+            failures.push(format!(
+                "Step 8d: {label} is missing, so the probe-divergence check did not look"
+            ));
+            return Ok(());
+        }
+    }
+    let a = std::fs::read_to_string(&ours).map_err(|e| e.to_string())?;
+    let b = std::fs::read_to_string(&probe).map_err(|e| e.to_string())?;
+
+    for name in SHARED_PACKING_FNS {
+        match (extract_fn_body(&a, name), extract_fn_body(&b, name)) {
+            (Some(x), Some(y)) if x == y => {}
+            (Some(x), Some(y)) => failures.push(format!(
+                "Step 8d: `{name}` has diverged from the probe.\n         \
+                 packing.rs: {x}\n         fusion.rs : {y}"
+            )),
+            (None, _) => failures.push(format!(
+                "Step 8d: `{name}` not found in packing.rs — renamed, or the extractor is wrong"
+            )),
+            (_, None) => failures.push(format!(
+                "Step 8d: `{name}` not found in fusion.rs — the probe has dropped it"
+            )),
+        }
+    }
+    Ok(())
+}
+
+/// The body of `fn name` in `src`, normalised for comparison.
+///
+/// Normalisation removes exactly the differences that are legitimate between a
+/// library and a single-file probe — `pub`/`pub(super)`, `#[must_use]`, comments
+/// and whitespace — and nothing else.
+fn extract_fn_body(src: &str, name: &str) -> Option<String> {
+    let needle = format!("fn {name}(");
+    let at = src.find(&needle)?;
+    let open = src.get(at..)?.find('{')? + at;
+
+    let mut lex = LexState::default();
+    let mut depth = 0_i64;
+    let mut out = String::new();
+    for (n, raw) in src.get(open..)?.lines().enumerate() {
+        let code = strip_comments_and_literals(raw, &mut lex);
+        for c in code.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        out.push(' ');
+        out.push_str(&code);
+        if depth <= 0 && n > 0 || (depth == 0 && n == 0) {
+            break;
+        }
+    }
+    Some(out.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 /// The §13.1 scanner is the only piece of logic here that can fail *quietly* —
 /// every other check either finds its target or does not exist. A miscounted
 /// brace makes it skip the rest of a file while still reporting success, so
@@ -1182,6 +1485,98 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::scan_for_derived_streams;
+    use super::{extract_fn_body, scan_closure_predicates};
+
+    fn closure_hits(src: &str) -> Vec<String> {
+        let mut f = Vec::new();
+        scan_closure_predicates("probe.rs", src, &mut f);
+        f
+    }
+
+    /// The tripwire must fire on the shape it exists to stop — the exact
+    /// declaration a review built, which passed every test in both files while
+    /// producing a bit-identical table.
+    #[test]
+    fn a_planted_closure_branch_is_reported() {
+        let hits = closure_hits(
+            "fn unmade_lateral(cap: usize, outer: usize) -> f64 {\n\
+             \x20   if outer == 0 { return 0.0; }\n\
+             \x20   1.0\n}\n",
+        );
+        assert_eq!(hits.len(), 1, "expected one finding, got {hits:?}");
+        assert!(
+            hits.first().is_some_and(|h| h.contains("unmade_lateral")),
+            "{hits:?}"
+        );
+    }
+
+    /// ...and must NOT fire on the identical line inside the function exempted
+    /// by name. An exemption that is never exercised is indistinguishable from
+    /// a check that does not scope by function at all.
+    #[test]
+    fn the_same_branch_inside_compact_bound_is_exempt() {
+        let hits = closure_hits(
+            "fn compact_bound(a: usize) -> f64 {\n\
+             \x20   if outer == 0 { return 0.0; }\n\
+             \x20   6.0\n}\n",
+        );
+        assert!(hits.is_empty(), "the exemption did not apply: {hits:?}");
+    }
+
+    /// The exemption must be scoped to `compact_bound` and end with it, or it
+    /// silently covers whatever function follows.
+    #[test]
+    fn the_exemption_ends_with_the_exempt_function() {
+        let hits = closure_hits(
+            "fn compact_bound(a: usize) -> f64 {\n\
+             \x20   if a == 0 { return 0.0; }\n\
+             \x20   6.0\n}\n\
+             fn frontier_notches(cap: usize, outer: usize) -> f64 {\n\
+             \x20   if outer == 0 { return 0.0; }\n\
+             \x20   1.0\n}\n",
+        );
+        assert_eq!(hits.len(), 1, "expected one finding, got {hits:?}");
+        assert!(
+            hits.first().is_some_and(|h| h.contains("frontier_notches")),
+            "{hits:?}"
+        );
+    }
+
+    /// Test code legitimately enumerates `outer` and must not trip the check —
+    /// `the_clamp_fires_only_at_a_lone_outer_site` asserts on `outer == 1`.
+    #[test]
+    fn cfg_test_regions_are_skipped() {
+        let hits = closure_hits(
+            "#[cfg(test)]\nmod tests {\n\
+             \x20   fn t() { assert_eq!(raw(cap, outer) < 0.0, outer == 0); }\n}\n",
+        );
+        assert!(hits.is_empty(), "test region was scanned: {hits:?}");
+    }
+
+    /// Step 8d's extractor has to normalise away exactly the differences that
+    /// are legitimate between a library and a single-file probe, and nothing
+    /// else.
+    #[test]
+    fn extraction_normalises_visibility_attributes_and_comments() {
+        let lib =
+            "#[must_use]\npub fn f(a: usize) -> f64 {\n    // a comment\n    6.0 * a as f64\n}\n";
+        let probe = "fn f(a: usize) -> f64 {\n    6.0 * a as f64\n}\n";
+        assert_eq!(extract_fn_body(lib, "f"), extract_fn_body(probe, "f"));
+    }
+
+    /// ...and must still see a real divergence through that normalisation.
+    #[test]
+    fn extraction_still_sees_a_real_divergence() {
+        let lib = "pub fn f(a: usize) -> f64 { let d = g(a); if d < 1.0 { d } else { 1.0 } }\n";
+        let probe = "fn f(a: usize) -> f64 { if g(a) < 1.0 { g(a) } else { 1.0 } }\n";
+        assert_ne!(extract_fn_body(lib, "f"), extract_fn_body(probe, "f"));
+    }
+
+    /// A renamed function must be reported, not silently skipped.
+    #[test]
+    fn extraction_reports_a_missing_function() {
+        assert_eq!(extract_fn_body("fn other() {}\n", "shell_size"), None);
+    }
 
     #[expect(
         clippy::expect_used,

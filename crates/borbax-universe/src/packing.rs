@@ -112,10 +112,11 @@ pub fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     } else {
         cap - outer
     };
-    if continuum < compact_bound(smaller) {
+    let discrete = compact_bound(smaller);
+    if continuum < discrete {
         continuum
     } else {
-        compact_bound(smaller)
+        discrete
     }
 }
 
