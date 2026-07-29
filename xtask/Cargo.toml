@@ -39,4 +39,5 @@ workspace = true
 # structural facts rather than substrings.
 syn = { version = "3", features = ["full", "parsing", "printing"] }
 quote = "1"
-proc-macro2 = "1"
+# `span-locations` so a failure names a line an editor can open.
+proc-macro2 = { version = "1", features = ["span-locations"] }
