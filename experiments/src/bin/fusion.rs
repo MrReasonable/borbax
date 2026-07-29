@@ -1367,6 +1367,9 @@ mod tests {
                       precondition that makes total_cmp safe"
         )]
         extents.sort_by(f64::total_cmp);
+        // `extents[12]` is the upper order statistic of 24, not the mean of the
+        // two central values. Labelled precisely because every figure in this
+        // file gets requoted verbatim elsewhere.
         let (min, median, max) = (extents[0], extents[12], extents[23]);
         for (name, got, want) in [
             ("min", min, 0.468),
