@@ -143,9 +143,7 @@ fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     // `if closed { 0 }` defect from `ptable.rs` in a different hat. It was also
     // redundant: both factors below already vanish at a closure.
     let f = outer as f64 / cap as f64;
-    // `sqrt` is native on purpose: IEEE-754 specifies it exactly, so it is
-    // portable without `det_math`. See the criterion in `clippy.toml`.
-    let continuum = FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt();
+    let continuum = continuum_at(cap, f);
 
     // **The continuum form overestimates tiny patches, and the bound has to be
     // the *compact* one.** A maximally compact patch of `a` sites exposes `6a`
@@ -180,6 +178,19 @@ fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     } else {
         discrete
     }
+}
+
+/// The continuum frontier length as a function of the fill *fraction*, split out
+/// so it can be evaluated off-lattice.
+///
+/// `cap as f64 * f * (1.0 - f)` associates left and must stay written that way:
+/// the obvious tidy-up `cap as f64 * (f * (1.0 - f))` moves 315 of 2808 cells by
+/// 1 ulp, and `peak` is a strict-`>` argmax.
+///
+/// `sqrt` is native on purpose: IEEE-754 specifies it exactly, so it is portable
+/// without `det_math`. See the criterion in `clippy.toml`.
+fn continuum_at(cap: usize, f: f64) -> f64 {
+    FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt()
 }
 
 /// Unmade lateral contacts on the frontier, divided by the lateral
