@@ -60,8 +60,11 @@
 //! Keying on it would make universe generation config-dependent, so changing a
 //! keyframe interval would regenerate the periodic table and break §13.4's
 //! promise that a shared `U-…/W-…` pair means the same planet. It belongs in
-//! keyframe identity, with a load-time refusal on mismatch; see Task 20b
-//! Step 3. An earlier version of this paragraph implied the key accommodates
+//! the *physics version* — §13.1's `config_hash` and §13.3's `@n` are the same
+//! thing under two names, so it travels in the shared world address rather than
+//! beside it, and a recipient with different physics has a visibly different
+//! address. Runtime knobs (keyframe interval, output, thread count) may not
+//! reach the arithmetic at all; a knob that would is not a knob. An earlier version of this paragraph implied the key accommodates
 //! all three, which is three values in two words.
 
 #![no_std]
@@ -180,51 +183,38 @@ pub enum Domain {
     /// counter-based construction for every domain and buys this variant
     /// nothing.
     ///
-    /// What this variant actually does is make the shadow's draws *different*
-    /// from the live run's, and whether that is wanted is an open question,
-    /// not a settled one. §15.3 makes every emergence claim a `run − shadow`
-    /// difference, and a paired difference estimated from one run and one
-    /// shadow *can* have far lower variance under common random numbers than
-    /// under independent streams — "can", because Glasserman and Yao (1992)
-    /// find the class of systems for which CRN is *provably* advantageous
-    /// "rather limited". Against that, common random numbers decouple in a
-    /// Gillespie setting as the integrated intensities diverge; indexing draws
-    /// per reaction channel (the common-reaction-path method) *reduces but
-    /// does not remove* that — Anderson (2012) "predicted (though did not
-    /// prove)" that both converge to crude Monte Carlo variance over long
-    /// times, and notes the time to full decoupling is "quite large" in his
-    /// example — and, for his Example 1 specifically, that "the full
-    /// decoupling of the CRP method described here does not seem to take
-    /// place". That last clause cuts against the pessimistic reading and is
-    /// included for that reason.
+    /// What this variant does is make the shadow's draws *different* from the
+    /// live run's — and **that is now the decided behaviour, not an open
+    /// question.** §15.3 makes every emergence claim a `run − shadow`
+    /// difference, and common random numbers would in principle reduce the
+    /// variance of that difference. The theory withholds its guarantee here:
     ///
-    /// **The decoupling results are for infinitesimal parameter
-    /// perturbations** — Anderson's and the common-reaction-path work, though
-    /// *not* Glasserman and Yao's, who treat system comparison generally.
-    /// `run − shadow` is selection on versus off, a large structural
-    /// difference — which is, by extrapolation from the mechanism rather than
-    /// from any measurement in those papers, the regime where those couplings
-    /// decay fastest. Anderson tests ε ∈ {1/100, 1/40, 1/20} and never a
-    /// structural perturbation.
-    /// Their positive result is the more useful half and goes unused here: the
-    /// guarantees rest on **monotonicity and continuity**, which is a test you
-    /// can apply before spending the measurement budget.
+    /// - Glasserman and Yao's results rest on **noninterruption** — "the
+    ///   occurrence of one event never interrupts the clock of another" —
+    ///   which fails *by construction* in a low-copy-number beaker, since
+    ///   firing a reaction that exhausts a reactant removes every channel
+    ///   needing it. That is the abiogenesis regime, not an edge case.
+    /// - `run − shadow` is their **structural-comparison** category at a large
+    ///   perturbation, their weakest case, not the sensitivity analysis where
+    ///   CRN is strongest.
+    /// - Anderson (2012) predicts both the common-reaction-path method and
+    ///   Gillespie+CRN converge to crude Monte Carlo variance over long times,
+    ///   noting the time to full decoupling is "quite large" in his example
+    ///   and that for that example "the full decoupling ... does not seem to
+    ///   take place".
     ///
-    /// §15.3 also defines a *second* control that this variant will be read as
-    /// covering and does not: randomising which molecule catalyses which
-    /// reaction at fixed catalysis density. That is a different experiment
-    /// with the opposite requirement — it needs a permutation that does *not*
-    /// move when the live run's draw count changes — and may want its own
-    /// domain. Whatever Task 15 decides must then apply to *every* draw on the
-    /// shadow path; mixing `Shadow` and `Beaker` draws gives partial CRN,
-    /// silently, which is the worst of the options.
+    /// So CRN would buy an unmeasured benefit for real cost — shared draw
+    /// coordinates across two runs, and silent *partial* CRN if any draw on the
+    /// shadow path were missed. Independent streams are simpler and separable.
+    /// Task 20b carries what would reopen it: a measurement that the paired
+    /// difference's variance is materially lower under CRN at fixed budget.
     ///
-    /// **Decide it in Task 20b; do not read this variant as having decided
-    /// it.** What would settle it is cheap, and is written into that task: run
-    /// both indexings at fixed budget and compare the variance of the paired
-    /// difference. Task 20b Step 4 is §15.3's second control and already
-    /// exists in the plan; what it lacked was any statement of which `Domain`
-    /// it draws from.
+    /// The variant's *original* justification — "must not consume the live
+    /// run's draws" — was vacuous and is retracted. A `Stream` is a value with
+    /// its own counter, so a shadow drawing from its own stream is
+    /// arithmetically incapable of advancing the live run's, whatever domain it
+    /// uses. That guarantee is delivered by the counter-based construction for
+    /// every domain and buys this variant nothing.
     Shadow = 8,
     /// Hashing only — cache keys and content digests. Separated from the live
     /// domains so that using a `Stream` as a hash function cannot couple to

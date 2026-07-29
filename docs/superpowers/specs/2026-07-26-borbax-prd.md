@@ -688,6 +688,33 @@ It is deliberately conservative about one thing: it will never demote a patch co
 
 Bit-for-bit reproducibility given `(universe_seed, world_seed, config_hash)`.
 
+**`config_hash` is the physics version §13.3 writes as `@n`, under a second
+name, and nothing else in configuration may reach the arithmetic.** That
+resolution is forced rather than chosen: §13.3 promises that sharing
+`U-7F3A21C9@1 / W-0004` gets the recipient a bit-identical planet, and that
+promise fails the moment a *fourth* value can change results while sitting
+outside the address. Either a setting changes the physics — in which case it
+mints a new version, is carried in the address, and a recipient with a
+different one can see that they differ — or it cannot change results, in which
+case it does not belong in a reproducibility tuple at all.
+
+So configuration splits in two, and the split is a rule rather than a
+convention:
+
+- **Runtime knobs** — keyframe interval, output paths, tier-promotion
+  thresholds, thread count. These must not reach any arithmetic that produces a
+  simulation value. A knob that would is not a knob.
+- **Physics** — anything that changes what the laws *are*. Sweeping such a
+  value is legitimate (§22.2 sweeps and then **locks** the geodesic resolution),
+  but the locked value becomes a constant under a version, not a field that
+  travels with a run.
+
+The failure this closes: a keyframe-restore check on `config_hash` only fires
+on restore. Two people sharing a seed pair and starting fresh never restore
+anything, so nothing would have caught a physics-affecting knob that differed
+between them. Putting physics in the address rather than in a side-channel is
+what makes the §13.3 promise true instead of merely stated.
+
 This requires discipline the engine must enforce structurally:
 
 - **Counter-based RNG**, with an independent stream derived per subsystem, per patch, per simulated time index. No shared mutable RNG state, so results never depend on thread scheduling. Streams are deliberately not `Copy`, so an accidental duplication — which would silently replay the same sequence twice — has to be written explicitly.
