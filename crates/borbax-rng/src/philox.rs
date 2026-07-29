@@ -32,16 +32,20 @@
 //! 2. That turns the stream-collision problem into a packing problem. The
 //!    earlier design hashed `(seed, domain, index)` — 192 bits of coordinate —
 //!    into a 64-bit key, which admits permanent collisions the seed cannot
-//!    escape: five relations exist below index 2³⁰, two of them pairing
-//!    `Decay` with `Shadow`. With a 256-bit counter every coordinate gets its
-//!    own 64-bit field and nothing is compressed, so there is no key left to
-//!    collide.
+//!    escape: five relations exist below index 2³⁰, against 1.125 expected —
+//!    a local fluctuation rather than structure, as `borbax_rng`'s module doc
+//!    records with the 2³² follow-up. With a 256-bit counter every coordinate
+//!    gets its own 64-bit field and nothing is compressed, so there is no
+//!    derived key left to collide.
 //!
 //! **The 4x64 variant, not 4x32, and the reason is not speed.** 4x32 carries a
-//! 64-bit key and a 128-bit counter — exactly full once domain, index and
-//! block are placed, with nothing spare and no room for §13.1's
-//! `(universe_seed, world_seed, config_hash)` tuple. 4x64 carries a 128-bit
-//! key and a 256-bit counter. It also emits four `u64` per block rather than
+//! 64-bit key and a 128-bit counter: the key holds one seed, so the world seed
+//! would eat counter words, leaving 64 bits for domain, index, sub and block
+//! together. Genuinely too tight. 4x64 carries a 128-bit key and a 256-bit
+//! counter — two seeds and four coordinates, each in its own word. (An earlier
+//! version of this paragraph counted §13.1's `config_hash` as a third key
+//! element; it is not a stream coordinate. The conclusion is unaffected — two
+//! seeds alone do not fit 4x32 — but the premise was overstated by one.) It also emits four `u64` per block rather than
 //! two, which halves the number of Philox *invocations* per draw — not the
 //! time: the paper's Table 2 puts 4x64-10 at 3.2 cpB against 2x64-10's 4.3,
 //! which is 26% cheaper per byte, not 50%.
@@ -53,7 +57,7 @@
 //! per-draw coordinate sits in `ctr[3]` and enters a multiply only from round
 //! 2 (9 rounds of diffusion against the 7 shown sufficient). Ample margin, and
 //! measured: `PractRand` finds no anomaly at 1–2 GB on the raw stream, on nine
-//! interleaved domains, on 64 interleaved forks, on the top, middle and bottom
+//! interleaved domains, on 64 interleaved sub-streams, on the top, middle and bottom
 //! 32 bits, and on Box-Muller's `(u1, u2)` pairs. That is "no evidence of a
 //! problem at this scale", not a replication of `Crush`-resistance.
 //!
