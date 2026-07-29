@@ -42,9 +42,9 @@
 //! domains, two of them pairing [`Domain::Decay`] with [`Domain::Shadow`].
 //! Nothing crashed and no test saw it.
 //!
-//! **Five was a local fluctuation, not structure, and the honest number
-//! belongs here** — an earlier draft of this paragraph dropped the correction
-//! and kept only the alarming half. The expectation for distinct relations is
+//! **Five was a local fluctuation, not structure**, and the honest number
+//! belongs here rather than only the alarming half of it. The expectation for
+//! distinct relations is
 //! `36 × C(2³⁰,2)/2⁶⁴ = 1.125`, so five is a 4.4× excess at p = 0.006; but
 //! extending the search to 2³² gives 25 against 18 expected, p = 0.068, and
 //! `Decay`/`Shadow` does not grow while two other pairs overtake it. The old
@@ -100,8 +100,7 @@
 //! thing under two names, so it travels in the shared world address rather than
 //! beside it, and a recipient with different physics has a visibly different
 //! address. Runtime knobs (keyframe interval, output, thread count) may not
-//! reach the arithmetic at all; a knob that would is not a knob. An earlier version of this paragraph implied the key accommodates
-//! all three, which is three values in two words.
+//! reach the arithmetic at all; a knob that would is not a knob.
 
 #![no_std]
 
