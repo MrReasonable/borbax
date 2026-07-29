@@ -2000,6 +2000,52 @@ written. Read them before Step 1 — two change the signatures above.**
    first time someone measures it; "a twelve-iteration loop" gets it
    deprioritised forever.
 
+4. **The radiogenic channel carries no scale constant, and on the drafted
+   arithmetic it dominates the other two by 10³–10⁷.** Cleave is
+   `count × Σ_bonds(decay_scale / E) × exp(-1/(0.01·T))` and solvent is
+   `count × solvent_rate × decay_scale`; radiogenic is `count × Σ_atoms decay_rate`
+   with **nothing**. `decay_scale` is drawn in `[1e-6, 1e-4]`, so for a 12-atom
+   species at `Thermal(300)` over the drawn range and bond energies 0.5..10, the
+   ratio `radiogenic / cleave` is **1.7e3 to 1.0e7**. §9.1 calls spontaneous
+   cleavage "the engine's primary decay path"; on this arithmetic it is not, by
+   three to seven orders.
+
+   **This is an emergence failure wearing a scaling defect's clothes.**
+   Radiogenic is per-atom, shape-blind and temperature-independent. If it
+   dominates, a molecule's lifespan is a function of its atom count alone — which
+   nullifies §9.5's "compact folds that bury their backbone survive; sprawling
+   ones are eaten. Folding therefore acquires a survival payoff for free", and
+   with it §8.4's entire reason for being 3D.
+
+   *And the spec's planned test does not catch it.* §9.5's "turnover rate must
+   respond monotonically to temperature" (prd §9.5) **still passes**, because
+   cleave is monotone in `T` and merely contributes ~10⁻⁵ of total turnover. A
+   green test over a dead mechanism, which is this project's recorded worst
+   failure shape.
+
+   *Test:* assert the three channels are **within two orders of magnitude of one
+   another** at a representative species and temperature, over the drawn
+   constant ranges. A test asserting only that each channel is positive, or that
+   the total responds to temperature, does not have that property — both pass
+   today.
+
+   Fixing it needs a drawn scale for the radiogenic channel parallel to
+   `decay_scale`. That is also what makes the channel **sweepable**: see Task 20.
+
+5. **`decay_rate`'s documented type contradicts its consumer.** §7.1 calls it
+   "decay probability per world-year"; this task multiplies it by `count` and
+   hands it to the scheduler as a Gillespie propensity. Those are different
+   quantities — a propensity coefficient has units of inverse time, is defined on
+   an infinitesimal interval and is **unbounded above** (Gillespie 2007, Eq. 2:
+   `a_j(x) = c_j x_1` for the unimolecular case). A ceiling at 1.0 is therefore
+   not a saturation, it is a category error, and summing 200 per-interval
+   probabilities for a `MAX_POLYMER` chain yields 200, which is not a
+   probability of anything.
+
+   Resolve it by correcting §7.1's *type*, not the value. Task 4 ships the cap
+   at 1.0 and a `borbax-universe` comment saying so; both move when this does,
+   and it is a golden-regenerating change.
+
 **And the test named as this task's §8.6 guard cannot fail.**
 `cost_does_not_depend_on_how_many_molecules_exist` is two `let _: f64 = ..`
 bindings and a comment reading "Asserted structurally: the function takes a
@@ -2993,6 +3039,18 @@ makes that easy to do quickly rather than impossible to do wrongly.
 ---
 
 ### Task 20: The beaker battery and metrics
+
+**Carried in from Task 4's review — the decay band sweep cannot move the
+dominant channel.** `borbax band --sweep decay_scale` bisects `decay_scale`,
+which appears in the cleave and solvent propensities and **not** in the
+radiogenic one (Task 15, requirement 4). Since radiogenic dominates the other
+two by 10³–10⁷ as drafted, the battery's decay-band search is bisecting a
+constant that moves ~10⁻⁵ of total turnover. Whatever band it reports is a
+property of the two minority channels.
+
+Fix Task 15's requirement 4 first — a drawn radiogenic scale — then decide
+whether this sweeps one constant or two. A band located before that is not a
+band.
 
 **Files:** Create `crates/borbax-beaker/src/{battery.rs,metrics.rs}`; test both.
 
