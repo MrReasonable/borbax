@@ -21,6 +21,14 @@
 # Coverage instrumentation, if it is ever run.
 *.profraw
 
+# Task worktrees. `EnterWorktree` and the `superpowers:using-git-worktrees`
+# fallback both place these here, so an unignored `.claude/worktrees/` shows up
+# as untracked in the main checkout — and one `git add -A` from there commits an
+# entire second copy of the repository into the repository. The worktree skill
+# names that as its reason for requiring the directory be ignored *before* a
+# worktree is created; it was not, from Task 3 until here.
+.claude/worktrees/
+
 # No Node section. This project is Rust-only by construction, and the web
 # viewer was considered and rejected in spec §14.0 — ignoring node_modules
 # would quietly imply the option is still open.
