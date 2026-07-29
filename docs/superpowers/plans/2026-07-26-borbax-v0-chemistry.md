@@ -2611,6 +2611,26 @@ pub fn find_raf(
 - Consumes: `Interner`, `Reaction`, `decay_channels`, `Universe`, `Stream`
 - Produces: `SegmentTree::{with_capacity, set, total, sample}`, `Beaker::{new, step, time, counts, species_count}`, `ChannelId(u32)`
 
+**Before Step 1 — the waiting-time draw, settled in Task 3 and easy to get
+wrong here.** Gillespie's direct method takes `tau = (1/a0) * ln(1/r1)`, which
+needs `r1 > 0`. `Stream::next_f64` returns `[0, 1)` — **closed at zero and open
+at one, the wrong half-open direction for this**. So `-det_math::ln(s.next_f64())`
+is `+inf` once in 2^53 draws: the clock jumps to infinity and the run silently
+stops scheduling, with no panic and nothing in the state hash.
+
+Write it as `-det_math::ln(1.0 - u)`, which is total over the whole reachable
+domain and truncates at 36.7368 — a cap on the waiting time rather than an
+infinity, and the omitted tail has mass 2^-53. **Test it at the value**, not by
+sampling: `u == 0.0` is unreachable by sampling at 2^-53 but is exactly the
+input that breaks the naive form. `borbax-rng`'s `next_f64` doc carries the
+same warning, and `normal_from` is the worked example of clamping rather than
+redrawing.
+
+**Also settle the draw-count contract here.** `next_range` rejection-samples,
+so a step's draw count is value-dependent — stream position is therefore *not*
+a function of the event count, which anything reconstructing a run will
+otherwise assume.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
@@ -3202,6 +3222,36 @@ Validate on a null trajectory of pure multinomial noise: it must score ~0.
 
 - [ ] **Step 3: The neutral shadow** (`shadow.rs`)
 
+**A `Stream`'s position cannot currently be saved or restored, and this step is
+the first thing that needs it.** `Stream` exposes no accessor for its block
+counter or intra-block offset and derives no `serde`, so "fork from a keyframe"
+has no route as written. Two options, and the choice is not free:
+
+1. **Expose position.** Keeps the 4x-amortised block buffer, and makes
+   `(counter[3], spent)` part of the §13.2 contract. Note the trap measured in
+   Task 3: `Stream` stores position *twice*, and a field-wise constructor —
+   the obvious `Stream::at(seed, domain, index, n)`, or a `#[derive(Default)]`,
+   or a field-wise `Deserialize` — emits `4 - n%4` zeros and then **skips a
+   block**. The discriminating test is every `n` in `0..=16`, not just
+   multiples of four; a test that checks only `n % 4 == 0` passes against
+   precisely the broken implementation.
+2. **Drive the counter from the logical simulation state** — Salmon et al.'s
+   own recommendation, and the paper names this exact failure: "the error
+   identified by [5] arose because of a failure to properly checkpoint and
+   restore the PRNG's state." A fresh `Stream::sub(seed, Domain::Beaker, ...,
+   event_index)` per event is O(1) state, not the per-molecule state §8.6
+   forbids. Its cost is the block buffer: the direct method uses 2 words per
+   event, so 2 of every 4 are discarded.
+
+**Related, and cheapest to settle now:** §13.1's reproducibility tuple is
+`(universe_seed, world_seed, config_hash)`, and `config_hash` has **no home**.
+Philox 4x64 gives six 64-bit words; `borbax-rng` allocates all six as
+`key = [universe_seed, reserved]` and `counter = [domain, index, sub, block]`.
+Either it folds into `universe_seed` upstream, or a config mismatch simply
+refuses to load a keyframe and it is never a stream coordinate — but decide
+which, because "compressed in with another word" is the failure Task 3
+eliminated.
+
 Fork from a keyframe with decay rates **equalised**, not disabled (§15.3). The
 common rate is set so total removal flux matches the focal run at the fork
 point — otherwise the two differ in mass balance and any diversity difference
@@ -3210,6 +3260,28 @@ is explained by that rather than by selection.
 Note in the module header that this is a drift control on *persistence only*:
 catalysis produces differential formation rates, which is also selection, and
 equalising it would destroy the chemistry.
+
+**Which `Domain` the shadow draws from is undecided, and both steps below
+depend on it.** `Domain::Shadow` exists but its doc explicitly declines to
+settle the question: a paired `run - shadow` difference *can* have far lower
+variance under common random numbers, but Glasserman & Yao (1992) find the
+class where CRN is provably advantageous "rather limited", CRN decouples in a
+Gillespie setting as the integrated intensities diverge, and per-channel
+indexing reduces without removing that (Anderson 2012). All of that literature
+is for infinitesimal parameter perturbations; `run - shadow` is selection on
+versus off, a large structural difference, which is the regime where coupling
+decays fastest.
+
+**Settle it by measurement, not argument:** run both indexings at fixed budget
+and compare the variance of the paired difference. If CRN's is not lower, use
+independent streams and spend the budget on replicates instead.
+
+**Whatever is chosen must apply to every draw on the shadow path.** Mixing
+`Shadow` and `Beaker` draws gives partial CRN, silently — the worst of the
+options. Note also that Steps 3 and 4 want *opposite* things: the persistence
+shadow wants the live run's draws where it can get them; the randomised-
+catalysis control needs a permutation that does **not** move when the live
+run's draw count changes, and may want its own `Domain`.
 
 - [ ] **Step 4: Randomised-catalysis control** (`shadow.rs`)
 

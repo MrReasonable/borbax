@@ -200,9 +200,12 @@ pub enum Domain {
     /// shadow path; mixing `Shadow` and `Beaker` draws gives partial CRN,
     /// silently, which is the worst of the options.
     ///
-    /// **Decide it in Task 15/20; do not read this variant as having decided
-    /// it.** What would settle it is cheap: run both indexings at fixed budget
-    /// and compare the variance of the paired difference.
+    /// **Decide it in Task 20b; do not read this variant as having decided
+    /// it.** What would settle it is cheap, and is written into that task: run
+    /// both indexings at fixed budget and compare the variance of the paired
+    /// difference. Task 20b Step 4 is §15.3's second control and already
+    /// exists in the plan; what it lacked was any statement of which `Domain`
+    /// it draws from.
     Shadow = 8,
     /// Hashing only — cache keys and content digests. Separated from the live
     /// domains so that using a `Stream` as a hash function cannot couple to
@@ -522,7 +525,10 @@ impl Stream {
     /// is a live hazard.** `u == 0.0` is reachable, so `-ln(u)` is `+inf`: the
     /// clock jumps to infinity once in 2⁵³ draws and the run silently stops
     /// scheduling. The bound above is real only for `1 - u`, or for a clamped
-    /// argument the way `normal_from` clamps `u1`. Task 15 owns this.
+    /// argument the way `normal_from` clamps `u1`. **Task 18** owns this — the
+    /// well-mixed beaker, where the Gillespie clock lives — and it is written
+    /// into that task rather than left here, because a doc comment in this
+    /// crate is not read while implementing that one.
     ///
     /// Both steps are exact: the shifted integer is below 2⁵³ so it converts
     /// without rounding, and `SCALE` is a power of two so the multiply cannot
