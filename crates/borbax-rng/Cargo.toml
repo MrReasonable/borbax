@@ -12,8 +12,9 @@ publish = false
 
 # And the same trap again for lints: `[workspace.lints]` applies to nothing
 # without this, so `unsafe_code = "forbid"` would forbid nothing and the
-# §13.1 `disallowed_methods` deny — which this crate actually trips against,
-# via Box-Muller's `ln` and `cos` — would be inert.
+# §13.1 `disallowed_methods` deny would be inert. That deny is what keeps
+# Box-Muller's `ln` and `cos` routed through `det_math` rather than through
+# `f64` — this crate does not violate it, it is the crate most able to.
 [lints]
 workspace = true
 
