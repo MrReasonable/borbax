@@ -218,10 +218,26 @@ impl Universe {
         // `Stream` (Task 3) exists to surface.
         let table = element::generate_elements(seed);
 
-        // A separate stream index so that adding a draw in element generation
-        // cannot shift the constants, and vice versa.
+        // **Three indices, not two, and the third was bought with a measured
+        // defect.** The comment here used to read "a separate stream index so
+        // that adding a draw in element generation cannot shift the constants,
+        // and vice versa" — true of element generation, false of bonds, which
+        // shared index 1 with the constants and sat *above* them on it.
+        //
+        // Retiring `weakest_share` and merging two order multipliers into one
+        // exponent took the bond generator from four draws to two, and a review
+        // measured the consequence: `solvent`, `temp_min`, `temp_max` and all
+        // five `UniverseConsts` reals moved in **8 of 8** probed seeds. Seed 0's
+        // `temp_min` went 206.09 -> 222.68. Every value stayed inside its
+        // documented range, so nothing but a digest could see it.
+        //
+        // §13.1: the identity of a universe must not depend on how many numbers
+        // an unrelated derivation happened to need. CLAUDE.md names the decay
+        // band — downstream of these temperatures — as the most sensitive
+        // parameter in the system, so the next person to add a bond constant
+        // would have spent a week on a dead run.
+        let bonds = BondEnergyMatrix::generate(&table, &mut Stream::new(seed, Domain::Universe, 2));
         let mut rng = Stream::new(seed, Domain::Universe, 1);
-        let bonds = BondEnergyMatrix::generate(&table, &mut rng);
 
         // Solvent: drawn uniformly from the lightest third of the table.
         //
@@ -379,6 +395,7 @@ mod tests {
             h ^= x;
             h = h.wrapping_mul(0x0100_0000_01b3);
         };
+        let mut mixed = 0_usize;
         for seed in 0..64 {
             let u = Universe::generate(seed);
             // **Destructured, not field-accessed, and that is the whole guard.**
@@ -427,22 +444,39 @@ mod tests {
                 for &b in &ids {
                     // Every representable order, not the first three: the cap
                     // is now `BondOrder::MAX`, derived from the valence ceiling.
+                    //
+                    // The `None` arm is unreachable while `new`'s bounds and
+                    // `MAX` agree — but if they ever drift, this would mix
+                    // *fewer* values and still produce a hash, sending the next
+                    // reader after a physics change that did not happen. The
+                    // count below is what makes that loud.
                     for o in 1..=BondOrder::MAX {
                         if let Some(order) = BondOrder::new(o) {
                             mix(bonds.energy(a, b, order).get().to_bits());
+                            mixed += 1;
                         }
                     }
                 }
             }
         }
+        // Every order of every pair of every seed reached the hash. A silent
+        // narrowing would move the constant with no other signal.
         assert_eq!(
-            h, 0x59a6_b8d5_560f_ea5c,
+            mixed % usize::from(BondOrder::MAX),
+            0,
+            "the digest mixed {mixed} cells, not a multiple of BondOrder::MAX — \
+             `BondOrder::new`'s bounds and `MAX` have drifted apart"
+        );
+        assert_eq!(
+            h, 0xef29_79c6_1879_20d8,
             "the assembled-universe digest moved — say which of §18.1's three this \
-             is, or the fourth: the digest's own seed range widened, which moves \
-             the constant while moving no universe value. Recomputing over the \
-             previous range distinguishes them, and did — this constant's \
-             predecessor reproduces exactly at 0..16. Otherwise check whether a \
-             draw was reordered or inserted"
+             is, or one of two widenings that move the constant while moving no \
+             universe value: the seed range (0..64 today) or the order range \
+             (1..=BondOrder::MAX today). Recompute over the previous range for \
+             whichever changed. Otherwise check whether a draw was reordered or \
+             inserted — and note that since the bond generator moved to its own \
+             stream index, its draw count can no longer do that silently, which \
+             it previously could and did"
         );
     }
 
