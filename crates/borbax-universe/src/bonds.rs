@@ -123,9 +123,24 @@
 //! `the_header_figures_are_current` measures each row and fails when one drifts.
 //! Read the numbers there; this paragraph states only the shape.
 //!
-//! `E/T` is no longer near zero. The cleave-rate ratio across all representable
-//! orders spans several orders of magnitude and exceeds 2.0 in every universe
-//! drawn, where before the derivation change it was near 1 in all of them.
+//! `E/T` rose, **and the claim needs its qualifier or it is misleading.** Across
+//! the orders a pair can actually *form* — capped at `min(valence_a, valence_b)`
+//! — the cleave-rate ratio spans several orders of magnitude and exceeds 2.0 in
+//! every universe drawn, where before the derivation change it was near 1 in all
+//! of them.
+//!
+//! **But that is carried by bond order, not by the energy scale.** For *single*
+//! bonds alone, max `E/T` is below 1 in **218 of 500** universes — so the
+//! pre-derivation diagnosis ("`E/T` sits in `exp`'s linear regime") is still true
+//! in 44% of universes for the only order many pairs can form. An earlier version
+//! of this paragraph said "no longer near zero" without that split, and priced
+//! every pair at order 6 to say it: measured, **78.1% of universes cannot form an
+//! order-6 bond at all**, so the figure came from an energy no bond in four
+//! universes out of five can carry.
+//!
+//! Task 14 must size against the formable numbers. `the_header_figures_are_current`
+//! now caps at the per-pair valence bound and measures `[11.40, 2370.55]` energy,
+//! `[3.58, 3.56e4]` rate ratio, max `E/T` 10.68 over 500 seeds.
 //!
 //! **The absolute energy scale rose about fivefold, and that was not stated
 //! when it happened.** Capacity was normalised onto `[w, 1]` and is now contact
@@ -220,18 +235,11 @@ impl BondOrder {
     /// divisibility guard built to compensate for it.
     pub const ALL: [Self; 6] = [Self(1), Self(2), Self(3), Self(4), Self(5), Self(6)];
     /// The largest order any universe's valence ceiling admits.
-    #[expect(
-        clippy::as_conversions,
-        clippy::cast_possible_truncation,
-        reason = "the assert below makes the narrowing structural rather than a \
-                  claim about today's literal — a 300-element `ALL` becomes E0080 \
-                  instead of a silent `MAX = 44`. `u8::try_from` is not const on \
-                  the pinned toolchain (E0658), and deriving from `ALL` is the \
-                  point: a literal `6` here would reintroduce the drift"
-    )]
-    pub const MAX: u8 = {
-        assert!(Self::ALL.len() <= u8::MAX as usize);
-        Self::ALL.len() as u8
+    /// Derived from `ALL`'s **last element**, not its length — no `as`, no
+    /// suppression, and it reads the array's content rather than its size.
+    pub const MAX: u8 = match Self::ALL.last() {
+        Some(o) => o.0,
+        None => 0,
     };
 
     /// An order, or `None` outside `1..=MAX`.
@@ -585,15 +593,22 @@ impl BondEnergyMatrix {
     /// `k = A·exp(−E_bond/T)` (PRD §9.1, §9.4), so `E_bond = 0` gives
     /// `exp(0) = 1` — the **maximum** of the range. A stray id does not produce
     /// an inert bond; it produces the most labile bond in the universe and the
-    /// largest cleave propensity available. Measured on seed 0
-    /// (`T = temp_min = 206.09`, single-bond energies `6.60..42.71`): the
-    /// sentinel rates **1.03x the fastest** genuine bond and 1.23x the slowest.
-    /// An earlier version of this sentence attached `1.23x` to the fastest,
-    /// which two review lanes caught independently — real number, wrong
-    /// referent, in the one block whose stated job is recording a defect
-    /// honestly. The corrected figure sharpens the point rather than weakening
-    /// it: a sentinel sitting 3% outside the genuine range *is* the §22.6
-    /// finding, and it becomes ~10^2-10^5 once Task 14 raises `E/T`.
+    /// largest cleave propensity available.
+    ///
+    /// **This is present, not prospective, and by four orders of magnitude.**
+    /// Measured over 500 universes against the slowest *formable* bond, the
+    /// sentinel cleaves **3.8x to 4.36e4x** faster — so a stray `ElementId`
+    /// dissolves a lineage in one step and looks like ordinary decay.
+    ///
+    /// Two earlier versions of this paragraph understated it. The first attached
+    /// `1.23x` to the fastest bond when it was the slowest — real number, wrong
+    /// referent, caught by two lanes. The second kept the seed-0 figures from
+    /// before the derivation changed (`T = 206.09`, energies `6.60..42.71`) and
+    /// called the hazard "entirely prospective... it becomes 10^2-10^5 once
+    /// Task 14 raises `E/T`". `E/T` already rose, in the commit that derived the
+    /// bond scale, and the figure is understated by roughly 5000x. A Task 14
+    /// implementer reading "1.23x, prospective" would not prioritise closing
+    /// this; at 4.4e4 it is not deferrable.
     ///
     /// The tell that a sentinel is the wrong shape here is that the *inert*
     /// value for `exp(−E/T)` would be `+∞`, which is a poison that propagates
@@ -1120,6 +1135,51 @@ mod tests {
         }
     }
 
+    /// **Both bond constants are this universe's own draws, bit-exactly.**
+    ///
+    /// Measured: replacing `scale` with a literal passes **57 of 58** tests, and
+    /// pinning `gamma` at `1 - 1e-9` passes 57 of 58 — in both cases the only
+    /// failure is the digest, which is re-pinned by hand on every deliberate
+    /// change and so is not a guard against this. The energy bands cannot see
+    /// either: under a constant scale they read `e_lo = 22.4` against a band top
+    /// of 25, and `e_hi = 1861` against a floor of 1200.
+    ///
+    /// `the_order_series_diminishes` cannot see the second, because it asserts
+    /// only the *sign* of the second difference, which survives to
+    /// `gamma = 1 - 2e-16`. The header's whole argument for `gamma <= 1` is dead
+    /// at nine decimal places of linear with nothing failing.
+    ///
+    /// Forward direction, not a recovery, so there is no tolerance — which also
+    /// makes this the §13.4 association pin for `base * (ca * cb).sqrt()`, today
+    /// caught only by the digest.
+    #[test]
+    fn both_bond_constants_are_this_universes_own_draws() {
+        for seed in 0..24 {
+            let (table, m) = universe(seed);
+            let pack = crate::packing::PackingConsts::new(table.pattern().k);
+            // Same stream, same index, same order. A reordered draw, a changed
+            // index or a narrowed range all fail here.
+            let mut rng = Stream::new(seed, Domain::Universe, 2);
+            let scale = rng.next_f64_range(28.0, 84.0);
+            let gamma = rng.next_f64_range(0.68, 1.0);
+            let base = table.pattern().eps * scale;
+            for (id, el) in table.iter() {
+                let c = contact_density(pack, el.units);
+                assert_eq!(
+                    m.energy(id, id, BondOrder::SINGLE).get().to_bits(),
+                    (base * (c * c).sqrt()).get().to_bits(),
+                    "seed {seed}: the bond scale is no longer `eps * <the draw>`"
+                );
+            }
+            let two = BondOrder::new(2).unwrap_or(BondOrder::SINGLE);
+            assert_eq!(
+                m.order_scale.of(two).to_bits(),
+                det_math::powf(2.0, gamma).to_bits(),
+                "seed {seed}: the order exponent is no longer the drawn gamma"
+            );
+        }
+    }
+
     /// **The header's figures, asserted rather than quoted.**
     ///
     /// Three rounds running, a measured table went into the module header and
@@ -1138,18 +1198,36 @@ mod tests {
         let (mut rate_hi, mut et_hi) = (f64::MIN, f64::MIN);
         for seed in 0..200 {
             let u = crate::Universe::generate(seed);
-            let b: Vec<ElementId> = u
+            let b: Vec<(ElementId, u8)> = u
                 .table
                 .iter()
                 .filter(|(_, e)| e.valence >= 1)
-                .map(|(id, _)| id)
+                .map(|(id, e)| (id, e.valence))
                 .collect();
             let t_min = u.consts.temp_min.get();
             let (mut lo, mut hi) = (f64::MAX, f64::MIN);
-            for &x in &b {
-                for &y in &b {
-                    for o in BondOrder::ALL {
+            for &(x, vx) in &b {
+                for &(y, vy) in &b {
+                    // **Only orders this pair can actually form.** A bond of
+                    // order `n` consumes `n` slots at each end, so the cap is
+                    // `min(valence_a, valence_b)` — `BondOrder`'s own doc says
+                    // so, and an earlier version of this test ignored it.
+                    // Measured over 20 000 seeds the per-universe ceiling is 4
+                    // in 27.2%, 5 in 50.9%, 6 in 21.9%: pricing every pair at
+                    // order 6 reports an energy **no bond in 78.1% of universes
+                    // can carry**, overstating `e_hi` by up to 1.63x and the
+                    // rate-ratio margin by 1.35x. Task 14 is told by this file
+                    // to size its coupling against these numbers.
+                    let cap = if vx < vy { vx } else { vy };
+                    for o in BondOrder::ALL.into_iter().filter(|o| u8::from(*o) <= cap) {
                         let v = u.bonds.energy(x, y, o).get();
+                        // F5: `<` and `>` are both false for NaN, so a bare
+                        // min/max scan *drops* a poisoned cell rather than
+                        // reporting it — the same hazard
+                        // `the_matrix_is_exactly_rank_one` records for zero
+                        // cells. Measured: a NaN at order 5 left this test
+                        // green; at order 6 it failed by a 13% margin, on luck.
+                        assert!(v.is_finite(), "seed {seed}: {x:?}-{y:?} {o:?} is {v}");
                         if v < lo {
                             lo = v;
                         }
