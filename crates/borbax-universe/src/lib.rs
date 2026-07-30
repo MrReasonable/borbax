@@ -117,6 +117,18 @@ pub struct UniverseConsts {
     pub decay_scale: f64,
     /// Which element acts as solvent. Its complementarity against a bond
     /// determines solvent attack (§9.5).
+    ///
+    /// **An `ElementId` because Layer 0 has no molecules, not because a solvent
+    /// is an element.** A universal solvent is far more plausibly a *molecule* —
+    /// and by the time a beaker is filled, a pre-generated molecular inventory
+    /// already exists (dust-cloud chemistry, plus whatever planetary heat
+    /// drives), which is where a real solvent would come from. Making this a
+    /// `SpeciesId` requires `borbax-molecule`, which sits above this crate, so
+    /// it cannot be done here at any price.
+    ///
+    /// Recorded so the constraint is visible before §9.5's solvent attack is
+    /// written against the element reading and inherits it. The decision belongs
+    /// with Task 6, and Task 5b's scope block states it.
     pub solvent: ElementId,
     /// Coldest temperature this universe supports.
     pub temp_min: Thermal,
