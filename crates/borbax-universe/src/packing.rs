@@ -159,7 +159,7 @@ pub(crate) fn unmade_lateral(cap: usize, outer: usize) -> f64 {
 /// `cap as f64 * (f * (1.0 - f))` moves **315 of the 2808 `(cap, outer)` cells**
 /// the table reaches and **18 of 1080** `contacts_upto` values, by 1 ulp. `peak`
 /// is a strict-`>` argmax over `energy_per_unit` ([`crate::element`]), so one ulp
-/// can relocate it by a whole element and change every `decay_rate` below it.
+/// can relocate it by a whole element and change every `instability` below it.
 /// `the_split_is_bit_exact_on_the_integer_domain` pins it.
 ///
 /// `sqrt` stays native: IEEE-754 specifies it exactly, so it is portable without
@@ -310,7 +310,7 @@ impl PackingConsts {
     /// that let `PackingConsts { k: 6, z: 40.0 }` compile.
     ///
     /// `z` feeds [`contacts_upto`], which sets the binding peak, which sets
-    /// `decay_rate` and `abundance`. A fourth call site transposing the
+    /// `instability` and `abundance`. A fourth call site transposing the
     /// constant produces a plausible table.
     #[must_use]
     #[expect(
@@ -361,7 +361,7 @@ impl PackingConsts {
 /// `total + (inward + lateral)`. Measured, fusing them into a single sum moves
 /// **167 of the 1080 `(k, N)` cells** the table reaches, worst 1.14e-13 — mass
 /// is untouched (0 of 4320 cells change `defect_sub`) but `energy_per_unit`,
-/// `peak` and every `decay_rate` are not. `the_universe_digest_is_pinned` is
+/// `peak` and every `instability` are not. `the_universe_digest_is_pinned` is
 /// what fails if it moves; nothing else would. Do not tidy (§13.4).
 #[must_use]
 #[expect(

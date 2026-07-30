@@ -29,7 +29,7 @@ column below for the reason, which is genuinely a plan's job.
 |---|---|---|
 | `ElementId(3)` from another crate | `ElementId::from_index(3)` → `Option` | the field is `pub(crate)`; `elements[id.0 as usize]` was a panic site at every call site, under `indexing_slicing` |
 | `u.elements`, `u.shell` | `u.table` — `PeriodicTable` with `get`/`iter`/`len`/`pattern` | names the tuple `generate_elements` returned |
-| `u.element(id).decay_rate` | `u.element(id)` → `Option<&Element>` | clamping an out-of-range id answered with a *different element's* properties, which nothing downstream could detect |
+| `u.element(id).instability` | `u.element(id)` → `Option<&Element>` | clamping an out-of-range id answered with a *different element's* properties, which nothing downstream could detect |
 | `u.bonds.energy(&a, &b, 1)` | `u.bonds.energy(id_a, id_b, BondOrder::SINGLE)` — and `BondOrder` is a validated newtype over `1..=BondOrder::MAX` (6), not a three-variant enum; build one with `BondOrder::new`/`try_from`, iterate `BondOrder::ALL` | a rate path holds ids, not structs 48 bytes of which are `String`; and `order: u8` had no honest answer for `0` — clamping it to `1` gives a non-bond the energy of a single bond |
 
 `Element::energy_per_unit` is `Quanta` rather than `f64` (§5 G4, decided in
@@ -1892,7 +1892,7 @@ pub struct SpeciesRecord<const D: usize> {
     pub sig: Signature<D>,
     pub mass: Mass,
     pub bond_count: u32,
-    /// Summed element `decay_rate`. Precomputed for the same reason as
+    /// Summed element `instability`. Precomputed for the same reason as
     /// everything else here — an earlier draft recomputed it per call with a
     /// comment saying it would be hoisted "if it shows up in a profile". A
     /// twelve-iteration loop never shows up in a profile and runs millions of
@@ -2278,7 +2278,7 @@ written. Read them before Step 1 — two change the signatures above.**
 4. **The radiogenic channel carries no scale constant, and on the drafted
    arithmetic it dominates the other two by 10³–10⁷.** Cleave is
    `count × Σ_bonds(decay_scale / E) × exp(-1/(0.01·T))` and solvent is
-   `count × solvent_rate × decay_scale`; radiogenic is `count × Σ_atoms decay_rate`
+   `count × solvent_rate × decay_scale`; radiogenic is `count × Σ_atoms instability`
    with **nothing**. `decay_scale` is drawn in `[1e-6, 1e-4]`, so for a 12-atom
    species at `Thermal(300)` over the drawn range and bond energies 0.5..10, the
    ratio `radiogenic / cleave` is **1.7e3 to 1.0e7**. §9.1 calls spontaneous
@@ -2307,7 +2307,7 @@ written. Read them before Step 1 — two change the signatures above.**
    Fixing it needs a drawn scale for the radiogenic channel parallel to
    `decay_scale`. That is also what makes the channel **sweepable**: see Task 20.
 
-5. **`decay_rate`'s documented type contradicts its consumer.** §7.1 calls it
+5. **`instability`'s documented type contradicts its consumer.** §7.1 calls it
    "decay probability per world-year"; this task multiplies it by `count` and
    hands it to the scheduler as a Gillespie propensity. Those are different
    quantities — a propensity coefficient has units of inverse time, is defined on
@@ -2458,7 +2458,7 @@ pub fn decay_channels<const D: usize>(
 }
 
 fn radiogenic_rate<const D: usize>(id: SpeciesId, it: &Interner<D>, u: &Universe) -> f64 {
-    // Summed element `decay_rate`. The field was called `stability` until
+    // Summed element `instability`. The field was called `stability` until
     // Task 4's review: it holds 0 at the binding peak and rises toward the
     // extremes, so it was being summed here *as a rate* — correct sense, wrong
     // name, which is exactly the inversion a reader reconciling the two would
@@ -2479,7 +2479,7 @@ fn radiogenic_rate<const D: usize>(id: SpeciesId, it: &Interner<D>, u: &Universe
     // the `Vec` buys 17% of the cost. See Task 15.
     let canon = it.record(id).canon;
     (0..canon.n as usize)
-        .map(|i| u.element(borbax_universe::ElementId(canon.elem[i])).decay_rate)
+        .map(|i| u.element(borbax_universe::ElementId(canon.elem[i])).instability)
         .sum()
 }
 ```
@@ -3469,7 +3469,7 @@ which is most of the work. This task's job is only to check the peak is
 **usable**: interior to the element range, not pinned at the table edge, not
 degenerate.
 
-**And a rule, because the alternative is rigging.** `peak` sets `decay_rate` for
+**And a rule, because the alternative is rigging.** `peak` sets `instability` for
 every element, and CLAUDE.md calls the decay band the most sensitive parameter in
 the system. Choosing the exponent by where the peak lands would be choosing the
 decay landscape by hand, one indirection removed. **The battery's pass rate may

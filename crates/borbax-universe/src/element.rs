@@ -169,13 +169,48 @@ pub struct Element {
     /// move, which is the evidence that this was a typing change and not a
     /// physics one.
     pub energy_per_unit: Quanta,
-    /// Decay probability per world-year, from the distance below the binding
-    /// peak. **Named for what it holds** — it is 0 at the peak and rises toward
-    /// the extremes. An earlier draft called this `stability`, which inverted
-    /// the sense of the field against its own description, in the quantity §9.4
-    /// calls the most sensitive parameter in the system. Unstable elements are
-    /// both an energy source and a mutation source (spec §9.5).
-    pub decay_rate: f64,
+    /// How far this element sits below the binding-energy peak, on `0..=1`.
+    /// 0 at the peak, rising toward both extremes.
+    ///
+    /// **Renamed from `instability`, because "decay" already meant something
+    /// else in this project and the collision was actively misleading.** Borbax
+    /// has two unrelated processes that the word covers:
+    ///
+    /// 1. **Bond cleavage** — heat and solvent attack breaking *chemical* bonds,
+    ///    `k = A·exp(−E_bond/T)` (§9.4, §9.5). Per-bond, driven by
+    ///    [`crate::bonds::BondEnergyMatrix`]. This is "the decay band", the
+    ///    quantity CLAUDE.md calls the most sensitive parameter in the system.
+    /// 2. **This field** — a per-*element* instability derived from
+    ///    [`Self::energy_per_unit`], which is the packing/cluster model. Nothing
+    ///    to do with bonds; it is the nuclear-side analogue.
+    ///
+    /// They meet in exactly one place: an unstable element sitting inside a
+    /// molecule damages it, which is §9.5's **radiogenic** cleave channel. So
+    /// this is a *source term* for one of the channels in (1), not an instance
+    /// of it. Sharing a name invited exactly the conflation it produced.
+    ///
+    /// **And the new name deliberately does not say "rate".** §7.1 calls the old
+    /// one "probability per world-year" while Task 15 consumes it as a Gillespie
+    /// propensity, which is unbounded above — a recorded, unresolved
+    /// contradiction, and the reason the `> 1.0` clamp below is a category error
+    /// rather than a saturation. A dimensionless distance is what the value
+    /// actually *is*; Task 15 decides how it becomes a rate, and now has to say
+    /// so explicitly rather than inheriting an answer from a field name.
+    ///
+    /// (An earlier draft called this `stability`, which inverted the sense
+    /// against its own description. `instability` keeps the sense — larger means
+    /// less stable — without claiming a unit.)
+    ///
+    /// **One-axis limitation, stated because it bounds what this can model.**
+    /// Real half-lives are driven by position in a *two*-dimensional (protons,
+    /// neutrons) space — beta decay corrects a wrong ratio, alpha decay and
+    /// spontaneous fission shed mass from nuclei too large for the strong force
+    /// to hold against electrostatic repulsion. Borbax has one axis (`units`),
+    /// so this can express "far from the peak is unstable" but has no second
+    /// axis for a *ratio* to be wrong along. The shape it gives is
+    /// alpha/fission-like, not beta-like. That is a property of invented
+    /// physics, not a defect — but do not reach for a neutron count to fix it.
+    pub instability: f64,
     /// Relative abundance. **The gel lever** (§7.2) — see [`generate_elements`].
     pub abundance: f64,
     /// Which band of outer-shell occupancy this element exposes — `floor(fill ×
@@ -649,7 +684,7 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
             affinity,
             radius: Span(radius),
             energy_per_unit,
-            decay_rate: 0.0, // filled below, once the peak is known
+            instability: 0.0, // filled below, once the peak is known
             abundance,
             outer_fill_band,
         });
@@ -720,7 +755,7 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
         let deficit = (peak_energy - e.energy_per_unit) / scale;
         // **Cap at 1.0 — and the reason this comment used to give was wrong.
         // Left standing deliberately; Task 15 owns the fix.** It said
-        // `decay_rate` is a probability per world-year (§7.1), so 1.0 "is the
+        // `instability` is a probability per world-year (§7.1), so 1.0 "is the
         // value the type implies and needs no defence". §7.1 does say that —
         // and Task 15 hands this quantity to the scheduler as a **Gillespie
         // propensity**, which is a rate constant: inverse time, defined on an
@@ -742,7 +777,7 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
         // **The cause is upstream of the cap.** `contacts_upto` returns 0 at
         // `units <= 1`, so `energy_per_unit(1) = -sigma` exactly and
         // `deficit(1) = 1 + sigma/peak_energy > 1` in **every** universe —
-        // measured, the monomer's `decay_rate` takes exactly one value across
+        // measured, the monomer's `instability` takes exactly one value across
         // 20 000 universes. The strain term charges a lone unit the full
         // per-site penalty of a lattice whose own comment above says "each shell
         // is stretched over a larger radius than the one below", and at N = 1
@@ -766,7 +801,7 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
         // `Beaker` API is `{new, step, time, counts, species_count}` and §11's
         // open boundaries are V1 — so a closed beaker losing its most abundant
         // element does not turn over, it empties.
-        e.decay_rate = if deficit > 1.0 { 1.0 } else { deficit };
+        e.instability = if deficit > 1.0 { 1.0 } else { deficit };
     }
 
     let shell = ShellPattern {
@@ -1452,7 +1487,7 @@ mod tests {
                     affinity,
                     radius,
                     energy_per_unit,
-                    decay_rate,
+                    instability,
                     abundance,
                     outer_fill_band,
                 } = e;
@@ -1469,7 +1504,7 @@ mod tests {
                 // moved no value, and it can only prove that if it hashes the
                 // same bits it hashed before.
                 mix(energy_per_unit.0.to_bits());
-                mix(decay_rate.to_bits());
+                mix(instability.to_bits());
                 mix(abundance.to_bits());
                 for b in symbol.bytes().chain(name.bytes()) {
                     mix(u64::from(b));

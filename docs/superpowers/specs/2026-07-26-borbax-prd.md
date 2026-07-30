@@ -299,8 +299,31 @@ Each element carries:
 | `affinity` | Surface-interaction scalar in [−1, +1]. Drives complementarity. Trends across a period. |
 | `radius` | Steric size; contributes to shape extent |
 | `bond_energies` | Per-partner-group bond strength matrix |
-| `decay_rate` | Decay probability per world-year. Unstable elements are both an energy source and a mutation source. **Named for what it holds**: it is 0 at the binding-energy peak and rises toward the extremes, so calling it `stability` — as an earlier version did — inverted the sense of the field against its own description, in the quantity §9.4 calls the most sensitive parameter in the system. |
+| `instability` | How far below the binding-energy peak this element sits, on `0..=1` — 0 at the peak, rising toward both extremes. Unstable elements are both an energy source and a mutation source (§9.5's radiogenic channel). **Renamed from `decay_rate`, because "decay" already meant bond cleavage** — see the note below. **Named for what it holds**: calling it `stability`, as a still earlier version did, inverted the sense against its own description. And it deliberately does not say "rate": §7.1 called the old name "probability per world-year" while the Cleave consumer treats it as a Gillespie propensity, which is unbounded above — an unresolved contradiction that a dimensionless name stops a reader from inheriting silently. |
 | `outer_fill_band` | **Reserved, and carries no chemistry. Renamed from `catalytic_class`**, because a `pub` field named for catalysis on a `pub` struct is not reserved, it is available — the only thing between it and a rate bonus keyed on a species label was a doc comment saying "do not", and §8.3's one-mechanism rule cannot be enforced by prose. A rebinning of `(period, group)` — `floor(fill × n_bands)`. Measured over 2000 universes: 54161 collisions keyed on `group` alone, **0** keyed on `(period, group)`, because `cap` follows the period. An earlier version of this row said "zero information beyond `group`", which is false — the value is not derived, but it is not a rebinning of `group` either. It is *not* derived, it is the one §7.1 property that is not, and **nothing downstream may branch on it as though it decided which reactions an element promotes.** An earlier version of this row said exactly that, which was a standing licence for a catalysis path keyed on an element label, parallel to §8.5's cavity geometry and forbidden by §8.3's one-mechanism rule. Catalysis is geometry (§8.5) or it is not catalysis. |
+
+**Two unrelated things in Borbax are called decay, and conflating them is easy.**
+
+1. **Bond cleavage** — heat and solvent attack breaking *chemical* bonds,
+   `k = A·exp(−E_bond/T)` (§9.4, §9.5). Per-bond, driven by the bond-energy
+   matrix. This is "the decay band", the most sensitive parameter in the system.
+2. **`instability`** — a per-*element* number derived from the packing model's
+   binding-energy peak. Nothing to do with bonds; it is the nuclear-side
+   analogue, where (1) is the chemical-side one. The two energy scales are not
+   comparable and no code may mix them.
+
+They meet in exactly one place: an unstable element inside a molecule damages
+it, which is §9.5's **radiogenic** cleave channel. So (2) is a *source term* for
+one channel of (1), not an instance of it.
+
+*One-axis limitation, stated so nobody reaches for the missing axis.* Real
+half-lives are set by position in a two-dimensional (proton, neutron) space:
+beta decay corrects a wrong ratio; alpha decay and spontaneous fission shed mass
+from nuclei too large for the strong force to hold against electrostatic
+repulsion. Borbax has one axis (`units`), so `instability` expresses "far from
+the peak is unstable" and has no second axis for a ratio to be wrong along — the
+shape is alpha/fission-like, never beta-like. That is a property of invented
+physics (§5, G3), not a defect to fix by adding a neutron count.
 
 ### 7.2 Validation — is this universe worth simulating?
 
@@ -544,12 +567,12 @@ Consistent with principle 1, there is no decay timer and there are no hitpoints.
 |---|---|---|
 | **Spontaneous cleavage** | Every bond carries a thermal breaking probability `k = A·exp(−E_bond/T)`. This is the Cleave class of §9.1 firing with no catalyst present. | Hot places destroy structure quickly, cold places preserve it. Vents are energy-rich *and* corrosive — the first real environmental trade-off. |
 | **Solvent attack** | The solvent binds exposed bonds by ordinary complementarity (§8.3) and cleaves them. A monomer's exposure is simply its count of empty lattice neighbours out of twelve. Same mechanism as everything else; nothing new is introduced. | **A molecule's shape determines its lifespan.** Compact folds that bury their backbone survive; sprawling ones are eaten. Folding therefore acquires a survival payoff for free, without us ever rewarding it — and in three dimensions a folded chain has a real interior for that burial to happen in (§8.4). |
-| **Radiogenic damage** | Unstable elements decay according to their `decay_rate` (§7.1), destroying their host molecule and damaging neighbours. | One process serves as both the mutation source and a decay source. |
+| **Radiogenic damage** | Unstable elements decay according to their `instability` (§7.1), destroying their host molecule and damaging neighbours. | One process serves as both the mutation source and a decay source. |
 | **Reactive by-products** | Some reactions yield small molecules with unusually *broad* complementarity — they bind almost anything and cleave it. | **Metabolism produces its own poison.** The harder a system runs, the faster it damages itself. |
 | **Photic damage** | High-energy input in the surface layer breaks bonds outright. | The photic zone is energy-rich and dangerous at once, which makes depth a genuine niche axis rather than just a coordinate. |
 | **Burial and dilution** | Sedimentation and diffusion physically remove material from the active volume. | Not destruction, but functionally identical — it leaves the system. |
 
-Note how little of this is new machinery. Solvent attack is the binding function from §8.3. Radiogenic damage is the `decay_rate` property from §7.1. Reactive by-products are simply molecules whose signatures happen to be broad. Only burial is genuinely new, and it belongs to the world layer regardless.
+Note how little of this is new machinery. Solvent attack is the binding function from §8.3. Radiogenic damage is the `instability` property from §7.1. Reactive by-products are simply molecules whose signatures happen to be broad. Only burial is genuinely new, and it belongs to the world layer regardless.
 
 **Decay also costs nothing per molecule**, which is worth spelling out because the obvious implementation — sweep every molecule every step and roll for each of its bonds — would dominate the loop entirely. It is unnecessary. Thermal cleavage is a Poisson process whose rate depends only on the species and the temperature, so the total propensity for a species is just its count multiplied by a precomputed per-species constant: one more channel in the same scheduler that handles every other reaction. Solvent attack is likewise a pure function of the species, resolved once at intern time (§8.6).
 
