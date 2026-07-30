@@ -107,9 +107,12 @@ biological word by accident — and unlike a drawn name there is nothing to redr
 if they do, because systematicity is the whole point. Enumerating the collisions
 would be the enumeration-of-spellings failure this project has now recorded
 three times. A mandatory separator makes the class structurally disjoint from
-the blocklist instead: no entry in `REAL_ELEMENT_NAMES` or the chemical-term
-list contains a hyphen, so no composed name can equal one, whatever the
-morphemes are later changed to. State that as the property the check decides,
+the blocklist instead: no entry in `REAL_ELEMENT_SYMBOLS` or `REAL_WORDS` — the
+actual constants, an earlier draft of this line named one that does not exist —
+contains a hyphen, so no composed name can equal one, whatever the morphemes are
+later changed to. Checked mechanically by review, along with all 20 illustrative
+morphemes and all 192 unhyphenated `stem+topology+bond` concatenations against
+`naming::is_real`: zero collisions in either arm. State that as the property the check decides,
 and `xtask` can assert it over the grammar rather than over the outputs.
 
 ## The common name
@@ -146,16 +149,37 @@ lesson was that a doc comment saying "reserved" does not reserve anything: a
 `pub` field with a chemical-sounding name on a `pub` struct is *available*.
 
 A species name is a label. It carries no chemistry, and no rate, propensity,
-reaction channel or selection rule may read it. **Enforce that structurally
-rather than by comment**: names belong in a side table owned by the display
-layer, not in `SpeciesRecord`. If `SpeciesRecord` carries `common_name`, then
-every `&SpeciesRecord` in the rate path can see it, and the only thing stopping
-a name-keyed special case is discipline — which this project has measured to be
-insufficient at least five times. If the physics never receives the table, the
-special case has no spelling.
+reaction channel or selection rule may read it.
 
-That also keeps `SpeciesRecord` free of two `String`s per species, though that
-was never the argument.
+**A first version of this section got the enforcement wrong, and the correction
+is the useful part.** It said: keep names out of `SpeciesRecord` and in a side
+table owned by the display layer, so the rate path cannot see one. That closes
+the `catalytic_class` route — a *stored field* — and leaves a wider one open.
+
+Both names are **pure functions of `CanonForm`**, and the placement below put the
+systematic one "beside `canonicalise`" (in `borbax-molecule`) and the common one
+"at intern" (in `borbax-reaction`). Task 14 puts `Interner` and `rate()` in the
+*same crate*, and `borbax-reaction` depends on `borbax-molecule` by the fixed
+crate order — so `rate.rs` could call `systematic_name(&form)` directly and never
+touch the side table at all. A callable pure function is strictly more available
+than a stored field: no struct to change, no allocation, reachable from anywhere
+in or below `borbax-reaction`. The remedy contradicted its own discriminator.
+
+**The property that actually holds it: the name-producing functions must live in
+a crate that `borbax-reaction` does not depend on.** Given the fixed order
+(`units → rng → universe → molecule → reaction → beaker`, with `geometry →
+render` and `cli` above), that means at or above `borbax-render`, taking
+`CanonForm` as input. Then the enforcement is `cargo tree` rather than a grep of
+the rate path — mechanical, which is what this note asked for and did not
+deliver.
+
+*Discriminator:* `cargo tree -p borbax-reaction` must not list the crate holding
+the naming functions. A version that keeps `systematic_name` in
+`borbax-molecule` and adds a doc comment saying "do not call this from a rate"
+is the `catalytic_class` remedy that already failed once.
+
+Keeping names out of `SpeciesRecord` remains right, and also keeps it free of two
+`String`s per species — but that was never the argument and is not the guarantee.
 
 ## Scope
 
@@ -176,6 +200,14 @@ not a named substance, and there is no evident reason for V1 to change that.
 Three numbers, none of which should be written into the implementation until it
 has been run — the standing rule after `FRONTIER_COEFF` orphaned five prose
 sites:
+
+0. **Species-against-element collisions, which the list below first omitted.**
+   `naming::mint` takes `taken: &mut Vec<String>`, so a species-naming pass that
+   starts a fresh list can mint a species with the same name as an element in
+   that same universe. Not a G2 breach — both clear the blocklist — but it
+   defeats the single property a common name has, which is naming one thing.
+   The `taken` list must span both, or the two must be drawn from disjoint
+   sub-grammars.
 
 1. **Common-name collision rate.** Two species sharing a drawn name is
    confusing rather than corrupting (`SpeciesId` remains the identity), but the

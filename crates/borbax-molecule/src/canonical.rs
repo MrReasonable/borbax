@@ -1,10 +1,32 @@
 //! Canonical labelling, so isomorphic molecules intern to the same species.
 //!
 //! Colour refinement (1-WL) followed by individualization-refinement, taking the
-//! lexicographically smallest encoding. At twelve atoms with element and
-//! bond-order labels, refinement alone discretises the colouring for the large
-//! majority of molecules, so the search is a rarely-taken path — see
-//! `search_rarely_needs_to_branch`, which measures this rather than assuming it.
+//! lexicographically smallest encoding.
+//!
+//! **Completeness comes from `encode` being faithful, not from the search
+//! repairing 1-WL.** An earlier version of this paragraph implied the latter.
+//! `CanonForm` records the atom count, the elements in canonical order, and
+//! every bonded pair at every order — it *is* the molecule, relabelled — so
+//! `canon(G) == canon(H)` means G under one permutation equals H under another,
+//! hence G is isomorphic to H, however weak refinement happens to be. 1-WL's
+//! incompleteness costs *leaves*, not correctness. What the search is for is
+//! making the leaf *set* isomorphism-invariant, so that the minimum over it is
+//! a canonical form rather than merely a deterministic one.
+//!
+//! Verified exhaustively rather than argued: across six enumerations totalling
+//! 122 251 valence-legal labelled molecules, zero collisions and zero invariance
+//! failures — with the checking machinery independently validated by
+//! reproducing 156 unlabelled graphs on six vertices (OEIS A000088).
+//!
+//! 1-WL weakness is nonetheless real inside the atom cap: `K(3,3)` and the
+//! triangular prism are both 3-regular on six vertices, both collapse to one
+//! colour class, and only the search separates them. Drop it and species
+//! identity breaks at six atoms.
+//!
+//! The governing cost relation, derived and measured by review:
+//! **`#leaves = |Aut(G)| x (number of distinct leaf encodings)`**. Valence
+//! bounds degree; degree does **not** bound `|Aut|` — see [`SEARCH_LEAF_CAP`],
+//! whose justification used to claim otherwise.
 
 use crate::graph::{MAX_ATOMS, Mol12, N_ORDERS};
 use borbax_universe::{BondOrder, ElementId};
@@ -39,26 +61,67 @@ const SIG_LEN: usize = 1 + N_ORDERS * MAX_COLOURS;
 
 /// Ceiling on leaves explored by the individualization search.
 ///
-/// Valence caps degree in any chemically reachable molecule, which bounds the
-/// automorphism group far below this. Hitting the cap therefore means a molecule
-/// was constructed that chemistry cannot produce, and the right response is to
-/// investigate the construction — **not** to raise the cap. If it is ever hit
-/// legitimately, bind to nauty (spec §18.2) rather than growing this search.
+/// **This bounds search cost. It does not encode a claim about chemistry, and
+/// an earlier version of this comment did.** It said valence caps degree in any
+/// chemically reachable molecule, so hitting the cap "means a molecule was
+/// constructed that chemistry cannot produce". That is false, and the
+/// counterexample is small: K(6,6) over a valence-6 element — twelve atoms, six
+/// bonds each — is **connected, valence-legal, and accepted by `add_bond`
+/// without a single refusal**, and it explores 50 000 leaves without finishing.
+/// Measured on seed 0, which has a valence-6 element; 22.0% of the first 500
+/// seeds do. `|Aut(K₆,₆)| = 2·(6!)² = 1 036 800`, twenty times this cap.
+///
+/// So the cap is reachable by legal input, and [`canonicalise`] reports it as an
+/// error rather than asserting it away. If it is ever hit by a molecule the
+/// simulation actually produces, bind to nauty (spec §18.2) rather than growing
+/// this search — that route is still right, only its trigger was misdescribed.
 pub const SEARCH_LEAF_CAP: u32 = 50_000;
+
+/// The search ran out of budget before it could finish.
+///
+/// **An unfinished search yields a minimum over a prefix of the leaf set, and
+/// nothing establishes that it is the minimum over all of it** — so this is an
+/// error rather than a flag on the result. It was a `cap_hit: bool` on
+/// [`SearchStats`], documented as "sticky, so callers cannot miss it". Missing
+/// it cost one character: `canonicalise(&m).0` compiled clean at `-D warnings`,
+/// because `#[must_use]` on the function is discharged by touching the tuple.
+/// And the `debug_assert!` meant to catch it fired on **legal** input in the dev
+/// profile — the one CLAUDE.md designates for beaker work — blaming a cause that
+/// had been falsified.
+///
+/// **What is NOT established, stated because the previous version asserted it.**
+/// That doc said a partial form "interns as a second species". A review went
+/// looking for that and could not produce it: 200 relabellings of K(6,6), 200 of
+/// 3×K₄ and 12 of twelve isolated atoms each yielded exactly **one** canonical
+/// form. The structural reason offered — that exceeding this many leaves at
+/// twelve atoms forces a graph homogeneous enough for the first root branch's
+/// subtree minimum to already be the global one — is on paper and untested, and
+/// explicitly not expected to survive a rise in [`MAX_ATOMS`].
+///
+/// So the honest claim is the weaker one: a capped search has not *proved* it
+/// found the minimum. That is reason enough to refuse to return it, and it is
+/// less than the previous doc claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "canonicalisation explored {leaves} leaves without finishing: the result would be a partial \
+     minimum, which interns as a second species rather than being merely slow"
+)]
+pub struct Capped {
+    /// Leaves explored before the budget ran out — always [`SEARCH_LEAF_CAP`].
+    pub leaves: u32,
+}
 
 /// What the search did, so the branch rate can be measured rather than assumed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SearchStats {
     /// Discrete colourings reached, i.e. candidate labellings encoded.
+    ///
+    /// For a molecule whose refinement does not discretise, this converges on
+    /// the size of the automorphism group — the twelve-cycle reaches exactly 24,
+    /// which is `|Aut(C₁₂)|`, the dihedral group of order 24.
     pub leaves: u32,
     /// Total refinement rounds across every node of the search tree.
     pub refinement_rounds: u32,
-    /// Set when the search hit [`SEARCH_LEAF_CAP`] and returned a **partial**
-    /// minimum. That is not a slow answer, it is a wrong one: the same molecule
-    /// under a different labelling can explore a different prefix and produce a
-    /// different canonical form, so it interns as a second species. Sticky, so
-    /// callers cannot miss it.
-    pub cap_hit: bool,
 }
 
 /// A molecule's canonical encoding. Comparison is a few integer compares, which
@@ -149,6 +212,17 @@ fn refine(m: &Mol12, colour: &mut [u8; MAX_ATOMS], stats: &mut SearchStats) -> u
 
         let mut sig = [[0u8; SIG_LEN]; MAX_ATOMS];
         for v in 0..n {
+            // **This line is what makes the termination test sound**, and it
+            // reads like an ordinary part of the signature. Because the vertex's
+            // own colour is the leading component of a lexicographic array
+            // compare, the new partition always *refines* the old, so an equal
+            // class count forces an unchanged partition — which is what lets the
+            // loop below stop on the count rather than on the partition.
+            // Delete it and refinement stops refining: the class count never
+            // stabilises, the recursion never bottoms out, and the observed
+            // failure is a stack overflow wearing a costume. Confirmed by review
+            // asserting monotone refinement over the whole suite plus 120k
+            // random molecules: never fired.
             sig[v][0] = colour[v];
             let mut k = 1;
             for o in BondOrder::ALL {
@@ -163,11 +237,30 @@ fn refine(m: &Mol12, colour: &mut [u8; MAX_ATOMS], stats: &mut SearchStats) -> u
         // Rank signatures to produce new colours. Insertion-order-free: the rank
         // of a signature is how many *distinct* signatures are strictly smaller,
         // which depends only on the multiset of signatures.
+        //
+        // **"Is this the first occurrence of `sig[w]`" is a function of `w`
+        // alone**, so it is computed once per `w` rather than once per `(v, w)`.
+        // The predecessor evaluated it inside the double loop, making the round
+        // O(n³·L) in 79-byte array compares where O(n²·L) does the same work.
+        // Measured, bit-identical: **−36% on a realistic corpus and −47% on the
+        // twelve-cycle**, against a p5 noise floor of 1.7% and 0.7%.
+        //
+        // The booleans are the same because `&&` is commutative over pure
+        // operands — but "the suite passes" would not establish that, since the
+        // relabelling properties only check that two labellings agree with *each
+        // other* and would hold under a genuinely different refinement. Verified
+        // instead by a digest over canonical forms across four alphabet sizes
+        // (100, 3, 2 and 1 elements — the small ones branch 28% to 100% of the
+        // time) plus the twelve-cycle, byte-identical either way.
+        let mut first_occurrence = [false; MAX_ATOMS];
+        for w in 0..n {
+            first_occurrence[w] = !(0..w).any(|x| sig[x] == sig[w]);
+        }
         let mut new_colour = [0u8; MAX_ATOMS];
         for v in 0..n {
             let mut rank = 0u8;
             for w in 0..n {
-                if sig[w] < sig[v] && !(0..w).any(|x| sig[x] == sig[w]) {
+                if first_occurrence[w] && sig[w] < sig[v] {
                     rank += 1;
                 }
             }
@@ -195,19 +288,23 @@ fn count_classes(colour: &[u8; MAX_ATOMS], n: usize) -> usize {
 ///
 /// Returns the form plus search statistics, which exist so the branch rate can
 /// be measured rather than assumed.
-#[must_use]
-pub fn canonicalise(m: &Mol12) -> (CanonForm, SearchStats) {
+///
+/// # Errors
+///
+/// [`Capped`] if the search exhausted [`SEARCH_LEAF_CAP`] leaves. That is
+/// reachable from legal input — see the constant — so it is a value the caller
+/// must handle rather than a condition asserted away.
+pub fn canonicalise(m: &Mol12) -> Result<(CanonForm, SearchStats), Capped> {
     let n = m.len();
-    let mut stats = SearchStats::default();
     if n == 0 {
-        return (
+        return Ok((
             CanonForm {
                 n: 0,
                 elem: [ElementId::ZERO; MAX_ATOMS],
                 planes: [0; N_ORDERS],
             },
-            stats,
-        );
+            SearchStats::default(),
+        ));
     }
 
     // Initial colouring by element, **densified**.
@@ -238,56 +335,83 @@ pub fn canonicalise(m: &Mol12) -> (CanonForm, SearchStats) {
         *slot = rank;
     }
 
-    let mut best: Option<CanonForm> = None;
-    search(m, colour, &mut best, &mut stats);
-    // `search` reaches at least one leaf for n > 0 unless it hit the cap.
-    let form = best.unwrap_or_else(|| {
-        let identity: Vec<u8> = (0..u8::try_from(n).unwrap_or(0)).collect();
-        encode(m, &identity)
-    });
-    (form, stats)
+    let mut s = Search::default();
+    search(m, colour, &mut s);
+    if s.capped {
+        return Err(Capped {
+            leaves: s.stats.leaves,
+        });
+    }
+    // For n > 0 an uncapped search always reaches a leaf: refinement either
+    // discretises, or the target cell is non-empty by pigeonhole and every
+    // child is explored, so depth is bounded by n.
+    s.best.map(|form| (form, s.stats)).ok_or(Capped {
+        leaves: s.stats.leaves,
+    })
+}
+
+/// The search's working state. Bundled so `capped` cannot be dropped on the way
+/// out the way `SearchStats::cap_hit` could be dropped by the caller.
+#[derive(Default)]
+struct Search {
+    best: Option<CanonForm>,
+    stats: SearchStats,
+    capped: bool,
 }
 
 #[expect(
     clippy::indexing_slicing,
     reason = "`v` and `w` run over `0..n <= MAX_ATOMS`, the length of both colour arrays"
 )]
-fn search(
-    m: &Mol12,
-    mut colour: [u8; MAX_ATOMS],
-    best: &mut Option<CanonForm>,
-    stats: &mut SearchStats,
-) {
+fn search(m: &Mol12, mut colour: [u8; MAX_ATOMS], s: &mut Search) {
     let n = m.len();
-    if stats.leaves >= SEARCH_LEAF_CAP {
-        // Returning here yields a partial minimum, which is a *wrong* canonical
-        // form rather than a slow one — see `SearchStats::cap_hit`.
-        stats.cap_hit = true;
-        debug_assert!(
-            false,
-            "canonicalisation hit the leaf cap: the molecule is not valence-legal, or the cap is wrong"
-        );
+    if s.capped || s.stats.leaves >= SEARCH_LEAF_CAP {
+        // **No `debug_assert!(false)` here, and its removal is the fix.** It
+        // fired on K(6,6) over a valence-6 element — connected, valence-legal,
+        // every one of its 36 bonds accepted — with a message asserting the
+        // molecule was not valence-legal. That is a panic on legal input, in the
+        // profile CLAUDE.md designates for beaker work, in a workspace where
+        // `clippy::panic` is denied and `debug_assert!` routes around the deny.
+        // The condition is now carried out as a value instead.
+        s.capped = true;
         return;
     }
-    let classes = refine(m, &mut colour, stats);
+    let classes = refine(m, &mut colour, &mut s.stats);
 
     if classes == n {
         // Discrete: the colouring *is* an ordering.
-        stats.leaves += 1;
+        s.stats.leaves += 1;
         let mut order = vec![0u8; n];
         for v in 0..n {
             order[usize::from(colour[v])] = u8::try_from(v).unwrap_or(0);
         }
         let form = encode(m, &order);
-        if best.as_ref().is_none_or(|b| form < *b) {
-            *best = Some(form);
+        if s.best.as_ref().is_none_or(|b| form < *b) {
+            s.best = Some(form);
         }
         return;
     }
 
-    // Target cell: the smallest colour class with more than one member.
-    // Deterministic choice — "smallest colour, then lowest index" — so the search
-    // tree is identical on every platform.
+    // Target cell: **the lowest colour VALUE with more than one member** — not
+    // the smallest cell by cardinality.
+    //
+    // The distinction is a trap, and the previous wording walked into it. To a
+    // graph-theory reader "smallest cell" means smallest *cardinality*, which is
+    // an equally standard and equally isomorphism-invariant selector. This code
+    // implements nauty's default, the first non-singleton cell by colour value.
+    //
+    // A review replicated the algorithm and swapped only the selector: **the two
+    // give different canonical forms** — measured on the Petersen graph and on
+    // two 5-rings sharing a bridging atom, an ordinary valence-legal 11-atom
+    // molecule. Leaf counts are identical, so nothing looks wrong, and *both*
+    // selectors pass every relabelling property here because both are invariant.
+    // So somebody "correcting" the code to match a comment that said cardinality
+    // would silently change every species id and every golden hash with the
+    // whole suite green.
+    //
+    // The selector is physics in exactly the sense `CanonForm`'s field order is,
+    // and unlike that one it was unlabelled. `the_target_cell_rule_is_pinned`
+    // holds it to a value, because no invariance test can.
     let target = (0..MAX_COLOURS)
         .find(|&c| {
             colour
@@ -314,7 +438,7 @@ fn search(
                 *slot += 1;
             }
         }
-        search(m, c2, best, stats);
+        search(m, c2, s);
     }
 }
 
@@ -361,6 +485,15 @@ mod tests {
         xs.get(i)
             .copied()
             .unwrap_or_else(|| unreachable!("index was drawn in range"))
+    }
+
+    /// Canonicalise, asserting the search finished.
+    ///
+    /// Every fixture here is a molecule whose search completes; a `Capped` would
+    /// mean the fixture changed into something else, so it fails loudly rather
+    /// than being absorbed.
+    fn canon(m: &Mol12) -> (CanonForm, SearchStats) {
+        canonicalise(m).unwrap_or_else(|e| unreachable!("fixture capped: {e}"))
     }
 
     fn as_u8(i: usize) -> u8 {
@@ -499,10 +632,9 @@ mod tests {
         let mut rng = Stream::new(17, Domain::Molecule, 0);
         for _ in 0..2_000 {
             let m = random_molecule(&mut rng, &t, &ids);
-            let (want, stats) = canonicalise(&m);
-            assert!(!stats.cap_hit);
+            let (want, _) = canon(&m);
             let p = shuffle(&mut rng, as_u8(m.len()));
-            assert_eq!(canonicalise(&permute(&m, &p, &t)).0, want);
+            assert_eq!(canon(&permute(&m, &p, &t)).0, want);
         }
     }
 
@@ -513,11 +645,11 @@ mod tests {
         let mut rng = Stream::new(1, Domain::Molecule, 0);
         for _ in 0..2_000 {
             let m = random_molecule(&mut rng, &t, &ids);
-            let want = canonicalise(&m).0;
+            let want = canon(&m).0;
             for _ in 0..4 {
                 let p = shuffle(&mut rng, as_u8(m.len()));
                 assert_eq!(
-                    canonicalise(&permute(&m, &p, &t)).0,
+                    canon(&permute(&m, &p, &t)).0,
                     want,
                     "relabelling changed the form"
                 );
@@ -593,7 +725,7 @@ mod tests {
             "same atoms, different order"
         );
 
-        assert_ne!(canonicalise(&a).0, canonicalise(&b).0);
+        assert_ne!(canon(&a).0, canon(&b).0);
     }
 
     #[test]
@@ -612,7 +744,7 @@ mod tests {
         assert!(b.add_atom(second).is_some());
         assert!(b.add_bond(0, 1, BondOrder::SINGLE, &t).is_ok());
 
-        assert_ne!(canonicalise(&a).0, canonicalise(&b).0);
+        assert_ne!(canon(&a).0, canon(&b).0);
     }
 
     /// A ring of identical atoms, which refinement **cannot** discretise.
@@ -643,48 +775,125 @@ mod tests {
             assert!(m.add_bond(i, next, BondOrder::SINGLE, &t).is_ok());
         }
 
-        let (want, stats) = canonicalise(&m);
-        assert!(
-            !stats.cap_hit,
-            "a twelve-cycle is chemically reachable and must not cap"
-        );
+        let (want, stats) = canon(&m);
         assert!(
             stats.leaves > 1,
             "refinement cannot discretise a vertex-transitive graph; the search must have run"
         );
+        // `#leaves = |Aut(G)| x (distinct leaf encodings)`, derived and measured
+        // by review. A twelve-cycle has one encoding and the dihedral group of
+        // order 24, so this is an exact expected value rather than a bound — and
+        // it is the cheapest available check that the search explores the orbit
+        // it should, no more and no less.
+        assert_eq!(stats.leaves, 24, "|Aut(C12)| is 24: the dihedral group");
 
         // And the whole point still holds: every relabelling agrees.
         let mut rng = Stream::new(99, Domain::Molecule, 0);
         for _ in 0..64 {
             let p = shuffle(&mut rng, as_u8(m.len()));
-            assert_eq!(canonicalise(&permute(&m, &p, &t)).0, want);
+            assert_eq!(canon(&permute(&m, &p, &t)).0, want);
         }
     }
+
+    /// **The target-cell selector is physics, and only a pinned value holds it.**
+    ///
+    /// `canonical.rs` picks the lowest colour *value* with more than one member.
+    /// Choosing the smallest cell by *cardinality* is equally standard and
+    /// equally isomorphism-invariant — and gives **different canonical forms**.
+    /// Both selectors satisfy every relabelling property in this file, because
+    /// both are invariant; invariance is what those tests check and it cannot
+    /// distinguish them. So a well-meaning change to match a differently-worded
+    /// comment would move every species id with the suite green.
+    ///
+    /// The Petersen graph is the fixture because it is where a review measured
+    /// the two selectors diverging: 10 atoms, 3-regular, girth 5, one element,
+    /// all single bonds. Refinement gives every vertex the same colour, so the
+    /// answer comes entirely from the search.
+    ///
+    /// A moved value here is a deliberate physics change requiring golden
+    /// regeneration, exactly like `CanonForm`'s field order. It is not a
+    /// tolerance to widen.
+    #[test]
+    fn the_target_cell_rule_is_pinned() {
+        let t = table(5);
+        let three = t.iter().find(|(_, e)| e.valence >= 3).map_or_else(
+            || unreachable!("seed 5 has a valence-3 element"),
+            |(id, _)| id,
+        );
+
+        let mut m = Mol12::new();
+        for _ in 0..10 {
+            assert!(m.add_atom(three).is_some());
+        }
+        // Outer pentagon, spokes, inner pentagram.
+        for i in 0..5u8 {
+            assert!(m.add_bond(i, (i + 1) % 5, BondOrder::SINGLE, &t).is_ok());
+            assert!(m.add_bond(i, i + 5, BondOrder::SINGLE, &t).is_ok());
+            assert!(
+                m.add_bond(i + 5, ((i + 2) % 5) + 5, BondOrder::SINGLE, &t)
+                    .is_ok()
+            );
+        }
+        assert!(m.is_connected());
+        for v in 0..10u8 {
+            assert_eq!(m.degree(v), 3, "Petersen is 3-regular");
+        }
+
+        let (form, stats) = canon(&m);
+        // |Aut(Petersen)| = 120, and it has one leaf orbit, so
+        // `#leaves = |Aut| x (distinct encodings)` predicts exactly 120.
+        assert_eq!(stats.leaves, 120, "|Aut(Petersen)| is 120");
+        assert_eq!(form.n, 10);
+        assert_eq!(
+            form.planes[0], PETERSEN_SINGLE_PLANE,
+            "the canonical form moved: either the target-cell rule or the \
+             encoding changed, and both are physics"
+        );
+    }
+
+    /// The single-bond plane of the Petersen graph's canonical form under the
+    /// lowest-colour-value target-cell rule. Regenerate deliberately, never to
+    /// make a test pass.
+    const PETERSEN_SINGLE_PLANE: u128 = 1_315_755_469_568;
 
     /// The perf review predicted refinement alone discretises for the large
     /// majority of small labelled molecules, leaving the expensive search a
     /// rarely-taken path. Measure it rather than believe it — the number decides
     /// how much this matters later.
     #[test]
-    fn search_rarely_needs_to_branch() {
+    fn the_branch_rate_is_reported_against_the_palette_it_was_measured_on() {
         let t = table(2);
-        let ids = tree_capable(&t);
-        let mut rng = Stream::new(2, Domain::Molecule, 0);
-        let (mut total, mut branched, mut worst) = (0u32, 0u32, 0u32);
-        for _ in 0..5_000 {
-            let m = random_molecule(&mut rng, &t, &ids);
-            let (_, stats) = canonicalise(&m);
-            total += 1;
-            if stats.leaves > 1 {
-                branched += 1;
+        let all = tree_capable(&t);
+        // The palette is the dominant variable, so it is swept rather than
+        // fixed. Uniform draws from 100 elements make almost every atom unique,
+        // which is why the shipped figure was so low.
+        let mut worst_overall = 0u32;
+        for palette in [1usize, 2, 3, 6, 12, all.len()] {
+            let ids: Vec<ElementId> = all.iter().copied().take(palette).collect();
+            let mut rng = Stream::new(2, Domain::Molecule, 0);
+            let (mut total, mut branched, mut worst) = (0u32, 0u32, 0u32);
+            for _ in 0..2_000 {
+                let m = random_molecule(&mut rng, &t, &ids);
+                let (_, stats) = canon(&m);
+                total += 1;
+                if stats.leaves > 1 {
+                    branched += 1;
+                }
+                worst = worst.max(stats.leaves);
             }
-            worst = worst.max(stats.leaves);
+            let pct = 100.0 * f64::from(branched) / f64::from(total);
+            println!("palette {palette:3}: branched {pct:5.1}%, worst {worst} leaves");
+            worst_overall = worst_overall.max(worst);
         }
-        let pct = 100.0 * f64::from(branched) / f64::from(total);
-        println!("branched on {pct:.1}% of molecules, worst case {worst} leaves");
+        // The conclusion the module doc rests on, asserted over every palette
+        // rather than over the friendliest one.
         assert!(
-            worst < SEARCH_LEAF_CAP,
+            worst_overall < SEARCH_LEAF_CAP,
             "hit the search cap — investigate, do not raise it"
+        );
+        assert!(
+            worst_overall <= 64,
+            "worst case grew past anything previously measured: {worst_overall}"
         );
     }
 }
