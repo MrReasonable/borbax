@@ -460,8 +460,17 @@ mod tests {
     /// ground truth. It is also `#[cfg(test)]`, so it cannot reach simulation
     /// output. **The open question is Task 20's, not this comment's** — whether
     /// `FRONTIER_COEFF`'s admitted band was located against a latitude ordering
-    /// the shipped geodesic does not reproduce. Discriminator: re-run the
-    /// packing probe with the reciprocal-multiply form and compare the band.
+    /// the shipped geodesic does not reproduce.
+    ///
+    /// **The obvious discriminator tests the wrong thing.** Re-running the
+    /// probe with the reciprocal-multiply form would demonstrate the six-index
+    /// difference, which is already known. The question underneath is sharper:
+    /// a *packing error* ought to be invariant under vertex ordering, and the
+    /// paragraph above records that adding the canonical sort moved the
+    /// admitted band by about 1.1. That means something inside the probe is
+    /// order-sensitive when it should not be — `cap_order`'s index tie-break is
+    /// the obvious suspect. Find out **why the probe depends on the order at
+    /// all** before asking which order it should use.
     #[expect(
         clippy::indexing_slicing,
         reason = "fixed-size vertex arrays indexed by their own 0..len loop bounds"
