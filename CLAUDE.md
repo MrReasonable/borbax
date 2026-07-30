@@ -9,10 +9,12 @@ whose chemistry is **invented from a 64-bit seed**, not modelled on the real wor
 Molecules are shapes; binding is a geometric complementarity test; catalysis,
 membranes and heredity are all downstream consequences of that single mechanism.
 
-**Tasks 1-5 of 21 are complete** — the workspace and fiction-guarantee gate,
+**Tasks 1-7 of 21 are complete** — the workspace and fiction-guarantee gate,
 `borbax-units` with the portable-transcendental chokepoint, `borbax-rng`,
-element generation by fusion, and bond energies with the assembled `Universe`.
-Everything else is spec and plan. Read them before proposing anything:
+element generation by fusion, bond energies with the assembled `Universe`,
+molecule graphs with canonical labelling, and the geodesic directions with the
+60-rotation permutation table. Everything else is spec and plan. Read them
+before proposing anything:
 
 | Document | What it is |
 |---|---|
@@ -62,8 +64,15 @@ green, linear history, no force-push, `enforce_admins` on. Bypassing is a
 deliberate, visible act:
 `gh api -X DELETE repos/MrReasonable/borbax/branches/main/protection/enforce_admins`.
 
-Next action if starting fresh: **Task 6** — molecule graphs and canonical
-labelling. Task 5 merged as PR #12 on 2026-07-30.
+Next action if starting fresh: **Task 8** — 3D embedding by stress
+majorization. Task 6 merged as PR #13 on 2026-07-30; Task 7 followed it.
+
+**Task 8 has a preamble in the plan and it is load-bearing.** Task 6's review
+routed a finding there — `canonicalise` discards the ordering, so a naive
+`embed(&Mol12)` gives one species two shapes — and the *first* version of that
+finding had a false mechanism and a discriminator that would have rejected a
+correct implementation. Read the "Withdrawn on measurement" block before
+writing `embed`'s signature, not after.
 
 **Task 5b is scaffolding, not a V0 task.** It respecifies `abundance` as a
 fusion/fission process and is fully written up, but it gates nothing, the shipped

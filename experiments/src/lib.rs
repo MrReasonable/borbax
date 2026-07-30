@@ -17,13 +17,21 @@
 //! one known to have none is measuring itself, and its number must not be
 //! reported.
 //!
-//! [`geodesic`] is the exception to "not part of the simulation": it is
-//! Task 7's content, written here first because the measurement needs it, and
-//! it lifts into `borbax-molecule` unchanged whatever G2 returns.
+//! [`geodesic`] was the exception to "not part of the simulation": it is
+//! Task 7's content, written here first because the measurement needed a
+//! rotation table before Task 7 was due. Task 7 has since lifted it into
+//! `borbax-molecule`, and the re-export below is deliberately not a second
+//! copy — if the table G2 measures ever diverged from the table the binding
+//! kernel searches, the measurement would be invalidated without anything
+//! failing.
 
 pub mod embed;
 pub mod g2;
-pub mod geodesic;
+/// Sample directions and the rotation table, re-exported from where they live.
+///
+/// See [`borbax_molecule::geodesic`]. Kept as `crate::geodesic` so the
+/// harnesses read the same either side of the lift.
+pub use borbax_molecule::geodesic;
 pub mod molecule;
 pub mod openended;
 pub mod rng;
