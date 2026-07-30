@@ -183,7 +183,11 @@ pub struct Element {
 }
 
 /// The derived shape of one universe's table.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **No `Eq`**, since [`Self::eps`] and [`Self::sigma`] are floats. That is the
+/// honest consequence of carrying the energy scale here, and `PartialEq` is what
+/// the equality tests actually use.
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ShellPattern {
     /// The drawn part of the shell law: shell `n` holds `k*n^2 + 2` units.
@@ -208,6 +212,21 @@ pub struct ShellPattern {
     /// from the predecessor, in which `peak` was an argument whose value was
     /// then reported back as an emergent minimum.
     pub peak: usize,
+    /// Per-contact binding energy — **the table's own energy scale**.
+    ///
+    /// Carried here so [`crate::bonds`] can build the bond scale *from* it
+    /// rather than drawing an independent one. A review measured that the bond
+    /// matrix was exactly invariant to `energy_per_unit`'s magnitude (scale
+    /// every energy by 1000, worst bond change 3.7e-16) because the capacity
+    /// map is affine-invariant — so "how strongly things bind" was encoded
+    /// twice, here in Quanta and there in a chosen interval, with neither able
+    /// to check the other. That is the defect `bonds.rs` exists to reject,
+    /// reproduced one axis over.
+    pub eps: f64,
+    /// Radial strain coefficient. Carried alongside [`Self::eps`] because the
+    /// two together are what scaling `energy_per_unit` means — scaling one
+    /// alone changes the *shape* of the series, not its scale.
+    pub sigma: f64,
 }
 
 /// One universe's periodic table: the elements, and the shell law they follow.
@@ -725,6 +744,8 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
 
     let shell = ShellPattern {
         k,
+        eps,
+        sigma,
         closures: packing::closures(k, n_elements),
         fallback_symbols,
         peak,
@@ -1360,10 +1381,17 @@ mod tests {
                 closures,
                 fallback_symbols,
                 peak,
+                eps,
+                sigma,
             } = &sp;
             mix(*k as u64);
             mix(*peak as u64);
             mix(*fallback_symbols as u64);
+            // Added when `bonds.rs` began deriving its energy scale from `eps`.
+            // Both are drawn physics constants that now reach a result through
+            // two paths, so they are pinned rather than `_`-ed.
+            mix(eps.to_bits());
+            mix(sigma.to_bits());
             for c in closures {
                 mix(*c as u64);
             }
@@ -1410,8 +1438,13 @@ mod tests {
             }
         }
         assert_eq!(
-            h, 0x9041_670f_d0f6_e431,
-            "the universe digest moved — say which of §18.1's three this is"
+            h, 0xea6c_3282_e7ea_259a,
+            "the universe digest moved — say which of §18.1's three this is, or \
+             the fourth: the digest's own input set widened. Recomputing without \
+             the newest mixed field distinguishes them. This constant moved once \
+             deliberately, when `eps`/`sigma` joined `ShellPattern` so `bonds.rs` \
+             could derive its energy scale from the table's own — no element \
+             value changed, only what is hashed"
         );
     }
 

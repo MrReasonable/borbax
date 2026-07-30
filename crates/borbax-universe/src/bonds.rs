@@ -1,44 +1,54 @@
 //! Generated bond energies (spec §7.1).
 //!
-//! **Bond energy's *ordering* is a function of the two elements' per-unit
-//! binding energies. Its *magnitude* is not, and that is a defect this file
-//! records rather than one it has fixed.** §7.1's `bond_energies` was the last
-//! substantive property of a universe still without a cause: Task 4 derived
-//! `period`, `group`, `valence`, `radius`, `affinity` and `mass` from how a
-//! cluster packs, and left this one to be drawn. Drawing it reproduces exactly
-//! the defect that made the predecessor's `peak` unfalsifiable — "these
-//! elements bind well" encoded twice, in incommensurable units, so neither
-//! encoding can check the other.
+//! **Bond energy is derived from the packing — both its ordering and its
+//! scale.** §7.1's `bond_energies` was the last substantive property of a
+//! universe still without a cause: Task 4 derived `period`, `group`, `valence`,
+//! `radius`, `affinity` and `mass` from how a cluster packs, and left this one
+//! to be drawn. Drawing it reproduces exactly the defect that made the
+//! predecessor's `peak` unfalsifiable — "these elements bind well" encoded
+//! twice, in incommensurable units, so neither encoding can check the other.
 //!
-//! So: an element whose units bind strongly to each other binds strongly to
-//! other elements, because a bond is the same kind of contact as the ones
-//! holding the cluster together. That is principle 1 — one mechanism reused —
-//! rather than a second axis invented for bonding.
+//! A bond is a *contact*, of the same kind as the ones holding a cluster
+//! together. Two things follow, and the file now implements both rather than
+//! only the first:
 //!
-//! # The half that is not derived, measured
+//! - **What a bond is made of** is contact density, `contacts_upto(N)/N` — not
+//!   `energy_per_unit`, which subtracts the strain of packing a cluster into a
+//!   sphere. That strain is about a cluster's own geometry and has nothing to
+//!   do with bonding to another one.
+//! - **The energy scale of a bond** is `eps`, the drawn per-contact energy, so
+//!   `base = eps * scale` with `scale` dimensionless.
 //!
-//! `capacity = w + (1-w)·(x-lo)/span` is **affine-invariant in `x`**: multiply
-//! every `energy_per_unit` by 1000 and the worst relative change in any bond
-//! energy is **3.7e-16**, one ulp. So the whole matrix is invariant to the
-//! table's energy *scale*, and the scale that survives is `base`, drawn from a
-//! chosen `[30, 90]` that traces to nothing.
+//! Only two constants are drawn here and both are dimensionless: that multiple,
+//! and the order exponent. That is principle 1 — one mechanism reused — rather
+//! than a second axis invented for bonding.
 //!
-//! **That is this file's own stated defect, one axis over.** "How strongly
-//! things bind" is encoded twice — as `energy_per_unit` in Quanta, and as
-//! `base` in a chosen interval — and neither can check the other. It matters
-//! because magnitude, not order, is what enters `exp(-E/T)`, so it is what
-//! §9.4's differential persistence is made of. The dead-`E/T` finding recorded
-//! below is a *symptom* of this rather than a separate problem: a scale
-//! unmoored from the table has no reason to sit anywhere in particular relative
-//! to `T`.
+//! # What this cost, and what a review had to find first
 //!
-//! The fix derives the scale from `eps`, the drawn per-contact energy in
-//! `element.rs` — if a bond is a contact, its energy scale is the contact
-//! energy, which is the mechanism the paragraph above already claims.
-//! *Discriminator:* scale every `energy_per_unit` by α and every bond energy
-//! must scale by α. Today that measures 1.0 where it wants α, and widening
-//! `base`'s interval leaves it at 1.0 — which is what separates the real fix
-//! from the plausible one.
+//! An earlier version normalised `energy_per_unit` onto a floored `[w, 1]`
+//! scale, with `base` drawn independently in Quanta. That map is
+//! **affine-invariant**: multiply every `energy_per_unit` by 1000 and the worst
+//! relative change in any bond energy was **3.7e-16**, one ulp. So the matrix
+//! carried the table's *ordering* and discarded its *magnitude* — and magnitude
+//! is what enters `exp(-E/T)`, hence what §9.4's differential persistence is
+//! made of. The file's own defect, one axis over, with `base` as the second
+//! incommensurable encoding.
+//!
+//! `scaling_the_tables_energy_scales_every_bond_energy` is the discriminator,
+//! and it is the one a plausible fix fails: widening `base`'s interval leaves
+//! the ratio at 1.0.
+//!
+//! Retiring the normalisation also retired `weakest_share`, whose floor existed
+//! only because a min-max map puts a zero at the table minimum and zero is
+//! absorbing under a geometric mean. Contact density is positive for every
+//! element that can bond, so positivity is structural. Measured over 500
+//! universes, the bondable single-bond ratio is now **[6.599, 10.826]** against
+//! the drawn scheme's [2.301, 5.279] — wider, the direction §22.6 wants — and
+//! it varies with `k`, which `1/weakest_share` could not.
+//!
+//! The monomer scores 0 and prices 0. That is correct by meaning: no frontier,
+//! `valence == 0`, no bonds. It collides with the unknown-id sentinel, which is
+//! one more reason Task 14 must retire that.
 //!
 //! # Two things the first draft of this file got wrong, both measured
 //!
@@ -99,10 +109,11 @@
 //! otherwise assume pair structure exists. If selectivity is ever wanted here,
 //! the question to answer first is what the shape model failed to do.
 //!
-//! # What this file gets wrong, recorded rather than hidden
+//! # What this file still gets wrong, recorded rather than hidden
 //!
-//! The energy scale drawn here and the temperature scale drawn in
-//! [`crate::UniverseConsts`] are independent, and §9.1/§9.5 make cleavage
+//! The energy scale is now the table's own, but the **temperature** scale in
+//! [`crate::UniverseConsts`] is still drawn independently of it, and §9.1/§9.5
+//! make cleavage
 //! `k = A·exp(−E_bond/T)`. With `base ∈ [30, 90]` against `T ∈ [180, 760]`,
 //! `E/T` never leaves `exp`'s linear regime. Stated in one convention, because
 //! an earlier version of this sentence spliced two: **bondable elements, single
@@ -139,70 +150,97 @@
 //! The fix sets the dimensionless group `E/T`, not `E`, and it belongs with the
 //! rate law: it is written into Task 14 with its discriminator, and into Task 20
 //! for the band. Picking a number here would be the typed-in constant this
-//! project keeps finding reported back as an emergent result.
+//! project keeps finding reported back as an emergent result — and note that
+//! deriving the *energy* scale, as this file now does, does not fix the
+//! *ratio*: `eps` is still drawn independently of `temp_min`. The remedy Task 14
+//! carries is to draw the energy in units of the universe's own temperature,
+//! which a review measured collapses the `Ea/T` spread from 4.39x to 1.09x.
 
 use crate::element::{ElementId, PeriodicTable};
 use borbax_rng::Stream;
-use borbax_units::Quanta;
+use borbax_units::{Quanta, det_math};
 
-/// How many bonds join one pair of atoms.
+/// How many contacts join one pair of atoms.
 ///
-/// **An enum rather than a `u8`, because the `u8` version has no honest
-/// answer for zero.** The plan's signature took `order: u8` and clamped to
-/// `1..=3` under the comment "a malformed molecule should be inert, not a
-/// crash" — but clamping `0` up to `1` is the opposite of inert: it hands a
-/// non-bond the energy of a single bond. Making the state unrepresentable
-/// removes the choice, and pushes the one real question — what a caller does
-/// with an out-of-range number — to [`TryFrom`], where it is visible.
+/// **A validated newtype over `1..=MAX`, not a three-variant enum, and both
+/// halves of that changed for measured reasons.**
+///
+/// It was `Single`/`Double`/`Triple` — the real-chemistry taxonomy verbatim,
+/// which is a G3/G6 concern on its own — capped at an undrawn `3`. Measured
+/// over 200 universes, the per-universe ceiling of `min(valence_a, valence_b)`
+/// across bondable pairs takes the values `{4, 5, 6}` and is **never 3**:
+/// 25.6% of bondable pairs have both partners able to support order 4 or more.
+/// So the one bonding rule in this crate that was not generated sat below the
+/// generated table's own ceiling in 200 of 200 universes, while landing exactly
+/// on real chemistry's main-group maximum.
+///
+/// The cap is now [`Self::MAX`] = 6, the valence ceiling `element.rs` already
+/// asserts as the attained set. A newtype keeps illegal states unrepresentable
+/// — the reason the enum was right — without inventing six names for what is a
+/// count.
+///
+/// **The per-pair cap is Task 11's**, not this type's: a bond of order *n*
+/// consumes *n* slots at each end, so the real bound is
+/// `min(valence_a, valence_b)`, and nothing here forms a bond.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum BondOrder {
-    /// One bond.
-    Single = 1,
-    /// Two bonds.
-    Double = 2,
-    /// Three bonds.
-    Triple = 3,
+pub struct BondOrder(u8);
+
+impl BondOrder {
+    /// A single contact.
+    pub const SINGLE: Self = Self(1);
+    /// The largest order any universe's valence ceiling admits.
+    pub const MAX: u8 = 6;
+
+    /// An order, or `None` outside `1..=MAX`.
+    #[must_use]
+    pub const fn new(n: u8) -> Option<Self> {
+        if n >= 1 && n <= Self::MAX {
+            Some(Self(n))
+        } else {
+            None
+        }
+    }
 }
 
 /// The error [`BondOrder::try_from`] returns for a count it cannot represent.
 ///
 /// `thiserror` rather than a hand-rolled `Display`/`Error` pair: it is already
 /// a workspace dependency and already compiled into this crate's tree via
-/// `borbax-units`, so it costs zero extra crates and zero build time. It is a
-/// proc macro emitting a `Display` impl and cannot reach a result-affecting
-/// path, so the "runtime dependency in a result-affecting path is expensive"
-/// rule does not bite.
+/// `borbax-units`, so it costs zero extra crates and zero build time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("bond order {0} is not in 1..=3")]
+#[error("bond order {0} is not in 1..={max}", max = BondOrder::MAX)]
 pub struct NotABondOrder(pub u8);
 
 impl TryFrom<u8> for BondOrder {
     type Error = NotABondOrder;
 
     fn try_from(n: u8) -> Result<Self, Self::Error> {
-        match n {
-            1 => Ok(Self::Single),
-            2 => Ok(Self::Double),
-            3 => Ok(Self::Triple),
-            other => Err(NotABondOrder(other)),
-        }
+        Self::new(n).ok_or(NotABondOrder(n))
     }
 }
 
-/// Closes the round-trip the variants' `= 1, 2, 3` discriminants promise.
-///
-/// Without this the only route back is `order as u8`, which `as_conversions`
-/// warns on — so the discriminants would be decoration inviting exactly the
-/// conversion the lint forbids, at the point `Mol12` needs to serialise a bond
-/// order.
+/// Closes the round-trip, so the count is never recovered by an `as`.
 impl From<BondOrder> for u8 {
     fn from(order: BondOrder) -> Self {
-        match order {
-            BondOrder::Single => 1,
-            BondOrder::Double => 2,
-            BondOrder::Triple => 3,
-        }
+        order.0
     }
+}
+
+/// Contacts per unit — **what a bond is made of**.
+///
+/// The positive half of `energy_per_unit`, divided by `eps`. The strain term
+/// that `energy_per_unit` subtracts is the cost of packing a cluster into a
+/// sphere, which is about that cluster's own geometry rather than about bonding
+/// to another one, so it has no place in a bond.
+///
+/// Zero exactly at `units == 1`, where `contacts_upto` is 0 — the monomer, which
+/// has no frontier and cannot bond. `u16::try_from` rather than `as`: the draw
+/// caps tables at 120 units, so the conversion is lossless and the fallback
+/// unreachable, but `as_conversions` is denied workspace-wide because a silent
+/// narrowing is the gotcha most likely to produce a plausible wrong number.
+fn contact_density(pack: crate::packing::PackingConsts, units: usize) -> f64 {
+    let n = u16::try_from(units).map_or(f64::INFINITY, f64::from);
+    crate::packing::contacts_upto(pack, units) / n
 }
 
 /// Every pairwise bond energy in one universe, computed once at generation.
@@ -220,30 +258,36 @@ pub struct BondEnergyMatrix {
     order_scale: OrderScale,
 }
 
-/// How much stronger a double and a triple bond are than a single one.
+/// How much stronger an order-*n* contact set is than a single one.
 ///
-/// **Named fields rather than `[f64; 3]`, because the array undid [`BondOrder`]
-/// one line after it was established.** Indexing an array by a converted enum
-/// reintroduces the integer the enum exists to remove, and the miss needs an
-/// `unwrap_or(1.0)` fallback that would silently return the *single*-bond
-/// multiplier — an unreachable branch whose value is wrong if it is ever
-/// reached. Matching on the variant makes `Single => 1.0` a fact rather than an
-/// array slot that happens to hold `1.0`, and makes a fourth order fail to
-/// compile in one place instead of two.
+/// **One drawn exponent, `n^gamma`, replacing two independently drawn
+/// multipliers.** The pair had three problems the exponent removes at once.
+///
+/// Monotonicity was enforced by making the draw ranges disjoint (`[1.6, 2.1]`
+/// and `[2.2, 3.0]`), which is a chosen constraint wearing the look of a
+/// structural guarantee. Under `n^gamma` it is a theorem for every `gamma > 0`.
+///
+/// The *increments* were undecided and nobody had noticed: measured over
+/// 2 000 000 draws, **40.04% of universes got an accelerating series** — the
+/// third contact adding more energy than the second — because the two
+/// multipliers were drawn independently. `gamma <= 1` makes diminishing returns
+/// a single visible choice instead of a coin flip, and it has a mechanism
+/// already in this codebase: `element.rs` charges strain for stacking contacts
+/// into the same region.
+///
+/// And orders 4..=6 come free, which [`BondOrder::MAX`] needs. `gamma` is drawn
+/// in `[0.68, 1.0]`, which reproduces the old ranges almost exactly (double
+/// `[1.60, 2.00]` against `[1.6, 2.1]`; triple `[2.11, 3.00]` against
+/// `[2.2, 3.0]`) with one constant instead of two.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct OrderScale {
-    double: f64,
-    triple: f64,
+    gamma: f64,
 }
 
 impl OrderScale {
-    /// Total by construction — there is no order without a multiplier.
-    const fn of(self, order: BondOrder) -> f64 {
-        match order {
-            BondOrder::Single => 1.0,
-            BondOrder::Double => self.double,
-            BondOrder::Triple => self.triple,
-        }
+    /// Total by construction, for every representable order.
+    fn of(self, order: BondOrder) -> f64 {
+        det_math::powf(f64::from(u8::from(order)), self.gamma)
     }
 }
 
@@ -266,89 +310,52 @@ impl BondEnergyMatrix {
     /// the matrix comes with one.
     pub(crate) fn generate(table: &PeriodicTable, rng: &mut Stream) -> Self {
         let n = table.len();
+        let pattern = table.pattern();
 
-        // Drawn before anything reads the table, so the draw order is a
-        // property of this function rather than of the table handed to it.
-        // `Quanta`, not a bare `f64`: unlike `eps`/`sigma` in `element.rs`,
-        // whose typing is correctly declined because they are compared and
-        // scaled as raw numbers, `base`'s only operation is to become a
-        // `Quanta` — so typing it here costs nothing and closes the G4 shape at
-        // the one place in this file where it applies.
-        let base = Quanta(rng.next_f64_range(30.0, 90.0));
-        // What the *weakest* element in the table brings to a bond, as a
-        // fraction of what the strongest brings.
+        // **Two draws, both dimensionless.** Every dimensionful constant here is
+        // now the table's own, which is what makes the matrix carry the table's
+        // energy *scale* rather than only its ordering.
         //
-        // **This is a floor on the capacity scale, not on the finished energy.**
-        // The first draft normalised binding energy onto `[0, 1]` and put the
-        // floor on the bond instead. That gives the weakest element capacity
-        // exactly zero — and zero is absorbing under a geometric mean, so every
-        // bond to it scored identically no matter the partner.
-        //
-        // **The mechanism is real; the target named in the first version of this
-        // comment was wrong, and the correction is worth keeping.** It said the
-        // weakest element "is reliably the monomer, the feedstock, the most
-        // abundant species", so the commonest bond in the chemistry would have
-        // had no structure. The first clause is right — `contacts_upto(1) = 0`,
-        // so the monomer is the minimum in 200 of 200 drawn universes — and the
-        // conclusion does not follow, because the monomer has `outer == 0`,
-        // hence no frontier, hence `valence == 0`. **It forms no bonds at all**,
-        // so the row this floor was described as rescuing is never priced.
-        //
-        // What the floor still buys is the rare case where the minimum is *not*
-        // the monomer: at large `sigma` and small `eps` the strain term
-        // overtakes the contact term and the heaviest element becomes the
-        // minimum, and that element can have a frontier. Keeping the floor is
-        // right; believing it protects the feedstock is not.
-        //
-        // Below 1/3 makes the nominal whole-matrix ratio exactly
-        // `1 / weakest_share` — see `bondable_elements_cover_most_of_the_binding_energy_range`
-        // for why that nominal figure is not the quantity §22.6 is about.
-        let weakest_share = rng.next_f64_range(0.12, 0.28);
-        // 2.2 > 2.1, so triple strictly exceeds double in every universe. The
-        // ranges are adjacent on purpose; overlapping them would make
-        // `higher_orders_are_stronger` a property of the draw.
+        // `scale` multiplies `eps`, the drawn per-contact energy. The header's
+        // mechanism said this already: if a bond is the same kind of contact as
+        // the ones holding a cluster together, its energy scale *is* the contact
+        // energy. Drawing an independent `base` in Quanta encoded that quantity
+        // twice, and a review measured the consequence — the matrix was exactly
+        // invariant to `energy_per_unit`'s magnitude, 3.7e-16 under a x1000.
+        let scale = rng.next_f64_range(28.0, 84.0);
+        let base = Quanta(pattern.eps * scale);
+        // The order exponent. See `OrderScale`.
         let order_scale = OrderScale {
-            double: rng.next_f64_range(1.6, 2.1),
-            triple: rng.next_f64_range(2.2, 3.0),
+            gamma: rng.next_f64_range(0.68, 1.0),
         };
 
-        // The binding-energy range of this table. Folded in table order, and
-        // `f64::min`/`max` are disallowed (§13.1 — they are non-deterministic
-        // for ±0.0), so the comparisons are written out.
-        let (lo, hi) = table.iter().fold((f64::MAX, f64::MIN), |(l, h), (_, el)| {
-            let v = el.energy_per_unit.get();
-            (if v < l { v } else { l }, if v > h { v } else { h })
-        });
-        let span = hi - lo;
-
-        // What each element brings to a bond, on a `[weakest_share, 1]` scale.
-        // Strictly positive at both ends, which is what keeps the weakest
-        // element from annihilating its partners.
+        // **Capacity is contact density, not net binding energy**, and the
+        // difference is the mechanism rather than a detail. `energy_per_unit` is
+        // `eps * contacts/units - sigma * cbrt(units^2)`; the second term is the
+        // strain of packing a cluster into a sphere, which is about that
+        // cluster's own geometry and has nothing to do with bonding to another
+        // one. A bond is a *contact*, so what a bond is made of is the contact
+        // term alone.
         //
-        // A degenerate table — every element identically bound — would divide
-        // by zero, so it maps to the top of the scale: every bond then costs
-        // `base`, which is the honest answer for a universe with no binding
-        // structure, and `energies_have_useful_spread` fails on it rather than
-        // a fudge hiding it. Unreachable while the table draws 60..=120
-        // elements, since `energy_per_unit` is strictly monotone in `units`
-        // over the first shell.
-        // **The association below is load-bearing and pinned (§13.4).** It reads
-        // `(1-w) * (x-lo) / span`, which associates as `((1-w) * (x-lo)) / span`.
-        // Rewriting it as `(1-w) * ((x-lo) / span)` is a reassociation a reviewer
-        // could ask for as clarification, it is mathematically identical, and it
-        // moves bond energies by an ulp: measured, the digest over 129 086 cells
-        // goes 9ef10ca10dd88b5c -> 34f1ac1ed3a2e377 while all 50 tests pass.
-        // `the_assembled_universe_digest_is_pinned` is what now catches it.
-        // Nobody tidies this later.
+        // This retires `weakest_share`. That constant existed because a min-max
+        // normalisation puts a zero at the table minimum and zero is absorbing
+        // under a geometric mean; contact density is positive for every element
+        // that can bond (`units >= 2` gives `contacts >= 1`), so positivity is
+        // structural rather than floored. Its stated justification had also come
+        // apart — "below 1/3" bought `ratio > 3`, and the only thing that ever
+        // wanted `> 3` was a test deleted two rounds earlier. Measured, the
+        // derived scheme's bondable ratio is 6.6-10.8 against the drawn scheme's
+        // 2.3-5.3, which is wider — the direction §22.6 wants — and it varies
+        // with `k`, which `1/weakest_share` cannot.
+        //
+        // The monomer has `contacts_upto(1) = 0` and so prices 0. That is
+        // correct by meaning: no frontier, `valence == 0`, forms no bonds. It
+        // does collide with the unknown-id sentinel, which is one more reason
+        // Task 14 must retire that.
+        let pack = crate::packing::PackingConsts::new(pattern.k);
         let capacity: Vec<f64> = table
             .iter()
-            .map(|(_, el)| {
-                if span > 0.0 {
-                    weakest_share + (1.0 - weakest_share) * (el.energy_per_unit.get() - lo) / span
-                } else {
-                    1.0
-                }
-            })
+            .map(|(_, el)| contact_density(pack, el.units))
             .collect();
 
         let mut e = vec![Quanta::ZERO; n * n];
@@ -362,23 +369,20 @@ impl BondEnergyMatrix {
             // `capacity[a]` load out of the inner loop — one redundant load per
             // cell across ~4560 pairs. Legibility and one load, not speed; the
             // measured effect is nil at 4.4 us.
-            let ca = capacity.get(a).copied().unwrap_or(weakest_share);
+            let ca = capacity.get(a).copied().unwrap_or(0.0);
             for b in a..n {
                 // Geometric mean, so the pair is symmetric bit-for-bit
                 // (multiplication commutes exactly) and a weak partner drags the
                 // bond down rather than being rescued by a strong one the way a
                 // sum would allow — a bond needs both ends to hold. `sqrt` is
                 // exactly specified by IEEE-754 and stays native (§13.1).
-                // Both fallbacks are unreachable (`capacity.len() == n` and
-                // `a, b < n`) — but they default to `weakest_share`, not to
-                // `1.0`. An earlier version defaulted to the maximum, so an
-                // element that fell out of the table would have been given the
-                // *strongest* bonds in the universe, thirty lines from a
-                // comment arguing the conservative default at the other
-                // unreachable site. Two unreachable branches in one file
-                // disagreeing about which direction is safe is the finding,
-                // regardless of whether either can fire.
-                let cb = capacity.get(b).copied().unwrap_or(weakest_share);
+                // Both fallbacks are unreachable (`capacity.len() == n`, and
+                // `a, b < n`) and both are `0.0` — which under contact density
+                // is not an arbitrary sentinel but the value a non-bonding
+                // element genuinely scores. An early version used `1.0`, the
+                // *maximum*, thirty lines from a comment arguing the
+                // conservative default at the other unreachable site.
+                let cb = capacity.get(b).copied().unwrap_or(0.0);
                 let v = base * (ca * cb).sqrt();
                 if let Some(cell) = e.get_mut(a * n + b) {
                     *cell = v;
@@ -489,6 +493,16 @@ mod tests {
         table.iter().map(|(id, _)| id).collect()
     }
 
+    /// Elements a molecule can actually contain. `valence == 0` means a closed
+    /// shell — no frontier, so no bonding slots (§7.1).
+    fn bondable_ids(table: &PeriodicTable) -> Vec<ElementId> {
+        table
+            .iter()
+            .filter(|(_, e)| e.valence >= 1)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     /// Bit-exact, not approximate. `energy` reads one symmetric table, so a
     /// tolerance here would pass for an implementation that computed the two
     /// directions separately and rounded them differently.
@@ -504,8 +518,8 @@ mod tests {
         for &a in &ids(&table) {
             for &b in &ids(&table) {
                 assert_eq!(
-                    m.energy(a, b, BondOrder::Single).get().to_bits(),
-                    m.energy(b, a, BondOrder::Single).get().to_bits(),
+                    m.energy(a, b, BondOrder::SINGLE).get().to_bits(),
+                    m.energy(b, a, BondOrder::SINGLE).get().to_bits(),
                     "{a:?} vs {b:?}"
                 );
             }
@@ -567,55 +581,6 @@ mod tests {
         );
     }
 
-    /// The spread is structural, not lucky: the extremes are the weakest and
-    /// strongest elements bonded to themselves, so the ratio over the whole
-    /// matrix is exactly `1 / weakest_share` — which is why drawing that
-    /// constant below 1/3 is what `energies_have_useful_spread` really asserts.
-    #[test]
-    fn the_spread_is_exactly_the_reciprocal_of_the_weakest_share() {
-        for seed in 0..16 {
-            let (table, m) = universe(seed);
-            let all = ids(&table);
-            let (mut lo, mut hi) = (f64::MAX, f64::MIN);
-            for &a in &all {
-                for &b in &all {
-                    let v = m.energy(a, b, BondOrder::Single).get();
-                    if v < lo {
-                        lo = v;
-                    }
-                    if v > hi {
-                        hi = v;
-                    }
-                }
-            }
-            // `weakest_share` is the second draw of the bond stream.
-            let mut rng = Stream::new(seed, Domain::Universe, 1);
-            let _base = rng.next_f64_range(30.0, 90.0);
-            let weakest_share = rng.next_f64_range(0.12, 0.28);
-            let ratio = hi / lo;
-            // 1e-12, not 1e-9. Measured worst deviation over 400 universes is
-            // 1.776e-15, so the old gate sat six orders above the signal — wide
-            // enough to admit a one-ulp reassociation of the capacity
-            // expression, which is exactly the drift a golden must catch.
-            assert!(
-                (ratio - 1.0 / weakest_share).abs() < 1e-12,
-                "seed {seed}: spread {ratio} is not 1/{weakest_share}"
-            );
-            // **Not a physics assertion — a tripwire on a draw range.** The
-            // whole-matrix ratio is exactly `1/weakest_share` by the identity
-            // above, so this can only fire if `weakest_share`'s upper bound is
-            // moved above 1/3. Measured minimum over 2000 universes is 3.5750
-            // against the analytic floor 1/0.28 = 3.5714, so `3.0` carries 20%
-            // slack. It named "the spread floor", which was
-            // `energies_have_useful_spread` — deleted two rounds ago.
-            assert!(
-                ratio > 3.0,
-                "seed {seed}: spread {ratio} — `weakest_share`'s upper bound must \
-                 have moved above 1/3, since the identity above fixes this ratio"
-            );
-        }
-    }
-
     /// **The other half of the derivation claim, and the half six mutation
     /// probes missed.**
     ///
@@ -642,18 +607,25 @@ mod tests {
     /// **exactly**, over every ordered pair. Any drawn admixture inverts roughly
     /// half of the pairs it touches.
     #[test]
-    fn capacity_is_a_function_of_binding_energy_and_of_nothing_else() {
+    fn capacity_is_a_function_of_contact_density_and_of_nothing_else() {
         for seed in 0..24 {
             let (table, m) = universe(seed);
+            // **Contact density, not `energy_per_unit`.** The derivation input
+            // changed when the bond scale moved onto `eps`: a bond is a contact,
+            // so what a bond is made of is the contact term, and the strain term
+            // `energy_per_unit` subtracts is about a cluster's own packing. The
+            // anti-dilution property this test exists for is unchanged — it
+            // still fails the moment anything else reaches the capacity scale.
+            let pack = crate::packing::PackingConsts::new(table.pattern().k);
             let all: Vec<(ElementId, f64)> = table
                 .iter()
-                .map(|(id, e)| (id, e.energy_per_unit.get()))
+                .map(|(id, e)| (id, contact_density(pack, e.units)))
                 .collect();
             let mut inversions = 0_usize;
             for &(ia, ea) in &all {
                 for &(ib, eb) in &all {
-                    let self_a = m.energy(ia, ia, BondOrder::Single).get();
-                    let self_b = m.energy(ib, ib, BondOrder::Single).get();
+                    let self_a = m.energy(ia, ia, BondOrder::SINGLE).get();
+                    let self_b = m.energy(ib, ib, BondOrder::SINGLE).get();
                     // Strict on both sides, so ties must correspond to ties.
                     if (ea < eb) != (self_a < self_b) {
                         inversions += 1;
@@ -688,19 +660,21 @@ mod tests {
     fn the_matrix_is_exactly_rank_one() {
         for seed in 0..8 {
             let (table, m) = universe(seed);
-            let ids: Vec<ElementId> = ids(&table).into_iter().take(16).collect();
+            // Bondable only: a `valence == 0` element scores 0 under contact
+            // density, and a zero cell makes the minor ratio 0/0.
+            let ids: Vec<ElementId> = bondable_ids(&table).into_iter().take(16).collect();
             let mut worst = 0.0_f64;
             for &a in &ids {
                 for &b in &ids {
                     for &c in &ids {
                         for &d in &ids {
                             let (ab, cd) = (
-                                m.energy(a, b, BondOrder::Single).get(),
-                                m.energy(c, d, BondOrder::Single).get(),
+                                m.energy(a, b, BondOrder::SINGLE).get(),
+                                m.energy(c, d, BondOrder::SINGLE).get(),
                             );
                             let (ad, cb) = (
-                                m.energy(a, d, BondOrder::Single).get(),
-                                m.energy(c, b, BondOrder::Single).get(),
+                                m.energy(a, d, BondOrder::SINGLE).get(),
+                                m.energy(c, b, BondOrder::SINGLE).get(),
                             );
                             // Guarded: `0.0 / 0.0` is NaN and `NaN > worst`
                             // is false, so an unguarded ratio would *silently
@@ -739,24 +713,28 @@ mod tests {
     #[test]
     fn higher_orders_are_stronger() {
         let (table, m) = universe(4);
-        for &a in &ids(&table) {
-            for &b in &ids(&table) {
+        for &a in &bondable_ids(&table) {
+            for &b in &bondable_ids(&table) {
                 let (s, d, t) = (
-                    m.energy(a, b, BondOrder::Single),
-                    m.energy(a, b, BondOrder::Double),
-                    m.energy(a, b, BondOrder::Triple),
+                    m.energy(a, b, BondOrder::SINGLE),
+                    m.energy(a, b, BondOrder::new(2).unwrap_or(BondOrder::SINGLE)),
+                    m.energy(a, b, BondOrder::new(3).unwrap_or(BondOrder::SINGLE)),
                 );
                 assert!(d > s && t > d, "{a:?}-{b:?}: {s:?} {d:?} {t:?}");
             }
         }
     }
 
+    /// Over **bondable** pairs. A `valence == 0` element has no frontier and
+    /// forms no bonds, and under contact density it prices exactly 0 — correct
+    /// by meaning rather than a sentinel. Asserting positivity over the whole
+    /// matrix would assert it of cells no molecule can occupy.
     #[test]
     fn energies_are_positive_and_finite() {
         let (table, m) = universe(9);
-        for &a in &ids(&table) {
-            for &b in &ids(&table) {
-                let e = m.energy(a, b, BondOrder::Single);
+        for &a in &bondable_ids(&table) {
+            for &b in &bondable_ids(&table) {
+                let e = m.energy(a, b, BondOrder::SINGLE);
                 assert!(e.get() > 0.0 && e.is_finite(), "{a:?}-{b:?} = {e:?}");
             }
         }
@@ -812,7 +790,7 @@ mod tests {
             let (mut lo, mut hi) = (f64::MAX, f64::MIN);
             for &a in &bondable {
                 for &b in &bondable {
-                    let v = m.energy(a, b, BondOrder::Single).get();
+                    let v = m.energy(a, b, BondOrder::SINGLE).get();
                     if v < lo {
                         lo = v;
                     }
@@ -827,12 +805,18 @@ mod tests {
             // stated justification was false anyway — no test in the workspace
             // asserts `energy_per_unit` is finite, and the nearest one asserts a
             // different quantity on seed 9 while this ran seeds 0..20.
+            let pack = crate::packing::PackingConsts::new(table.pattern().k);
+            let density = |id: ElementId| {
+                table
+                    .get(id)
+                    .map_or(0.0, |x| contact_density(pack, x.units))
+            };
             let extreme = |pick_max: bool| {
                 bondable
                     .iter()
                     .copied()
-                    .fold(None::<(ElementId, Quanta)>, |best, id| {
-                        let e = table.get(id).map_or(Quanta::ZERO, |x| x.energy_per_unit);
+                    .fold(None::<(ElementId, f64)>, |best, id| {
+                        let e = density(id);
                         match best {
                             Some((_, b)) if (e > b) != pick_max => best,
                             _ => Some((id, e)),
@@ -852,13 +836,13 @@ mod tests {
                 // submatrix must be the self-bonds of its extreme elements. This
                 // reads the matrix, which the previous version had stopped doing.
                 assert_eq!(
-                    m.energy(weak, weak, BondOrder::Single).get().to_bits(),
+                    m.energy(weak, weak, BondOrder::SINGLE).get().to_bits(),
                     lo.to_bits(),
                     "seed {seed}: the weakest bondable bond is not the weakest \
                      bondable element's self-bond"
                 );
                 assert_eq!(
-                    m.energy(strong, strong, BondOrder::Single).get().to_bits(),
+                    m.energy(strong, strong, BondOrder::SINGLE).get().to_bits(),
                     hi.to_bits(),
                     "seed {seed}: the strongest bondable bond is not the strongest \
                      bondable element's self-bond"
@@ -912,7 +896,7 @@ mod tests {
             let (mut lo, mut hi) = (f64::MAX, f64::MIN);
             for &a in &bondable {
                 for &b in &bondable {
-                    let e = u.bonds.energy(a, b, BondOrder::Single).get();
+                    let e = u.bonds.energy(a, b, BondOrder::SINGLE).get();
                     if e < lo {
                         lo = e;
                     }
@@ -964,84 +948,53 @@ mod tests {
         }
     }
 
-    /// **The distinguishing test for §7.1's one uncaused property.**
+    /// **The discriminator for the scale half of the derivation.**
     ///
-    /// Task 4 derives `energy_per_unit` from the packing counts and makes both
-    /// the mass defect and the decay rate functions of it, because its
-    /// predecessor encoded "these bind well" twice in incommensurable units and
-    /// neither encoding could check the other. A `bond_energies` matrix drawn
-    /// from its own stream reproduces that defect one level up, and every other
-    /// test in this file passes for such a matrix.
+    /// This replaces `perturbing_one_elements_binding_energy_moves_every_bond_it_makes`,
+    /// whose premise the round-4 change removed: capacity no longer reads
+    /// `energy_per_unit`, so perturbing it moves nothing and the test asserted a
+    /// property that had become false for a good reason.
     ///
-    /// So the assertion is that the matrix *moves*: raise one element's binding
-    /// energy and every bond it makes must strengthen. A mid-table element is
-    /// perturbed deliberately — at either extreme the element defines the
-    /// normalising range, so its own normalised value is pinned at 0 or 1 and
-    /// the test would measure the denominator instead.
+    /// What matters now is the property a review measured absent: **scale the
+    /// table's energy by alpha and every bond energy must scale by alpha.**
+    /// Before `base` was derived from `eps`, that measured 1.0 for any alpha —
+    /// the matrix carried the table's ordering and discarded its magnitude,
+    /// while magnitude is what enters `exp(-E/T)`. Widening the old `base`
+    /// interval would have left it at 1.0, which is what separates this fix
+    /// from the plausible one.
     #[test]
-    fn perturbing_one_elements_binding_energy_moves_every_bond_it_makes() {
-        let (table, before) = universe(9);
-        let all = ids(&table);
+    fn scaling_the_tables_energy_scales_every_bond_energy() {
+        for seed in 0..12 {
+            let table = generate_elements(seed);
+            let alpha = 3.0;
+            let mut scaled = table.pattern().clone();
+            scaled.eps *= alpha;
+            scaled.sigma *= alpha;
+            let scaled_table =
+                PeriodicTable::new(scaled, table.iter().map(|(_, e)| e.clone()).collect());
 
-        // A mid-table element by binding energy, found without sorting floats:
-        // the element whose energy is nearest the midpoint of the range.
-        let lo = table.iter().fold(f64::MAX, |m, (_, e)| {
-            let v = e.energy_per_unit.get();
-            if v < m { v } else { m }
-        });
-        let hi = table.iter().fold(f64::MIN, |m, (_, e)| {
-            let v = e.energy_per_unit.get();
-            if v > m { v } else { m }
-        });
-        let mid = f64::midpoint(lo, hi);
-        let (target, _) = table
-            .iter()
-            .fold((ElementId::ZERO, f64::MAX), |(bid, bd), (id, e)| {
-                let d = (e.energy_per_unit.get() - mid).abs();
-                if d < bd { (id, d) } else { (bid, bd) }
-            });
-
-        // Indexed by `target.index()`, which is the invariant `PeriodicTable`
-        // now establishes: ids come from position in `iter`, so position is
-        // where the element lives. `get_mut`/`if let` rather than `expect` —
-        // `clippy.toml` sets neither `allow-expect-in-tests` nor
-        // `allow-unwrap-in-tests`, so the workspace deny reaches inside
-        // `#[cfg(test)]`.
-        let mut perturbed: Vec<_> = table.iter().map(|(_, e)| e.clone()).collect();
-        let bump = (hi - lo) * 0.05;
-        let bumped = if let Some(e) = perturbed.get_mut(target.index()) {
-            e.energy_per_unit += Quanta(bump);
-            true
-        } else {
-            false
-        };
-        assert!(
-            bumped,
-            "the target id came from this table and must be in it"
-        );
-        let after_table = PeriodicTable::new(table.pattern().clone(), perturbed);
-        let mut rng = Stream::new(9, Domain::Universe, 1);
-        let after = BondEnergyMatrix::generate(&after_table, &mut rng);
-
-        // Every bond the perturbed element makes strengthens...
-        for &other in &all {
-            let b = before.energy(target, other, BondOrder::Single);
-            let a = after.energy(target, other, BondOrder::Single);
-            assert!(
-                a > b,
-                "bond {target:?}-{other:?} did not move: {b:?} -> {a:?}"
+            let mut r0 = Stream::new(seed, Domain::Universe, 1);
+            let mut r1 = Stream::new(seed, Domain::Universe, 1);
+            let (m0, m1) = (
+                BondEnergyMatrix::generate(&table, &mut r0),
+                BondEnergyMatrix::generate(&scaled_table, &mut r1),
             );
-        }
-        // ...and bonds between two untouched elements do not, since the
-        // normalising range is unchanged by a strictly interior bump.
-        let untouched: Vec<ElementId> = all.iter().copied().filter(|&i| i != target).collect();
-        for &a in untouched.iter().take(8) {
-            for &b in untouched.iter().take(8) {
-                assert_eq!(
-                    before.energy(a, b, BondOrder::Single).canonical_bits(),
-                    after.energy(a, b, BondOrder::Single).canonical_bits(),
-                    "bond {a:?}-{b:?} moved without either element changing"
-                );
+            for &a in ids(&table).iter().take(24) {
+                for &b in ids(&table).iter().take(24) {
+                    let (e0, e1) = (
+                        m0.energy(a, b, BondOrder::SINGLE).get(),
+                        m1.energy(a, b, BondOrder::SINGLE).get(),
+                    );
+                    if e0 == 0.0 {
+                        continue;
+                    }
+                    assert!(
+                        (e1 / e0 - alpha).abs() < 1e-12,
+                        "seed {seed}: {a:?}-{b:?} scaled by {}, not {alpha} — the bond \
+                         scale has come unmoored from the table's own energy",
+                        e1 / e0
+                    );
+                }
             }
         }
     }
@@ -1069,20 +1022,25 @@ mod tests {
         let past_the_end = ElementId::from_index(table.len()).unwrap_or(ElementId(u8::MAX));
         let first = ids(&table).first().copied().unwrap_or(ElementId::ZERO);
         assert_eq!(
-            m.energy(past_the_end, first, BondOrder::Single),
+            m.energy(past_the_end, first, BondOrder::SINGLE),
             Quanta::ZERO
         );
         assert_eq!(
-            m.energy(first, past_the_end, BondOrder::Single),
+            m.energy(first, past_the_end, BondOrder::SINGLE),
             Quanta::ZERO
         );
     }
 
     #[test]
     fn bond_order_rejects_what_it_cannot_represent() {
-        assert_eq!(BondOrder::try_from(1), Ok(BondOrder::Single));
-        assert_eq!(BondOrder::try_from(3), Ok(BondOrder::Triple));
+        assert_eq!(BondOrder::try_from(1), Ok(BondOrder::SINGLE));
+        assert_eq!(u8::from(BondOrder::SINGLE), 1);
+        // The ceiling is the valence ceiling — measured `{4, 5, 6}` across
+        // universes and never 3, which is what the old undrawn cap asserted.
+        for n in 1..=BondOrder::MAX {
+            assert_eq!(BondOrder::try_from(n).map(u8::from), Ok(n));
+        }
         assert!(BondOrder::try_from(0).is_err());
-        assert!(BondOrder::try_from(4).is_err());
+        assert!(BondOrder::try_from(BondOrder::MAX + 1).is_err());
     }
 }
