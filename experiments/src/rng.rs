@@ -143,9 +143,15 @@ impl Stream {
 
     /// A uniform value in `[0, 1)`.
     ///
-    /// Built from the top 53 bits — the exact width of an f64 mantissa — so
-    /// every representable value in the interval is reachable and the
-    /// conversion is exact rather than rounded.
+    /// Built from the top 53 bits — the exact width of an `f64` significand —
+    /// so the conversion is exact rather than rounded: every result is `k/2^53`
+    /// for an integer `k`, and every such value is representable.
+    ///
+    /// **Not "every representable value in the interval is reachable"**, which
+    /// this said and which is wrong by a factor of 511.5: there are ~2^62
+    /// distinct `f64` in `[0, 1)` because the exponent shrinks toward zero, and
+    /// only 2^53 of them are on this grid. The qualifier "at that spacing" is
+    /// load-bearing — `MANTISSA_BITS` has it and this did not.
     #[allow(
         clippy::as_conversions,
         clippy::cast_precision_loss,

@@ -1040,18 +1040,43 @@ mod tests {
     /// it constant, which removes the binding peak entirely — and the
     /// resulting table looks perfectly reasonable on a printout.
     #[test]
-    fn contacts_per_unit_rises_with_cluster_size() {
-        let c = PackingConsts::new(10);
-        let (a, b, d) = (
-            contacts_upto(c, 13) / 13.0,
-            contacts_upto(c, 55) / 55.0,
-            contacts_upto(c, 147) / 147.0,
-        );
-        assert!(
-            a < b && b < d,
-            "contacts per unit did not rise: {a} {b} {d}"
-        );
-        assert!(d < c.z / 2.0, "contacts per unit passed the bulk bound");
+    fn contacts_per_unit_rises_from_closure_to_closure_and_dips_after_each() {
+        // **Renamed, because the old name asserted a property the body did not
+        // check.** It sampled 13, 55 and 147 at k=10 — the three closures,
+        // which are the sawtooth's local *maxima* — and called the result
+        // "rises with cluster size". Contacts per unit is not monotone:
+        // measured at k=6 it falls on 28 of 119 steps, worst 7.34% at
+        // N=9->10, and every fall is immediately after a shell closure,
+        // because the unit that opens a shell has almost nothing to nestle
+        // against. The envelope rises; the series saws.
+        for k in 6..=14 {
+            let c = PackingConsts::new(k);
+            // `n` is a cluster size, at most 160 here, so the widening is exact.
+            let cpu = |n: usize| contacts_upto(c, n) / f64::from(u16::try_from(n).unwrap_or(1));
+            let cl = closures(k, 160);
+            for w in cl.windows(2) {
+                if let [lo, hi] = w {
+                    assert!(
+                        cpu(*hi) > cpu(*lo),
+                        "k={k}: the closure envelope did not rise {lo} -> {hi}"
+                    );
+                }
+            }
+            for &n in cl.iter().filter(|&&n| n > 1 && n < 160) {
+                assert!(
+                    cpu(n + 1) < cpu(n),
+                    "k={k}: no dip after closure {n} — the shell boundary has \
+                     stopped costing anything, which would delete the sawtooth \
+                     the periodic families rest on"
+                );
+            }
+            if let Some(&top) = cl.last() {
+                assert!(
+                    cpu(top) < c.z / 2.0,
+                    "k={k}: contacts per unit passed the bulk bound"
+                );
+            }
+        }
     }
 
     /// Two units share exactly one contact, whatever the shell law says.

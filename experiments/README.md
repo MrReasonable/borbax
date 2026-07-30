@@ -63,9 +63,17 @@ pseudorandom number generators"*, OOPSLA 2014,
 
 It works in two steps:
 
-1. **Advance.** Add a fixed odd number (`GAMMA`, which is 2⁶⁴ ÷ the golden
-   ratio) to the state. Because it is odd, repeatedly adding it visits every one
-   of the 2⁶⁴ possible states before repeating.
+1. **Advance.** Add a fixed odd number (`GAMMA`, which is exactly
+   `floor(2⁶⁴ ÷ φ)`) to the state. Because it is odd, repeatedly adding it visits
+   every one of the 2⁶⁴ possible states before repeating — oddness is both
+   necessary and sufficient here, since the additive order of `g` in `Z/2⁶⁴` is
+   `2⁶⁴ / gcd(g, 2⁶⁴)`.
+
+   **The golden ratio itself is doing nothing for the period.** *Any* odd
+   constant gives the full 2⁶⁴. What it buys is that the raw, unmixed state
+   sequence is low-discrepancy — a convention inherited from Fibonacci hashing.
+   Since every value leaves through the mixer in step 2 before anyone sees it,
+   that property is not what makes the output usable; step 2 is.
 2. **Mix.** Scramble that state hard, using shift–XOR–multiply three times over.
 
 Step 2 is what earns its keep. Without it, seeds 0, 1 and 2 would produce
@@ -86,8 +94,10 @@ low values come up slightly more often — and for a harness picking atoms and
 edit sites, that quietly skews which molecules get generated.
 
 `below()` uses **Lemire's multiply-shift with rejection** instead, which is
-exactly uniform. The rejection branch fires with probability under `n / 2⁶⁴`,
-which is to say never.
+exactly uniform. The rejection branch fires with probability `(2⁶⁴ mod n)/2⁶⁴`,
+which is under `n / 2⁶⁴` — and `n` here is an atom count or an edit-site count,
+so in practice never. (The bound is only reassuring because `n` is small: at
+`n ≈ 2⁶³` it would be one rejection in two.)
 
 ### Unit floats
 

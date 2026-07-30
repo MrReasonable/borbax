@@ -5,7 +5,15 @@
 //! **The criterion is "is the result exactly specified by IEEE-754", not
 //! "does it avoid arch dispatch"** — the same restatement `clippy.toml`
 //! carries, and for the same reason. `exp`, `log`, `sin`, `cos` and `pow` are
-//! portable because they are pure Rust with no dispatch at all. `acos` is
+//! portable because they have no dispatch **on the three architectures the
+//! §13.4 matrix builds** — which is not the same as "no dispatch at all", and
+//! the difference is what a future `libm` bump gets judged against. Measured on
+//! 0.2.16: `exp`, `exp2` and `exp10` route to x87 inline assembly on 32-bit x86
+//! without SSE2, via `use_arch_required`, which bypasses even
+//! `force-soft-float` — and `libm`'s own `arch/i586.rs` documents the result as
+//! possibly 1 ulp off and *hardware-dependent*. We do not build that target.
+//! Adding a 32-bit leg to the matrix would make `exp` a portability hazard the
+//! same day, and this paragraph is the reason someone would notice. `acos` is
 //! portable for a *different* reason: it reaches `super::sqrt`, which **is**
 //! arch-dispatched on both CI architectures, to the hardware instruction —
 //! and IEEE-754 specifies `sqrt` to be correctly rounded, so the hardware and
