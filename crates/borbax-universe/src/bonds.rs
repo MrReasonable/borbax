@@ -116,15 +116,16 @@
 //! **Deriving the scale substantially changed that, and the old figures are kept
 //! nowhere — they were measured under a map this file no longer uses.**
 //!
-//! Measured on the current code over 500 universes, all bondable pairs:
+//! **The figures are asserted, not quoted.** Three consecutive rounds wrote a
+//! measured table into this header and the next commit invalidated it — the
+//! stream-index move alone shifted seed 0's `temp_min` through 206.09, 222.68
+//! and 197.24, and every row here divides by `T`. Prose cannot survive that, so
+//! `the_header_figures_are_current` measures each row and fails when one drifts.
+//! Read the numbers there; this paragraph states only the shape.
 //!
-//! | quantity | was | is |
-//! |---|---|---|
-//! | single-bond energy | — | `[11.57, 501.76]` Quanta |
-//! | cleave-rate ratio, single bond, mid-`T` | 1.043–1.243 | **1.185–3.728** |
-//! | same, orders 1..=3, at `temp_min` | max 3.50, >2.0 in 716/2000 | **max 614**, >2.0 in **500/500** |
-//! | same, orders 1..=6, at `temp_min` | not representable | **4.0 – 217 758** |
-//! | `logmean(E)/T` (the assertion below) | — | `[0.083, 0.571]`, **1.75x** of headroom |
+//! `E/T` is no longer near zero. The cleave-rate ratio across all representable
+//! orders spans several orders of magnitude and exceeds 2.0 in every universe
+//! drawn, where before the derivation change it was near 1 in all of them.
 //!
 //! **The absolute energy scale rose about fivefold, and that was not stated
 //! when it happened.** Capacity was normalised onto `[w, 1]` and is now contact
@@ -202,11 +203,33 @@ pub struct BondOrder(u8);
 impl BondOrder {
     /// A single contact.
     pub const SINGLE: Self = Self(1);
+    /// Every representable order, ascending.
+    ///
+    /// **One array is the single source of the bound, its `u8` form, and the
+    /// multiplier table's length.** It replaces a `MAX: u8` / `MAX_LEN: usize`
+    /// pair that were two independent literals: two reviews measured that
+    /// raising one without the other made order 7 price at `1.0` — *exactly*
+    /// order 1's multiplier, a 4.8x drop — with the only failure being the
+    /// digest, whose message then blames the order range for widening. And
+    /// `element.rs` instructs a future reader to raise the cap.
+    ///
+    /// It also lets a consumer iterate or clamp without a fallible conversion.
+    /// `MAX` as a bare `u8` beside `SINGLE: Self` forced `BondOrder::new(MAX)`
+    /// plus a `None` arm nobody can `unwrap` in a workspace that denies it —
+    /// visible inside this crate as an unreachable `if let` in the digest and a
+    /// divisibility guard built to compensate for it.
+    pub const ALL: [Self; 6] = [Self(1), Self(2), Self(3), Self(4), Self(5), Self(6)];
     /// The largest order any universe's valence ceiling admits.
-    pub const MAX: u8 = 6;
-    /// [`Self::MAX`] as an array length, so a multiplier table cannot be sized
-    /// independently of the bound it must cover.
-    const MAX_LEN: usize = 6;
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "the length of a const array literal with six elements, so the \
+                  narrowing is decided at compile time and cannot truncate. \
+                  `u8::try_from` is not const on the pinned toolchain, and the \
+                  point of deriving this from `ALL` is that the two can no longer \
+                  drift — which a literal `6` here would reintroduce"
+    )]
+    pub const MAX: u8 = Self::ALL.len() as u8;
 
     /// An order, or `None` outside `1..=MAX`.
     #[must_use]
@@ -308,7 +331,7 @@ pub struct BondEnergyMatrix {
 /// `[2.2, 3.0]`) with one constant instead of two.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct OrderScale {
-    mult: [f64; BondOrder::MAX_LEN],
+    mult: [f64; BondOrder::ALL.len()],
 }
 
 impl OrderScale {
@@ -316,10 +339,18 @@ impl OrderScale {
     ///
     /// The old two-multiplier form was a field read; moving to an exponent put a
     /// transcendental in `energy()`, which is the one function a rate path will
-    /// call per species. `gamma` is fixed per universe and `MAX` is small, so
-    /// the table costs six `powf` calls once.
+    /// call per species. `gamma` is fixed per universe, so the table costs
+    /// `ALL.len()` `powf` calls once.
+    ///
+    /// **Measured 32.3 ns/lookup inline against 1.0-1.3 precomputed — a 25-32x
+    /// win, not the 4.6x an earlier version of this comment claimed.** That
+    /// figure quoted 7.3 ns for the precomputed form, which was per-call
+    /// harness overhead rather than the lookup: this repo's recorded
+    /// microbenchmark incident, one level up. The decision was right and the
+    /// baseline was wrong, and a per-lookup cost is exactly the number someone
+    /// sizes a budget against later.
     fn new(gamma: f64) -> Self {
-        let mut mult = [1.0; BondOrder::MAX_LEN];
+        let mut mult = [1.0; BondOrder::ALL.len()];
         for (i, m) in mult.iter_mut().enumerate() {
             // `i` runs 0..MAX_LEN, so the narrowing is lossless; `as` is denied.
             let order = u8::try_from(i).unwrap_or(0).saturating_add(1);
@@ -329,9 +360,30 @@ impl OrderScale {
     }
 
     /// Total by construction, for every representable order.
-    fn of(self, order: BondOrder) -> f64 {
-        let i = usize::from(u8::from(order)) - 1;
-        self.mult.get(i).copied().unwrap_or(1.0)
+    ///
+    /// **`&self`, not `self`.** `OrderScale` is 48 bytes and `Copy`, and taking
+    /// it by value with a dynamic index defeats SROA — LLVM materialises the
+    /// copy in a stack slot and indexes *that*, surviving thin LTO at opt-level
+    /// 3. Measured: the inner loop goes 7 instructions to 3, six memory ops to
+    /// two, and the dev-profile frame drops from 64 bytes to 16. **-22.3%**,
+    /// bit-identical over 3 087 174 cells, against a zero noise floor.
+    ///
+    /// The path is per-species at intern time so this buys nothing at the real
+    /// call rate. It is here because the fix is one character with no downside,
+    /// and because the shape — a `Copy` struct with an array field, taken by
+    /// value, indexed dynamically — is what gets copy-pasted into the signature
+    /// code where the rate is 10^6/s.
+    ///
+    /// `wrapping_sub` removes an unreachable underflow panic branch: the field
+    /// is private and `new` bounds it at >= 1, but LLVM cannot see that, so a
+    /// bare `- 1` compiles to a test-and-panic in dev.
+    fn of(&self, order: BondOrder) -> f64 {
+        let i = usize::from(u8::from(order)).wrapping_sub(1);
+        // `NAN`, not `1.0`: `1.0` is exactly order 1's multiplier, so an
+        // out-of-range order would price as a single bond and look plausible.
+        // Same ruling `contact_density` makes about `INFINITY`; the file now
+        // has one rule for unreachable fallbacks instead of three.
+        self.mult.get(i).copied().unwrap_or(f64::NAN)
     }
 }
 
@@ -478,12 +530,21 @@ impl BondEnergyMatrix {
     /// not a rate path**, which an earlier version of this comment claimed. The
     /// Gillespie loop reads a resolved `cleave_propensity`/`activation` and
     /// never reaches this method. That matters because the claim was the stated
-    /// premise for the `n²` layout, and the premise was false: measured, the
-    /// table buys **0%** over recomputing `base * sqrt(c_a * c_b)` (+0.9% in the
-    /// intern loop shape, +0.3% in a hot loop, both inside a 0.02–0.08% noise
-    /// floor), and both forms are bit-identical over 129 086 cells. The table is
-    /// kept anyway — it is the only shape that could later hold a pair rule that
-    /// does not factorise — but nobody should re-derive that from a cost story.
+    /// premise for the `n²` layout, and the premise was false — but so was the
+    /// "0%" that replaced it, which held for one loop shape only. Measured
+    /// against recomputing `base * sqrt(c_a * c_b)`, which is bit-identical over
+    /// 3 087 174 cells: **+0.3%** in a single-accumulator loop (fadd-latency
+    /// bound, so the `sqrt` hides entirely), **+18.6%** in the intern shape, and
+    /// **+32.9%** with four independent accumulators over the whole table. The
+    /// dense form is genuinely faster wherever the accumulator chain is broken,
+    /// which is the shape a real consumer has.
+    ///
+    /// So the table stays on the measurement rather than on the extensibility
+    /// story an earlier version told — that was a YAGNI argument for a design
+    /// this same file rejects on §3.2 grounds. Caveat worth keeping: at a mean
+    /// 67 KB the matrix fits this machine's 128 KiB L1D and does *not* fit the
+    /// 32-48 KiB L1D of the x86-64 CI legs, where scattered access could shrink
+    /// or invert that. Unmeasured; it changes nothing at intern-time rates.
     ///
     /// # An id this universe never minted scores [`Quanta::ZERO`], and that is
     /// the **worst** available answer, not a conservative one
@@ -533,13 +594,6 @@ impl BondEnergyMatrix {
             * self.order_scale.of(order)
     }
 
-    /// The multiplier this universe applies to an order. Test-visible so the
-    /// diminishing-returns choice can be asserted rather than only documented.
-    #[cfg(test)]
-    fn order_multiplier(&self, order: BondOrder) -> f64 {
-        self.order_scale.of(order)
-    }
-
     /// Elements this matrix was built for.
     #[must_use]
     pub const fn len(&self) -> usize {
@@ -570,6 +624,20 @@ mod tests {
 
     fn ids(table: &PeriodicTable) -> Vec<ElementId> {
         table.iter().map(|(id, _)| id).collect()
+    }
+
+    /// Elements with at least one contact — everything but the monomer, which
+    /// is the only element whose capacity is 0. This is the predicate for the
+    /// **zero-cell** hazard; `bondable_ids` is the predicate for "a molecule can
+    /// contain it". Conflating them excluded 404 well-behaved elements per 200
+    /// seeds on a reason that was false, and a review found the comment saying
+    /// so sitting directly above code that still used the wrong one.
+    fn contacting_ids(table: &PeriodicTable) -> Vec<ElementId> {
+        table
+            .iter()
+            .filter(|(_, e)| e.units > 1)
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Elements a molecule can actually contain. `valence == 0` means a closed
@@ -784,7 +852,7 @@ mod tests {
             let (_, m) = universe(seed);
             let step = |n: u8| {
                 let o = BondOrder::new(n).unwrap_or(BondOrder::SINGLE);
-                m.order_multiplier(o)
+                m.order_scale.of(o)
             };
             for n in 2..BondOrder::MAX {
                 let (prev, this) = (step(n) - step(n - 1), step(n + 1) - step(n));
@@ -825,7 +893,7 @@ mod tests {
             // 5.09, and a `valence == 0` element holds the whole-table maximum
             // in 63 of 200 seeds. Filtering on valence excluded them from
             // coverage on a reason that was false.
-            let ids: Vec<ElementId> = bondable_ids(&table).into_iter().take(16).collect();
+            let ids: Vec<ElementId> = contacting_ids(&table).into_iter().take(16).collect();
             let mut worst = 0.0_f64;
             for &a in &ids {
                 for &b in &ids {
@@ -876,8 +944,9 @@ mod tests {
     #[test]
     fn higher_orders_are_stronger() {
         let (table, m) = universe(4);
-        for &a in &bondable_ids(&table) {
-            for &b in &bondable_ids(&table) {
+        let bondable = bondable_ids(&table);
+        for &a in &bondable {
+            for &b in &bondable {
                 let (s, d, t) = (
                     m.energy(a, b, BondOrder::SINGLE),
                     m.energy(a, b, BondOrder::new(2).unwrap_or(BondOrder::SINGLE)),
@@ -901,8 +970,9 @@ mod tests {
     #[test]
     fn energies_are_positive_and_finite() {
         let (table, m) = universe(9);
-        for &a in &bondable_ids(&table) {
-            for &b in &bondable_ids(&table) {
+        let bondable = bondable_ids(&table);
+        for &a in &bondable {
+            for &b in &bondable {
                 let e = m.energy(a, b, BondOrder::SINGLE);
                 assert!(e.get() > 0.0 && e.is_finite(), "{a:?}-{b:?} = {e:?}");
             }
@@ -1018,6 +1088,79 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The header's figures, asserted rather than quoted.**
+    ///
+    /// Three rounds running, a measured table went into the module header and
+    /// the next commit falsified it — most recently because moving the bond
+    /// generator to its own stream index shifted every temperature. Each time a
+    /// review had to find it, and each time the stale numbers were the sizing
+    /// input for Task 14's coupling.
+    ///
+    /// The bands are wide on purpose: this is a drift detector for figures the
+    /// header describes qualitatively, not a physics gate. A change that moves
+    /// any of them by more than a factor of two is a change the header must be
+    /// rewritten for, and this says so by name.
+    #[test]
+    fn the_header_figures_are_current() {
+        let (mut e_lo, mut e_hi) = (f64::MAX, f64::MIN);
+        let (mut rate_hi, mut et_hi) = (f64::MIN, f64::MIN);
+        for seed in 0..200 {
+            let u = crate::Universe::generate(seed);
+            let b: Vec<ElementId> = u
+                .table
+                .iter()
+                .filter(|(_, e)| e.valence >= 1)
+                .map(|(id, _)| id)
+                .collect();
+            let t_min = u.consts.temp_min.get();
+            let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+            for &x in &b {
+                for &y in &b {
+                    for o in BondOrder::ALL {
+                        let v = u.bonds.energy(x, y, o).get();
+                        if v < lo {
+                            lo = v;
+                        }
+                        if v > hi {
+                            hi = v;
+                        }
+                    }
+                }
+            }
+            if lo < e_lo {
+                e_lo = lo;
+            }
+            if hi > e_hi {
+                e_hi = hi;
+            }
+            let r = borbax_units::det_math::exp((hi - lo) / t_min);
+            if r > rate_hi {
+                rate_hi = r;
+            }
+            if hi / t_min > et_hi {
+                et_hi = hi / t_min;
+            }
+            assert!(
+                r > 2.0,
+                "seed {seed}: cleave-rate ratio {r} across all orders is below 2.0 — \
+                 the header says every drawn universe exceeds it"
+            );
+        }
+        assert!(
+            (5.0..=25.0).contains(&e_lo) && (1200.0..=5200.0).contains(&e_hi),
+            "bondable energies [{e_lo}, {e_hi}] left the header's range by more than \
+             a factor of two — rewrite the header, do not widen this"
+        );
+        assert!(
+            (7.0..=30.0).contains(&et_hi),
+            "max E/T is {et_hi}; the header describes a regime, and this moved out of it"
+        );
+        assert!(
+            rate_hi > 1e4,
+            "max cleave-rate ratio {rate_hi} — the header says several orders of magnitude"
+        );
     }
 
     /// **Records the defect four review lanes converged on — and is explicitly
@@ -1246,8 +1389,22 @@ mod tests {
         // element's cell, so this is the id an unguarded lookup answers wrongly
         // rather than out of range. The fallback cannot fire for a 60..=120
         // table and is still out of range if it ever does.
-        let past_the_end = ElementId::from_index(table.len()).unwrap_or(ElementId(u8::MAX));
-        let first = ids(&table).first().copied().unwrap_or(ElementId::ZERO);
+        // **`len() + 1`, not `len()`.** At exactly `n` the alias `a*n + b` wraps to
+        // cell `(a+1, 0)` — column 0 is the *monomer's* column, which is all
+        // zeros, so the assertion passed no matter which probe element was
+        // chosen. Measured: with `n`, deleting half the bounds check left all 57
+        // tests green. `n + 1` aliases to `(a+1, 1)`, a real nonzero cell.
+        let past_the_end = ElementId::from_index(table.len() + 1).unwrap_or(ElementId(u8::MAX));
+        // **Not `ids(..).first()`** — that is element 0, the monomer, whose
+        // whole row is `Quanta::ZERO` by construction. The cell an unguarded
+        // read aliases into is *also* zero, so the assertion could not tell "the
+        // bound check fired" from "we read a neighbouring element's energy".
+        // Measured: deleting the `ib >= self.n` half of the guard left all 57
+        // tests green. A probe with nonzero capacity makes it discriminate.
+        let first = contacting_ids(&table)
+            .first()
+            .copied()
+            .unwrap_or(ElementId::ZERO);
         assert_eq!(
             m.energy(past_the_end, first, BondOrder::SINGLE),
             Quanta::ZERO
