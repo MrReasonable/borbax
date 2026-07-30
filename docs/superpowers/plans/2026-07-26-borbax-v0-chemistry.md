@@ -1559,6 +1559,35 @@ that assumes interning is infallible. Cheaper to absorb now than mid-task.
 `-> SpeciesId` by swallowing the error has reintroduced exactly the droppable
 flag Task 6 removed.
 
+**`intern` returning `SpeciesId` infallibly is the decision this task owns.** A
+capped molecule cannot be named, and there are exactly three answers: propagate
+(`intern -> Result`), refuse the reaction that would have built it, or add
+automorphism pruning in `borbax-molecule` so the case stops existing. **Do not
+add a fourth by unwrapping** — `clippy::unwrap_used` is denied, and that deny is
+the only thing between this and a simulation that dies eight hours into an
+overnight run. Which of the three is partly an emergence question: refusing a
+reaction is a chemistry rule that is not in the physics.
+
+*Trigger for pruning, as a property:* if any valence-legal molecule inside
+`MAX_ATOMS` costs more leaves than it has **distinct leaf encodings** by a factor
+that matters, add pruning. The redundancy factor *is* `|Aut(G)|`, because
+`#leaves = |Aut(G)| x (distinct leaf encodings)` — measured over 954 regular
+graphs with orbit counts from 1 to 16 and 4000 random graphs, zero failures.
+
+*What pruning breaks, stated here because it will look like a regression:* that
+relation holds only for the **unpruned** tree. `a_symmetric_ring_forces_the_search_to_branch`
+(`leaves == 24`) and `the_target_cell_rule_is_pinned` (`leaves == 120`) must
+**both** fail the moment pruning lands, and `PETERSEN_SINGLE_PLANE` must **not**
+move. One that leaves the leaf counts intact has not pruned; one that moves the
+plane constant has changed the canonical form, which is physics and needs golden
+regeneration.
+
+*Discriminator:* a test that interns `K(6,6)` over a valence-6 element and asserts
+whichever answer is chosen. **A test using only molecules `random_molecule`
+produces passes while this stands** — that generator emits 84% two-atom molecules
+at small palettes and never exceeds cyclomatic number 3, so it cannot reach the
+case at all.
+
 **Species naming is specified and deliberately not scheduled — see
 `docs/superpowers/plans/2026-07-30-borbax-species-naming.md`.** This task is its
 home when it is picked up, because a species first exists here. Two constraints
