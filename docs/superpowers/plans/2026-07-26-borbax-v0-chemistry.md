@@ -42,6 +42,26 @@ be asked whether it ought to take `Quanta` itself.
 - Consumes: `borbax_universe::{Universe, ElementId}`, `borbax_rng::{Stream, Domain}`
 - Produces: `MAX_POLYMER`, `Polymer`, `Fold`, `FoldWorkspace`, `FoldWorkspace::{fold(&Polymer, &Universe) -> Fold, fold_with_seed(..)}`, `Fold::{contacts, energy, exposure}`, `fcc::{GRID, NEIGHBOURS, to_flat, from_flat}`
 
+**Requirement routed from Task 5's review: valence-0 elements must not enter a
+molecule, and this task is where that is decided.**
+
+`valence == 0` means a closed shell — no frontier, so no bonding slots (§7.1).
+`borbax-universe`'s `bondable_elements_cover_most_of_the_binding_energy_range`
+filters the bond-energy scale on exactly this predicate. **If the molecule layer
+does not honour it, that test is filtering on a fiction and nothing will report
+it** — the filter passes, the scale looks sound, and molecules are built from
+atoms that cannot bond.
+
+The fixture in Step 1 below currently does exactly that: it pushes
+`ElementId(i * 7 % len)`, an arbitrary element, with no valence check. Measured
+over 2000 universes: valence-0 elements are 2.5%–5.0% of each table, and the set
+includes **the most abundant element in 1998 of 2000 universes** — so an
+unfiltered fixture is not sampling an edge case, it is sampling the feedstock.
+
+*Discriminator:* `Polymer::push` (and `Mol12::add_bond` in Task 6's type) must
+reject a `valence == 0` element, and a test must construct one and see it
+refused. "The fixture happens to avoid them" does not satisfy it.
+
 - [ ] **Step 1: Write the failing tests**
 
 `crates/borbax-molecule/src/fold.rs`:
@@ -1550,10 +1570,8 @@ where differential persistence is identically zero. So the test must read a
 prescription: reaching `Ea/T = 10` for the strongest bondable single bond at
 mid-temperature needs roughly ×67 on the current scale, ×134 for `Ea/T = 20`; the
 abundance²-weighted operating point then sits at 0.552 of the bondable range, so
-a seeded beaker runs mid-band rather than pinned. `borbax-universe`'s
-`the_cleave_rate_spread_is_currently_far_too_narrow` asserts the *defect* and is
-designed to fail when this is fixed — deleting it is part of the fix, not
-collateral.
+a seeded beaker runs mid-band rather than pinned. `borbax-universe`'s `the_single_bond_rate_spread_at_mid_temperature_is_narrow`
+records the defect but **cannot observe this fix** — see Step 0, which retires it.
 
 **Also inherited here: the bond-energy spread is quoted over cells no molecule
 can occupy.** `valence == 0` means no frontier and no bonding slots. Measured
@@ -1565,6 +1583,19 @@ this as Task 5's inheritance (`2026-07-26-borbax-v0.md`, "the binding peak sits
 at a closure, and a closure has valence 0"), and Task 5 did not resolve it — it
 recorded it and moved it here, because whether valence-0 atoms can enter a
 molecule at all is Task 11's decision and was not available.
+
+- [ ] **Step 0: retire `borbax-universe`'s stand-in assertion.**
+
+Delete `the_single_bond_rate_spread_at_mid_temperature_is_narrow` from
+`crates/borbax-universe/src/bonds.rs` and assert the target band here instead,
+against `rate()` itself.
+
+**This step exists because the assertion in `borbax-universe` cannot observe the
+fix.** The coupling lands in this crate's exponent, so applying it leaves that
+crate's energies and temperatures untouched and its test green — a stale
+defect-record passing beside a repaired defect, which is worse than no record at
+all because nothing tells the next reader. A round-2 reviewer caught the earlier
+version of this plan claiming that test would fail on repair; it would not.
 
 - [ ] **Step 1: Write the failing tests**
 
