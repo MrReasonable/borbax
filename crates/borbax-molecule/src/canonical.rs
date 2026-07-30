@@ -252,6 +252,17 @@ fn refine(m: &Mol12, colour: &mut [u8; MAX_ATOMS], stats: &mut SearchStats) -> u
         // of a signature is how many *distinct* signatures are strictly smaller,
         // which depends only on the multiset of signatures.
         //
+        // **Two properties hold here, and the second is the one that is easy to
+        // omit.** (a) the new partition refines the old, so an equal class count
+        // means an unchanged partition — that is what lets the loop below stop on
+        // the count. (b) the new ranks are *order-consistent* with the old
+        // colours. (a) alone would allow the terminating round to return a
+        // relabelling of its input; it takes (b), plus both colourings being
+        // dense ranks, to return the **identical labelling** — which is what
+        // `search`'s target-cell rule reads, and that rule is pinned physics.
+        // Both were asserted over the whole suite plus 18 000 random molecules by
+        // review; neither fired.
+        //
         // **"Is this the first occurrence of `sig[w]`" is a function of `w`
         // alone**, so it is computed once per `w` rather than once per `(v, w)`.
         // The predecessor evaluated it inside the double loop, making the round
