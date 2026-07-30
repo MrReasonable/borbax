@@ -2307,9 +2307,13 @@ written. Read them before Step 1 — two change the signatures above.**
    Fixing it needs a drawn scale for the radiogenic channel parallel to
    `decay_scale`. That is also what makes the channel **sweepable**: see Task 20.
 
-5. **`instability`'s documented type contradicts its consumer.** §7.1 calls it
-   "decay probability per world-year"; this task multiplies it by `count` and
-   hands it to the scheduler as a Gillespie propensity. Those are different
+5. **`instability`'s type is unresolved, and half this requirement is already
+   done.** §7.1 *used to* call it "decay probability per world-year"; the field
+   has since been renamed from `decay_rate` and §7.1 rewritten to describe it as
+   a dimensionless `0..=1` distance, quoting the old phrase in the past tense.
+   **Do not grep §7.1 for that sentence — it is not there.** What remains open is
+   this task's end: it multiplies the quantity by `count` and hands it to the
+   scheduler as a Gillespie propensity. Those are different
    quantities — a propensity coefficient has units of inverse time, is defined on
    an infinitesimal interval and is **unbounded above** (Gillespie 2007, Eq. 2:
    `a_j(x) = c_j x_1` for the unimolecular case). A ceiling at 1.0 is therefore

@@ -110,7 +110,9 @@ reachable.
 
 Every experiment names its seeds as constants. The values are arbitrary — the
 requirements are only that they are *fixed* (so a measurement reproduces) and
-*unrelated to each other* (so two regimes cannot share a stream prefix).
+*distinct*. **Not "unrelated"**: an earlier version said that, and it contradicts
+the section above — the mixer is precisely what makes adjacent or related seeds
+safe, and `adjacent_seeds_decorrelate_immediately` measures it.
 
 They are written as recognisable bit patterns rather than 1, 2, 3 so that a
 value turning up somewhere unexpected is obviously a seed and not a count.

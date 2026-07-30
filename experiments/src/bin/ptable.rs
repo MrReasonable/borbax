@@ -67,6 +67,13 @@ use borbax_units::det_math;
 
 /// Seed for the molecule generator. Arbitrary but fixed — see the note in
 /// `g2.rs`; a measurement is reproducible only if its stream is.
+///
+/// **Known coupling, stated rather than left to be discovered.** The per-seed
+/// arm uses `MOLECULE_SEED ^ seed_ix`, which at `seed_ix == 0` is exactly
+/// `MOLECULE_SEED` — the value the other arm uses directly. Both then build the
+/// same population, so one of the eight sampled seeds is not independent of the
+/// baseline. Probably harmless, but a paired design whose arms share a
+/// population by accident is worth knowing before a result rests on it.
 const MOLECULE_SEED: u64 = 0x0B0B_BA05;
 
 /// Seed for periodic-table generation, distinct from [`MOLECULE_SEED`] so the

@@ -31,7 +31,21 @@ const CHEMISTRY_CRATES: &[&str] = &[
 ];
 
 /// Real chemical-format tokens that must never appear anywhere (G5).
-const FORBIDDEN_FORMAT_TOKENS: &[&str] = &["SMILES", "InChI", "FASTA", "PDB format"];
+/// §5, G5 — real chemical interchange formats Borbax will never read or write.
+///
+/// **Spelled to avoid substring collisions, which is why two carry the word
+/// "format".** Bare `MOL` matches `MOLECULE` and bare `PDB` is a common
+/// abbreviation; both would fire on ordinary prose in a codebase whose subject
+/// is molecules. `SDF` is included because it is the multi-record form of MOL
+/// and would otherwise be the obvious way round this list.
+const FORBIDDEN_FORMAT_TOKENS: &[&str] = &[
+    "SMILES",
+    "InChI",
+    "FASTA",
+    "PDB format",
+    "MOL format",
+    "SDF format",
+];
 
 /// §13.1 — float operations that are not specified exactly by IEEE-754, so two
 /// correct libm implementations may return different bits for the same input.
@@ -280,6 +294,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     let mut failures = Vec::new();
     check_no_data_files(root, &mut failures)?;
     check_blocklist_present(root, &mut failures)?;
+    check_no_real_chemical_formats(root, &mut failures)?;
     check_toolchain_pins_agree(root, &mut failures)?;
     check_no_platform_transcendentals(root, &mut failures)?;
     check_no_stream_deriving_method(root, &mut failures)?;
@@ -855,9 +870,41 @@ fn check_blocklist_present(root: &Path, failures: &mut Vec<String>) -> Result<()
     if !src.contains("REAL_ELEMENT_SYMBOLS") {
         failures.push("G2: naming.rs has no REAL_ELEMENT_SYMBOLS blocklist".into());
     }
-    for token in FORBIDDEN_FORMAT_TOKENS {
-        if src.contains(token) {
-            failures.push(format!("G5: forbidden format token {token:?} in naming.rs"));
+    Ok(())
+}
+
+/// §5, G5 — no real chemical interchange format is read or written anywhere.
+///
+/// **This used to live inside the G2 blocklist check and therefore scanned
+/// exactly one file, `naming.rs`.** A review planted `SMILES`, `InChI`, `FASTA`
+/// and `MOL` in `bonds.rs` and the gate reported all checks passed — while
+/// `xtask`'s own README described the check as covering the repository. G5 says
+/// Borbax "will never import or export real chemical formats"; a scan of the
+/// one file where a blocklist might be smuggled in as *data* does not say that.
+///
+/// Scanned wholesale rather than from a crate list, for the reason
+/// `check_no_platform_transcendentals` already gives: a hand-kept list silently
+/// exempts every crate added after it was written.
+fn check_no_real_chemical_formats(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    for scan_root in TRANSCENDENTAL_SCAN_ROOTS {
+        let dir = root.join(scan_root);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in walk(&dir)? {
+            if entry.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&entry).map_err(|e| e.to_string())?;
+            let rel = entry.strip_prefix(root).unwrap_or(&entry);
+            for token in FORBIDDEN_FORMAT_TOKENS {
+                if src.contains(token) {
+                    failures.push(format!(
+                        "G5: forbidden format token {token:?} in {}",
+                        rel.display()
+                    ));
+                }
+            }
         }
     }
     Ok(())

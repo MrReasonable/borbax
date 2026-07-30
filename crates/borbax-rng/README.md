@@ -69,10 +69,20 @@ Two properties matter, and only the second needed a paper:
   changes each output bit with probability about one half. That is why counters
   0, 1, 2, 3 produce results with no visible relationship.
 
-The multipliers `M0`/`M1` and the key-schedule constants `W0`/`W1` are the
-published ones. They are **not arbitrary and must not be adjusted** — they were
-chosen by search, and round-looking substitutes destroy the scrambling while
-leaving most tests passing.
+The multipliers `M0`/`M1` are the published ones, found by search. The
+key-schedule constants `W0`/`W1` are **not** search results — they are
+"nothing-up-my-sleeve" numbers you can recompute in one line:
+`W0 = ⌊2⁶⁴/φ⌋` and `W1 = ⌊(√3 − 1)·2⁶⁴⌋`, both verified to the bit. That
+distinction is worth keeping, because "recomputable" is what would catch a
+transposed digit and "chosen by search" is not.
+
+None of them may be adjusted. And if one is, **you will know**: `philox.rs`
+carries the published known-answer vectors, so replacing `W0` with a
+round-looking constant fails 6 of the crate's 46 tests — the first being
+`matches_the_published_known_answer_vectors`, by name. (An earlier version of
+this README said substitutes leave "most tests passing", which is arithmetically
+true and reads as *you would not notice*. The one test whose entire purpose is to
+notice fails first.)
 
 ## Why only whole-number arithmetic
 
