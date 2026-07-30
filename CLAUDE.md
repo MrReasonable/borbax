@@ -245,12 +245,21 @@ back into a sweep over every molecule.
 - **Binding pairs each direction with its partner's *antipode*.** Two bodies in
   contact touch along opposite directions, so the kernel indexes `b` through
   the antipode of the rotated direction, never the rotated direction itself.
-  Since Task 7 that composition is precomputed as
-  `Geodesic::contact_perms(r)`, and the raw `rotation_perms(r)` is for Task 9's
-  single-signature canonicalisation. **Reaching for `rotation_perms` inside
-  `affinity` is the mistake**: because `−I` is not in the rotation group, it
-  silently converts the search into the 60 *improper* elements — reflections
-  only — and nothing fails.
+  Since Task 7 that composition is precomputed as `Geodesic::contact_perms(r)`,
+  and the raw `rotation_perms(r)` is for Task 9's single-signature
+  canonicalisation.
+
+  **Two spellings break it and both are silent.** Reaching for
+  `rotation_perms(r)` never applies the antipode. Applying `anti` a *second*
+  time on top of `contact_perms` applies it twice, which cancels — and that is
+  the one an earlier version of this bullet actively instructed, because it said
+  the kernel must index through `ANTI[PERM[R][i]]` and `PERM` had been renamed
+  under it. Measured at all three resolutions:
+  `anti[contact_perms[r][i]] == rotation_perms[r][i]` in **100% of entries**
+  (720/720, 2520/2520, 9720/9720). The apparently-defensive second `anti`
+  produces exactly the defect. Because `−I` is not in the rotation group, either
+  mistake converts the search into the 60 *improper* elements — reflections only
+  — and nothing fails.
 
   **A complement built at the same index does not merely fail to test this — it
   inverts.** Measured at D=42 during Task 7's review, §8.3's kernel scored four
