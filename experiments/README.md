@@ -16,13 +16,19 @@ data.
 | `rng.rs` | A small standalone generator, so experiments do not depend on the real one |
 | `molecule.rs` | Toy molecules — build, mutate, canonicalise, hash |
 | `signature.rs` | Turning a shape into a comparable descriptor |
-| `geodesic.rs` | Points spread evenly over a sphere |
 | `embed.rs` | Laying a graph out in 3D |
 | `g2.rs` | **Locality**: does a small change to a molecule produce a small change in its shape? |
 | `openended.rs` | Does the system keep producing genuinely new things, or plateau? |
 | `bin/ptable.rs` | Periodic-table shape under different drawn constants |
 | `bin/fusion.rs` | Cluster fusion and the binding peak |
 | `bin/g2.rs` | Runs the locality measurement across several regimes |
+
+`geodesic.rs` used to be in that table. It was Task 7's content, written here
+first because the locality measurement needed a rotation table before Task 7
+was due, and Task 7 lifted it into `borbax-molecule`. This crate re-exports it
+as `crate::geodesic`, so the harnesses read the same either side of the lift —
+and, more to the point, the table G2 measured and the table the binding kernel
+searches cannot drift apart.
 
 ## The two ideas worth understanding
 
