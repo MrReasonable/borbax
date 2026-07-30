@@ -232,8 +232,22 @@ impl Mol12 {
     /// [`BondError::NoSuchAtom`] if the indices are equal or either names no
     /// atom; [`BondError::NoSuchElement`] if an atom's element is absent from
     /// `table`; [`BondError::ValenceExceeded`] if either end lacks the slots.
-    /// **A refused bond leaves the molecule exactly as it was found**, including
-    /// any bond this call would have replaced.
+    ///
+    /// **A refused bond leaves the molecule exactly as it was found, and that is
+    /// now structural rather than repaired.** The predecessor cleared the pair
+    /// first — so a *replacement* got its old slots back — and then restored the
+    /// old bond on the `ValenceExceeded` path. But the two element lookups were
+    /// bare `?` sitting after that clear and restored nothing, so a molecule
+    /// checked against a table that does not hold its ids returned `Err` **with
+    /// the bond already deleted**. Reproduced: two atoms of one id bonded under
+    /// an 89-element table, then re-stated against an 80-element one.
+    /// `a_refused_bond_leaves_the_molecule_untouched` covered only the valence
+    /// branch, so two of the three documented paths were unenforced.
+    ///
+    /// The repair is not a third restore. Refunding a replaced bond's order
+    /// *arithmetically* means every fallible check happens before any mutation,
+    /// so there is no error path after a write for a fourth one to be forgotten
+    /// on.
     pub fn add_bond(
         &mut self,
         a: u8,
@@ -248,14 +262,15 @@ impl Mol12 {
             return Err(BondError::NoSuchAtom { a, b, n: self.n });
         }
 
-        // Clear first, so *replacing* a bond returns the slots the old one held.
-        // Checking before clearing would make re-stating an existing bond
-        // progressively bankrupt the molecule — see
-        // `replacing_a_bond_returns_its_slots_first`.
-        let previous = self.bond_order(a, b);
-        self.clear_pair(a, b, bit_a, bit_b);
-
+        // A replacement must not be charged twice, so the bond being replaced is
+        // refunded from the budget rather than cleared out of the molecule.
+        // `saturating_sub` cannot actually saturate: a bond of order `o` between
+        // `a` and `b` contributes `o` to `valence_used` at *both* ends, so the
+        // refund never exceeds either end's usage. It is spelled saturating so a
+        // future change cannot turn that reasoning into an underflow.
+        let refund = self.bond_order(a, b).map_or(0, |o| u32::from(u8::from(o)));
         let cost = u32::from(u8::from(order));
+
         for atom in [a, b] {
             let id = self
                 .element(atom)
@@ -264,14 +279,8 @@ impl Mol12 {
                 .get(id)
                 .ok_or(BondError::NoSuchElement { atom })?
                 .valence;
-            let would_use = self.valence_used(atom) + cost;
+            let would_use = self.valence_used(atom).saturating_sub(refund) + cost;
             if would_use > u32::from(valence) {
-                // Put the molecule back the way it was found. A refused bond
-                // must not be a mutation, or a caller that handles the error
-                // still carries the damage.
-                if let Some(o) = previous {
-                    self.write_pair(a, b, bit_a, bit_b, o);
-                }
                 return Err(BondError::ValenceExceeded {
                     atom,
                     valence,
@@ -280,6 +289,9 @@ impl Mol12 {
             }
         }
 
+        // Past every fallible step. Both of these are infallible, so the write
+        // is a commit rather than a mutation that might need undoing.
+        self.clear_pair(a, b, bit_a, bit_b);
         self.write_pair(a, b, bit_a, bit_b, order);
         Ok(())
     }
@@ -606,6 +618,56 @@ mod tests {
             "the refused bond destroyed the one that was there"
         );
         assert_eq!(m.bond_order(0, 1), Some(order(2)));
+    }
+
+    /// **All three error variants, because two of them were unenforced.**
+    ///
+    /// The test above covered `ValenceExceeded` only. `NoSuchElement` is
+    /// reachable only with two tables of different lengths — `add_atom` accepts
+    /// any `ElementId`, and an id is only meaningful against a particular table —
+    /// and on that path the predecessor had already cleared the bond before the
+    /// lookup failed. It returned `Err` as documented, with the molecule
+    /// silently changed, which changes its `CanonForm` and interns it as a
+    /// different species.
+    #[test]
+    fn every_refusal_leaves_the_molecule_untouched() {
+        let big = table(); // seed 5
+        let small = generate_elements(1);
+        assert!(
+            small.len() < big.len(),
+            "this test needs an id valid in one table and absent from the other"
+        );
+
+        // An id the big table holds and the small one does not.
+        let stranger = ElementId::from_index(small.len())
+            .unwrap_or_else(|| unreachable!("a table length fits u8"));
+        assert!(big.get(stranger).is_some() && small.get(stranger).is_none());
+
+        let mut m = Mol12::new();
+        atom(&mut m, stranger);
+        atom(&mut m, stranger);
+        bond(&mut m, 0, 1, BondOrder::SINGLE, &big);
+        let before = m;
+
+        // NoSuchElement: the ids are fine here, absent over there.
+        assert!(matches!(
+            m.add_bond(0, 1, order(2), &small),
+            Err(BondError::NoSuchElement { .. })
+        ));
+        assert_eq!(m, before, "a table mismatch deleted the bond it refused");
+        assert_eq!(m.bond_order(0, 1), Some(BondOrder::SINGLE));
+
+        // NoSuchAtom, both spellings.
+        assert!(matches!(
+            m.add_bond(0, 0, BondOrder::SINGLE, &big),
+            Err(BondError::NoSuchAtom { .. })
+        ));
+        assert_eq!(m, before);
+        assert!(matches!(
+            m.add_bond(0, 9, BondOrder::SINGLE, &big),
+            Err(BondError::NoSuchAtom { .. })
+        ));
+        assert_eq!(m, before);
     }
 
     /// **An index past the atom count must be refused before anything shifts.**
