@@ -20,3 +20,9 @@ workspace = true
 [dependencies]
 thiserror.workspace = true
 borbax-units.workspace = true
+# `geodesic` lived here first, because the G2 measurement needed a rotation
+# table before Task 7 was due. Task 7 lifted it into `borbax-molecule` and this
+# crate re-exports it, so the table G2 measures and the table the binding kernel
+# searches cannot drift apart. `borbax-experiments` is a leaf, so depending
+# upward introduces no cycle.
+borbax-molecule.workspace = true

@@ -12,7 +12,11 @@
 //! simulation step may call any of them.
 
 pub mod canonical;
+pub mod geodesic;
 pub mod graph;
 
 pub use canonical::{CanonForm, Capped, SEARCH_LEAF_CAP, SearchStats, canonicalise};
+pub use geodesic::{
+    GeoError, Geodesic, Mat3, N_ROTATIONS, apply_mat, is_identity, rotation_matrices, vertex_count,
+};
 pub use graph::{BondError, MAX_ATOMS, Mol12, N_ORDERS};

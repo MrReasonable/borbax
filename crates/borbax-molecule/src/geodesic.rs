@@ -16,9 +16,20 @@
 //! operations are exactly specified by IEEE-754, so this file is portable by
 //! construction rather than by routing through `det_math` (§13.4).
 //!
-//! This is Task 7's content, written in `experiments` first because the G2
-//! measurement needs it. It is intended to lift into `borbax-molecule`
-//! unchanged.
+//! Written in `borbax-experiments` first, because the G2 locality measurement
+//! needed a rotation table before Task 7 was due, and lifted here when it was.
+//! `borbax-experiments` now re-exports this module rather than holding a second
+//! copy — the one thing that must never happen to this file, since a divergence
+//! between the table G2 measured and the table the kernel searches would
+//! invalidate the measurement without failing anything.
+//!
+//! The lift was **not** verbatim, and the differences are the interesting part.
+//! Four comments asserted "this lifts into `borbax-molecule`" and had to become
+//! statements about a file that has arrived; the test module traded `.unwrap()`
+//! for this crate's `unwrap_or_else(|| unreachable!(…))` idiom, because
+//! `clippy.toml` sets no `allow-unwrap-in-tests`; and one measured claim —
+//! "antipodes bit-exact" — was wrong, in the benign direction, which nothing
+//! had ever checked. See [`Geodesic::anti`].
 
 #![allow(
     clippy::indexing_slicing,
@@ -135,8 +146,17 @@ fn midpoint(a: Vec3, b: Vec3) -> Vec3 {
 /// These are the cyclic permutations of `(0, ±1, ±φ)`. Generating all three
 /// cyclic forms inside the sign loops keeps antipodal pairs exact: `-1.0` and
 /// `-φ` are exact negations in IEEE, and `normalise` divides both members of a
-/// pair by the same norm, so `dirs[anti[i]]` is the bit-exact negation of
-/// `dirs[i]` rather than merely close to it.
+/// pair by the same norm, so `dirs[anti[i]]` is the *exact* negation of
+/// `dirs[i]` rather than merely close to it — `dirs[anti[i]][k] + dirs[i][k]`
+/// is `0.0` in every component at every level, measured, not argued.
+///
+/// Exact numerically, not bitwise, and the distinction is worth keeping
+/// because the two claims point at different hazards. The zero component of
+/// each `(0, ±1, ±φ)` vertex is stored as `+0.0` and negates to `-0.0`: equal
+/// under `==`, different under `to_bits`. Numeric equality is what `dist2` and
+/// [`Geodesic::build_anti`]'s tolerance see. Bitwise, the fact that matters is
+/// the *other* one — that no `-0.0` is ever stored — because that is what makes
+/// the `total_cmp` sort in [`Geodesic::build`] safe.
 fn icosahedron() -> Vec<Vec3> {
     #[allow(
         clippy::manual_midpoint,
@@ -163,8 +183,9 @@ fn min_pair_dist2(v: &[Vec3]) -> f64 {
     // `+0.0` and `-0.0` do — either may be returned non-deterministically, and
     // it was measured returning different signs on aarch64 and x86-64 *and*
     // under different codegen on one target. Squared distances make that
-    // unreachable here, but this function lifts into `borbax-molecule` and the
-    // comparison costs nothing.
+    // unreachable here — they cannot be negative, so the two zeros cannot both
+    // arise — but the comparison costs nothing and does not depend on that
+    // argument staying true.
     let mut min_d2 = f64::MAX;
     for i in 0..v.len() {
         for j in (i + 1)..v.len() {
@@ -287,15 +308,23 @@ impl<const D: usize> Geodesic<D> {
         // free of platform variation in general. It orders on the sign bit,
         // and a runtime NaN's sign bit differs between aarch64 and x86-64;
         // that is precisely the defect `borbax_units::Span::canonical_cmp`
-        // exists to fix, and this comment asserting the opposite in the file
-        // CLAUDE.md says lifts into `borbax-molecule` unchanged is how the
-        // wrong lesson gets cited a year from now.
+        // exists to fix, and a comment asserting the opposite is how the wrong
+        // lesson gets cited a year from now.
         //
-        // It is safe *here* because these coordinates are provably free of
-        // both hazards, measured at all three levels: 0 `-0.0` components,
-        // 0 NaN, antipodes bit-exact, max |‖v‖-1| = 1.11e-16. Every value is
-        // a normalised coordinate built from sums of squares. When this lifts,
-        // that reasoning lifts with it or the call changes (spec §13.4).
+        // It is safe *here* because these coordinates are free of both hazards,
+        // measured at all three levels: 0 `-0.0` components, 0 NaN, max
+        // |‖v‖-1| = 1.11e-16 (one ulp, at D=162; exact at 12 and 42). Every
+        // value is a normalised coordinate built from sums of squares.
+        //
+        // The predecessor of this comment ended "when this lifts, that
+        // reasoning lifts with it or the call changes". It has lifted, so the
+        // reasoning was re-measured rather than re-copied — which is how the
+        // fourth item in that list, "antipodes bit-exact", turned out to be
+        // false at every zero component and was corrected (see [`icosahedron`]).
+        // The two claims this exemption actually rests on are the first two,
+        // and they are no longer only a comment:
+        // `the_direction_set_carries_no_negative_zero_and_no_nan` fails if
+        // either stops holding, at all three levels (spec §13.4).
         #[expect(
             clippy::disallowed_methods,
             reason = "§13.4: measured free of NaN and -0.0 at all three levels — see above"
@@ -316,11 +345,21 @@ impl<const D: usize> Geodesic<D> {
 
     /// Index of `-dirs[i]` for every `i`.
     ///
-    /// The tolerance is `1e-24` on a squared distance — effectively exact.
-    /// The vertex set is built so antipodal pairs are bit-exact negations
-    /// (see [`icosahedron`]), so anything short of that means the set is not
-    /// antipodally closed, and a nearest match would corrupt every binding
-    /// comparison rather than failing visibly.
+    /// The tolerance is `1e-24` on a squared distance — effectively exact, and
+    /// it can be, because the vertex set is built so antipodal pairs are exact
+    /// negations (see [`icosahedron`]). The measured `dist2` is `0.0` at every
+    /// index at all three levels, so the tolerance has 24 orders of headroom
+    /// over a quantity that is not merely small but zero. Anything short of
+    /// that means the set is not antipodally closed, and a nearest match would
+    /// corrupt every binding comparison rather than failing visibly.
+    ///
+    /// "Exact" is numeric, not bitwise: at a zero component `dirs` holds `+0.0`
+    /// and the negation is `-0.0`. `dist2` subtracts them to `+0.0`, so the
+    /// tolerance sees exactness; `to_bits` would not. An earlier version of the
+    /// comment above said "bit-exact", which is wrong in exactly this way — 12,
+    /// 24 and 48 components at the three levels — and nothing tested it either
+    /// way. `the_antipode_table_is_an_involution_on_opposite_directions` now
+    /// asserts the numeric equality that this tolerance actually depends on.
     fn build_anti(dirs: &[Vec3; D]) -> Result<[u8; D], GeoError> {
         let mut anti = [0u8; D];
         for i in 0..D {
@@ -373,9 +412,11 @@ pub fn apply_mat(m: &Mat3, p: Vec3) -> Vec3 {
 /// Whether a group element is the identity, to within the error of building it.
 ///
 /// Lives here rather than beside its caller because it is a fact about
-/// [`rotation_matrices`], and this module is intended to lift into
-/// `borbax-molecule` unchanged — Task 8's binding kernel needs the same
-/// predicate.
+/// [`rotation_matrices`], and Task 10's binding kernel needs the same
+/// predicate. Its original caller is the G2 harness in `borbax-experiments`,
+/// one crate up; that call site does not come with the module, which is why
+/// `is_identity_selects_exactly_one_of_the_sixty` was written during the lift
+/// rather than leaving the predicate to ship here untested.
 ///
 /// Not `m == IDENTITY`: the 60 elements are frame products, so the identity
 /// arrives with entries at `1.0000000000000004` and `-5.6e-17`, and an exact
@@ -386,11 +427,16 @@ pub fn apply_mat(m: &Mat3, p: Vec3) -> Vec3 {
 /// entrywise (2 ulp at 1.0), and the nearest other element by
 /// 0.80901699437494742…, which is exactly φ/2 = cos 36°: a constant of the
 /// icosahedral group, independent of `D`, of the element radii and of any
-/// fixture. That is the difference between this and
-/// `g2::ROTATION_MUST_MOVE_RAW`, whose margin *is* proportional to molecule
-/// size and radius scale and which documents that exposure. So 1e-9 sits 6.35
+/// fixture. That is the difference between this and the G2 harness's
+/// `ROTATION_MUST_MOVE_RAW`, whose margin *is* proportional to molecule size
+/// and radius scale and which documents that exposure. So 1e-9 sits 6.35
 /// orders above the construction noise and 8.91 below the nearest real
 /// rotation, in a safe window 15.3 orders wide, and selects exactly one matrix.
+///
+/// Every figure in that paragraph is now asserted by
+/// `is_identity_selects_exactly_one_of_the_sixty` — both edges of the window
+/// and the count. "Structural" is a claim about why the numbers cannot drift,
+/// not a licence to leave them unchecked.
 ///
 /// The predicate also never has to discriminate a *near*-identity. Every
 /// caller runs [`Geodesic::build`] first, and `build_perms` rejects any matrix
@@ -484,18 +530,34 @@ pub fn rotation_matrices() -> Result<Vec<Mat3>, GeoError> {
     }
     Ok(out)
 }
-
 #[cfg(test)]
 #[allow(
-    clippy::unwrap_used,
     clippy::indexing_slicing,
     clippy::as_conversions,
-    reason = "CLAUDE.md: tests may unwrap freely; indices are loop bounds over fixed-size arrays; \
-              every cast is u8 -> usize, a widening that cannot lose information — `as_conversions` \
-              is here to catch truncation, and `usize::from` on each index would bury the assertion"
+    reason = "indices are loop bounds over fixed-size arrays; every cast is u8 -> usize, a \
+              widening that cannot lose information — `as_conversions` is here to catch \
+              truncation, and `usize::from` on each index would bury the assertion"
 )]
 mod tests {
     use super::*;
+
+    /// Build a geodesic, or fail naming the resolution that broke.
+    ///
+    /// Not `.unwrap()`. `clippy.toml` sets neither `allow-unwrap-in-tests` nor
+    /// `allow-expect-in-tests`, so the workspace `unwrap_used = "deny"` reaches
+    /// inside `#[cfg(test)]`, and this crate carries zero bare unwraps. The
+    /// `unreachable!` spelling is preferred anyway because it names its own
+    /// precondition: `build` is infallible at the three resolutions the ladder
+    /// admits, so a failure here means that stopped being true — which is what
+    /// the message says, rather than `called Result::unwrap on an Err value`.
+    fn geo<const D: usize>() -> Geodesic<D> {
+        Geodesic::<D>::build().unwrap_or_else(|e| unreachable!("D={D} is on the ladder: {e}"))
+    }
+
+    /// The 60 rotations as matrices, or fail naming why.
+    fn mats() -> Vec<Mat3> {
+        rotation_matrices().unwrap_or_else(|e| unreachable!("the icosahedron has 60 edges: {e}"))
+    }
 
     fn norm(v: [f64; 3]) -> f64 {
         (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
@@ -536,18 +598,63 @@ mod tests {
         assert_eq!(vertex_count(2), 162);
     }
 
+    /// Checked at every resolution rather than only at D=42: normalisation
+    /// error is the one quantity here that grows with subdivision depth, so
+    /// D=42 is the level least able to detect it.
+    ///
+    /// The tolerance is set from measurement, not from habit. The worst
+    /// deviation across the whole ladder is 1.11e-16 — exactly one ulp at 1.0,
+    /// at D=162; D=12 and D=42 are exact. Every coordinate is built from sums,
+    /// products and `sqrt`, all of which IEEE-754 specifies exactly, so that
+    /// figure is the same on every target (§13.4) and 1e-15 sits ~9x above it
+    /// rather than being a round number chosen for comfort.
     #[test]
     fn directions_are_unit_vectors() {
-        let g = Geodesic::<42>::build().unwrap();
-        for d in &g.dirs {
-            assert!((norm(*d) - 1.0).abs() < 1e-12, "not unit: {d:?}");
+        fn check<const D: usize>() {
+            for d in &geo::<D>().dirs {
+                assert!((norm(*d) - 1.0).abs() < 1e-15, "D={D}: not unit: {d:?}");
+            }
         }
+        check::<12>();
+        check::<42>();
+        check::<162>();
+    }
+
+    /// The premise the `total_cmp` exemption in [`Geodesic::build`] rests on.
+    ///
+    /// `total_cmp` orders on the sign bit, so it separates `-0.0` from `+0.0`
+    /// and it ranks NaN by a sign that differs between aarch64 and x86-64.
+    /// Neither hazard can reach the sort here — but that is a *measured*
+    /// property of the coordinates, and until this test existed it was only a
+    /// sentence in a comment. It is the sentence that licenses the
+    /// `#[expect(clippy::disallowed_methods)]`, so it needs something that
+    /// fails when it stops being true.
+    ///
+    /// Zero components are real and expected: the icosahedron's vertices are
+    /// the cyclic permutations of `(0, ±1, ±φ)`, giving 12, 24 and 48 exact
+    /// zeros at the three levels. What matters is that every one is `+0.0`.
+    #[test]
+    fn the_direction_set_carries_no_negative_zero_and_no_nan() {
+        fn check<const D: usize>() {
+            for (i, v) in geo::<D>().dirs.iter().enumerate() {
+                for (k, &c) in v.iter().enumerate() {
+                    assert!(!c.is_nan(), "D={D}: NaN at dirs[{i}][{k}]");
+                    assert!(
+                        !(c == 0.0 && c.is_sign_negative()),
+                        "D={D}: -0.0 at dirs[{i}][{k}] — the total_cmp sort is no longer safe"
+                    );
+                }
+            }
+        }
+        check::<12>();
+        check::<42>();
+        check::<162>();
     }
 
     #[test]
     fn construction_is_deterministic() {
-        let a = Geodesic::<42>::build().unwrap();
-        let b = Geodesic::<42>::build().unwrap();
+        let a = geo::<42>();
+        let b = geo::<42>();
         assert_eq!(a.dirs, b.dirs);
         assert_eq!(a.perms, b.perms);
         assert_eq!(a.anti, b.anti);
@@ -555,7 +662,7 @@ mod tests {
 
     #[test]
     fn every_rotation_is_a_bijection() {
-        let g = Geodesic::<42>::build().unwrap();
+        let g = geo::<42>();
         for (r, perm) in g.perms.iter().enumerate() {
             let mut seen = [false; 42];
             for &j in perm {
@@ -567,7 +674,7 @@ mod tests {
 
     #[test]
     fn rotations_are_all_distinct() {
-        let g = Geodesic::<42>::build().unwrap();
+        let g = geo::<42>();
         for i in 0..N_ROTATIONS {
             for j in (i + 1)..N_ROTATIONS {
                 assert_ne!(g.perms[i], g.perms[j], "rotations {i} and {j} coincide");
@@ -581,7 +688,7 @@ mod tests {
     /// permutation of the sample directions holds.
     #[test]
     fn permutations_form_a_group() {
-        let g = Geodesic::<42>::build().unwrap();
+        let g = geo::<42>();
         let set: std::collections::BTreeSet<Vec<u8>> = g.perms.iter().map(|p| p.to_vec()).collect();
         assert_eq!(set.len(), N_ROTATIONS);
         for a in &g.perms {
@@ -594,7 +701,7 @@ mod tests {
 
     #[test]
     fn identity_is_present() {
-        let g = Geodesic::<42>::build().unwrap();
+        let g = geo::<42>();
         let identity: Vec<u8> = (0..42u8).collect();
         assert!(g.perms.iter().any(|p| p.to_vec() == identity));
     }
@@ -610,7 +717,7 @@ mod tests {
     /// and nothing else in the suite fails.
     #[test]
     fn every_rotation_has_determinant_plus_one() {
-        let g = Geodesic::<42>::build().unwrap();
+        let g = geo::<42>();
         let (a, b, c) = best_triple(&g.dirs);
         let source = det3(g.dirs[a], g.dirs[b], g.dirs[c]);
         for (r, p) in g.perms.iter().enumerate() {
@@ -639,7 +746,7 @@ mod tests {
     /// composition test above, and every other property here still holds.
     #[test]
     fn minus_identity_is_not_in_the_group() {
-        let g = Geodesic::<42>::build().unwrap();
+        let g = geo::<42>();
         assert!(
             !g.perms.iter().any(|p| p[..] == g.anti[..]),
             "-I is in the rotation set: the search is over reflections, not rotations"
@@ -649,20 +756,46 @@ mod tests {
     /// The antipode table is what makes `affinity` search rotations rather
     /// than reflections (§8.3, §22.8). These three properties are what it
     /// means for it to be correct.
+    ///
+    /// The negation is asserted as **exact equality**, not within a tolerance,
+    /// and that is a statement about the construction rather than an act of
+    /// optimism: [`icosahedron`] generates antipodal pairs as exact IEEE
+    /// negations and `normalise` divides both members by the same norm, so
+    /// `dirs[anti[i]] + dirs[i]` is `0.0` in every component at every level —
+    /// measured, not hoped. A `< 1e-12` version of this assertion would pass
+    /// for a construction that had merely drifted close, which is precisely
+    /// what [`Geodesic::build_anti`]'s 1e-24 tolerance is there to forbid.
+    ///
+    /// Note it is *numeric* equality, not bit equality. `dirs` holds `+0.0` at
+    /// the zero components (12, 24 and 48 of them at the three levels) while
+    /// their negation is `-0.0`; the two compare equal and differ in bits. It
+    /// is the numeric equality that `dist2` sees and that the tolerance means.
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact equality is the property under test — see the doc above"
+    )]
     fn the_antipode_table_is_an_involution_on_opposite_directions() {
-        let g = Geodesic::<42>::build().unwrap();
-        for i in 0..42 {
-            let j = g.anti[i] as usize;
-            assert_ne!(i, j, "direction {i} is its own antipode");
-            assert_eq!(g.anti[j] as usize, i, "anti is not an involution at {i}");
-            for k in 0..3 {
-                assert!(
-                    (g.dirs[j][k] + g.dirs[i][k]).abs() < 1e-12,
-                    "dirs[{j}] != -dirs[{i}]"
+        fn check<const D: usize>() {
+            let g = geo::<D>();
+            for i in 0..D {
+                let j = g.anti[i] as usize;
+                assert_ne!(i, j, "D={D}: direction {i} is its own antipode");
+                assert_eq!(
+                    g.anti[j] as usize, i,
+                    "D={D}: anti is not an involution at {i}"
                 );
+                for k in 0..3 {
+                    assert_eq!(
+                        g.dirs[j][k], -g.dirs[i][k],
+                        "D={D}: dirs[{j}][{k}] is not the exact negation of dirs[{i}][{k}]"
+                    );
+                }
             }
         }
+        check::<12>();
+        check::<42>();
+        check::<162>();
     }
 
     /// Rotations commute with `x -> -x`, so the two ways of composing them
@@ -670,7 +803,7 @@ mod tests {
     /// with the wrong handedness and the binding kernel silently inherits it.
     #[test]
     fn antipode_commutes_with_every_rotation() {
-        let g = Geodesic::<42>::build().unwrap();
+        let g = geo::<42>();
         for perm in &g.perms {
             for i in 0..42 {
                 assert_eq!(g.anti[perm[i] as usize], perm[g.anti[i] as usize]);
@@ -692,7 +825,7 @@ mod tests {
     #[test]
     fn the_group_properties_hold_at_every_resolution() {
         fn check<const D: usize>() {
-            let g = Geodesic::<D>::build().unwrap();
+            let g = geo::<D>();
             let set: std::collections::BTreeSet<Vec<u8>> =
                 g.perms.iter().map(|p| p.to_vec()).collect();
             assert_eq!(set.len(), N_ROTATIONS, "D={D}: rotations are not distinct");
@@ -720,30 +853,42 @@ mod tests {
     /// 60 rotations, or of some unrelated group of order 60, would satisfy all
     /// of them. This is the only check that says the lookup means what the
     /// binding kernel will assume it means.
+    ///
+    /// Run at every resolution, for the same reason
+    /// `the_group_properties_hold_at_every_resolution` is: this is the test
+    /// carrying the most weight, and restricting the one test that touches
+    /// geometry to a single `D` is how a level-dependent indexing error
+    /// survives. The inverse mistake is already recorded in this project —
+    /// a coefficient validated at D=162, the one level its table never used.
     #[test]
     fn the_permutation_table_agrees_with_the_rotation_matrices() {
-        let g = Geodesic::<42>::build().unwrap();
-        let mats = rotation_matrices().unwrap();
-        assert_eq!(mats.len(), N_ROTATIONS);
-        for (r, m) in mats.iter().enumerate() {
-            for i in 0..42 {
-                let rotated = apply_mat(m, g.dirs[i]);
-                let expected = g.dirs[g.perms[r][i] as usize];
-                for k in 0..3 {
-                    assert!(
-                        (rotated[k] - expected[k]).abs() < 1e-12,
-                        "rotation {r} on direction {i}: matrix and table disagree"
-                    );
+        fn check<const D: usize>() {
+            let g = geo::<D>();
+            let mats = mats();
+            assert_eq!(mats.len(), N_ROTATIONS);
+            for (r, m) in mats.iter().enumerate() {
+                for i in 0..D {
+                    let rotated = apply_mat(m, g.dirs[i]);
+                    let expected = g.dirs[g.perms[r][i] as usize];
+                    for k in 0..3 {
+                        assert!(
+                            (rotated[k] - expected[k]).abs() < 1e-12,
+                            "D={D}: rotation {r} on direction {i}: matrix and table disagree"
+                        );
+                    }
                 }
             }
         }
+        check::<12>();
+        check::<42>();
+        check::<162>();
     }
 
     /// The matrices must be rotations in their own right, checked without
     /// reference to the direction set: orthonormal rows and determinant `+1`.
     #[test]
     fn rotation_matrices_are_orthonormal_with_determinant_one() {
-        for (r, m) in rotation_matrices().unwrap().iter().enumerate() {
+        for (r, m) in mats().iter().enumerate() {
             for i in 0..3 {
                 for j in 0..3 {
                     let d = m[i][0] * m[j][0] + m[i][1] * m[j][1] + m[i][2] * m[j][2];
@@ -760,6 +905,63 @@ mod tests {
                 "rotation {r} has determinant {det}"
             );
         }
+    }
+
+    /// [`is_identity`] documents a *structural* tolerance — one that needs no
+    /// re-measuring when something nearby changes — and this is what makes
+    /// that claim checkable rather than a paragraph.
+    ///
+    /// The claim has three parts and all three are asserted: exactly one of
+    /// the 60 is the identity; it deviates from `I` by ~1 ulp; and the nearest
+    /// other element is 0.809… away, which is φ/2 = cos 36°, a constant of the
+    /// icosahedral group independent of `D`, of radius and of any fixture.
+    /// `TOL = 1e-9` therefore sits in a window over fifteen orders wide, and
+    /// this test fails if either edge of that window moves.
+    ///
+    /// Without it, lifting the module out of `borbax-experiments` would have
+    /// left `is_identity` shipping with no test in its own crate: its only
+    /// coverage was a call site in the G2 harness, which does not come along.
+    #[test]
+    fn is_identity_selects_exactly_one_of_the_sixty() {
+        const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mats = mats();
+        assert_eq!(mats.iter().filter(|m| is_identity(m)).count(), 1);
+
+        // An explicit comparison rather than `f64::max`, which §13.1 bans for
+        // the reason `min_pair_dist2` documents: for inputs that compare equal
+        // — `+0.0` and `-0.0` — std may return either, and it was measured
+        // returning different signs by architecture. Unreachable for these
+        // absolute values, and still not worth spelling the banned way.
+        let deviation = |m: &Mat3| {
+            let mut worst = 0.0_f64;
+            for i in 0..3 {
+                for j in 0..3 {
+                    let d = (m[i][j] - IDENTITY[i][j]).abs();
+                    if d > worst {
+                        worst = d;
+                    }
+                }
+            }
+            worst
+        };
+        let mut identity_dev = f64::MAX;
+        let mut nearest_other = f64::MAX;
+        for m in &mats {
+            let d = deviation(m);
+            if is_identity(m) {
+                identity_dev = d;
+            } else if d < nearest_other {
+                nearest_other = d;
+            }
+        }
+        assert!(
+            identity_dev < 1e-15,
+            "the identity now deviates by {identity_dev}, not ~1 ulp"
+        );
+        assert!(
+            (nearest_other - 0.809_016_994_374_947_4).abs() < 1e-12,
+            "nearest non-identity is {nearest_other}, not phi/2 = cos 36 degrees"
+        );
     }
 
     #[test]
