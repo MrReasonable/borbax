@@ -239,9 +239,18 @@ use borbax_units::{Quanta, det_math};
 /// — the reason the enum was right — without inventing six names for what is a
 /// count.
 ///
-/// **The per-pair cap is Task 11's**, not this type's: a bond of order *n*
-/// consumes *n* slots at each end, so the real bound is
-/// `min(valence_a, valence_b)`, and nothing here forms a bond.
+/// **Enforcing a valence budget is not this type's job**, and the routing has
+/// been wrong twice. It is not Task 11's (`Polymer::push`) and it is not Task
+/// 6's `add_bond`, which has no `&Universe` and stores element *indices*, not
+/// valences. The per-pair bound `min(valence_a, valence_b)` — a bond of order
+/// *n* consumes *n* slots at each end — is also only **necessary, not
+/// sufficient**: at 12 atoms a vertex has up to 11 neighbours, so a per-pair
+/// check alone admits 11x the budget at every valence. The rule that holds is
+/// per *atom*: `valence_used(a) <= valence(elem[a])`. Its home is
+/// `Interner::intern`, which already takes `&Universe`, is already per-species
+/// (§8.6), and can return `Result<SpeciesId, OverValence>` so that no
+/// `SpeciesId` reachable from a simulation step can name an over-valent
+/// molecule. Nothing here forms a bond.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BondOrder(u8);
 
@@ -269,7 +278,12 @@ impl BondOrder {
     /// suppression, and it reads the array's content rather than its size.
     pub const MAX: u8 = match Self::ALL.last() {
         Some(o) => o.0,
-        None => 0,
+        // **Not `0`.** `MAX = 0` makes `new`'s range `1..=0` empty, so every
+        // `BondOrder::new` in the workspace returns `None` — silently, at every
+        // call site — which is precisely the plausible-value fallback this file
+        // argues against three times elsewhere. A panic in a const initializer
+        // is `E0080` at compile time, not a runtime abort.
+        None => panic!("BondOrder::ALL is empty"),
     };
 
     /// An order, or `None` outside `1..=MAX`.
@@ -1270,10 +1284,23 @@ mod tests {
                     );
                 }
             }
-            let two = BondOrder::new(2).unwrap_or(BondOrder::SINGLE);
+            // **Every order, not order 2.** The predecessor read
+            // `BondOrder::new(2).unwrap_or(BondOrder::SINGLE)`, which would turn
+            // "2 stopped being a valid order" into a *different* assertion
+            // firing with a message naming the wrong cause. `unwrap` is not the
+            // fix — `clippy::unwrap_used` is denied workspace-wide and reaches
+            // inside `#[cfg(test)]`. Iterating `ALL` needs no fallible
+            // construction at all and pins the whole series rather than one term.
+            for o in BondOrder::ALL {
+                assert_eq!(
+                    m.order_scale.of(o).to_bits(),
+                    det_math::powf(f64::from(u8::from(o)), gamma).to_bits(),
+                    "seed {seed}: order {o:?}'s multiplier is no longer the drawn gamma"
+                );
+            }
             assert_eq!(
-                m.order_scale.of(two).to_bits(),
-                det_math::powf(2.0, gamma).to_bits(),
+                m.order_scale.of(BondOrder::SINGLE).to_bits(),
+                1.0_f64.to_bits(),
                 "seed {seed}: the order exponent is no longer the drawn gamma"
             );
         }
@@ -1329,7 +1356,11 @@ mod tests {
                     // rate ratios 1.6533x, of `E/T` 1.6310x. An unnamed "margin"
                     // in a comment Task 14 sizes against is exactly the class of
                     // figure this file has lost four rounds to.
-                    let cap = if vx < vy { vx } else { vy };
+                    // `u8::min`, not the comparison form. The `if a < b` idiom is house style
+                    // for `f64` because `f64::min` is `disallowed_methods` for a stated
+                    // IEEE-754 reason; writing it on integers erodes exactly that
+                    // distinction, which `clippy.toml`'s header insists on.
+                    let cap = vx.min(vy);
                     for o in BondOrder::ALL.into_iter().filter(|o| u8::from(*o) <= cap) {
                         let v = u.bonds.energy(x, y, o).get();
                         // F5: `<` and `>` are both false for NaN, so a bare
@@ -1388,7 +1419,7 @@ mod tests {
             // header must not state this as a property of the physics.
             assert!(
                 r > 2.0,
-                "seed {seed}: cleave-rate ratio {r} across all orders is below 2.0 — \
+                "seed {seed}: cleave-rate ratio {r} across formable orders is below 2.0 — \
                  the header says every drawn universe exceeds it. This is a tail \
                  statistic: check the sample size before concluding the physics moved"
             );
@@ -1454,10 +1485,17 @@ mod tests {
     /// The slice is stated rather than implied, which is the other round-2
     /// correction: **weakest to strongest bondable SINGLE bond at
     /// mid-temperature**. The module header used to quote this figure under the
-    /// words "most durable bondable bond", which is a *triple* bond — a
-    /// different and wider number (all orders at `temp_min` reaches 3.50, and
-    /// exceeds 2.0 in 716 of 2000 universes). Sizing Task 14's coupling from the
-    /// narrow slice while reading the wide sentence would oversize it ~2.4x.
+    /// words "most durable bondable bond", which is the highest **formable**
+    /// order — a different and much wider number: all formable orders at
+    /// `temp_min` reaches **1.609e6** and exceeds 2.0 in **2000 of 2000**
+    /// universes. Sizing Task 14's coupling from the narrow slice while reading
+    /// the wide sentence would oversize it by orders of magnitude.
+    ///
+    /// (That parenthetical previously read "a *triple* bond … reaches 3.50 …
+    /// 716 of 2000". "Triple" names the `Single/Double/Triple` enum this branch
+    /// retired — the widest order is now 6 — and both figures predate the
+    /// derivation change. A stale number inside the sentence warning against
+    /// stale numbers.)
     #[test]
     fn the_single_bond_rate_spread_at_mid_temperature_is_narrow() {
         for seed in 0..20 {
