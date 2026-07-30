@@ -72,10 +72,14 @@
 //! The energy scale drawn here and the temperature scale drawn in
 //! [`crate::UniverseConsts`] are independent, and §9.1/§9.5 make cleavage
 //! `k = A·exp(−E_bond/T)`. With `base ∈ [30, 90]` against `T ∈ [180, 760]`,
-//! `E/T` never leaves `exp`'s linear regime: the cleave-rate ratio between the
-//! most fragile and most durable bondable bond is **1.04×–1.48×**, and about
-//! **1.05×–1.20×** over the abundance-weighted population a beaker actually
-//! contains. A molecule's spontaneous lifespan is therefore set by how many
+//! `E/T` never leaves `exp`'s linear regime. Stated in one convention, because
+//! an earlier version of this sentence spliced two: **bondable elements, single
+//! bond, at mid-temperature, the cleave-rate ratio is 1.044x–1.243x over 200
+//! seeds** — which is the convention
+//! `the_single_bond_rate_spread_at_mid_temperature_is_narrow` actually asserts,
+//! so it is the only figure here checkable with `cargo test`. The `1.04x–1.48x`
+//! that stood here took its floor from that set and its ceiling from the *whole
+//! matrix at* `temp_min`; no bondable convention reaches 1.48. A molecule's spontaneous lifespan is therefore set by how many
 //! bonds it has, with composition worth the equivalent of one to five extra
 //! bonds — the same shape as the recorded radiogenic finding, where a
 //! composition channel is swamped by an atom-count channel.
@@ -304,10 +308,15 @@ impl BondEnergyMatrix {
 
         let mut e = vec![Quanta::ZERO; n * n];
         for a in 0..n {
-            // Hoisted out of the inner loop: `a` is loop-invariant, and leaving
-            // the lookup inside made LLVM version-clone the whole loop on an
-            // unreachable fallback rather than lift the load. Legibility, not
-            // speed — the measured effect is nil at 4.4 us.
+            // Hoisted: `a` is loop-invariant. Leaving the lookup inside made
+            // LLVM version-clone the loop on an unreachable fallback — but only
+            // *pre-LTO*; under `lto = "thin"`, the profile that ships, the clone
+            // had already collapsed. What survives LTO is the reason to keep the
+            // hoist: LLVM cannot prove `capacity: Vec<f64>` does not alias the
+            // `e: Vec<Quanta>` being stored into, so it could not lift the
+            // `capacity[a]` load out of the inner loop — one redundant load per
+            // cell across ~4560 pairs. Legibility and one load, not speed; the
+            // measured effect is nil at 4.4 us.
             let ca = capacity.get(a).copied().unwrap_or(weakest_share);
             for b in a..n {
                 // Geometric mean, so the pair is symmetric bit-for-bit
@@ -364,9 +373,15 @@ impl BondEnergyMatrix {
     /// `k = A·exp(−E_bond/T)` (PRD §9.1, §9.4), so `E_bond = 0` gives
     /// `exp(0) = 1` — the **maximum** of the range. A stray id does not produce
     /// an inert bond; it produces the most labile bond in the universe and the
-    /// largest cleave propensity available. Measured on seed 0 (`T = 206.09`,
-    /// real energies `6.60..42.71`): the zero sentinel rates `1.23x` the
-    /// fastest genuine bond.
+    /// largest cleave propensity available. Measured on seed 0
+    /// (`T = temp_min = 206.09`, single-bond energies `6.60..42.71`): the
+    /// sentinel rates **1.03x the fastest** genuine bond and 1.23x the slowest.
+    /// An earlier version of this sentence attached `1.23x` to the fastest,
+    /// which two review lanes caught independently — real number, wrong
+    /// referent, in the one block whose stated job is recording a defect
+    /// honestly. The corrected figure sharpens the point rather than weakening
+    /// it: a sentinel sitting 3% outside the genuine range *is* the §22.6
+    /// finding, and it becomes ~10^2-10^5 once Task 14 raises `E/T`.
     ///
     /// The tell that a sentinel is the wrong shape here is that the *inert*
     /// value for `exp(−E/T)` would be `+∞`, which is a poison that propagates
@@ -551,6 +566,15 @@ mod tests {
     /// **The other half of the derivation claim, and the half six mutation
     /// probes missed.**
     ///
+    /// **Complementary to `perturbing_...`, not a superset of it — do not delete
+    /// that one as redundant.** Gap-adaptive dilution (each element free
+    /// anywhere strictly between its neighbours' midpoints, extremes pinned)
+    /// *passes* this test, because ordering is preserved by construction, and is
+    /// caught only by the perturbation test's untouched half: the jitter bounds
+    /// are relational, so bumping the target shifts its neighbours. Measured
+    /// dilution threshold with both in place: 2e-6 < eps <= 3e-6, against the
+    /// 0.99 that defeated the suite before.
+    ///
     /// `perturbing_one_elements_binding_energy_moves_every_bond_it_makes` says
     /// `energy_per_unit` has *non-zero* influence. It does not say it has *all*
     /// the influence, and the difference is not academic: a review measured that
@@ -603,7 +627,10 @@ mod tests {
     /// monotonicity.
     ///
     /// The identity survives a change to the capacity *map* — that only moves
-    /// `c` — so this pins the combiner without pinning the normalisation.
+    /// `c` — so this pins **separability** without pinning the normalisation.
+    /// The geometric mean is pinned by this together with the spread identity,
+    /// and by neither alone: `base * c_a * c_b` and `(c_a c_b)^0.7` both keep
+    /// rank 1 and are caught by the other test.
     #[test]
     fn the_matrix_is_exactly_rank_one() {
         for seed in 0..8 {
@@ -622,6 +649,12 @@ mod tests {
                                 m.energy(a, d, BondOrder::Single).get(),
                                 m.energy(c, b, BondOrder::Single).get(),
                             );
+                            // Guarded: `0.0 / 0.0` is NaN and `NaN > worst`
+                            // is false, so an unguarded ratio would *silently
+                            // drop* zero-valued cells rather than catch them —
+                            // and `energies_are_positive_and_finite`, the
+                            // precondition, runs on seed 9 while this runs 0..8.
+                            assert!(ab * cd > 0.0, "seed {seed}: zero-valued cell");
                             let minor = (ab * cd - ad * cb).abs();
                             let rel = minor / (ab * cd);
                             if rel > worst {
@@ -633,8 +666,12 @@ mod tests {
             }
             assert!(
                 worst < 1e-12,
-                "seed {seed}: worst relative 2x2 minor {worst} — the matrix is \
-                 not rank 1, so the combiner is no longer a geometric mean"
+                "seed {seed}: worst relative 2x2 minor {worst} — the matrix is no \
+                 longer separable. This does NOT mean the combiner stopped being a \
+                 geometric mean: a non-geometric separable combiner keeps rank 1, and \
+                 a geometric mean plus a derived pair factor breaks it. If a pair \
+                 factor was added deliberately, it needs a substitution-cycle test \
+                 first — rank 1 is what guarantees no exchange cycle is net-favourable"
             );
         }
     }
@@ -710,47 +747,52 @@ mod tests {
                 }
             }
             let _ = (lo, hi);
-            // **Coverage, not the energy ratio.** The ratio mixes a drawn
-            // nuisance parameter (`weakest_share`) with the physics, and the
-            // band fitted to it was false on the population: measured over 2000
-            // universes the bondable ratio spans [2.301, 5.279] and leaves
-            // `[2.4, 4.6]` on 11 seeds — the first at **seed 213**, just past
-            // the 200 the band was fitted on, while this loop runs 0..20. That
-            // is the defect this test replaced, one iteration later and quieter.
+            // **No fitted band, and this is the third attempt at that.**
             //
-            // `M - m` is the fraction of the binding-energy range that bondable
-            // elements span. Free of `weakest_share`, free of `base`, and a
-            // bound that means something: the elements a molecule can contain
-            // still cover most of the range the bond scale is built from.
-            // Measured [0.715677, 0.901821] over 2000 universes.
-            let (mut e_lo, mut e_hi) = (f64::MAX, f64::MIN);
-            for (_, e) in table.iter() {
-                let v = e.energy_per_unit.get();
-                if v < e_lo {
-                    e_lo = v;
-                }
-                if v > e_hi {
-                    e_hi = v;
-                }
-            }
-            let (mut m, mut big_m) = (f64::MAX, f64::MIN);
-            for &id in &bondable {
-                if let Some(e) = table.get(id) {
-                    let nv = (e.energy_per_unit.get() - e_lo) / (e_hi - e_lo);
-                    if nv < m {
-                        m = nv;
-                    }
-                    if nv > big_m {
-                        big_m = nv;
-                    }
-                }
-            }
-            let coverage = big_m - m;
+            // v1 asserted `hi/lo > 3.0` over the whole matrix — a range whose
+            // two endpoints are elements with `valence == 0`, which no molecule
+            // can contain. v2 asserted the bondable ratio inside `[2.4, 4.6]`,
+            // measured over 200 seeds and checked over 20: false from seed 213
+            // on, over 2000. v3 asserted a coverage fraction `> 0.6`, measured
+            // over 2000 and still a number picked because the test passed with
+            // it. Each was the previous one's defect at lower amplitude.
+            //
+            // The structural claim never needed a constant: the bond scale must
+            // not be set by cells no molecule can occupy, so the elements a
+            // molecule *can* contain must appear on **both sides of the table's
+            // own median** binding energy. The median is derived from the table
+            // under test, so nothing is fitted, and the assertion still fails
+            // the moment the bondable set collapses toward either end.
+            //
+            // `total_cmp` is legitimate here and nowhere else in this crate:
+            // `energy_per_unit` is finite by construction (asserted over 2000
+            // universes) and this is a test-local ordering that reaches no
+            // output, so the architecture-dependent NaN sign `canonical_cmp`
+            // exists to tame cannot arise.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "§13.4 — test-local sort over values asserted finite \
+                          elsewhere; no NaN reachable and no result derived from it"
+            )]
+            let median = {
+                let mut sorted: Vec<f64> =
+                    table.iter().map(|(_, e)| e.energy_per_unit.get()).collect();
+                sorted.sort_by(f64::total_cmp);
+                sorted.get(sorted.len() / 2).copied().unwrap_or_default()
+            };
+            let side = |f: &dyn Fn(f64) -> bool| {
+                bondable
+                    .iter()
+                    .filter_map(|&id| table.get(id))
+                    .any(|e| f(e.energy_per_unit.get()))
+            };
+            let below = side(&|v| v < median);
+            let above = side(&|v| v > median);
             assert!(
-                coverage > 0.6,
-                "seed {seed}: bondable elements cover only {coverage:.3} of the \
-                 binding-energy range — the bond scale is being set by cells no \
-                 molecule can occupy"
+                below && above,
+                "seed {seed}: bondable elements sit entirely on one side of the \
+                 median binding energy (below={below}, above={above}) — the bond \
+                 scale is being set by cells no molecule can occupy"
             );
         }
     }
@@ -809,18 +851,38 @@ mod tests {
                     }
                 }
             }
-            // Fastest cleave is the weakest bond. Ratio of rates, not energies.
-            let rate_ratio =
-                borbax_units::det_math::exp(-lo / t) / borbax_units::det_math::exp(-hi / t);
-            // Measured over 2000 universes for this exact slice: [1.043, 1.243].
-            // The bound has headroom over the population, not over the 20 seeds
-            // that run here — the mistake this round corrected twice.
+            // **The defect, stated without a threshold.**
+            //
+            // Arrhenius amplifies energy differences when `E/T` is large and
+            // compresses them when it is small, so "is `E/T` in the dead
+            // regime" has a number-free answer: compare the *rate* spread
+            // against the *energy* spread it came from. `exp((hi-lo)/T)` below
+            // `hi/lo` means the exponential is shrinking the differences the
+            // bond matrix worked to create — precisely what §22.6 needs it not
+            // to do.
+            //
+            // Two fitted thresholds preceded this one — `< 2.0`, then `< 1.5` —
+            // and a review killed each in turn for sitting above the population
+            // rather than on it. A fitted bound was never the right shape here:
+            // the quantity is a ratio of two things the code already computes,
+            // so the assertion can be an inequality between them and carry no
+            // constant at all. Measured over 500 universes the rate spread runs
+            // 0.242–0.466 of the energy spread; those figures are reported, not
+            // asserted.
+            //
+            // Raising `E/T` in Task 14 flips this above 1 and the test fails —
+            // so it dies in the commit that repairs the physics, this time on a
+            // quantity that repair actually moves. The previous version could
+            // not: it read this crate's numbers, and the coupling lands in
+            // another one.
+            let rate_ratio = borbax_units::det_math::exp((hi - lo) / t);
+            let energy_ratio = hi / lo;
             assert!(
-                rate_ratio < 1.5,
-                "seed {seed}: single-bond mid-T rate spread is {rate_ratio}, outside \
-                 the measured [1.043, 1.243]. If the bond or temperature draws moved, \
-                 requote the module header; the E/T coupling itself lands in Task 14 \
-                 and cannot move this number"
+                rate_ratio < energy_ratio,
+                "seed {seed}: rate spread {rate_ratio} now exceeds the energy spread \
+                 {energy_ratio} it came from — Arrhenius has stopped compressing, so \
+                 the E/T coupling has landed. Delete this test and assert the target \
+                 band where the rate law lives (Task 14)"
             );
         }
     }

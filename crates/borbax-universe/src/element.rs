@@ -223,8 +223,28 @@ impl PeriodicTable {
     /// [`generate_elements`] and nowhere else, so no caller can build one whose
     /// elements disagree with its shell law.
     pub(crate) const fn new(pattern: ShellPattern, elements: Vec<Element>) -> Self {
+        // **The bound belongs here, not at the read site.** An `ElementId` is a
+        // `u8`, so a table longer than 256 cannot round-trip position through an
+        // id: measured, a 300-slot table hands out 256 distinct ids, 44 slots
+        // disagree between `iter` and `get`, and `BondEnergyMatrix::energy`
+        // prices slot 299 as slot 255 — in range, plausible and silent, which is
+        // the exact failure removing `Element::id` was meant to close.
+        //
+        // `assert!`, not `debug_assert!`: this crate has already shipped a guard
+        // present in `cargo test` and absent from the profile that mints
+        // goldens. It costs one compare against a 146 us generation.
+        assert!(elements.len() <= Self::MAX_ELEMENTS);
         Self { pattern, elements }
     }
+
+    /// The largest table an [`ElementId`] can address.
+    #[expect(
+        clippy::as_conversions,
+        reason = "widening `u8` to `usize` is lossless, and `usize::from` is not \
+                  const on the pinned toolchain (E0658), so the derivation has to \
+                  stay visible as an `as` rather than becoming a literal 256"
+    )]
+    pub(crate) const MAX_ELEMENTS: usize = 1 + u8::MAX as usize;
 
     /// The shell law this table was built under.
     #[must_use]
@@ -261,12 +281,19 @@ impl PeriodicTable {
 
     /// Every element with its id, in table order.
     ///
-    /// **The single source of an [`ElementId`].** Ids come from the position
-    /// here and nowhere else, which is what makes them agree with
-    /// [`Self::get`] by construction rather than by convention. The `u8`
-    /// conversion cannot fail for a 60..=120 table; a table long enough to
-    /// truncate would be a different bug, and `saturating` keeps it from
-    /// silently aliasing slot 0.
+    /// **Ids come from position here**, which is what makes them agree with
+    /// [`Self::get`] by construction rather than by convention.
+    ///
+    /// Not "the single source of an `ElementId`" — an earlier version of this
+    /// line said that and it was false twice over: [`ElementId::from_index`] is
+    /// public, and `Universe::generate` mints one from an RNG draw. Neither can
+    /// *disagree* with position, since both take a position as input, so the
+    /// guarantee holds — but the sentence a later reader would have relied on
+    /// did not.
+    ///
+    /// The `unwrap_or` is not `saturating` and does not "keep it from aliasing
+    /// slot 0"; it would alias slot **255**, which is a real slot in any table
+    /// where it could fire. `Self::new` now caps the length so it cannot.
     pub fn iter(&self) -> impl Iterator<Item = (ElementId, &Element)> {
         self.elements
             .iter()
@@ -1315,6 +1342,20 @@ mod tests {
             h, 0x9041_670f_d0f6_e431,
             "the universe digest moved — say which of §18.1's three this is"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion failed")]
+    fn a_table_too_long_to_address_is_refused_at_construction() {
+        // 300 slots: measured before the guard, `iter` handed out 256 distinct
+        // ids, 44 slots disagreed with `get`, and the bond matrix priced slot
+        // 299 as slot 255 — in range, plausible and silent.
+        let (pattern, els) = generate_elements(0).into_parts();
+        let mut long = els.clone();
+        while long.len() <= PeriodicTable::MAX_ELEMENTS {
+            long.extend(els.iter().cloned());
+        }
+        let _ = PeriodicTable::new(pattern, long);
     }
 
     #[test]
