@@ -36,9 +36,14 @@
 //! shell, so a value recurs only once per period — and `period <= 3`. At most 4
 //! elements share a group. But the decisive figure is not the aliasing: against
 //! a permutation null with identical class sizes, `group` explains bond
-//! character with an R² *ratio of 0.30–0.90* — **below chance**, so partitioning
-//! by group is worse than an arbitrary partition of the same shape. `period`
-//! scores 19.8–41.6× above the null.
+//! character with an R² *ratio of 0.296–0.893* — **below chance**, so
+//! partitioning by group is worse than an arbitrary partition of the same
+//! shape. `period` scores 16.3–53.4× above it. Both are sample ranges over 40
+//! seeds and are quoted as such; the qualitative claim (period far above
+//! chance, group below it) is what the decision rests on, and nothing in this
+//! crate guards the R² itself — `the_table_still_justifies_ignoring_affinity_and_group`
+//! guards the affinity floor and the multiplicity bound, which this paragraph
+//! demotes.
 //!
 //! So families do share bond character here, and the axis is the **period, not
 //! the group** — an earlier version of this header implied the column. §7.1's
@@ -82,6 +87,10 @@
 //! no test in this crate could previously tell those apart — a review showed
 //! that multiplying `base` by 0.001 leaves every spread assertion passing in a
 //! universe where differential persistence is identically zero.
+//!
+//! Both figures above are the **single** bond at mid-temperature. Across all
+//! three orders at `temp_min` the ratio reaches 3.50 and exceeds 2.0 in 716 of
+//! 2000 universes — wider, and the slice to size a coupling against.
 //!
 //! The fix sets the dimensionless group `E/T`, not `E`, and it belongs with the
 //! rate law: it is written into Task 14 with its discriminator, and into Task 20
@@ -243,7 +252,7 @@ impl BondEnergyMatrix {
         // right; believing it protects the feedstock is not.
         //
         // Below 1/3 makes the nominal whole-matrix ratio exactly
-        // `1 / weakest_share` — see `bondable_energies_span_a_recorded_band`
+        // `1 / weakest_share` — see `bondable_elements_cover_most_of_the_binding_energy_range`
         // for why that nominal figure is not the quantity §22.6 is about.
         let weakest_share = rng.next_f64_range(0.12, 0.28);
         // 2.2 > 2.1, so triple strictly exceeds double in every universe. The
@@ -372,7 +381,7 @@ impl BondEnergyMatrix {
     /// boundary, makes this lookup total and deletes the question. There is no
     /// consumer today, so nothing is presently wrong — the hazard is entirely
     /// prospective, which is exactly why it is written into Task 14 (reaction rates)
-    /// rather than left in this comment. `the_zero_sentinel_is_known_wrong_signed`
+    /// rather than left in this comment. `the_zero_sentinel_is_the_fastest_cleaving_value`
     /// pins the current value *and* names it as wrong, so a future reader
     /// cannot mistake a green test for a blessing.
     #[must_use]
@@ -659,7 +668,7 @@ mod tests {
         }
     }
 
-    /// Bond-energy spread over the elements a molecule can actually contain.
+    /// How much of the binding-energy range the bondable elements span.
     ///
     /// **This replaces `energies_have_useful_spread`, which asserted
     /// `hi/lo > 3.0` over the whole matrix and cited §22.6 — and was measuring
@@ -676,7 +685,7 @@ mod tests {
     /// the module header for why the quantity §22.6 is about is a **rate**
     /// ratio, which this commit's scales leave near 1.
     #[test]
-    fn bondable_energies_span_a_recorded_band() {
+    fn bondable_elements_cover_most_of_the_binding_energy_range() {
         for seed in 0..20 {
             let (table, m) = universe(seed);
             let bondable: Vec<ElementId> = table
@@ -700,32 +709,85 @@ mod tests {
                     }
                 }
             }
-            let ratio = hi / lo;
+            let _ = (lo, hi);
+            // **Coverage, not the energy ratio.** The ratio mixes a drawn
+            // nuisance parameter (`weakest_share`) with the physics, and the
+            // band fitted to it was false on the population: measured over 2000
+            // universes the bondable ratio spans [2.301, 5.279] and leaves
+            // `[2.4, 4.6]` on 11 seeds — the first at **seed 213**, just past
+            // the 200 the band was fitted on, while this loop runs 0..20. That
+            // is the defect this test replaced, one iteration later and quieter.
+            //
+            // `M - m` is the fraction of the binding-energy range that bondable
+            // elements span. Free of `weakest_share`, free of `base`, and a
+            // bound that means something: the elements a molecule can contain
+            // still cover most of the range the bond scale is built from.
+            // Measured [0.715677, 0.901821] over 2000 universes.
+            let (mut e_lo, mut e_hi) = (f64::MAX, f64::MIN);
+            for (_, e) in table.iter() {
+                let v = e.energy_per_unit.get();
+                if v < e_lo {
+                    e_lo = v;
+                }
+                if v > e_hi {
+                    e_hi = v;
+                }
+            }
+            let (mut m, mut big_m) = (f64::MAX, f64::MIN);
+            for &id in &bondable {
+                if let Some(e) = table.get(id) {
+                    let nv = (e.energy_per_unit.get() - e_lo) / (e_hi - e_lo);
+                    if nv < m {
+                        m = nv;
+                    }
+                    if nv > big_m {
+                        big_m = nv;
+                    }
+                }
+            }
+            let coverage = big_m - m;
             assert!(
-                (2.4..=4.6).contains(&ratio),
-                "seed {seed}: bondable spread {ratio} left the recorded band \
-                 [2.4, 4.6] — requote the module header and Task 14's note"
+                coverage > 0.6,
+                "seed {seed}: bondable elements cover only {coverage:.3} of the \
+                 binding-energy range — the bond scale is being set by cells no \
+                 molecule can occupy"
             );
         }
     }
 
-    /// **Records the defect four review lanes converged on, so it cannot be
-    /// mistaken for a satisfied requirement.**
+    /// **Records the defect four review lanes converged on — and is explicitly
+    /// NOT the tripwire for its repair.**
     ///
     /// §22.6 wants "some linkages durable and others fragile", and §9.4 calls
     /// differential persistence the thing selection acts on. Both are claims
     /// about *rates*, and §9.1/§9.5 make the rate `k = A·exp(−E_bond/T)`. This
-    /// commit mints both scales — `base ∈ [30, 90]` Quanta and `T ∈ [180, 760]`
-    /// Thermal — so `E/T` lands near zero and `exp` never leaves its linear
-    /// regime. The energy spread is fine; the *rate* spread is not.
+    /// crate mints both scales — `base ∈ [30, 90]` Quanta and `T ∈ [180, 760]`
+    /// Thermal — so `E/T` stays in `exp`'s linear regime. The energy spread is
+    /// fine; the *rate* spread is not.
     ///
-    /// The assertion is deliberately an upper bound on a defect rather than a
-    /// lower bound on a virtue: it fails if the ratio grows, which is what
-    /// Task 14 fixing the scale will do. That is the intended way for this test
-    /// to die — deliberately, in the commit that repairs the physics, rather
-    /// than silently.
+    /// **A round-2 review killed the claim this doc used to make.** It said the
+    /// assertion "fails when Task 14 fixes the scale", which cannot be true: the
+    /// coupling belongs in `borbax-reaction`'s `rate()`, and applying it there
+    /// leaves this crate's energies and temperatures untouched. The test would
+    /// have stayed green with the defect repaired and a stale defect-record
+    /// passing beside it — a green test whose doc describes a problem that no
+    /// longer exists, which is worse than an honest one because nothing tells
+    /// the next reader.
+    ///
+    /// So this asserts only what `borbax-universe` can see: the two scales *as
+    /// minted here* are mismatched. It guards against those drifting, nothing
+    /// more. Deleting it is a numbered step in Task 14, because no assertion in
+    /// this crate can observe a constant in another one.
+    ///
+    /// The slice is stated rather than implied, which is the other round-2
+    /// correction: **weakest to strongest bondable SINGLE bond at
+    /// mid-temperature**. The module header used to quote this figure under the
+    /// words "most durable bondable bond", which is a *triple* bond — a
+    /// different and wider number (all orders at `temp_min` reaches 3.50, and
+    /// exceeds 2.0 in 716 of 2000 universes). Sizing Task 14's coupling from the
+    /// narrow slice while reading the wide sentence would oversize it ~2.4x.
     #[test]
-    fn the_cleave_rate_spread_is_currently_far_too_narrow() {
+    fn the_single_bond_rate_spread_at_mid_temperature_is_narrow() {
         for seed in 0..20 {
             let u = crate::Universe::generate(seed);
             let bondable: Vec<ElementId> = u
@@ -750,11 +812,15 @@ mod tests {
             // Fastest cleave is the weakest bond. Ratio of rates, not energies.
             let rate_ratio =
                 borbax_units::det_math::exp(-lo / t) / borbax_units::det_math::exp(-hi / t);
+            // Measured over 2000 universes for this exact slice: [1.043, 1.243].
+            // The bound has headroom over the population, not over the 20 seeds
+            // that run here — the mistake this round corrected twice.
             assert!(
-                rate_ratio < 2.0,
-                "seed {seed}: cleave-rate spread is {rate_ratio}, which is larger \
-                 than when this defect was recorded. If Task 14 introduced the E/T \
-                 coupling, delete this test and assert the target band instead"
+                rate_ratio < 1.5,
+                "seed {seed}: single-bond mid-T rate spread is {rate_ratio}, outside \
+                 the measured [1.043, 1.243]. If the bond or temperature draws moved, \
+                 requote the module header; the E/T coupling itself lands in Task 14 \
+                 and cannot move this number"
             );
         }
     }
@@ -854,7 +920,7 @@ mod tests {
     /// test is a published guarantee, so this one says in its own name which
     /// half is which.
     #[test]
-    fn the_zero_sentinel_is_known_wrong_signed() {
+    fn the_zero_sentinel_is_the_fastest_cleaving_value() {
         let (table, m) = universe(9);
         // The first slot *past* the table, not an arbitrary large id: `n` is
         // exactly the value that makes `a * n + b` alias into a different
