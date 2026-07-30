@@ -15,7 +15,13 @@
 use borbax_experiments::g2::{Config, Report, run};
 use borbax_experiments::signature::Descriptor;
 
-/// Independent seeds per regime.
+/// Independent seeds, one per regime.
+///
+/// **Arbitrary values, deliberately unrelated to one another.** The requirement
+/// is only that they are fixed (so a measurement reproduces) and not adjacent
+/// (so two regimes cannot accidentally share a stream prefix). They are written
+/// as recognisable bit patterns rather than 1, 2, 3 precisely so that a value
+/// appearing somewhere unexpected is obviously *this array* and not a count.
 const SEEDS: [u64; 5] = [
     0x0B0B_BA05,
     0x1234_5678,

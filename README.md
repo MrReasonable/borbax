@@ -86,8 +86,8 @@ cargo xtask            # fiction-guarantee checks
 ```
 crates/            the simulation, in dependency order — ✅ exists, ○ planned
   ✅ borbax-units      invented units + the portable-transcendental chokepoint
-  ○  borbax-rng        counter-based deterministic streams
-  ○  borbax-universe   generated elements, bond energies, constants
+  ✅ borbax-rng        counter-based deterministic streams
+  ✅ borbax-universe   generated elements, bond energies, constants
   ○  borbax-molecule   graph → canonical form → 3D embedding → signature → binding → fold → cavity
   ○  borbax-reaction   reaction classes and rates
   ○  borbax-beaker     the well-mixed reactor
@@ -103,6 +103,21 @@ docs/
 
 Crates later in that list depend on earlier ones and never the reverse. The
 planned ones arrive in plan order; nothing is stubbed ahead of time.
+
+## How the maths works, per crate
+
+Each crate has a README written for a reader who wants to understand the
+*ideas* rather than the API — what problem the maths solves, why that approach
+and not the obvious one, and where the constants came from. They assume no
+background and cite sources.
+
+| README | What it explains |
+|---|---|
+| [`crates/borbax-rng`](crates/borbax-rng/README.md) | Why random numbers are *computed from a counter* rather than shuffled, and how Philox scrambles them |
+| [`crates/borbax-units`](crates/borbax-units/README.md) | Units the compiler enforces, why mass is an integer, and why `exp` is banned |
+| [`crates/borbax-universe`](crates/borbax-universe/README.md) | Elements as packed spheres — the shell law, the binding peak, and where valence and bond energies come from |
+| [`experiments`](experiments/README.md) | The measurement harnesses, locality, and the neutral shadow |
+| [`xtask`](xtask/README.md) | The fiction-guarantee gate and why it is a program rather than a checklist |
 
 ## Reading order
 
