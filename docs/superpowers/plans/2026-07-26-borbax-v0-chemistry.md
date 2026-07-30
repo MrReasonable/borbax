@@ -1509,6 +1509,63 @@ the step loop only ever reads it.
 - Consumes: `borbax_molecule::{Mol12, Signature, Geodesic, canonicalise, embed, signature, affinity_ordered}`, `Universe`
 - Produces: `SpeciesId(u32)`, `SpeciesRecord`, `Interner::{new, intern, record, len}`, `ReactionKind`, `Reaction`, `rate(&Reaction, Thermal, &[f64], f64) -> f64`, `AffinityMemo`
 
+**Requirement from Task 5's review — the Arrhenius exponent has no useful range,
+and this task owns the coupling that fixes it. Four of six review lanes found
+this independently, by four different instruments.**
+
+Task 5 mints the bond-energy scale (`base ∈ [30, 90]` Quanta) and Task 5 mints
+the temperature scale (`temp_min ∈ [180, 260]`, `temp_max = temp_min + 200..500`
+Thermal). §9.1's `rate = A·exp(−Ea/T)` can only see the dimensionless group
+`Ea/T`, and those two independent draws put it in `[0.006, 1.35]` — so `exp`
+never leaves its linear regime. Measured on the committed code:
+
+| quantity | measured |
+|---|---|
+| `exp(−Ea/T)` over 200 universes, all orders | `[0.2583, 0.9936]` |
+| cleave-rate ratio, most fragile : most durable **bondable** bond | 1.04× – 1.48× |
+| same, over the abundance-weighted population a beaker holds | 1.05× – 1.20× |
+| §22.6 phase-2 redistribution as a fraction of phase-1's own range | **0.5% – 2.4%** |
+
+The consequence is not "decay is mistuned" — `decay_scale` can move that. It is
+that **a molecule's spontaneous lifespan is set by how many bonds it has**, with
+composition worth the equivalent of one to five extra bonds. §9.4's differential
+persistence then has nothing to act on but molecular size, and a V0 result
+reading "large polymers persist" would be an artefact of bond counting. This is
+the same shape as requirement 4 in Task 15, where a composition channel is
+swamped by an atom-count channel.
+
+**Fix the dimensionless group, not the energy.** Widening `base`'s range or
+`weakest_share`'s moves the energy spread, which is already adequate, and leaves
+`Ea/T` where it is. The coupling belongs here rather than in `borbax-universe`
+because this is where the rate law is written; Task 5 deliberately did not pick a
+number, because a constant chosen to make a distribution look right is the defect
+this project keeps finding reported back as an emergent result.
+
+*Discriminator:* the assertion must **not be invariant under `Ea → α·Ea`**, and
+it must be two-sided. A review demonstrated the current test's blindness by
+multiplying `base` by 0.001: every spread assertion still passed in a universe
+where differential persistence is identically zero. So the test must read a
+**rate** ratio at the universe's own drawn temperatures, and must fail both for
+α = 0.001 (nothing differs) and α = 1000 (nothing ever cleaves). For sizing, not
+prescription: reaching `Ea/T = 10` for the strongest bondable single bond at
+mid-temperature needs roughly ×67 on the current scale, ×134 for `Ea/T = 20`; the
+abundance²-weighted operating point then sits at 0.552 of the bondable range, so
+a seeded beaker runs mid-band rather than pinned. `borbax-universe`'s
+`the_cleave_rate_spread_is_currently_far_too_narrow` asserts the *defect* and is
+designed to fail when this is fixed — deleting it is part of the fix, not
+collateral.
+
+**Also inherited here: the bond-energy spread is quoted over cells no molecule
+can occupy.** `valence == 0` means no frontier and no bonding slots. Measured
+over 200 universes, the weakest element is the monomer and has `valence == 0` in
+**200 of 200**; the strongest sits on a binding-peak closure and has
+`valence == 0` in **170 of 200**. Nominal whole-matrix spread is 3.58–8.33;
+restricted to bondable elements it is **2.42–4.56**. Task 4's own record flagged
+this as Task 5's inheritance (`2026-07-26-borbax-v0.md`, "the binding peak sits
+at a closure, and a closure has valence 0"), and Task 5 did not resolve it — it
+recorded it and moved it here, because whether valence-0 atoms can enter a
+molecule at all is Task 11's decision and was not available.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
@@ -1968,6 +2025,37 @@ EOF
 **Interfaces:**
 - Consumes: `SpeciesRecord`, `Interner`, `Universe`, `Thermal`
 - Produces: `decay_propensity<D>(SpeciesId, f64, &Interner<D>, Thermal, &Universe) -> f64`, `DecayKind`, `decay_channels<D>(...) -> [(DecayKind, SpeciesId, f64); 3]`
+
+**A further requirement from Task 5's review: the drafted Cleave law is not
+§9.1's, and the substitution is not named as a physics change.** §9.1 and §9.5
+both give `k = A·exp(−E_bond/T)`. Step 4 below implements
+`r.cleave_propensity * exp(-1.0 / (temp * 0.01))` with `cleave_propensity`
+accumulating `decay_scale / energy` — that is `(1/E)·g(T)`, a **factorised** law
+whose temperature factor does not depend on bond energy. Its comment justifies
+the shape on determinism/performance grounds (keeping the transcendental out of
+the sum) and never mentions that the physics changed.
+
+What is lost is the **cross-term**. Under a factorised law, heating multiplies
+every bond by the same factor, so there is no temperature at which weak linkages
+are preferentially destroyed while strong ones survive — which is the entire
+content of §9.5's *"hot places destroy structure quickly, cold places preserve
+it — vents are energy-rich and corrosive, the first real environmental
+trade-off"*. It reduces to a global clock-speed change.
+
+This is dangerous rather than merely wrong, because `1/E` yields a **larger**
+durability spread (median 3.12× bondable) than true Arrhenius does at Task 5's
+scale (1.24×). A reviewer measuring only spread would conclude the factorised
+law is the better one.
+
+*Discriminator:* the test must read the **mixed second difference**
+`ln k(E_weak, T_cold) − ln k(E_weak, T_hot) − ln k(E_strong, T_cold) + ln k(E_strong, T_hot)`,
+which is exactly zero for any factorised law. A spread test cannot see it, and
+§9.5's already-planned "turnover responds monotonically to temperature" test
+passes for both laws — the same green-test-over-a-dead-mechanism shape as
+requirement 4 below.
+
+**Bundle this with requirements 4 and 5 and with Task 14's `Ea/T` coupling: they
+are one golden regeneration, not four.**
 
 **Three requirements this task carries, all found by review before any of it was
 written. Read them before Step 1 — two change the signatures above.**

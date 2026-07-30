@@ -19,3 +19,7 @@ workspace = true
 [dependencies]
 borbax-units = { workspace = true }
 borbax-rng = { workspace = true }
+# Already compiled into this crate's tree via `borbax-units`, so this adds zero
+# crates and zero build time. It is a proc macro emitting `Display`, and cannot
+# reach a result-affecting path — the dependency doctrine's expensive case.
+thiserror = { workspace = true }
