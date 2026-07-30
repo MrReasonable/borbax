@@ -1542,8 +1542,8 @@ never leaves its linear regime. Measured on the committed code:
 | quantity | measured |
 |---|---|
 | `exp(−Ea/T)` over 200 universes, all orders | `[0.2583, 0.9936]` |
-| cleave-rate ratio, bondable, **single** bond, at mid-temperature | 1.044× – 1.243× |
-| same, over the abundance-weighted population a beaker holds | 1.05× – 1.20× |
+| cleave-rate ratio, bondable, **single** bond, at mid-temperature | 1.043× – 1.243× |
+| same, over the abundance-weighted population | *not reproduced* — the percentile convention was never stated; four attempts gave [1.031,1.153] to [1.044,1.219]. Use the row above |
 | §22.6 phase-2 redistribution vs phase-1's `decay_scale` range (1e-6..1e-4, i.e. 100×) | **0.9% – 4.7% on a log scale**; 0.04%–0.25% linearly |
 
 The consequence is not "decay is mistuned" — `decay_scale` can move that. It is
@@ -1569,8 +1569,11 @@ where differential persistence is identically zero. So the test must read a
 α = 0.001 (nothing differs) and α = 1000 (nothing ever cleaves). For sizing, not
 prescription: reaching `Ea/T = 10` for the strongest bondable single bond at
 mid-temperature needs a **median** ×67 on the current scale, ×134 for
-`Ea/T = 20`; the abundance²-weighted operating point then sits at 0.552 of the
-bondable range, so a seeded beaker runs mid-band rather than pinned.
+`Ea/T = 20`; the abundance²-weighted operating point then sits at a **median**
+0.552 of the bondable range — spread [0.304, 0.769] over 200 seeds — so a seeded
+beaker runs mid-band rather than pinned. (Median with its range, because the
+sentence beside it makes exactly that point about ×67 and an earlier version of
+this clause did not.)
 
 **"Median" is the load-bearing word — do not implement ×67 as a constant.** The
 factor required is a per-universe quantity with a 4.4× spread: measured over 200
@@ -1580,8 +1583,18 @@ universes at one nominal setting, which is this requirement's own failure mode
 one level in. So the assertion must bound the **spread of `Ea/T` across
 universes**, not merely its magnitude in one. That is what makes "fix the
 dimensionless group, not the energy" operational: it rules out a multiplier and
-forces the group — draw `base` in units of the universe's own temperature, or
-divide by `T` where the rate law is written. `borbax-universe`'s `the_single_bond_rate_spread_at_mid_temperature_is_narrow`
+forces the group. **Draw `base` in units of the universe's own temperature** —
+and *not* the "divide by `T` where the rate law is written" an earlier version
+offered as an alternative, because the drafted `rate()` already divides by
+`temp`, so that option changes nothing and the measured [4.5, 19.7] spread *is*
+the spread under it.
+
+The first remedy has a measured target rather than a direction. Decomposing the
+required factor over 200 seeds: the temperature scale contributes 1.72×, `base`
+2.98×, and the bondable-capacity structure only 1.09×. So drawing `base` in units
+of `t_mid` collapses the `Ea/T` spread from **4.39× to 1.09×**, and the residual
+is physics rather than a scale mismatch. **Assert `Ea/T` within roughly ±6% of
+nominal across universes.** `borbax-universe`'s `the_single_bond_rate_spread_at_mid_temperature_is_narrow`
 records the defect but **cannot observe this fix** — see Step 0, which retires it.
 
 **Also inherited here: the bond-energy spread is quoted over cells no molecule
@@ -1630,10 +1643,41 @@ simulates happily and produces a plausible steady state. In an artificial
 chemistry that is how a spurious "replicator" gets manufactured out of the rate
 law rather than out of the physics.
 
-*Discriminator:* for every Condense channel and its Cleave inverse,
-`activation_forward − activation_reverse == delta` exactly, on a stated sign
-convention, asserted at channel-creation time. A per-reaction sanity check does
-not have this property; the constraint is a relation between the pair.
+**First decide what "its Cleave inverse" refers to, because today it refers to
+nothing.** `ReactionKind::Cleave` is constructed nowhere in either plan file;
+Cleave as drafted is Task 15's `decay_channels`, a species-level *unimolecular*
+propensity with no `activation`, no products and no reactant pair — the spec is
+explicit at §7.2, "§9.1's bimolecular Condense against §9.4's unimolecular
+Cleave". So `activation_reverse` has no field to read. Mass conservation blocks
+the naive repair: Condense is `A + B → AB + W` and Cleave `AB → A + B`, which
+balance only if the leaving group is massless.
+
+*Discriminator, once the pairing exists:* for every Condense channel and its
+Cleave inverse, `activation_forward − activation_reverse == delta` exactly, on a
+stated sign convention, at channel-creation time.
+
+**That relation is necessary and not sufficient, and the gap is the one the
+requirement is actually about.** Three reactions `A⇌B`, `B⇌C`, `C⇌A` each with
+`delta = +1` satisfy it pairwise while `Σδ = +3` around the loop — traversing the
+cycle returns to the same state having gained 3 units, with every construction
+-time assertion passing. What closes it is that **`delta` be a difference of a
+per-species state function**, so the sum telescopes to zero around any cycle
+identically. `SpeciesRecord` carries `bond_count` but no energy field; add
+`energy: Quanta`, summed from the bond matrix at intern time (§8.6-compliant —
+that is already where `cleave_propensity` is built), and define
+`delta = E(products) − E(reactants)`.
+
+**And this requirement and Task 16's are one requirement.** `rate()` applies
+catalysis to the *prefactor*, not the activation, so a one-sided catalyst leaves
+`activation_forward − activation_reverse == delta` true and untouched. An
+implementer landing this assertion faithfully will believe energy balance closed
+while Task 16's pump walks through it. The statement that covers both is
+**`k_f/k_r = exp(−delta/T)` must hold, catalysed or not.**
+
+*Also unconsumed, and the same defect this block opens with:* `rate_prefactor` is
+drawn in `UniverseConsts`, documented as §9.1's pre-exponential factor, and read
+by nothing — the drafted `rate()` drops the `A`. Three Task 20 battery tests set
+it expecting it to work.
 
 **Requirement: retire `borbax-universe`'s known-wrong sentinel.**
 `BondEnergyMatrix::energy` returns `Quanta::ZERO` for an id outside its table.
@@ -2423,11 +2467,26 @@ concentration above the uncatalysed equilibrium without bound — and §21's "th
 chemistry works" then measures a broken catalyst rather than emergence. A real
 catalyst changes the path, not the equilibrium; it must multiply both directions.
 
-*Discriminator:* run the beaker **closed** — no food influx, no outflow — and
-assert that total bond energy stops rising and every cycle's net flux goes to
-zero. It has to be the closed run: an open beaker is legitimately driven, so the
-constraint is not falsifiable there and a green open-beaker test would be the
-usual green-test-over-a-dead-mechanism.
+**Both halves of the discriminator this block first carried are passed by the
+defect they name.** "Total bond energy stops rising" is bounded by mass
+conservation in a closed beaker for *any* rate law — fixed atoms, bounded bond
+count — so it can only fail on numerical breakage. "Every cycle's net flux goes
+to zero" is true at steady state *by definition of steady state*, catalysed or
+not. A one-sided catalyst reaches a **shifted but finite and flux-balanced**
+steady state, `[AB]/([A][B]) = f·K` instead of `K`: a thermodynamic error with no
+kinetic signature. The word "unbounded" above was wrong too, and this task's own
+`enhancement_is_bounded` test says so 50 lines below.
+
+*Discriminator that works:* **the closed-run steady state must be invariant under
+the catalyst's presence.** Run closed twice, with and without the cavity-bearing
+species, and assert the realised `[AB]/([A][B])` is unchanged. Cheaper and
+matching Task 14's construction-time shape: assert that the catalysis multiplier
+applied to a channel is applied identically to its reverse, so `k_f/k_r` is
+invariant under catalysis.
+
+*And "run it closed" needs no switch:* V0's beaker is closed already — grepping
+both plans for influx/outflow/chemostat returns only this line. §11's open
+boundaries are V1, so the caveat belongs to V1 rather than to this test.
 
 - [ ] **Step 1: Write the failing tests**
 

@@ -106,12 +106,20 @@
 //! `k = A·exp(−E_bond/T)`. With `base ∈ [30, 90]` against `T ∈ [180, 760]`,
 //! `E/T` never leaves `exp`'s linear regime. Stated in one convention, because
 //! an earlier version of this sentence spliced two: **bondable elements, single
-//! bond, at mid-temperature, the cleave-rate ratio is 1.044x–1.243x over 200
-//! seeds** — which is the convention
-//! `the_single_bond_rate_spread_at_mid_temperature_is_narrow` actually asserts,
-//! so it is the only figure here checkable with `cargo test`. The `1.04x–1.48x`
+//! bond, at mid-temperature, the cleave-rate ratio is 1.043x–1.243x over 200
+//! seeds** (measured min 1.04347; round 3 wrote 1.044, stating a lower bound
+//! *above* the observed minimum — and round 2's commit message had 1.043 right
+//! before round 3 "corrected" it) — which is the convention
+//! `the_single_bond_rate_spread_at_mid_temperature_is_narrow` computes. **It is
+//! not asserted anywhere** — round 3 replaced that test's band with a regime
+//! predicate, so `base x 0.001` and `base x 3` both leave the suite green except
+//! for the digest. An earlier version of this sentence called it "the only
+//! figure here checkable with `cargo test`", which round 3 falsified in the act
+//! of writing it. The `1.04x–1.48x`
 //! that stood here took its floor from that set and its ceiling from the *whole
-//! matrix at* `temp_min`; no bondable convention reaches 1.48. A molecule's spontaneous lifespan is therefore set by how many
+//! matrix at* `temp_min`. No bondable **single-bond** convention reaches 1.48
+//! — the qualifier matters, because bondable across all three orders at
+//! `temp_min` reaches 3.50, which this header quotes fourteen lines below. A molecule's spontaneous lifespan is therefore set by how many
 //! bonds it has, with composition worth the equivalent of one to five extra
 //! bonds — the same shape as the recorded radiogenic finding, where a
 //! composition channel is swamped by an atom-count channel.
@@ -754,24 +762,42 @@ mod tests {
         }
     }
 
-    /// How much of the binding-energy range the bondable elements span.
+    /// The bondable submatrix's extremes are the self-bonds of the extreme
+    /// bondable elements.
     ///
-    /// **This replaces `energies_have_useful_spread`, which asserted
-    /// `hi/lo > 3.0` over the whole matrix and cited §22.6 — and was measuring
-    /// cells no molecule can occupy.** `valence == 0` means no frontier and so
-    /// no bonding slots. Measured over 200 universes: the *weakest* element is
-    /// the monomer and has valence 0 in **200 of 200**; the *strongest* sits on
-    /// a binding-peak closure and has valence 0 in **170 of 200**. So both
-    /// endpoints of the asserted range are unreachable, and the old threshold
-    /// failed on the bondable submatrix in **86 of 200** universes while passing
-    /// on all 20 seeds it ran.
+    /// **Fourth attempt, and the first that reads the bond matrix.** The three
+    /// before it all tried to assert a *magnitude* — `hi/lo > 3.0` over the
+    /// whole matrix (endpoints are `valence == 0` elements no molecule can
+    /// contain), then the bondable ratio in `[2.4, 4.6]` (fitted to 200 seeds,
+    /// false from seed 213), then a coverage fraction `> 0.6` (fitted to 2000).
+    /// Round 3 replaced the third with "bondable elements straddle the median",
+    /// which carries no constant and is nearly vacuous: 95–97.5% of elements are
+    /// bondable with ~45% each side, so it fires only once the non-bondable
+    /// fraction reaches 45% on one side. Seed 1209's entire above-median
+    /// bondable set sits within 1.04% of the range and it passes.
     ///
-    /// The band below is the measured bondable range, recorded so drift is
-    /// visible. It is deliberately *not* dressed up as satisfying §22.6 — see
-    /// the module header for why the quantity §22.6 is about is a **rate**
-    /// ratio, which this commit's scales leave near 1.
+    /// **The lesson, which is the useful part: a magnitude claim cannot be made
+    /// constant-free, because a magnitude needs a scale.** Three thresholds and
+    /// one vacuity is the evidence. So the magnitude is *recorded* below and
+    /// asserted nowhere — measured coverage `[0.7157, 0.9018]` over 2000
+    /// universes — and what is asserted instead is a *derivation* claim, which
+    /// can be exact: the extreme bondable bond energies are the self-bonds of
+    /// the bondable elements with extreme `energy_per_unit`. Bit-exact, 0
+    /// violations over 2000 seeds.
+    ///
+    /// **What it does not catch: a flat matrix.** With every bond equal the
+    /// extremes tie and the assertion holds trivially. That is caught twice
+    /// elsewhere — by `the_single_bond_rate_spread...`'s `hi > lo` guard and by
+    /// `capacity_is_a_function_of_binding_energy_and_of_nothing_else` — so the
+    /// suite covers it; this test does not, and saying so is the point.
+    ///
+    /// That also repairs a defect round 3 introduced: the previous body computed
+    /// `lo`/`hi` over the submatrix and then wrote `let _ = (lo, hi);`, so the
+    /// test named for bond coverage, living in `bonds.rs`, **did not read the
+    /// bond matrix at all** — verified, it passed with every bond energy
+    /// replaced by a constant.
     #[test]
-    fn bondable_elements_cover_most_of_the_binding_energy_range() {
+    fn the_bondable_extremes_are_the_extreme_elements_self_bonds() {
         for seed in 0..20 {
             let (table, m) = universe(seed);
             let bondable: Vec<ElementId> = table
@@ -795,61 +821,49 @@ mod tests {
                     }
                 }
             }
-            let _ = (lo, hi);
-            // **No fitted band, and this is the third attempt at that.**
-            //
-            // v1 asserted `hi/lo > 3.0` over the whole matrix — a range whose
-            // two endpoints are elements with `valence == 0`, which no molecule
-            // can contain. v2 asserted the bondable ratio inside `[2.4, 4.6]`,
-            // measured over 200 seeds and checked over 20: false from seed 213
-            // on, over 2000. v3 asserted a coverage fraction `> 0.6`, measured
-            // over 2000 and still a number picked because the test passed with
-            // it. Each was the previous one's defect at lower amplitude.
-            //
-            // The structural claim never needed a constant: the bond scale must
-            // not be set by cells no molecule can occupy, so the elements a
-            // molecule *can* contain must appear on **both sides of the table's
-            // own median** binding energy. The median is derived from the table
-            // under test, so nothing is fitted, and the assertion still fails
-            // the moment the bondable set collapses toward either end.
-            //
-            // **Honest scope: this guards against total collapse, not against
-            // the bond scale being badly set.** Measured over 2000 universes the
-            // tightest seed still has 28 bondable elements below the median and
-            // 27 above, so there is enormous slack before it fires. A green
-            // result here is not evidence the scale is well-set — see the module
-            // header for the quantity that actually is not.
-            //
-            // `total_cmp` is legitimate here and nowhere else in this crate:
-            // `energy_per_unit` is finite by construction (asserted over 2000
-            // universes) and this is a test-local ordering that reaches no
-            // output, so the architecture-dependent NaN sign `canonical_cmp`
-            // exists to tame cannot arise.
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "§13.4 — test-local sort over values asserted finite \
-                          elsewhere; no NaN reachable and no result derived from it"
-            )]
-            let median = {
-                let mut sorted: Vec<f64> =
-                    table.iter().map(|(_, e)| e.energy_per_unit.get()).collect();
-                sorted.sort_by(f64::total_cmp);
-                sorted.get(sorted.len() / 2).copied().unwrap_or_default()
-            };
-            let side = |f: &dyn Fn(f64) -> bool| {
+            // The extreme bondable elements by binding energy. `canonical_cmp`
+            // rather than `total_cmp` under an `#[expect]`: it is the route
+            // `clippy.toml`'s own reason string names, and the exemption's
+            // stated justification was false anyway — no test in the workspace
+            // asserts `energy_per_unit` is finite, and the nearest one asserts a
+            // different quantity on seed 9 while this ran seeds 0..20.
+            let extreme = |pick_max: bool| {
                 bondable
                     .iter()
-                    .filter_map(|&id| table.get(id))
-                    .any(|e| f(e.energy_per_unit.get()))
+                    .copied()
+                    .fold(None::<(ElementId, Quanta)>, |best, id| {
+                        let e = table.get(id).map_or(Quanta::ZERO, |x| x.energy_per_unit);
+                        match best {
+                            Some((_, b)) if (e > b) != pick_max => best,
+                            _ => Some((id, e)),
+                        }
+                    })
             };
-            let below = side(&|v| v < median);
-            let above = side(&|v| v > median);
+            let (weak, strong) = (extreme(false), extreme(true));
+            // `assert!` then `if let`, not `let ... else { panic! }`:
+            // `clippy::panic` is denied workspace-wide and reaches inside tests.
             assert!(
-                below && above,
-                "seed {seed}: bondable elements sit entirely on one side of the \
-                 median binding energy (below={below}, above={above}) — the bond \
-                 scale is being set by cells no molecule can occupy"
+                weak.is_some() && strong.is_some(),
+                "seed {seed}: bondable set has no extremes"
             );
+            if let (Some((weak, _)), Some((strong, _))) = (weak, strong) {
+                // The derivation claim, exact: `bond = base * sqrt(c_a * c_b)` is
+                // monotone in both arguments, so the extreme cells of the bondable
+                // submatrix must be the self-bonds of its extreme elements. This
+                // reads the matrix, which the previous version had stopped doing.
+                assert_eq!(
+                    m.energy(weak, weak, BondOrder::Single).get().to_bits(),
+                    lo.to_bits(),
+                    "seed {seed}: the weakest bondable bond is not the weakest \
+                     bondable element's self-bond"
+                );
+                assert_eq!(
+                    m.energy(strong, strong, BondOrder::Single).get().to_bits(),
+                    hi.to_bits(),
+                    "seed {seed}: the strongest bondable bond is not the strongest \
+                     bondable element's self-bond"
+                );
+            }
         }
     }
 
@@ -907,38 +921,45 @@ mod tests {
                     }
                 }
             }
-            // **The defect, stated without a threshold.**
+            // **`exp((hi-lo)/T) < hi/lo` reduces EXACTLY to `logmean(lo,hi) < T`,
+            // and round 3 shipped it without noticing.** Take logs:
+            // `(hi-lo)/T < ln hi - ln lo`, and `(hi-lo)/(ln hi - ln lo)` is the
+            // logarithmic mean. Verified: 0 disagreements over 5000 seeds.
             //
-            // Arrhenius amplifies energy differences when `E/T` is large and
-            // compresses them when it is small, so "is `E/T` in the dead
-            // regime" has a number-free answer: compare the *rate* spread
-            // against the *energy* spread it came from. `exp((hi-lo)/T)` below
-            // `hi/lo` means the exponential is shrinking the differences the
-            // bond matrix worked to create — precisely what §22.6 needs it not
-            // to do.
+            // So the "constant-free" form was not constant-free — it carries the
+            // constant **1**, on the dimensionless group `E_typical/T`, reached
+            // by algebraic coincidence rather than by choice. Worse, it is
+            // *scale*-sensitive rather than *spread*-sensitive, so it merges two
+            // different claims. Measured: a completely flat matrix — every bond
+            // identical, rate spread exactly 1.0, the maximally dead universe —
+            // **fails** it, reporting the defect as repaired and instructing the
+            // reader to delete the tripwire.
             //
-            // Two fitted thresholds preceded this one — `< 2.0`, then `< 1.5` —
-            // and a review killed each in turn for sitting above the population
-            // rather than on it. A fitted bound was never the right shape here:
-            // the quantity is a ratio of two things the code already computes,
-            // so the assertion can be an inequality between them and carry no
-            // constant at all. Measured over 500 universes the rate spread runs
-            // 0.242–0.466 of the energy spread; those figures are reported, not
-            // asserted.
+            // Written in the reduced form because the `hi/lo` spelling hides its
+            // own threshold and reads as though it were about spread. The
+            // `hi > lo` guard splits the two failure modes the old form merged.
             //
-            // Raising `E/T` in Task 14 flips this above 1 and the test fails —
-            // so it dies in the commit that repairs the physics, this time on a
-            // quantity that repair actually moves. The previous version could
-            // not: it read this crate's numbers, and the coupling lands in
-            // another one.
-            let rate_ratio = borbax_units::det_math::exp((hi - lo) / t);
-            let energy_ratio = hi / lo;
+            // Honest about sensitivity, which round 3 also got wrong: this fires
+            // once `E/T` rises ~5.8x, against ~2.6x for the fitted `< 1.5` it
+            // replaced — constant-free bought a **2.3x less sensitive** test. It
+            // is kept because it says something true about the *regime* rather
+            // than about a sample, not because it is stronger. The rate spread
+            // itself (0.242-0.466 of the energy spread over 500 universes) is
+            // recorded here and asserted nowhere: it is a magnitude, and a
+            // magnitude needs a scale.
             assert!(
-                rate_ratio < energy_ratio,
-                "seed {seed}: rate spread {rate_ratio} now exceeds the energy spread \
-                 {energy_ratio} it came from — Arrhenius has stopped compressing, so \
-                 the E/T coupling has landed. Delete this test and assert the target \
-                 band where the rate law lives (Task 14)"
+                hi > lo,
+                "seed {seed}: every bondable single bond has the same energy — the \
+                 capacity map has collapsed. That is a bond-matrix defect, NOT an \
+                 E/T one, and the `< hi/lo` form used to report it as the repair"
+            );
+            let logmean =
+                (hi - lo) / (borbax_units::det_math::ln(hi) - borbax_units::det_math::ln(lo));
+            assert!(
+                logmean < t,
+                "seed {seed}: typical bondable single-bond energy {logmean} has risen \
+                 above mid-temperature {t} — E/T has left the linear regime. Delete \
+                 this test and assert the target band in Task 14"
             );
         }
     }
