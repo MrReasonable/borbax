@@ -11,6 +11,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "borbax-molecule"
+version = "0.1.0"
+dependencies = [
+ "borbax-rng",
+ "borbax-units",
+ "borbax-universe",
+ "thiserror",
+]
+
+[[package]]
 name = "borbax-rng"
 version = "0.1.0"
 dependencies = [
