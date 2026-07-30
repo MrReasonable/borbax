@@ -9,9 +9,10 @@ whose chemistry is **invented from a 64-bit seed**, not modelled on the real wor
 Molecules are shapes; binding is a geometric complementarity test; catalysis,
 membranes and heredity are all downstream consequences of that single mechanism.
 
-**Tasks 1-2 of 21 are complete** — the workspace and fiction-guarantee gate,
-and `borbax-units` with the portable-transcendental chokepoint. Everything else
-is spec and plan. Read them before proposing anything:
+**Tasks 1-5 of 21 are complete** — the workspace and fiction-guarantee gate,
+`borbax-units` with the portable-transcendental chokepoint, `borbax-rng`,
+element generation by fusion, and bond energies with the assembled `Universe`.
+Everything else is spec and plan. Read them before proposing anything:
 
 | Document | What it is |
 |---|---|
@@ -62,8 +63,7 @@ deliberate, visible act:
 `gh api -X DELETE repos/MrReasonable/borbax/branches/main/protection/enforce_admins`.
 
 Next action if starting fresh: **Task 6** — molecule graphs and canonical
-labelling. Task 5 (bond energies and the assembled `Universe`) is built on
-`task-5-bond-energies` and not yet merged.
+labelling. Task 5 merged as PR #12 on 2026-07-30.
 
 **Task 5b is scaffolding, not a V0 task.** It respecifies `abundance` as a
 fusion/fission process and is fully written up, but it gates nothing, the shipped

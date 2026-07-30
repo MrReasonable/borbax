@@ -1538,6 +1538,26 @@ the step loop only ever reads it.
 - Consumes: `borbax_molecule::{Mol12, Signature, Geodesic, canonicalise, embed, signature, affinity_ordered}`, `Universe`
 - Produces: `SpeciesId(u32)`, `SpeciesRecord`, `Interner::{new, intern, record, len}`, `ReactionKind`, `Reaction`, `rate(&Reaction, Thermal, &[f64], f64) -> f64`, `AffinityMemo`
 
+**Species naming is specified and deliberately not scheduled — see
+`docs/superpowers/plans/2026-07-30-borbax-species-naming.md`.** This task is its
+home when it is picked up, because a species first exists here. Two constraints
+from that note bind *this* task's design whether or not naming is implemented,
+because retrofitting either is expensive:
+
+1. **A name must key on `CanonForm`, never on `SpeciesId`.** Ids are assigned in
+   first-seen order, so an id-keyed name differs between a run and its neutral
+   shadow, and between two world seeds in one universe — the same molecule under
+   two names, which destroys the only property a name has.
+2. **Names must not live in `SpeciesRecord`.** Every `&SpeciesRecord` in the rate
+   path could then read one, and the only thing preventing a name-keyed special
+   case would be discipline — the `catalytic_class` failure exactly, which a doc
+   comment saying "reserved" did not prevent. A side table owned by the display
+   layer makes the special case unspellable rather than merely discouraged.
+
+*Discriminator:* if naming lands here, `borbax-reaction` must not be able to read
+a name at all — verified by the physics crate not depending on whatever holds
+them, not by grepping the rate path.
+
 **READ FIRST — Task 5's later rounds substantially repaired this, and the
 remedy below is now sized against a dead measurement.** Deriving the bond scale
 from the packing took capacity out of a `[w, 1]` normalisation, so bond energies
