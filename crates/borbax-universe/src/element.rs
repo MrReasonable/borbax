@@ -184,9 +184,9 @@ pub struct Element {
 
 /// The derived shape of one universe's table.
 ///
-/// **No `Eq`**, since [`Self::eps`] and [`Self::sigma`] are floats. That is the
-/// honest consequence of carrying the energy scale here, and `PartialEq` is what
-/// the equality tests actually use.
+/// **No `Eq`**, since the in-crate `eps` field wraps a float. That is the honest consequence
+/// of carrying the energy scale here, and `PartialEq` is what the equality tests
+/// actually use.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ShellPattern {
@@ -222,11 +222,16 @@ pub struct ShellPattern {
     /// twice, here in Quanta and there in a chosen interval, with neither able
     /// to check the other. That is the defect `bonds.rs` exists to reject,
     /// reproduced one axis over.
-    pub eps: f64,
-    /// Radial strain coefficient. Carried alongside [`Self::eps`] because the
-    /// two together are what scaling `energy_per_unit` means — scaling one
-    /// alone changes the *shape* of the series, not its scale.
-    pub sigma: f64,
+    ///
+    /// **`pub(crate)`, not `pub`.** `#[non_exhaustive]` blocks external
+    /// construction, not field *reads*, and `PeriodicTable::pattern` is public —
+    /// so a `pub` field here would let `borbax-molecule` and everything above it
+    /// read the raw drawn per-contact energy and build a second energy formula
+    /// from it. That is the double-encoding this commit removed, made reachable
+    /// one crate up. A companion `sigma` was added and then removed the same
+    /// round: it had exactly one reader in the workspace, an inert line in a
+    /// test's setup, which is not a reason to widen a public type.
+    pub(crate) eps: Quanta,
 }
 
 /// One universe's periodic table: the elements, and the shell law they follow.
@@ -435,7 +440,7 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
     let base_mass = 1.0 + 0.25 * rng.next_range(4) as f64;
     let contact_defect = (1 + rng.next_range(4)) as f64 / 512.0;
     let base_radius = 0.30 + 0.02 * rng.next_range(11) as f64;
-    let eps = 0.8 + 0.05 * rng.next_range(9) as f64;
+    let eps = Quanta(0.8 + 0.05 * rng.next_range(9) as f64);
     let sigma = 0.02 + 0.01 * rng.next_range(12) as f64;
     let decay = 0.04 + 0.01 * rng.next_range(13) as f64;
     let n_elements = 60 + rng.next_range(61) as usize; // 60..=120
@@ -549,8 +554,10 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
         // units with no operations between them. The expression inside the
         // constructor is byte-for-byte the one Task 4 shipped — this is a
         // typing change, and `the_universe_digest_is_pinned` is what says so.
-        let energy_per_unit =
-            Quanta(eps * contacts / units as f64 - sigma * det_math::cbrt((units * units) as f64));
+        // Parenthesised to preserve the left-association exactly, so typing
+        // `eps` as `Quanta` moves no bits (§13.4).
+        let energy_per_unit = (eps * contacts) / units as f64
+            - Quanta(sigma) * det_math::cbrt((units * units) as f64);
 
         // Abundance: fusion builds heavy clusters from light ones, so each
         // extra unit costs a step and abundance falls geometrically. Sequential
@@ -745,7 +752,6 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
     let shell = ShellPattern {
         k,
         eps,
-        sigma,
         closures: packing::closures(k, n_elements),
         fallback_symbols,
         peak,
@@ -946,6 +952,20 @@ mod tests {
         assert_eq!(
             seen, expected,
             "the attained valence ceiling set moved over the full drawn grid"
+        );
+
+        // **Ties `BondOrder::MAX` to the measurement that defines it.** The cap
+        // was an undrawn 3 while this set was `{4,5,6}` — the emergence lane's
+        // finding — and the repair raised it to 6. Nothing pointed the two at
+        // each other, so a refit that moved this set would have left the cap
+        // silently below the generated ceiling again, in the other file. This is
+        // exhaustive over the drawn grid and costs a millisecond.
+        assert!(
+            seen.iter().all(|&v| v <= crate::bonds::BondOrder::MAX),
+            "the valence ceiling {seen:?} now exceeds BondOrder::MAX = {} — raise \
+             the cap in bonds.rs, or the one bonding rule in this crate is again \
+             below the ceiling the table generates",
+            crate::bonds::BondOrder::MAX
         );
     }
 
@@ -1382,16 +1402,15 @@ mod tests {
                 fallback_symbols,
                 peak,
                 eps,
-                sigma,
             } = &sp;
             mix(*k as u64);
             mix(*peak as u64);
             mix(*fallback_symbols as u64);
-            // Added when `bonds.rs` began deriving its energy scale from `eps`.
-            // Both are drawn physics constants that now reach a result through
-            // two paths, so they are pinned rather than `_`-ed.
-            mix(eps.to_bits());
-            mix(sigma.to_bits());
+            // Added when `bonds.rs` began deriving its energy scale from `eps`,
+            // which gave it a second path to a result. `sigma` reaches results
+            // only through `energy_per_unit`, which is already mixed below, so
+            // it is not carried here.
+            mix(eps.get().to_bits());
             for c in closures {
                 mix(*c as u64);
             }
@@ -1438,13 +1457,14 @@ mod tests {
             }
         }
         assert_eq!(
-            h, 0xea6c_3282_e7ea_259a,
+            h, 0x2643_2a8a_5584_a577,
             "the universe digest moved — say which of §18.1's three this is, or \
              the fourth: the digest's own input set widened. Recomputing without \
-             the newest mixed field distinguishes them. This constant moved once \
-             deliberately, when `eps`/`sigma` joined `ShellPattern` so `bonds.rs` \
-             could derive its energy scale from the table's own — no element \
-             value changed, only what is hashed"
+             the newest mixed field distinguishes them. This constant has moved \
+             twice deliberately and no element value has ever changed: once when \
+             `eps` joined `ShellPattern` so `bonds.rs` could derive its energy \
+             scale from the table's own, and once when a companion `sigma` was \
+             removed again for having no reader outside a test"
         );
     }
 

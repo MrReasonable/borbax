@@ -1529,6 +1529,18 @@ the step loop only ever reads it.
 - Consumes: `borbax_molecule::{Mol12, Signature, Geodesic, canonicalise, embed, signature, affinity_ordered}`, `Universe`
 - Produces: `SpeciesId(u32)`, `SpeciesRecord`, `Interner::{new, intern, record, len}`, `ReactionKind`, `Reaction`, `rate(&Reaction, Thermal, &[f64], f64) -> f64`, `AffinityMemo`
 
+**READ FIRST — Task 5's later rounds substantially repaired this, and the
+remedy below is now sized against a dead measurement.** Deriving the bond scale
+from the packing took capacity out of a `[w, 1]` normalisation, so bond energies
+grew ~6x. Measured at Task 5's HEAD: `E/T` reaches **12.52**, the cleave-rate
+ratio at `temp_min` spans **3 to 217 758** and exceeds 2.0 in **2000 of 2000**
+universes, and the bondable single-bond ratio at mid-temperature is
+**1.245x-3.728x** against the 1.043-1.243 quoted below. **Applying the "collapse
+`Ea/T` from 4.39x to 1.09x" remedy now would destroy that spread rather than
+create it.** Re-derive against current numbers; what remains is choosing a band,
+not a direction. Everything below is preserved as the record of how the item was
+found.
+
 **Requirement from Task 5's review — the Arrhenius exponent has no useful range,
 and this task owns the coupling that fixes it. Four of six review lanes found
 this independently, by four different instruments.**
