@@ -66,14 +66,19 @@ const FORMAT_SEGMENTS: &[&str] = &[
 /// boundaries.
 ///
 /// `SmilesParser` -> `["smiles", "parser"]`; `read_pdb_file` -> `["read", "pdb",
-/// "file"]`; `SMILES` -> `["smiles"]`. Whole-segment matching is what lets `smi`
-/// be in the vocabulary without firing on `smith`.
+/// "file"]`; `SMILES` -> `["smiles"]`; `b"pdb"` -> `["b", "pdb"]`. Whole-segment
+/// matching is what lets `smi` be in the vocabulary without firing on `smith`.
 fn identifier_segments(name: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut prev_upper = false;
     for ch in name.chars() {
-        if ch == '_' || ch == '-' || ch == '.' {
+        // **Any non-alphanumeric is a boundary**, not just `_`/`-`/`.`. A
+        // review probe found `b"pdb"` scoring zero: the byte-string prefix
+        // stayed glued to the token, so the segment was `b"pdb` and matched
+        // nothing. Splitting on the quote as well makes prefixes, suffixes and
+        // path separators all fall out without enumerating them.
+        if !ch.is_alphanumeric() {
             if !cur.is_empty() {
                 out.push(std::mem::take(&mut cur));
             }
@@ -2828,6 +2833,19 @@ mod tests {
 
     /// Segment splitting is what makes `smi` safe to carry: it matches
     /// `parse_smi` and not `smith`.
+    /// Literal prefixes and quotes must not glue to the segment. `b"pdb"` once
+    /// scored zero because the `b` stayed attached.
+    #[test]
+    fn literal_prefixes_and_quotes_are_segment_boundaries() {
+        for src in [
+            r#"pub const X: &[u8] = b"pdb";"#,
+            r##"pub const X: &str = r#"smiles"#;"##,
+            r#"pub const D: &str = include_str!("data.inchi");"#,
+        ] {
+            assert!(!g5(src).is_empty(), "escaped the scan: {src}");
+        }
+    }
+
     #[test]
     fn identifiers_split_on_underscores_and_camel_case() {
         assert_eq!(identifier_segments("SmilesParser"), ["smiles", "parser"]);
