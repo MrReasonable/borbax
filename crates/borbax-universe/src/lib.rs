@@ -395,7 +395,7 @@ mod tests {
             h ^= x;
             h = h.wrapping_mul(0x0100_0000_01b3);
         };
-        let mut mixed = 0_usize;
+        let (mut mixed, mut pairs) = (0_usize, 0_usize);
         for seed in 0..64 {
             let u = Universe::generate(seed);
             // **Destructured, not field-accessed, and that is the whole guard.**
@@ -450,22 +450,26 @@ mod tests {
                     // *fewer* values and still produce a hash, sending the next
                     // reader after a physics change that did not happen. The
                     // count below is what makes that loud.
-                    for o in 1..=BondOrder::MAX {
-                        if let Some(order) = BondOrder::new(o) {
-                            mix(bonds.energy(a, b, order).get().to_bits());
-                            mixed += 1;
-                        }
+                    for order in BondOrder::ALL {
+                        mix(bonds.energy(a, b, order).get().to_bits());
+                        mixed += 1;
                     }
+                    pairs += 1;
                 }
             }
         }
-        // Every order of every pair of every seed reached the hash. A silent
-        // narrowing would move the constant with no other signal.
+        // **Coverage asserted directly, not by divisibility.** The previous
+        // form was `mixed % MAX == 0`, which is sound only because
+        // `sum(n^2) mod 6` happens to be non-zero over 0..64 — a review measured
+        // that at 0..32 it is zero and the guard goes silent for *every* drift,
+        // and the digest's own message names widening the seed range as an
+        // anticipated change.
         assert_eq!(
-            mixed % usize::from(BondOrder::MAX),
-            0,
-            "the digest mixed {mixed} cells, not a multiple of BondOrder::MAX — \
-             `BondOrder::new`'s bounds and `MAX` have drifted apart"
+            mixed,
+            pairs * BondOrder::ALL.len(),
+            "the digest mixed {mixed} cells for {pairs} pairs, not {}x — an order \
+             in `BondOrder::ALL` was skipped",
+            BondOrder::ALL.len()
         );
         assert_eq!(
             h, 0xef29_79c6_1879_20d8,
