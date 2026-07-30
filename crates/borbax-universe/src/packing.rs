@@ -443,6 +443,25 @@ mod tests {
     /// band by about 1.1 in opposite directions at the two ends. With the sort
     /// in place the two copies agree to four decimals on the worst-case error
     /// at every level. See [`geodesic`].
+    ///
+    /// **That agreement is about the derived packing error, not about the
+    /// tables, and the tables do not agree.** Task 7's review measured it: this
+    /// copy's `normalise` divides componentwise where
+    /// `borbax_molecule::geodesic`'s multiplies by the reciprocal. The two
+    /// produce the same point set — worst nearest-neighbour `dist²` between
+    /// them is 2.47e-32, about one ulp — but a one-ulp difference in the `z`
+    /// sort key splits directions sitting at one latitude, so **six of the 162
+    /// index positions differ at D=162**. Nothing moves at D=12; at D=42 forty
+    /// components differ bitwise while no position moves.
+    ///
+    /// Harmless here, and deliberately so: this module is an independent
+    /// oracle answerable to nothing but Euler, and importing the
+    /// implementation under test would destroy the only property that makes it
+    /// ground truth. It is also `#[cfg(test)]`, so it cannot reach simulation
+    /// output. **The open question is Task 20's, not this comment's** — whether
+    /// `FRONTIER_COEFF`'s admitted band was located against a latitude ordering
+    /// the shipped geodesic does not reproduce. Discriminator: re-run the
+    /// packing probe with the reciprocal-multiply form and compare the band.
     #[expect(
         clippy::indexing_slicing,
         reason = "fixed-size vertex arrays indexed by their own 0..len loop bounds"

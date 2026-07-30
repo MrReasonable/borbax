@@ -247,7 +247,18 @@ back into a sweep over every molecule.
   `ANTI[PERM[R][i]]`, never `PERM[R][i]` directly. Dropping `ANTI` is not a
   small error: because `−I` is not in the rotation group, it silently converts
   the search into the 60 *improper* elements — reflections only — and nothing
-  fails. A complement built at the same index cannot test this.
+  fails.
+
+  **A complement built at the same index does not merely fail to test this — it
+  inverts.** Measured at D=42 during Task 7's review, §8.3's kernel scored four
+  ways: with `ANTI`, the same-index fixture gives **−4.602147** and the
+  `ANTI`-built fixture gives **0.000000**; without `ANTI`, exactly the reverse.
+  So an implementer who writes the obvious fixture sees the *correct* kernel
+  score −4.6, "fixes" the kernel until it scores 0, and arrives at precisely
+  this defect with a green test. Task 10 therefore carries a required probe:
+  delete `anti[...]` from `affinity`'s index expression and **both**
+  `a_physical_complement_scores_zero` and `the_mirror_complement_does_not_fit`
+  must fail. If only one does, the pair is not discriminating.
 - **Binding searches rotations but not reflections** — 60 elements, not 120. This
   makes Borbax chemistry *handed*, so homochirality is an emergent result the
   simulation could produce rather than something excluded by construction (§22.8).
