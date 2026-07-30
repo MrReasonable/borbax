@@ -168,14 +168,21 @@
 //! from firing, not the ~5.8x its own comment claimed under the old map. The
 //! test that exists to say when the regime changed is close to saying so.
 //!
-//! **STOP before applying Task 14's planned remedy.** It is written as "draw the
-//! energy in units of the universe's own temperature, which collapses the `Ea/T`
-//! spread from 4.39x to 1.09x" — sized against the *old* map. Applied to this
-//! one it would collapse a cleave-rate spread of **3 to 217 758** down to 1.09x,
-//! deleting §9.4's differential persistence in order to fix a problem this
-//! commit already fixed. Measured at HEAD: `E/T` reaches **12.52**, and the rate
-//! ratio at `temp_min` exceeds 2.0 in **2000 of 2000** universes. Task 14 must
-//! re-derive against these numbers before touching anything.
+//! **A STOP stood here and it was a false alarm — recorded because a Task 14
+//! implementer opens this file first.** It said drawing the energy in units of
+//! the universe's own temperature "would collapse a cleave-rate spread of 3 to
+//! 217 758 down to 1.09x, deleting §9.4's differential persistence". That does
+//! not follow. `E = base·sqrt(c_a c_b)·n^gamma` is separable, so pinning
+//! `base/T` across universes does not collapse the *within*-universe rate ratio
+//! — it makes every universe have the *same* ratio, at whatever level the
+//! nominal sets. The remedy was being blamed for a harm it does not do.
+//!
+//! The real caution is the opposite one and it is Task 20's: `log R` is exactly
+//! linear in `base/T`, so a tolerance stated on the dimensionless group is a
+//! tolerance on the *logarithm* of the rate ratio — "±6% on `Ea/T`" is a 3.5x
+//! cross-universe spread in `R` at the measured high end, not a pin. Task 14
+//! should fix the group; Task 20 chooses the value, against an observable it can
+//! print rather than against the group.
 //!
 //! The remaining question is a *band*, not a direction: it belongs with the rate
 //! law, is written into Task 14 with its discriminator, and into Task 20 for the
