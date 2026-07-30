@@ -2,6 +2,59 @@
 //!
 //! A 64-bit seed becomes a complete periodic table. Nothing here is read from
 //! a data file and nothing is modelled on real chemistry (§5, G1–G6).
+//!
+//! # The migrated surface, as an executable table
+//!
+//! Task 5 renamed or retyped most of this crate's public API, and the plan files
+//! carried hand-written "was / is now" tables to tell downstream tasks what
+//! moved. Those tables went stale **in the commit that changed the type** —
+//! `BondOrder::MAX` went 3 to 6 and both copies still spelled a
+//! `BondOrder::Single` that no longer existed. They failed in the worst
+//! available way: correct in form, wrong in content, so they looked maintained.
+//!
+//! A table is a copy of a fact and nothing compiles it. This is the same fact,
+//! and `cargo test --locked --workspace` runs it — so a rename is a build
+//! failure rather than a stale row. The plan's tables keep their "why" column,
+//! which is genuinely a plan's job, and point here for "is now".
+//!
+//! ```
+//! use borbax_universe::{
+//!     Universe,
+//!     bonds::BondOrder,
+//!     element::{ElementId, PeriodicTable, generate_elements},
+//! };
+//! use borbax_units::{Quanta, Span};
+//!
+//! let u = Universe::generate(7);
+//!
+//! // `ElementId(3)` from another crate is a compile error — the field is
+//! // `pub(crate)`. Construct through `from_index`, which is fallible.
+//! let id = ElementId::from_index(3).expect("3 fits in a u8");
+//!
+//! // `u.elements` / `u.shell` are `u.table`, a `PeriodicTable`.
+//! let table: &PeriodicTable = &u.table;
+//! assert!(table.get(id).is_some());
+//! assert!(table.iter().count() >= 1);
+//! // `pattern()` is public; `eps` on it is not — it is the bond scale's input
+//! // and lives inside the crate. `k`, `closures` and `peak` are the public part.
+//! assert!(table.pattern().k >= 1);
+//!
+//! // `u.element(id)` answers `Option`, never a neighbouring element.
+//! let el = u.element(id).expect("seed 7 has at least four elements");
+//! let _epu: Quanta = el.energy_per_unit;
+//! assert!(u.element(ElementId::from_index(255).expect("fits")).is_none());
+//!
+//! // `energy` takes ids and a validated `BondOrder`, not `&Element` and `u8`.
+//! let _e: Quanta = u.bonds.energy(id, id, BondOrder::SINGLE);
+//! assert!(BondOrder::new(0).is_none());
+//! assert!(BondOrder::try_from(BondOrder::MAX).is_ok());
+//! assert_eq!(BondOrder::ALL.len(), usize::from(BondOrder::MAX));
+//! assert_eq!(BondOrder::PLANES, usize::from(BondOrder::MAX));
+//! assert_eq!(BondOrder::SINGLE.plane_index(), 0);
+//!
+//! // G4: lengths crossing the boundary are `Span`, not `f64`.
+//! let _gap: Span = u.consts.ideal_gap;
+//! ```
 
 pub mod bonds;
 pub mod element;
