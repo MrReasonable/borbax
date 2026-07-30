@@ -313,7 +313,7 @@ pub enum ControlFailure {
         min: f64,
     },
     /// The 60-rotation search failed to recover a rotation that is one of the
-    /// 60 — so `perms` or the signature's direction-purity is broken.
+    /// 60 — so `rotation_perms` or the signature's direction-purity is broken.
     ///
     /// **Not `anti`.** `d_group` never reads it; see `check_geometry_is_live`.
     #[error(

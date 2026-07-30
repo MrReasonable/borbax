@@ -16,9 +16,12 @@
 //! enough to state in full rather than gesture at: `+ - * /`, `sqrt`, `abs`,
 //! comparison and `total_cmp` — all either exactly specified by IEEE-754 or
 //! pure functions of the bits — **plus [`f64::midpoint`], which is neither**.
-//! std specifies nothing about its rounding. On the pinned rustc it is
-//! `(a + b) * 0.5`, a plain `const fn` in `core` with no `cfg(target_arch)`,
-//! so it is portable across targets and exposed only to a toolchain bump. That
+//! std specifies nothing about its rounding. On the pinned rustc it is a plain
+//! `const fn` in `core` with no `cfg(target_arch)`, computing `(a + b) * 0.5`
+//! when `|a|` and `|b|` are both `≤ f64::MAX / 2` and `(a * 0.5) + (b * 0.5)`
+//! otherwise — every input here is a unit-vector component, so only the first
+//! branch is reachable. Portable across targets, exposed only to a toolchain
+//! bump. That
 //! matters more than it looks: `intern`'s edge dedup relies on
 //! `midpoint(u, v)` and `midpoint(v, u)` being bit-identical, which holds
 //! because IEEE addition commutes but would not for a future `a + (b - a) * 0.5`.
@@ -1152,19 +1155,26 @@ mod tests {
         }
     }
 
+    /// Parameterised over `D` rather than pinned at 42, because the `[false; D]`
+    /// scratch array is sized by the resolution: hardcoding `42` here while the
+    /// geodesic is built at another rung is an out-of-bounds index, not a
+    /// compile error. §22.2 locks `D` to one of three values and this test
+    /// should not have an opinion about which.
     #[test]
     fn every_rotation_is_a_bijection() {
-        let g = geo::<42>();
-        for (r, perm) in Rotation::all()
-            .enumerate()
-            .map(|(n, r)| (n, g.rotation_perms(r)))
-        {
-            let mut seen = [false; 42];
-            for &j in perm {
-                assert!(!seen[j as usize], "rotation {r} is not injective");
-                seen[j as usize] = true;
+        fn check<const D: usize>() {
+            let g = geo::<D>();
+            for r in Rotation::all() {
+                let mut seen = [false; D];
+                for &j in g.rotation_perms(r) {
+                    assert!(!seen[j as usize], "D={D}: rotation {r} is not injective");
+                    seen[j as usize] = true;
+                }
             }
         }
+        check::<12>();
+        check::<42>();
+        check::<162>();
     }
 
     #[test]
@@ -1185,19 +1195,30 @@ mod tests {
     /// closed under composition. If they are, they genuinely form the
     /// icosahedral rotation group, and §8.2's claim that rotation is an exact
     /// permutation of the sample directions holds.
+    /// Parameterised for the same reason as the bijection test: a `(0..42)`
+    /// composition against a geodesic built at another rung truncates silently
+    /// rather than failing.
     #[test]
     fn permutations_form_a_group() {
-        let g = geo::<42>();
-        let set: std::collections::BTreeSet<Vec<u8>> = Rotation::all()
-            .map(|r| g.rotation_perms(r).to_vec())
-            .collect();
-        assert_eq!(set.len(), N_ROTATIONS);
-        for a in Rotation::all().map(|r| g.rotation_perms(r)) {
-            for b in Rotation::all().map(|q| g.rotation_perms(q)) {
-                let composed: Vec<u8> = (0..42).map(|i| b[a[i] as usize]).collect();
-                assert!(set.contains(&composed), "not closed under composition");
+        fn check<const D: usize>() {
+            let g = geo::<D>();
+            let set: std::collections::BTreeSet<Vec<u8>> = Rotation::all()
+                .map(|r| g.rotation_perms(r).to_vec())
+                .collect();
+            assert_eq!(set.len(), N_ROTATIONS, "D={D}");
+            for a in Rotation::all().map(|r| g.rotation_perms(r)) {
+                for b in Rotation::all().map(|q| g.rotation_perms(q)) {
+                    let composed: Vec<u8> = (0..D).map(|i| b[a[i] as usize]).collect();
+                    assert!(
+                        set.contains(&composed),
+                        "D={D}: not closed under composition"
+                    );
+                }
             }
         }
+        check::<12>();
+        check::<42>();
+        check::<162>();
     }
 
     #[test]
