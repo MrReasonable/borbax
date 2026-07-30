@@ -445,11 +445,9 @@ mod tests {
                     // Every representable order, not the first three: the cap
                     // is now `BondOrder::MAX`, derived from the valence ceiling.
                     //
-                    // The `None` arm is unreachable while `new`'s bounds and
-                    // `MAX` agree — but if they ever drift, this would mix
-                    // *fewer* values and still produce a hash, sending the next
-                    // reader after a physics change that did not happen. The
-                    // count below is what makes that loud.
+                    // (This iterated `1..=MAX` through `BondOrder::new` and
+                    // carried a paragraph about its `None` arm. It is
+                    // `for order in ALL` now — there is no `Option` here.)
                     for order in BondOrder::ALL {
                         let v = bonds.energy(a, b, order).get();
                         // **A non-finite value must name itself here.** Both
@@ -474,18 +472,10 @@ mod tests {
                 }
             }
         }
-        // **This is a tautology and is kept only as a shape check.** `mixed`
-        // increments once per `for order in ALL` iteration and `pairs` once per
-        // outer, so the identity holds by construction for any array of any
-        // length — it can fail only for an explicit `continue` inside the loop.
-        // A review measured that; it also measured that the divisibility form it
-        // replaced *did* fire at the shipped 0..64 range, so this closed no live
-        // gap and traded a guard coupled to an independent constant for one
-        // coupled to itself.
-        //
-        // What was actually unguarded is `ALL`'s **contents**, and that now has
-        // a `const _` assertion in `bonds.rs` — a compile error rather than a
-        // runtime one.
+        // Catches exactly one thing: a `continue` added inside the order loop,
+        // which would silently hash fewer cells. `mixed` and `pairs` exist only
+        // for this. `ALL`'s *contents* are guarded by a `const _` in `bonds.rs`,
+        // at compile time.
         assert_eq!(
             mixed,
             pairs * BondOrder::ALL.len(),

@@ -25,8 +25,19 @@ use crate::packing::{self, PackingConsts};
 use borbax_rng::{Domain, Stream};
 use borbax_units::{Mass, Quanta, Span, det_math};
 
-/// Index into a universe's element table. `u8` because tables are capped
-/// well below 256, which keeps `Mol12`'s atom array one byte per slot.
+/// Index into a universe's element table.
+///
+/// `u8` because tables are capped well below 256, which keeps `Mol12`'s atom
+/// array one byte per slot — **by storing `[ElementId; MAX_ATOMS]`, not
+/// `[u8; MAX_ATOMS]`.**
+///
+/// That distinction is load-bearing and a review found Task 6's draft on the
+/// wrong side of it. `Self::index` is `pub(crate)`, so a downstream crate
+/// holding raw `u8`s has a route *in* ([`Self::from_index`]) and none back out;
+/// `self.elem[idx] = e.0` and `ElementId(self.elem[i])` are both hard compile
+/// errors outside this crate. Storing the id itself costs the same byte
+/// (asserted below), keeps `Copy`, and means the array cannot hold a value that
+/// was never an id.
 ///
 /// **The field is `pub(crate)`, and that is the whole point of the type.** Until
 /// Task 5 an `ElementId` was write-only — minted by [`generate_elements`] and
@@ -43,6 +54,15 @@ use borbax_units::{Mass, Quanta, Span, det_math};
 /// bounded integer and a table is what makes one meaningful.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ElementId(pub(crate) u8);
+
+// The doc above promises `Mol12` one byte per slot. Enforce it rather than
+// asserting it: a newtype over `u8` is 1 byte with no `repr` attribute today,
+// but adding a field or a niche would silently double `Mol12`'s atom array and
+// the promise would rot the way a comment does.
+const _: () = assert!(
+    size_of::<ElementId>() == size_of::<u8>(),
+    "ElementId must stay one byte — Mol12's atom array is sized on it"
+);
 
 impl ElementId {
     /// The first slot of any non-empty table.
