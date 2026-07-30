@@ -425,14 +425,18 @@ mod tests {
             let ids: Vec<ElementId> = table.iter().map(|(id, _)| id).collect();
             for &a in &ids {
                 for &b in &ids {
-                    for order in [BondOrder::Single, BondOrder::Double, BondOrder::Triple] {
-                        mix(bonds.energy(a, b, order).get().to_bits());
+                    // Every representable order, not the first three: the cap
+                    // is now `BondOrder::MAX`, derived from the valence ceiling.
+                    for o in 1..=BondOrder::MAX {
+                        if let Some(order) = BondOrder::new(o) {
+                            mix(bonds.energy(a, b, order).get().to_bits());
+                        }
                     }
                 }
             }
         }
         assert_eq!(
-            h, 0x6fe1_e408_16b9_cec6,
+            h, 0x59a6_b8d5_560f_ea5c,
             "the assembled-universe digest moved — say which of §18.1's three this \
              is, or the fourth: the digest's own seed range widened, which moves \
              the constant while moving no universe value. Recomputing over the \
