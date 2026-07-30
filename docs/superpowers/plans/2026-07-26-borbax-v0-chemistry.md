@@ -2322,6 +2322,66 @@ written. Read them before Step 1 — two change the signatures above.**
    and it is a golden-regenerating change.
 
 **And the test named as this task's §8.6 guard cannot fail.**
+6. **§9.5 says radiogenic decay damages *neighbours*, and nothing implements
+   that — nor can V0.** The spec's decay table reads: "Unstable elements decay
+   according to their `instability` (§7.1), **destroying their host molecule and
+   damaging neighbours**." `radiogenic_rate` is summed element `instability`
+   over the host's own atoms and stops there. Every "neighbour" elsewhere in this
+   plan is an *FCC lattice* neighbour inside the folding model — a different
+   thing entirely.
+
+   **It is not an oversight to fix here.** Damaging neighbours needs a notion of
+   *nearby*, and V0 is one well-mixed beaker: there are no neighbours, by
+   construction. It also cuts directly against §8.6 — "the molecules near this
+   one" is per-molecule and spatial, which is the shape the per-species invariant
+   exists to forbid, and the regression §8.6 warns "usually arrives disguised as
+   a small feature".
+
+   So: **state in Task 15 that the host-only channel is V0's whole radiogenic
+   model, and that the neighbour half is V1**, where §11's region and patch
+   structure supplies locality. Do not let a later reader treat the omission as a
+   bug and reach for a per-molecule damage field — that is the exact regression
+   §8.6 names.
+
+   *Discriminator:* a test asserting `radiogenic_rate` is a pure function of the
+   species and reads nothing about what else is in the beaker. It passes trivially
+   today, which is the point — it is there to fail loudly when someone implements
+   the spec sentence without noticing which version it belongs to.
+
+   *And it is the first concrete case of the scale question* — see the standing
+   note below.
+
+## Standing note — representing the same physics at different zoom scales
+
+**Not a task, and deliberately not designed yet.** V1's engine is three coupled
+scales (§11: bulk ~10⁶ patches, stochastic ~10³, molecular ~10), and the same
+process has to mean something at each. Radiogenic neighbour damage is the first
+worked example to arrive:
+
+- **molecular scale** — a specific decay event destroys a specific molecule and
+  damages specific others nearby;
+- **stochastic scale** — a propensity channel with a rate depending on local
+  composition;
+- **bulk scale** — a term in a patch-level rate law, with no individual molecules
+  at all.
+
+The hard direction is *back in*: when the viewer zooms from bulk to molecular,
+individual molecules must be materialised consistently with the bulk state that
+replaced them, or the two scales disagree and the disagreement is a determinism
+bug rather than a rendering artefact.
+
+Two things to fix in advance of that conversation, because both are cheap now and
+expensive later:
+
+1. **Whatever the scale, the expensive work stays per-species** (§8.6). A
+   scale-transition that needs per-molecule state is the same regression under a
+   new name.
+2. **Every scale must be a function of the same seeds.** §13.1's identity tuple is
+   `(universe_seed, world_seed, config_hash)`; a materialisation step that draws
+   fresh randomness on zoom-in makes the same world different depending on where
+   the user looked, which is a determinism failure that no golden would catch
+   because no golden zooms.
+
 `cost_does_not_depend_on_how_many_molecules_exist` is two `let _: f64 = ..`
 bindings and a comment reading "Asserted structurally: the function takes a
 scalar count, not a collection". The structural argument is sound and the test
