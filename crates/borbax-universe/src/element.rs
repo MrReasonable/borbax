@@ -23,12 +23,45 @@
 use crate::naming;
 use crate::packing::{self, PackingConsts};
 use borbax_rng::{Domain, Stream};
-use borbax_units::{Mass, Span, det_math};
+use borbax_units::{Mass, Quanta, Span, det_math};
 
 /// Index into a universe's element table. `u8` because tables are capped
 /// well below 256, which keeps `Mol12`'s atom array one byte per slot.
+///
+/// **The field is `pub(crate)`, and that is the whole point of the type.** Until
+/// Task 5 an `ElementId` was write-only — minted by [`generate_elements`] and
+/// read by nobody — and the shape it was heading for was `elements[id.0 as
+/// usize]` at every call site: a panic site, in a workspace where
+/// `clippy::indexing_slicing` is `warn` under `-D warnings`, repeated once per
+/// consumer. Closing the field means the only route from an id to an element is
+/// [`PeriodicTable::get`], which is fallible, so the panic has one home and that
+/// home returns `None`.
+///
+/// [`Self::from_index`] is deliberately *not* the inverse of that rule. It goes
+/// `usize -> ElementId`, which cannot index anything on its own; validity
+/// against a particular table stays the table's question, because an id is a
+/// bounded integer and a table is what makes one meaningful.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ElementId(pub u8);
+pub struct ElementId(pub(crate) u8);
+
+impl ElementId {
+    /// The first slot of any non-empty table.
+    pub const ZERO: Self = Self(0);
+
+    /// An id for the `i`th slot, or `None` if `i` cannot be an element index.
+    ///
+    /// Fails only on the `u8` bound — it says nothing about whether any
+    /// particular table has such a slot. Ask [`PeriodicTable::get`] for that.
+    #[must_use]
+    pub fn from_index(i: usize) -> Option<Self> {
+        u8::try_from(i).ok().map(Self)
+    }
+
+    /// The slot number, for indexing inside this crate only.
+    pub(crate) fn index(self) -> usize {
+        usize::from(self.0)
+    }
+}
 
 /// One generated element: a cluster of [`Element::units`] base units, and the
 /// properties that follow from how they pack.
@@ -77,24 +110,30 @@ pub struct Element {
     pub radius: Span,
     /// Binding energy per unit: made contacts, less radial strain.
     ///
-    /// **Task 5 must derive `bond_energies` from this**, not draw an
-    /// independent matrix. Two encodings of "these elements bind well" in
+    /// [`crate::bonds::BondEnergyMatrix`] is derived from this rather than drawn
+    /// independently. Two encodings of "these elements bind well" in
     /// incommensurable units is the defect that made the predecessor's `peak`
-    /// unfalsifiable, one level up.
+    /// unfalsifiable, and an independently drawn bond matrix reproduces it one
+    /// level up.
     ///
-    /// **G4 note, flagged deliberately rather than silently accepted.** This is
-    /// an energy travelling as a bare `f64` into a task that mints it as
-    /// `Quanta` at the far end, with no type-level relationship — the exact
-    /// "bare `f64` carrying a quantity through three functions defeats this
-    /// quietly" shape §5's G4 exists to stop. `borbax-units` provides
-    /// `Div<f64> for Quanta`, so cluster-energy-per-unit is expressible as
-    /// `Quanta` and this *could* be typed. It is left bare for now because
-    /// `energy_per_unit` is also compared, summed and scaled inside this file
-    /// where the newtype buys nothing, and changing it is Task 5's call when it
-    /// writes the consumer. **Task 5 must decide explicitly**, not inherit the
-    /// `f64` by default — that decision is what sets the precedent for every
-    /// energy that follows.
-    pub energy_per_unit: f64,
+    /// **G4, decided in Task 5 rather than inherited: this is `Quanta`.** Task 4
+    /// left it a bare `f64` and flagged it, on the argument that the value is
+    /// compared, summed and scaled inside this file where the newtype buys
+    /// nothing. That argument is true and it stops at the crate boundary — the
+    /// field is `pub` on a `pub` struct, so a bare `f64` here *is* an energy
+    /// crossing the public API undimensioned, which is the "carried through
+    /// three functions and quietly defeated" shape §5's G4 exists to stop.
+    /// Precedence 1 has nothing to trade against, so the tie went to the type.
+    ///
+    /// The measured cost was lower than the flag implied, which is worth
+    /// recording because the flag is what a future reader will find: the
+    /// arithmetic below needed no `.get()` calls at all. `deficit` now reads
+    /// `(Quanta - Quanta) / Quanta`, and `borbax-units` types that quotient as
+    /// `f64` — so the dimensionless-ness of a decay rate became a fact the
+    /// compiler checks instead of a convention. The universe digest did not
+    /// move, which is the evidence that this was a typing change and not a
+    /// physics one.
+    pub energy_per_unit: Quanta,
     /// Decay probability per world-year, from the distance below the binding
     /// peak. **Named for what it holds** — it is 0 at the peak and rises toward
     /// the extremes. An earlier draft called this `stability`, which inverted
@@ -156,6 +195,84 @@ pub struct ShellPattern {
     pub peak: usize,
 }
 
+/// One universe's periodic table: the elements, and the shell law they follow.
+///
+/// **This exists to make [`ElementId`] usable without an indexing panic**, and
+/// it names the pair [`generate_elements`] used to return as a bare tuple. The
+/// fields are private so that [`Self::get`] is the only route from an id to an
+/// element — a `pub elements: Vec<Element>` would hand every consumer back the
+/// `elements[id.0 as usize]` this type exists to prevent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeriodicTable {
+    pattern: ShellPattern,
+    elements: Vec<Element>,
+}
+
+impl PeriodicTable {
+    /// Assemble a table. In-crate only: outside, a table comes from
+    /// [`generate_elements`] and nowhere else, so no caller can build one whose
+    /// elements disagree with its shell law.
+    pub(crate) const fn new(pattern: ShellPattern, elements: Vec<Element>) -> Self {
+        Self { pattern, elements }
+    }
+
+    /// The shell law this table was built under.
+    #[must_use]
+    pub const fn pattern(&self) -> &ShellPattern {
+        &self.pattern
+    }
+
+    /// Take the table apart. In-crate only, and used only by tests that predate
+    /// this type — keeping them destructuring the same pair they always did is
+    /// what lets `the_universe_digest_is_pinned` stay textually unchanged
+    /// across this refactor, so a moved digest means moved physics rather than
+    /// a rewritten test.
+    #[cfg(test)]
+    pub(crate) fn into_parts(self) -> (ShellPattern, Vec<Element>) {
+        (self.pattern, self.elements)
+    }
+
+    /// The element with this id, or `None` if this table has no such slot.
+    ///
+    /// Fallible on purpose. Ids outlive the tables that mint them — one
+    /// travelling in from another universe, or from a persisted molecule, is a
+    /// number with no guarantee attached, and the two alternatives are both
+    /// worse: indexing panics, and clamping silently answers with a *different
+    /// element's* properties, which nothing downstream can detect.
+    #[must_use]
+    pub fn get(&self, id: ElementId) -> Option<&Element> {
+        self.elements.get(id.index())
+    }
+
+    /// Every element with its id, in table order.
+    pub fn iter(&self) -> impl Iterator<Item = (ElementId, &Element)> {
+        self.elements.iter().map(|e| (e.id, e))
+    }
+
+    /// How many elements this universe drew.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.elements.len()
+    }
+
+    /// Always `false` — [`generate_elements`] draws 60..=120 elements. Present
+    /// because a `len` without one is a clippy finding, and because the day
+    /// that draw changes this should already read correctly.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.elements.is_empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a PeriodicTable {
+    type Item = (ElementId, &'a Element);
+    type IntoIter = std::iter::Map<std::slice::Iter<'a, Element>, fn(&'a Element) -> Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elements.iter().map(|e| (e.id, e))
+    }
+}
+
 /// Convenience for tests and callers that need the universe-domain stream.
 #[must_use]
 pub const fn stream(seed: u64) -> Stream {
@@ -190,7 +307,7 @@ pub const fn stream(seed: u64) -> Stream {
               `cap` <= 130, `valence` in 0..=6, `outer_fill_band` <= 5, mass sub-units \
               in 1024..=215040. `out.len()` and `units` are <= `n_elements` <= 120"
 )]
-pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
+pub fn generate_elements(seed: u64) -> PeriodicTable {
     let mut rng = stream(seed);
 
     // `k` spans 6..=14. Below 6 a shell cannot triangulate a sphere; above 14
@@ -323,8 +440,14 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         // choice and not of the packing. Deferred to Task 20 deliberately:
         // precedence 2, not a G3 breach, remedy known and it requotes every
         // number. Do not describe the exponent as derived.
+        // Wrapped once, at the point the quantity acquires its meaning. `eps`
+        // and `sigma` stay bare `f64`: they are the drawn *scale* of a contact
+        // and of the strain penalty, and typing them would mint two more energy
+        // units with no operations between them. The expression inside the
+        // constructor is byte-for-byte the one Task 4 shipped — this is a
+        // typing change, and `the_universe_digest_is_pinned` is what says so.
         let energy_per_unit =
-            eps * contacts / units as f64 - sigma * det_math::cbrt((units * units) as f64);
+            Quanta(eps * contacts / units as f64 - sigma * det_math::cbrt((units * units) as f64));
 
         // Abundance: fusion builds heavy clusters from light ones, so each
         // extra unit costs a step and abundance falls geometrically. Sequential
@@ -433,7 +556,7 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
     // rather than asserted.
     let peak = out
         .iter()
-        .fold((1_usize, f64::MIN), |(bn, be), e| {
+        .fold((1_usize, Quanta(f64::MIN)), |(bn, be), e| {
             if e.energy_per_unit > be {
                 (e.units, e.energy_per_unit)
             } else {
@@ -445,7 +568,9 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
     // Decay rate: distance below the peak, so the most tightly bound elements
     // persist and the extremes decay. One quantity, two consequences — which
     // is what the predecessor's two unlinked encodings could not give.
-    let peak_energy = out.get(peak - 1).map_or(0.0, |e| e.energy_per_unit);
+    let peak_energy = out
+        .get(peak - 1)
+        .map_or(Quanta::ZERO, |e| e.energy_per_unit);
     for e in &mut out {
         // `f64::max` is disallowed — it returns either input on a tie and
         // measured `(+0.0).max(-0.0)` differs between aarch64 and x86-64.
@@ -454,13 +579,15 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         // error. Harmless here only because `peak_energy` is the series maximum
         // and is O(1) over the drawn grid — named so the guard says what scale
         // it is relative to rather than leaving the next reader to assume.
-        const MIN_ENERGY_SCALE: f64 = f64::EPSILON;
-        let scale = peak_energy.abs();
+        const MIN_ENERGY_SCALE: Quanta = Quanta(f64::EPSILON);
+        let scale = Quanta(peak_energy.get().abs());
         let scale = if scale > MIN_ENERGY_SCALE {
             scale
         } else {
             MIN_ENERGY_SCALE
         };
+        // `Quanta / Quanta` is `f64` by construction in `borbax-units`, so the
+        // dimensionlessness of a decay rate is now checked rather than assumed.
         let deficit = (peak_energy - e.energy_per_unit) / scale;
         // **Cap at 1.0 — and the reason this comment used to give was wrong.
         // Left standing deliberately; Task 15 owns the fix.** It said
@@ -519,7 +646,7 @@ pub fn generate_elements(seed: u64) -> (ShellPattern, Vec<Element>) {
         fallback_symbols,
         peak,
     };
-    (shell, out)
+    PeriodicTable::new(shell, out)
 }
 
 #[cfg(test)]
@@ -529,7 +656,7 @@ mod tests {
     /// Named for brevity below; `generate_elements` is infallible because the
     /// mass is built in sub-units (see its doc), so there is nothing to unwrap.
     fn table(seed: u64) -> (ShellPattern, Vec<Element>) {
-        generate_elements(seed)
+        generate_elements(seed).into_parts()
     }
 
     /// The maximum valence of a table at an explicit `(k, n_elements)`.
@@ -1145,7 +1272,12 @@ mod tests {
                 mix(u64::from(e.outer_fill_band));
                 mix(e.affinity.to_bits());
                 mix(e.radius.0.to_bits());
-                mix(e.energy_per_unit.to_bits());
+                // `.0.to_bits()`, matching the `radius` line above rather than
+                // switching to `canonical_bits()`. The point of this line
+                // during Task 5 is to prove that typing the field as `Quanta`
+                // moved no value, and it can only prove that if it hashes the
+                // same bits it hashed before.
+                mix(e.energy_per_unit.0.to_bits());
                 mix(e.decay_rate.to_bits());
                 mix(e.abundance.to_bits());
                 for b in e.symbol.bytes().chain(e.name.bytes()) {

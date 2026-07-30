@@ -8,6 +8,26 @@ unchanged — read them first. Tasks 1–10 are there; this file has 11–21.
 
 **Spec:** `docs/superpowers/specs/2026-07-26-borbax-prd.md`. V0 exit criteria are §23.
 
+## `borbax-universe`'s API moved in Task 5 — reconcile before executing any task here
+
+Every snippet in this file predates Task 5 and still spells the old forms.
+Nine call sites are affected (`ElementId(..)` at lines ~39, 297, 776, 1079,
+1504, 2099, 2207; `u.bonds.energy(ea, eb, ..)` and its two `u.element(..)`
+arguments at ~1736). They are the *intended* consequence of the three decisions
+Task 4's review routed into Task 5, not oversights:
+
+| Was | Is now | Why |
+|---|---|---|
+| `ElementId(3)` from another crate | `ElementId::from_index(3)` → `Option` | the field is `pub(crate)`; `elements[id.0 as usize]` was a panic site at every call site, under `indexing_slicing` |
+| `u.elements`, `u.shell` | `u.table` — `PeriodicTable` with `get`/`iter`/`len`/`pattern` | names the tuple `generate_elements` returned |
+| `u.element(id).decay_rate` | `u.element(id)` → `Option<&Element>` | clamping an out-of-range id answered with a *different element's* properties, which nothing downstream could detect |
+| `u.bonds.energy(&a, &b, 1)` | `u.bonds.energy(id_a, id_b, BondOrder::Single)` | a rate path holds ids, not structs 48 bytes of which are `String`; and `order: u8` had no honest answer for `0` — clamping it to `1` gives a non-bond the energy of a single bond |
+
+`Element::energy_per_unit` is `Quanta` rather than `f64` (§5 G4, decided in
+Task 5 rather than inherited). `Quanta / Quanta` is `f64`, so ratios and
+deficits keep their type; a bare-`f64` consumer needs `.get()` and should first
+be asked whether it ought to take `Quanta` itself.
+
 ---
 
 ## Phase 4 — Polymers, folding, and cavities
