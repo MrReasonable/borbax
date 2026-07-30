@@ -989,6 +989,17 @@ mod tests {
             0x23c8_7115_e46e_1edd,
             0xc5ef_782c_3a5a_3684,
         );
+
+        // The 60 matrices, which are `D`-independent and so sit outside `check`.
+        // Pinned because the module doc's cross-ISA bit-dump claim names them
+        // and nothing else did: `the_permutation_table_agrees_with_the_rotation_matrices`
+        // admits 1e-12, so a change to `frame`'s arithmetic could move these
+        // bits with every other test in the file green.
+        assert_eq!(
+            fnv1a(mats().iter().flatten().flatten().map(|c| c.to_bits())),
+            0xe318_1547_c216_9bfd,
+            "rotation_matrices moved"
+        );
     }
 
     /// Checked at every resolution rather than only at D=42: normalisation
