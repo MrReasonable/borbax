@@ -1388,7 +1388,7 @@ fn lining_signature<const D: usize>(
     }
 
     for dir_idx in 0..D {
-        let dir = g.dirs[dir_idx];
+        let dir = g.dirs()[dir_idx];
 
         // **Nearest wall, not furthest.** An earlier draft took `max`, which
         // is the support function of the *far* side of the cavity — the wall

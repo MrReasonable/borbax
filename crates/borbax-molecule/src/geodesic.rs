@@ -151,24 +151,86 @@ const fn level_for(d: usize) -> Option<u32> {
 
 /// Sample directions at resolution `D`, with the rotation and antipode tables
 /// that make comparing two signatures a table lookup.
+///
+/// **Fields are private and [`Geodesic::build`] is the only producer.** Three
+/// invariants are established there and are unenforceable afterwards: `perms`
+/// is closed under composition, `anti` is an involution with
+/// `dirs[anti[i]] == -dirs[i]`, and every index in either table is `< D`. With
+/// the fields public a caller could desynchronise them — `g.dirs.reverse()` is
+/// enough — and nothing here would notice, because every test but
+/// `the_canonical_direction_ordering_is_pinned` is invariant under relabelling.
+/// That is the same hazard the `-0.0` probe found, reopened at runtime.
+///
+/// Keeping the storage shape private is also what made
+/// [`Geodesic::contact_perms`] cheap to add rather than a breaking change.
 #[derive(Debug, Clone)]
 pub struct Geodesic<const D: usize> {
     /// Unit sample directions, in a canonical order.
-    pub dirs: [[f64; 3]; D],
-    /// `perms[r][i] = j` means rotation `r` carries direction `i` to `j`.
-    pub perms: [[u8; D]; N_ROTATIONS],
+    dirs: [[f64; 3]; D],
+    /// `rotation_perms[r][i] = j` — rotation `r` carries direction `i` to `j`.
+    rotation_perms: [[u8; D]; N_ROTATIONS],
+    /// `contact_perms[r][i] = anti[rotation_perms[r][i]]`.
+    contact_perms: [[u8; D]; N_ROTATIONS],
     /// `anti[i] = j` where `dirs[j] == -dirs[i]`.
+    anti: [u8; D],
+}
+
+impl<const D: usize> Geodesic<D> {
+    /// Unit sample directions, in the canonical order [`Geodesic::build`] fixed.
     ///
-    /// **Required by the binding kernel** (§8.3). Two bodies in contact touch
-    /// along opposite directions, so `affinity` indexes its partner through
-    /// `anti[perms[r][i]]`. Omitting it converts the search into the 60
-    /// *improper* elements of the icosahedral group — reflections only, the
-    /// opposite of §22.8 — and nothing fails to signal it.
+    /// The index is the coordinate system for every signature (§8.2), which is
+    /// why the order is pinned by a golden rather than left as an output.
+    #[must_use]
+    pub const fn dirs(&self) -> &[[f64; 3]; D] {
+        &self.dirs
+    }
+
+    /// Where rotation `r` sends each direction: `rotation_perms(r)[i] = j`.
     ///
-    /// The vertex set is antipodally closed at every subdivision level, so
-    /// this is total; `build_anti` errors rather than approximating if it
-    /// ever is not.
-    pub anti: [u8; D],
+    /// **For rotating a *single* signature** — Task 9's `canonicalise` sweeps
+    /// the 60 elements looking for a canonical orientation, and no contact is
+    /// involved. **Not for binding.** See [`Geodesic::contact_perms`].
+    #[must_use]
+    pub const fn rotation_perms(&self, r: usize) -> &[u8; D] {
+        &self.rotation_perms[r]
+    }
+
+    /// The direction on a partner rotated by `r` that *touches* direction `i`:
+    /// `contact_perms(r)[i] = anti[rotation_perms(r)[i]]`.
+    ///
+    /// **§8.3's binding kernel indexes its partner through this and nothing
+    /// else.** Two bodies in contact touch along opposite directions, so the
+    /// antipode is not a refinement of the rotation — it is half of what
+    /// "in contact" means. Reaching for [`Geodesic::rotation_perms`] here
+    /// silently converts the search into the 60 *improper* elements of the
+    /// icosahedral group — reflections only, the opposite of §22.8 — and
+    /// nothing fails.
+    ///
+    /// The composition is precomputed for two reasons and the second is the
+    /// one that mattered. It removes a dependent load from the kernel's
+    /// innermost statement, worth a measured **−13.2%** at D = 42 against
+    /// `anti[rotation_perms[r][i]]`, bit-identical. And it gives the correct
+    /// operation the shorter name: a reviewer reading `rotation_perms` inside
+    /// a function called `affinity` sees something wrong, where `perms` — the
+    /// name this field used to carry — read like the obvious choice. Adding a
+    /// table does not remove an affordance; renaming the other one does.
+    #[must_use]
+    pub const fn contact_perms(&self, r: usize) -> &[u8; D] {
+        &self.contact_perms[r]
+    }
+
+    /// `anti()[i] = j` where `dirs()[j] == -dirs()[i]`.
+    ///
+    /// Exposed because Task 9 and the harnesses want the antipode directly.
+    /// The binding kernel should not: [`Geodesic::contact_perms`] already
+    /// carries the composition.
+    ///
+    /// The vertex set is antipodally closed at every subdivision level, so this
+    /// is total; `build_anti` errors rather than approximating if it ever is not.
+    #[must_use]
+    pub const fn anti(&self) -> &[u8; D] {
+        &self.anti
+    }
 }
 
 /// A direction or point in three dimensions.
@@ -450,9 +512,27 @@ impl<const D: usize> Geodesic<D> {
         let mut dirs = [[0.0; 3]; D];
         dirs.copy_from_slice(&verts);
 
-        let perms = Self::build_perms(&dirs)?;
+        let rotation_perms = Self::build_perms(&dirs)?;
         let anti = Self::build_anti(&dirs)?;
-        Ok(Self { dirs, perms, anti })
+
+        // `contact_perms = anti ∘ rotation_perms`, composed once here so the
+        // binding kernel does one load instead of two. Bit-identical to
+        // composing at the call site by construction — same values, same
+        // order, only the addressing differs — and
+        // `contact_perms_is_anti_composed_with_rotation_perms` holds it to that.
+        let mut contact_perms = [[0u8; D]; N_ROTATIONS];
+        for (r, row) in contact_perms.iter_mut().enumerate() {
+            for (i, cell) in row.iter_mut().enumerate() {
+                *cell = anti[usize::from(rotation_perms[r][i])];
+            }
+        }
+
+        Ok(Self {
+            dirs,
+            rotation_perms,
+            contact_perms,
+            anti,
+        })
     }
 
     /// Index of `-dirs[i]` for every `i`.
@@ -612,7 +692,8 @@ pub fn is_identity(m: &Mat3) -> bool {
         .all(|(a, b)| (a - b).abs() < TOL)
 }
 
-/// The 60 rotations as matrices, in the same order as [`Geodesic::perms`].
+/// The 60 rotations as matrices, in the same order as
+/// [`Geodesic::rotation_perms`].
 ///
 /// `perms` is what the binding kernel needs — a rotation as a table lookup.
 /// This is the same 60 rotations as actual geometry, and it exists so the two
@@ -807,12 +888,19 @@ mod tests {
         // sibling test proves there is no `-0.0` or NaN here to fold.
         fn check<const D: usize>(want_dirs: u64, want_perms: u64, want_anti: u64) {
             let g = geo::<D>();
-            let dirs = fnv1a(g.dirs.iter().flatten().map(|c| c.to_bits()));
-            let perms = fnv1a(g.perms.iter().flatten().map(|&p| u64::from(p)));
-            let anti = fnv1a(g.anti.iter().map(|&a| u64::from(a)));
+            let dirs = fnv1a(g.dirs().iter().flatten().map(|c| c.to_bits()));
+            let perms = fnv1a(
+                (0..N_ROTATIONS).flat_map(|r| g.rotation_perms(r).iter().map(|&p| u64::from(p))),
+            );
+            let anti = fnv1a(g.anti().iter().map(|&a| u64::from(a)));
             assert_eq!(dirs, want_dirs, "D={D}: dirs moved");
-            assert_eq!(perms, want_perms, "D={D}: perms moved");
+            assert_eq!(perms, want_perms, "D={D}: rotation_perms moved");
             assert_eq!(anti, want_anti, "D={D}: anti moved");
+            // `contact_perms` is derived, so it gets no constant of its own —
+            // a constant here would be a second encoding of the same fact and
+            // could drift from the composition it is supposed to be.
+            // `contact_perms_is_anti_composed_with_rotation_perms` pins it
+            // against the two tables above, which is stronger.
         }
         check::<12>(
             0x71d3_a418_1bf1_6135,
@@ -844,7 +932,7 @@ mod tests {
     #[test]
     fn directions_are_unit_vectors() {
         fn check<const D: usize>() {
-            for d in &geo::<D>().dirs {
+            for d in geo::<D>().dirs() {
                 assert!((norm(*d) - 1.0).abs() < 1e-15, "D={D}: not unit: {d:?}");
             }
         }
@@ -869,7 +957,7 @@ mod tests {
     #[test]
     fn the_direction_set_carries_no_negative_zero_and_no_nan() {
         fn check<const D: usize>() {
-            for (i, v) in geo::<D>().dirs.iter().enumerate() {
+            for (i, v) in geo::<D>().dirs().iter().enumerate() {
                 for (k, &c) in v.iter().enumerate() {
                     assert!(!c.is_nan(), "D={D}: NaN at dirs[{i}][{k}]");
                     assert!(
@@ -884,19 +972,74 @@ mod tests {
         check::<162>();
     }
 
+    /// Weak on its own — two builds in one process share every code path, so
+    /// this cannot see a cross-platform or cross-toolchain difference. It is
+    /// kept because it localises a nondeterminism *within* `build` (an
+    /// address-dependent order, say) to this function rather than to whatever
+    /// consumes the table. `the_canonical_direction_ordering_is_pinned` is the
+    /// test that carries the §13.4 weight.
     #[test]
     fn construction_is_deterministic() {
         let a = geo::<42>();
         let b = geo::<42>();
-        assert_eq!(a.dirs, b.dirs);
-        assert_eq!(a.perms, b.perms);
-        assert_eq!(a.anti, b.anti);
+        assert_eq!(a.dirs(), b.dirs());
+        assert_eq!(a.anti(), b.anti());
+        for r in 0..N_ROTATIONS {
+            assert_eq!(a.rotation_perms(r), b.rotation_perms(r));
+            assert_eq!(a.contact_perms(r), b.contact_perms(r));
+        }
+    }
+
+    /// `contact_perms` must be exactly `anti ∘ rotation_perms`, at every
+    /// rotation and every direction and every resolution.
+    ///
+    /// This is the whole safety argument for precomposing. The kernel gets a
+    /// one-load table because this holds; if it ever stopped holding, binding
+    /// would search something that is neither the rotations nor the
+    /// reflections, and every other test here would still pass — `contact_perms`
+    /// participates in none of them.
+    #[test]
+    fn contact_perms_is_anti_composed_with_rotation_perms() {
+        fn check<const D: usize>() {
+            let g = geo::<D>();
+            for r in 0..N_ROTATIONS {
+                for i in 0..D {
+                    assert_eq!(
+                        g.contact_perms(r)[i],
+                        g.anti()[g.rotation_perms(r)[i] as usize],
+                        "D={D}: contact_perms disagrees with anti∘rotation_perms at ({r},{i})"
+                    );
+                }
+            }
+        }
+        check::<12>();
+        check::<42>();
+        check::<162>();
+    }
+
+    /// The precomposed table is a *coset*, not the rotation group, and that is
+    /// the point: `contact_perms` is `{-I · R}`, the 60 improper elements. If
+    /// it ever coincided with `rotation_perms` the antipode step would have
+    /// vanished — which is exactly the defect CLAUDE.md's ANTI bullet names,
+    /// and the reason the two tables must never be interchangeable.
+    #[test]
+    fn contact_perms_is_never_the_rotation_table() {
+        let g = geo::<42>();
+        for r in 0..N_ROTATIONS {
+            for q in 0..N_ROTATIONS {
+                assert_ne!(
+                    g.contact_perms(r)[..],
+                    g.rotation_perms(q)[..],
+                    "contact_perms[{r}] equals rotation_perms[{q}]: the antipode step is gone"
+                );
+            }
+        }
     }
 
     #[test]
     fn every_rotation_is_a_bijection() {
         let g = geo::<42>();
-        for (r, perm) in g.perms.iter().enumerate() {
+        for (r, perm) in (0..N_ROTATIONS).map(|r| (r, g.rotation_perms(r))) {
             let mut seen = [false; 42];
             for &j in perm {
                 assert!(!seen[j as usize], "rotation {r} is not injective");
@@ -910,7 +1053,11 @@ mod tests {
         let g = geo::<42>();
         for i in 0..N_ROTATIONS {
             for j in (i + 1)..N_ROTATIONS {
-                assert_ne!(g.perms[i], g.perms[j], "rotations {i} and {j} coincide");
+                assert_ne!(
+                    g.rotation_perms(i),
+                    g.rotation_perms(j),
+                    "rotations {i} and {j} coincide"
+                );
             }
         }
     }
@@ -922,10 +1069,14 @@ mod tests {
     #[test]
     fn permutations_form_a_group() {
         let g = geo::<42>();
-        let set: std::collections::BTreeSet<Vec<u8>> = g.perms.iter().map(|p| p.to_vec()).collect();
+        let set: std::collections::BTreeSet<Vec<u8>> = (0..N_ROTATIONS)
+            .map(|r| g.rotation_perms(r).to_vec())
+            .collect();
         assert_eq!(set.len(), N_ROTATIONS);
-        for a in &g.perms {
-            for b in &g.perms {
+        for r in 0..N_ROTATIONS {
+            let a = g.rotation_perms(r);
+            for q in 0..N_ROTATIONS {
+                let b = g.rotation_perms(q);
                 let composed: Vec<u8> = (0..42).map(|i| b[a[i] as usize]).collect();
                 assert!(set.contains(&composed), "not closed under composition");
             }
@@ -936,7 +1087,7 @@ mod tests {
     fn identity_is_present() {
         let g = geo::<42>();
         let identity: Vec<u8> = (0..42u8).collect();
-        assert!(g.perms.iter().any(|p| p.to_vec() == identity));
+        assert!((0..N_ROTATIONS).any(|r| g.rotation_perms(r).to_vec() == identity));
     }
 
     /// Every element must be a *proper* rotation, and this measures it
@@ -951,13 +1102,13 @@ mod tests {
     #[test]
     fn every_rotation_has_determinant_plus_one() {
         let g = geo::<42>();
-        let (a, b, c) = best_triple(&g.dirs);
-        let source = det3(g.dirs[a], g.dirs[b], g.dirs[c]);
-        for (r, p) in g.perms.iter().enumerate() {
+        let (a, b, c) = best_triple(g.dirs());
+        let source = det3(g.dirs()[a], g.dirs()[b], g.dirs()[c]);
+        for (r, p) in (0..N_ROTATIONS).map(|r| (r, g.rotation_perms(r))) {
             let image = det3(
-                g.dirs[p[a] as usize],
-                g.dirs[p[b] as usize],
-                g.dirs[p[c] as usize],
+                g.dirs()[p[a] as usize],
+                g.dirs()[p[b] as usize],
+                g.dirs()[p[c] as usize],
             );
             let det = image / source;
             assert!(
@@ -981,7 +1132,7 @@ mod tests {
     fn minus_identity_is_not_in_the_group() {
         let g = geo::<42>();
         assert!(
-            !g.perms.iter().any(|p| p[..] == g.anti[..]),
+            !(0..N_ROTATIONS).any(|r| g.rotation_perms(r)[..] == g.anti()[..]),
             "-I is in the rotation set: the search is over reflections, not rotations"
         );
     }
@@ -1012,15 +1163,17 @@ mod tests {
         fn check<const D: usize>() {
             let g = geo::<D>();
             for i in 0..D {
-                let j = g.anti[i] as usize;
+                let j = g.anti()[i] as usize;
                 assert_ne!(i, j, "D={D}: direction {i} is its own antipode");
                 assert_eq!(
-                    g.anti[j] as usize, i,
+                    g.anti()[j] as usize,
+                    i,
                     "D={D}: anti is not an involution at {i}"
                 );
                 for k in 0..3 {
                     assert_eq!(
-                        g.dirs[j][k], -g.dirs[i][k],
+                        g.dirs()[j][k],
+                        -g.dirs()[i][k],
                         "D={D}: dirs[{j}][{k}] is not the exact negation of dirs[{i}][{k}]"
                     );
                 }
@@ -1037,9 +1190,10 @@ mod tests {
     #[test]
     fn antipode_commutes_with_every_rotation() {
         let g = geo::<42>();
-        for perm in &g.perms {
+        for r in 0..N_ROTATIONS {
+            let perm = g.rotation_perms(r);
             for i in 0..42 {
-                assert_eq!(g.anti[perm[i] as usize], perm[g.anti[i] as usize]);
+                assert_eq!(g.anti()[perm[i] as usize], perm[g.anti()[i] as usize]);
             }
         }
     }
@@ -1059,21 +1213,28 @@ mod tests {
     fn the_group_properties_hold_at_every_resolution() {
         fn check<const D: usize>() {
             let g = geo::<D>();
-            let set: std::collections::BTreeSet<Vec<u8>> =
-                g.perms.iter().map(|p| p.to_vec()).collect();
+            let set: std::collections::BTreeSet<Vec<u8>> = (0..N_ROTATIONS)
+                .map(|r| g.rotation_perms(r).to_vec())
+                .collect();
             assert_eq!(set.len(), N_ROTATIONS, "D={D}: rotations are not distinct");
-            for a in &g.perms {
-                for b in &g.perms {
+            for r in 0..N_ROTATIONS {
+                let a = g.rotation_perms(r);
+                for q in 0..N_ROTATIONS {
+                    let b = g.rotation_perms(q);
                     let composed: Vec<u8> = (0..D).map(|i| b[a[i] as usize]).collect();
                     assert!(set.contains(&composed), "D={D}: not closed");
                 }
             }
             assert!(
-                !g.perms.iter().any(|p| p[..] == g.anti[..]),
+                !(0..N_ROTATIONS).any(|r| g.rotation_perms(r)[..] == g.anti()[..]),
                 "D={D}: -I is in the rotation set"
             );
             for i in 0..D {
-                assert_eq!(g.anti[g.anti[i] as usize] as usize, i, "D={D}: anti at {i}");
+                assert_eq!(
+                    g.anti()[g.anti()[i] as usize] as usize,
+                    i,
+                    "D={D}: anti at {i}"
+                );
             }
         }
         check::<12>();
@@ -1101,8 +1262,8 @@ mod tests {
             assert_eq!(mats.len(), N_ROTATIONS);
             for (r, m) in mats.iter().enumerate() {
                 for i in 0..D {
-                    let rotated = apply_mat(m, g.dirs[i]);
-                    let expected = g.dirs[g.perms[r][i] as usize];
+                    let rotated = apply_mat(m, g.dirs()[i]);
+                    let expected = g.dirs()[g.rotation_perms(r)[i] as usize];
                     for k in 0..3 {
                         assert!(
                             (rotated[k] - expected[k]).abs() < 1e-12,
