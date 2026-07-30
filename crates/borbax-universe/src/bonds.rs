@@ -223,13 +223,16 @@ impl BondOrder {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        reason = "the length of a const array literal with six elements, so the \
-                  narrowing is decided at compile time and cannot truncate. \
-                  `u8::try_from` is not const on the pinned toolchain, and the \
-                  point of deriving this from `ALL` is that the two can no longer \
-                  drift — which a literal `6` here would reintroduce"
+        reason = "the assert below makes the narrowing structural rather than a \
+                  claim about today's literal — a 300-element `ALL` becomes E0080 \
+                  instead of a silent `MAX = 44`. `u8::try_from` is not const on \
+                  the pinned toolchain (E0658), and deriving from `ALL` is the \
+                  point: a literal `6` here would reintroduce the drift"
     )]
-    pub const MAX: u8 = Self::ALL.len() as u8;
+    pub const MAX: u8 = {
+        assert!(Self::ALL.len() <= u8::MAX as usize);
+        Self::ALL.len() as u8
+    };
 
     /// An order, or `None` outside `1..=MAX`.
     #[must_use]
@@ -241,6 +244,33 @@ impl BondOrder {
         }
     }
 }
+
+/// **`ALL` must be `1..=MAX` ascending, checked by the compiler.**
+///
+/// Nothing else checks its *contents*. `OrderScale` fills and reads `mult` by
+/// index, so a permuted or duplicated `ALL` never reaches the multiplier table:
+/// a review measured `[1, 2, 3, 4, 6, 5]` failing **only** the pinned digest,
+/// 57 of 58 green, with the array contradicting its own doc line. And a digest
+/// is re-pinned by hand on every deliberate change, so it is not a guard against
+/// this — the argument this file makes about itself twice already.
+#[expect(
+    clippy::as_conversions,
+    clippy::indexing_slicing,
+    reason = "const evaluation: an out-of-range index is E0080 at compile time, \
+              not a runtime panic, so `indexing_slicing`'s hazard cannot arise; \
+              and `u8 -> usize` is widening. `.get()` and `usize::from` are both \
+              unavailable in a const `while` on the pinned toolchain"
+)]
+const _: () = {
+    let mut i = 0;
+    while i < BondOrder::ALL.len() {
+        assert!(
+            BondOrder::ALL[i].0 as usize == i + 1,
+            "BondOrder::ALL must be 1..=MAX ascending"
+        );
+        i += 1;
+    }
+};
 
 /// The error [`BondOrder::try_from`] returns for a count it cannot represent.
 ///
@@ -352,7 +382,7 @@ impl OrderScale {
     fn new(gamma: f64) -> Self {
         let mut mult = [1.0; BondOrder::ALL.len()];
         for (i, m) in mult.iter_mut().enumerate() {
-            // `i` runs 0..MAX_LEN, so the narrowing is lossless; `as` is denied.
+            // `i` runs 0..ALL.len(), so the narrowing is lossless; `as` is denied.
             let order = u8::try_from(i).unwrap_or(0).saturating_add(1);
             *m = det_math::powf(f64::from(order), gamma);
         }

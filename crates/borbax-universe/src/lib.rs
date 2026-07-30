@@ -451,25 +451,45 @@ mod tests {
                     // reader after a physics change that did not happen. The
                     // count below is what makes that loud.
                     for order in BondOrder::ALL {
-                        mix(bonds.energy(a, b, order).get().to_bits());
+                        let v = bonds.energy(a, b, order).get();
+                        // **A non-finite value must name itself here.** Both
+                        // unreachable fallbacks in `bonds.rs` are `NAN`, and a
+                        // review measured that NaN *propagation* through `*`,
+                        // `/` and `sqrt` is bit-identical on aarch64 and x86-64
+                        // — so a poisoned universe would move this hash the same
+                        // way on all three CI legs, the §13.4 matrix would stay
+                        // green, and "category one, regenerate" is the natural
+                        // and wrong conclusion. Only *freshly generated* NaNs
+                        // diverge by architecture.
+                        assert!(
+                            v.is_finite(),
+                            "seed {seed}: {a:?}-{b:?} order {order:?} is {v} — a \
+                             non-finite value reached the digest. This is NOT one \
+                             of §18.1's three; an unreachable fallback fired"
+                        );
+                        mix(v.to_bits());
                         mixed += 1;
                     }
                     pairs += 1;
                 }
             }
         }
-        // **Coverage asserted directly, not by divisibility.** The previous
-        // form was `mixed % MAX == 0`, which is sound only because
-        // `sum(n^2) mod 6` happens to be non-zero over 0..64 — a review measured
-        // that at 0..32 it is zero and the guard goes silent for *every* drift,
-        // and the digest's own message names widening the seed range as an
-        // anticipated change.
+        // **This is a tautology and is kept only as a shape check.** `mixed`
+        // increments once per `for order in ALL` iteration and `pairs` once per
+        // outer, so the identity holds by construction for any array of any
+        // length — it can fail only for an explicit `continue` inside the loop.
+        // A review measured that; it also measured that the divisibility form it
+        // replaced *did* fire at the shipped 0..64 range, so this closed no live
+        // gap and traded a guard coupled to an independent constant for one
+        // coupled to itself.
+        //
+        // What was actually unguarded is `ALL`'s **contents**, and that now has
+        // a `const _` assertion in `bonds.rs` — a compile error rather than a
+        // runtime one.
         assert_eq!(
             mixed,
             pairs * BondOrder::ALL.len(),
-            "the digest mixed {mixed} cells for {pairs} pairs, not {}x — an order \
-             in `BondOrder::ALL` was skipped",
-            BondOrder::ALL.len()
+            "the digest skipped an order — `{mixed}` cells for `{pairs}` pairs"
         );
         assert_eq!(
             h, 0xef29_79c6_1879_20d8,
