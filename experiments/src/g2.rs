@@ -318,7 +318,7 @@ pub enum ControlFailure {
     /// **Not `anti`.** `d_group` never reads it; see `check_geometry_is_live`.
     #[error(
         "the rotation search is broken: D_group left {got:.3e} between a molecule and a copy \
-         rotated by a group element, expected < {max} — check perms and that the signature \
+         rotated by a group element, expected < {max} — check rotation_perms and that the signature \
          is a pure function of direction (not anti; d_group does not read it)"
     )]
     RotationSearchIsBroken {

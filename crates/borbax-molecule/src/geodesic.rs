@@ -62,16 +62,62 @@
 
 #![allow(
     clippy::indexing_slicing,
-    reason = "fixed-size arrays indexed by loop bounds proven against D and N_ROTATIONS; \
-              a get().ok_or() on every coordinate access would obscure the geometry"
+    reason = "fixed-size arrays indexed by loop bounds proven against D and N_ROTATIONS, or \
+              by a `Rotation`, which cannot be constructed out of range; a get().ok_or() on \
+              every coordinate access would obscure the geometry"
 )]
 
 /// Order of the icosahedral rotation group. Reflections are excluded — see
 /// spec §22.8, which makes Borbax chemistry handed on purpose.
 pub const N_ROTATIONS: usize = 60;
 
-/// Why a geodesic could not be built. Both variants are bugs rather than bad
-/// input in normal use; they exist so the failure is loud instead of silent.
+/// An index naming one of the [`N_ROTATIONS`] elements, and nothing else.
+///
+/// The permutation accessors take this rather than a `usize` because they index
+/// a fixed-size table, and a `usize` parameter makes them partial functions that
+/// panic on out-of-range input. CLAUDE.md treats a library panic as a
+/// correctness bug — "a simulation that dies eight hours into an overnight run"
+/// — and `clippy::panic` does not catch a panic that arrives via indexing.
+///
+/// It is not defensive programming against a caller who cannot exist. Task 10's
+/// `affinity_with_rotation` returns its winning rotation for §14.5's renderer to
+/// apply, and that round-trip — table to caller and back — is exactly where an
+/// unvalidated index arrives. This makes the round-trip total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Rotation(usize);
+
+impl core::fmt::Display for Rotation {
+    /// Prints the bare index. Assertion messages name rotations constantly, and
+    /// `Rotation(7)` in a failure would be noise.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Rotation {
+    /// The rotation at `r`, or `None` when `r >= N_ROTATIONS`.
+    #[must_use]
+    pub const fn new(r: usize) -> Option<Self> {
+        if r < N_ROTATIONS { Some(Self(r)) } else { None }
+    }
+
+    /// The index, for storing, printing, or feeding back through [`Rotation::new`].
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+
+    /// All 60, in table order — the spelling every sweep should use.
+    pub fn all() -> impl Iterator<Item = Self> {
+        (0..N_ROTATIONS).map(Self)
+    }
+}
+
+/// Why a geodesic could not be built.
+///
+/// Only [`GeoError::UnsupportedResolution`] is reachable from caller input; the
+/// other two are broken construction invariants. All three exist so the failure
+/// is loud instead of silent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum GeoError {
     /// D must be one of the geodesic ladder values: 12, 42, 162.
@@ -164,10 +210,14 @@ const fn level_for(d: usize) -> Option<u32> {
 ///
 /// Keeping the storage shape private is also what made
 /// [`Geodesic::contact_perms`] cheap to add rather than a breaking change.
-#[derive(Debug, Clone)]
+// No `Clone`. Nothing in the workspace clones a `Geodesic`, it is 23.5 KB at
+// D=162, and the module doc's "built once and passed by reference" is a
+// contract a derived `Clone` quietly contradicts. Adding a trait impl later is
+// additive; removing one is breaking, so the asymmetry says omit it now.
+#[derive(Debug)]
 pub struct Geodesic<const D: usize> {
     /// Unit sample directions, in a canonical order.
-    dirs: [[f64; 3]; D],
+    dirs: [Vec3; D],
     /// `rotation_perms[r][i] = j` — rotation `r` carries direction `i` to `j`.
     rotation_perms: [[u8; D]; N_ROTATIONS],
     /// `contact_perms[r][i] = anti[rotation_perms[r][i]]`.
@@ -182,7 +232,7 @@ impl<const D: usize> Geodesic<D> {
     /// The index is the coordinate system for every signature (§8.2), which is
     /// why the order is pinned by a golden rather than left as an output.
     #[must_use]
-    pub const fn dirs(&self) -> &[[f64; 3]; D] {
+    pub const fn dirs(&self) -> &[Vec3; D] {
         &self.dirs
     }
 
@@ -192,12 +242,28 @@ impl<const D: usize> Geodesic<D> {
     /// the 60 elements looking for a canonical orientation, and no contact is
     /// involved. **Not for binding.** See [`Geodesic::contact_perms`].
     #[must_use]
-    pub const fn rotation_perms(&self, r: usize) -> &[u8; D] {
-        &self.rotation_perms[r]
+    pub const fn rotation_perms(&self, r: Rotation) -> &[u8; D] {
+        &self.rotation_perms[r.0]
     }
 
-    /// The direction on a partner rotated by `r` that *touches* direction `i`:
-    /// `contact_perms(r)[i] = anti[rotation_perms(r)[i]]`.
+    /// The direction that *touches* direction `i` when the partner is presented
+    /// at orientation `R_rᵀ`: `contact_perms(r)[i]` is the index of
+    /// `−R_r · dirs[i]`, equivalently `anti[rotation_perms(r)[i]]`.
+    ///
+    /// **The transpose is not a typo, and an earlier version of this line got
+    /// it backwards.** Pairing `a[i]` with `b[contact_perms(r)[i]]` asks for the
+    /// partner's extent along `−R_r·u_i`; that lands on `−u_i`, where contact
+    /// happens, only once the partner is turned by `R_rᵀ`. Measured on a
+    /// support function at D=42 over all 60×42 pairs:
+    /// `b[contact_perms(r)[i]] == h_{R_rᵀ·B}(−u_i)` to 1.8e-15, while the
+    /// forward reading is off by 2.26 — not a rounding question.
+    ///
+    /// It costs nothing in `affinity`, which maximises over all 60 and the
+    /// group is closed under inverse. It costs a great deal in **§14.5's
+    /// renderer**, which is handed the winning `r` precisely so it does not
+    /// re-derive the pose, and must apply `R_rᵀ`. Applying `R_r` draws a
+    /// plausible, silent, wrong docking picture — in a project that ships SVG
+    /// from day one because a shape-based chemistry cannot be developed blind.
     ///
     /// **§8.3's binding kernel indexes its partner through this and nothing
     /// else.** Two bodies in contact touch along opposite directions, so the
@@ -216,8 +282,8 @@ impl<const D: usize> Geodesic<D> {
     /// name this field used to carry — read like the obvious choice. Adding a
     /// table does not remove an affordance; renaming the other one does.
     #[must_use]
-    pub const fn contact_perms(&self, r: usize) -> &[u8; D] {
-        &self.contact_perms[r]
+    pub const fn contact_perms(&self, r: Rotation) -> &[u8; D] {
+        &self.contact_perms[r.0]
     }
 
     /// `anti()[i] = j` where `dirs()[j] == -dirs()[i]`.
@@ -467,7 +533,8 @@ impl<const D: usize> Geodesic<D> {
         //
         // It is safe *here* because these coordinates are free of both hazards,
         // measured at all three levels: 0 `-0.0` components, 0 NaN, max
-        // |‖v‖-1| = 1.11e-16 (one ulp, at D=162; exact at 12 and 42). Every
+        // |‖v‖-1| = 1.11e-16 (one ulp below 1.0, at D=162; exact at 12 and
+        // 42). Every
         // value is a normalised coordinate built from sums of squares.
         //
         // The predecessor of this comment ended "when this lifts, that
@@ -491,8 +558,9 @@ impl<const D: usize> Geodesic<D> {
         // Replacing `scale(a, 1.0 / n)` in `normalise` with componentwise
         // division — mathematically identical, *better* rounded, no behavioural
         // intent — splits two of the four directions at z = -0.85065… by one
-        // ulp and re-indexes the whole table: `dirs[12]` at D=162 moves to a
-        // direction 0.743 away, and all 18 tests still pass in both profiles.
+        // ulp and **moves six of the 162 index positions** at D=162 (none at
+        // 12 or 42): `dirs[12]` moves to a direction 0.743 away, and every
+        // other test still passes in both profiles.
         // `the_canonical_direction_ordering_is_pinned` is what catches that.
         #[expect(
             clippy::disallowed_methods,
@@ -896,7 +964,7 @@ mod tests {
             let g = geo::<D>();
             let dirs = fnv1a(g.dirs().iter().flatten().map(|c| c.to_bits()));
             let perms = fnv1a(
-                (0..N_ROTATIONS).flat_map(|r| g.rotation_perms(r).iter().map(|&p| u64::from(p))),
+                Rotation::all().flat_map(|r| g.rotation_perms(r).iter().map(|&p| u64::from(p))),
             );
             let anti = fnv1a(g.anti().iter().map(|&a| u64::from(a)));
             assert_eq!(dirs, want_dirs, "D={D}: dirs moved");
@@ -930,8 +998,8 @@ mod tests {
     /// D=42 is the level least able to detect it.
     ///
     /// The tolerance is set from measurement, not from habit. The worst
-    /// deviation across the whole ladder is 1.11e-16 — exactly one ulp at 1.0,
-    /// at D=162; D=12 and D=42 are exact. Every coordinate is built from sums,
+    /// deviation across the whole ladder is 1.11e-16 — exactly one ulp *below*
+    /// 1.0 (the ulp above is 2.22e-16), at D=162; D=12 and D=42 are exact. Every coordinate is built from sums,
     /// products and `sqrt`, all of which IEEE-754 specifies exactly, so that
     /// figure is the same on every target (§13.4) and 1e-15 sits ~9x above it
     /// rather than being a round number chosen for comfort.
@@ -990,7 +1058,7 @@ mod tests {
         let b = geo::<42>();
         assert_eq!(a.dirs(), b.dirs());
         assert_eq!(a.anti(), b.anti());
-        for r in 0..N_ROTATIONS {
+        for r in Rotation::all() {
             assert_eq!(a.rotation_perms(r), b.rotation_perms(r));
             assert_eq!(a.contact_perms(r), b.contact_perms(r));
         }
@@ -1008,13 +1076,46 @@ mod tests {
     fn contact_perms_is_anti_composed_with_rotation_perms() {
         fn check<const D: usize>() {
             let g = geo::<D>();
-            for r in 0..N_ROTATIONS {
+            for r in Rotation::all() {
                 for i in 0..D {
                     assert_eq!(
                         g.contact_perms(r)[i],
                         g.anti()[g.rotation_perms(r)[i] as usize],
                         "D={D}: contact_perms disagrees with anti∘rotation_perms at ({r},{i})"
                     );
+                }
+            }
+        }
+        check::<12>();
+        check::<42>();
+        check::<162>();
+    }
+
+    /// Ties `contact_perms` to geometry **directly**, not transitively.
+    ///
+    /// `contact_perms_is_anti_composed_with_rotation_perms` pins it against the
+    /// other two tables, which is the right invariant but says nothing about
+    /// what the composition *means*. This says it: `contact_perms(r)[i]` is the
+    /// index of `−R_r · dirs[i]`, measured against the matrices themselves.
+    ///
+    /// It exists because a cross-check found the docstring naming the wrong
+    /// pose while the formula beside it was correct — the sort of error no
+    /// table-versus-table assertion can see, and one §14.5's renderer would
+    /// have inherited as a silently wrong docking picture.
+    #[test]
+    fn contact_perms_is_the_antipode_of_the_rotated_direction() {
+        fn check<const D: usize>() {
+            let g = geo::<D>();
+            for (r, m) in Rotation::all().zip(mats().iter()) {
+                for i in 0..D {
+                    let want = apply_mat(m, g.dirs()[i]);
+                    let got = g.dirs()[g.contact_perms(r)[i] as usize];
+                    for k in 0..3 {
+                        assert!(
+                            (got[k] + want[k]).abs() < 1e-12,
+                            "D={D}: contact_perms[{r}][{i}] is not the index of -R_{r}.dirs[{i}]"
+                        );
+                    }
                 }
             }
         }
@@ -1031,8 +1132,8 @@ mod tests {
     #[test]
     fn contact_perms_is_never_the_rotation_table() {
         let g = geo::<42>();
-        for r in 0..N_ROTATIONS {
-            for q in 0..N_ROTATIONS {
+        for r in Rotation::all() {
+            for q in Rotation::all() {
                 assert_ne!(
                     g.contact_perms(r)[..],
                     g.rotation_perms(q)[..],
@@ -1045,7 +1146,10 @@ mod tests {
     #[test]
     fn every_rotation_is_a_bijection() {
         let g = geo::<42>();
-        for (r, perm) in (0..N_ROTATIONS).map(|r| (r, g.rotation_perms(r))) {
+        for (r, perm) in Rotation::all()
+            .enumerate()
+            .map(|(n, r)| (n, g.rotation_perms(r)))
+        {
             let mut seen = [false; 42];
             for &j in perm {
                 assert!(!seen[j as usize], "rotation {r} is not injective");
@@ -1057,8 +1161,8 @@ mod tests {
     #[test]
     fn rotations_are_all_distinct() {
         let g = geo::<42>();
-        for i in 0..N_ROTATIONS {
-            for j in (i + 1)..N_ROTATIONS {
+        for i in Rotation::all() {
+            for j in Rotation::all().filter(|j| j.index() > i.index()) {
                 assert_ne!(
                     g.rotation_perms(i),
                     g.rotation_perms(j),
@@ -1075,14 +1179,12 @@ mod tests {
     #[test]
     fn permutations_form_a_group() {
         let g = geo::<42>();
-        let set: std::collections::BTreeSet<Vec<u8>> = (0..N_ROTATIONS)
+        let set: std::collections::BTreeSet<Vec<u8>> = Rotation::all()
             .map(|r| g.rotation_perms(r).to_vec())
             .collect();
         assert_eq!(set.len(), N_ROTATIONS);
-        for r in 0..N_ROTATIONS {
-            let a = g.rotation_perms(r);
-            for q in 0..N_ROTATIONS {
-                let b = g.rotation_perms(q);
+        for a in Rotation::all().map(|r| g.rotation_perms(r)) {
+            for b in Rotation::all().map(|q| g.rotation_perms(q)) {
                 let composed: Vec<u8> = (0..42).map(|i| b[a[i] as usize]).collect();
                 assert!(set.contains(&composed), "not closed under composition");
             }
@@ -1093,7 +1195,7 @@ mod tests {
     fn identity_is_present() {
         let g = geo::<42>();
         let identity: Vec<u8> = (0..42u8).collect();
-        assert!((0..N_ROTATIONS).any(|r| g.rotation_perms(r).to_vec() == identity));
+        assert!(Rotation::all().any(|r| g.rotation_perms(r).to_vec() == identity));
     }
 
     /// Every element must be a *proper* rotation, and this measures it
@@ -1110,7 +1212,10 @@ mod tests {
         let g = geo::<42>();
         let (a, b, c) = best_triple(g.dirs());
         let source = det3(g.dirs()[a], g.dirs()[b], g.dirs()[c]);
-        for (r, p) in (0..N_ROTATIONS).map(|r| (r, g.rotation_perms(r))) {
+        for (r, p) in Rotation::all()
+            .enumerate()
+            .map(|(n, r)| (n, g.rotation_perms(r)))
+        {
             let image = det3(
                 g.dirs()[p[a] as usize],
                 g.dirs()[p[b] as usize],
@@ -1138,7 +1243,7 @@ mod tests {
     fn minus_identity_is_not_in_the_group() {
         let g = geo::<42>();
         assert!(
-            !(0..N_ROTATIONS).any(|r| g.rotation_perms(r)[..] == g.anti()[..]),
+            !Rotation::all().any(|r| g.rotation_perms(r)[..] == g.anti()[..]),
             "-I is in the rotation set: the search is over reflections, not rotations"
         );
     }
@@ -1196,7 +1301,7 @@ mod tests {
     #[test]
     fn antipode_commutes_with_every_rotation() {
         let g = geo::<42>();
-        for r in 0..N_ROTATIONS {
+        for r in Rotation::all() {
             let perm = g.rotation_perms(r);
             for i in 0..42 {
                 assert_eq!(g.anti()[perm[i] as usize], perm[g.anti()[i] as usize]);
@@ -1219,20 +1324,18 @@ mod tests {
     fn the_group_properties_hold_at_every_resolution() {
         fn check<const D: usize>() {
             let g = geo::<D>();
-            let set: std::collections::BTreeSet<Vec<u8>> = (0..N_ROTATIONS)
+            let set: std::collections::BTreeSet<Vec<u8>> = Rotation::all()
                 .map(|r| g.rotation_perms(r).to_vec())
                 .collect();
             assert_eq!(set.len(), N_ROTATIONS, "D={D}: rotations are not distinct");
-            for r in 0..N_ROTATIONS {
-                let a = g.rotation_perms(r);
-                for q in 0..N_ROTATIONS {
-                    let b = g.rotation_perms(q);
+            for a in Rotation::all().map(|r| g.rotation_perms(r)) {
+                for b in Rotation::all().map(|q| g.rotation_perms(q)) {
                     let composed: Vec<u8> = (0..D).map(|i| b[a[i] as usize]).collect();
                     assert!(set.contains(&composed), "D={D}: not closed");
                 }
             }
             assert!(
-                !(0..N_ROTATIONS).any(|r| g.rotation_perms(r)[..] == g.anti()[..]),
+                !Rotation::all().any(|r| g.rotation_perms(r)[..] == g.anti()[..]),
                 "D={D}: -I is in the rotation set"
             );
             for i in 0..D {
@@ -1266,7 +1369,7 @@ mod tests {
             let g = geo::<D>();
             let mats = mats();
             assert_eq!(mats.len(), N_ROTATIONS);
-            for (r, m) in mats.iter().enumerate() {
+            for (r, m) in Rotation::all().zip(mats.iter()) {
                 for i in 0..D {
                     let rotated = apply_mat(m, g.dirs()[i]);
                     let expected = g.dirs()[g.rotation_perms(r)[i] as usize];

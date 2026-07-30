@@ -31,7 +31,7 @@
 )]
 
 use crate::embed::{self, Point};
-use crate::geodesic::{Geodesic, Mat3, N_ROTATIONS, apply_mat};
+use crate::geodesic::{Geodesic, Mat3, Rotation, apply_mat};
 use crate::molecule::{ELEMENT_RADII, Molecule, N_ELEMENTS};
 
 /// Sampling resolution. 42 is the spec's prior (§22.2); the ladder is
@@ -194,7 +194,7 @@ pub fn d_raw(a: &[f64], b: &[f64]) -> f64 {
 #[must_use]
 pub fn d_group<const N: usize>(g: &Geodesic<N>, a: &[f64], b: &[f64]) -> f64 {
     let mut best = f64::INFINITY;
-    for r in 0..N_ROTATIONS {
+    for r in Rotation::all() {
         let mut total = 0.0;
         for i in 0..N {
             let e = a[i] - b[usize::from(g.rotation_perms(r)[i])];
@@ -381,7 +381,7 @@ mod tests {
         let coords = crate::embed::embed(&m);
         let base = signature(&g, &coords, &m.elements);
 
-        for (r, mat) in rotation_matrices().unwrap().iter().enumerate() {
+        for (r, mat) in Rotation::all().zip(rotation_matrices().unwrap().iter()) {
             let turned: Vec<Point> = coords.iter().map(|&p| apply_mat(mat, p)).collect();
             let sig = signature(&g, &turned, &m.elements);
             for i in 0..D {

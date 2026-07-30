@@ -244,10 +244,13 @@ back into a sweep over every molecule.
   solvent-attack mechanisms both depend on real burial (§8.4).
 - **Binding pairs each direction with its partner's *antipode*.** Two bodies in
   contact touch along opposite directions, so the kernel indexes `b` through
-  `ANTI[PERM[R][i]]`, never `PERM[R][i]` directly. Dropping `ANTI` is not a
-  small error: because `−I` is not in the rotation group, it silently converts
-  the search into the 60 *improper* elements — reflections only — and nothing
-  fails.
+  the antipode of the rotated direction, never the rotated direction itself.
+  Since Task 7 that composition is precomputed as
+  `Geodesic::contact_perms(r)`, and the raw `rotation_perms(r)` is for Task 9's
+  single-signature canonicalisation. **Reaching for `rotation_perms` inside
+  `affinity` is the mistake**: because `−I` is not in the rotation group, it
+  silently converts the search into the 60 *improper* elements — reflections
+  only — and nothing fails.
 
   **A complement built at the same index does not merely fail to test this — it
   inverts.** Measured at D=42 during Task 7's review, §8.3's kernel scored four
@@ -255,10 +258,24 @@ back into a sweep over every molecule.
   `ANTI`-built fixture gives **0.000000**; without `ANTI`, exactly the reverse.
   So an implementer who writes the obvious fixture sees the *correct* kernel
   score −4.6, "fixes" the kernel until it scores 0, and arrives at precisely
-  this defect with a green test. Task 10 therefore carries a required probe:
-  delete `anti[...]` from `affinity`'s index expression and **both**
-  `a_physical_complement_scores_zero` and `the_mirror_complement_does_not_fit`
-  must fail. If only one does, the pair is not discriminating.
+  this defect with a green test.
+
+  **The zero is exact and structural, not a measurement.** With a same-index
+  complement (`b.r[i] = gap − a.r[i]`, `b.a[i] = −a.a[i]`) the anti-less kernel
+  gives `ds = a.r[i] + (gap − a.r[i]) − gap = 0` and `dc = a.a[i] − a.a[i] = 0`
+  in every direction, so it scores exactly 0 at the identity — and 0 is the
+  global maximum of a negated sum of squares, so no rotation can beat it. The
+  correct kernel on that fixture gives `ds = a.r[i] − a.r[anti[i]] ≠ 0`. This
+  holds for every universe seed, not just the one measured. Task 10 therefore carries a required probe:
+  **substitute `g.rotation_perms(r)` for `g.contact_perms(r)`** in `affinity`
+  and **both** `a_physical_complement_scores_zero` and
+  `the_mirror_complement_does_not_fit` must fail. If only one does, the pair is
+  not discriminating.
+
+  The probe is stated as a *substitution* because the rename removed the thing
+  its first wording told you to delete — there is no `anti[...]` in the index
+  expression any more. A probe instruction naming an edit that does not exist
+  is a probe nobody runs.
 - **Binding searches rotations but not reflections** — 60 elements, not 120. This
   makes Borbax chemistry *handed*, so homochirality is an emergent result the
   simulation could produce rather than something excluded by construction (§22.8).
