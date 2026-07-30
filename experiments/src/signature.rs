@@ -187,7 +187,7 @@ pub fn d_raw(a: &[f64], b: &[f64]) -> f64 {
 
 /// Smallest Euclidean distance over all 60 rotations of `b`.
 ///
-/// Rotation `r` carries direction `i` to `perms[r][i]`, so reading `b` through
+/// Rotation `r` carries direction `i` to `rotation_perms(r)[i]`, so reading `b` through
 /// the table is exactly comparing against a rotated copy. No antipode here:
 /// `anti` is for binding, where two bodies touch along *opposite* directions.
 /// This compares one shape against another in a different pose.
@@ -368,7 +368,7 @@ mod tests {
 
     /// The load-bearing link between geometry and the lookup table. Rotating
     /// the molecule by rotation `r` and recomputing the signature from scratch
-    /// must give exactly the original signature read through `perms[r]`.
+    /// must give exactly the original signature read through `rotation_perms(r)`.
     ///
     /// If this fails, `D_group` is minimising over a table that does not
     /// correspond to rotating anything, and its number is meaningless while

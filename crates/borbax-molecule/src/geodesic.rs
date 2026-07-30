@@ -153,7 +153,8 @@ const fn level_for(d: usize) -> Option<u32> {
 /// that make comparing two signatures a table lookup.
 ///
 /// **Fields are private and [`Geodesic::build`] is the only producer.** Three
-/// invariants are established there and are unenforceable afterwards: `perms`
+/// invariants are established there and are unenforceable afterwards:
+/// `rotation_perms`
 /// is closed under composition, `anti` is an involution with
 /// `dirs[anti[i]] == -dirs[i]`, and every index in either table is `< D`. With
 /// the fields public a caller could desynchronise them — `g.dirs.reverse()` is
@@ -414,6 +415,8 @@ impl<const D: usize> Geodesic<D> {
     /// [`GeoError::RotationNotClosed`] if a rotation or an antipode fails to
     /// land exactly on a sample direction, which would mean the icosahedral
     /// symmetry assumption in §8.2 is false.
+    /// [`GeoError::SubdivisionCountMismatch`] if subdivision at the ladder
+    /// level for `D` yields a vertex count other than `D`.
     pub fn build() -> Result<Self, GeoError> {
         let level = level_for(D).ok_or(GeoError::UnsupportedResolution(D))?;
 
@@ -624,8 +627,9 @@ pub fn apply_mat(m: &Mat3, p: Vec3) -> Vec3 {
 /// rather than leaving the predicate to ship here untested.
 ///
 /// An earlier version of this line said "Task 10's binding kernel needs the
-/// same predicate". Task 10's plan section consumes `Geodesic`, `perms` and
-/// `anti` and asks for neither this nor [`rotation_matrices`], so the claim was
+/// same predicate". Task 10's plan section consumes `Geodesic` and its
+/// permutation tables and asks for neither this nor [`rotation_matrices`], so
+/// the claim was
 /// a forward reference with nothing behind it. The placement rests on the
 /// harness use, which is real and current.
 ///
@@ -695,9 +699,10 @@ pub fn is_identity(m: &Mat3) -> bool {
 /// The 60 rotations as matrices, in the same order as
 /// [`Geodesic::rotation_perms`].
 ///
-/// `perms` is what the binding kernel needs — a rotation as a table lookup.
+/// [`Geodesic::contact_perms`] is what the binding kernel needs — a rotation
+/// composed with the antipode, as a table lookup.
 /// This is the same 60 rotations as actual geometry, and it exists so the two
-/// can be checked against each other. Without it, `perms` is a table of
+/// can be checked against each other. Without it, the table is one of
 /// integers that no test can tie back to rotating anything: it would pass
 /// every group-theoretic check while corresponding to the wrong rotations, or
 /// to none.
@@ -850,7 +855,8 @@ mod tests {
     /// bijectivity, distinctness, det = +1, the `anti` involution, `-I` absent,
     /// matrix/table agreement, unit norms — and every one of them survives an
     /// arbitrary permutation of the direction set with the matching permutation
-    /// of `perms` and `anti`, because that is still a perfectly self-consistent
+    /// of `rotation_perms` and `anti`, because that is still a perfectly
+    /// self-consistent
     /// table. Two review lanes measured this independently: re-keying the sort
     /// `(z,y,x)` → `(x,y,z)` leaves the whole 325-test workspace green.
     ///
@@ -1243,7 +1249,7 @@ mod tests {
     }
 
     /// Ties the integer table back to geometry. Every other test here treats
-    /// `perms` as an abstract permutation group — and a table of the *wrong*
+    /// `rotation_perms` as an abstract permutation group — and a table of the *wrong*
     /// 60 rotations, or of some unrelated group of order 60, would satisfy all
     /// of them. This is the only check that says the lookup means what the
     /// binding kernel will assume it means.
