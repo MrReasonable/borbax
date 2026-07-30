@@ -21,7 +21,8 @@ rather than documented around.)
 |---|---|---|
 | `check_no_data_files` | G1 | No data files under the chemistry crates — no element tables, reaction databases, structures or sequence data. |
 | `check_blocklist_present` | G2 | `naming.rs` exists and contains `REAL_ELEMENT_SYMBOLS`. Fails loudly if the file is missing, rather than reporting green for a path that moved. |
-| `check_no_real_chemical_formats` | G5 | No `SMILES`, `InChI`, `FASTA`, `PDB format`, `MOL format` or `SDF format` in the **code** of any `.rs` file under the scanned roots. Comment-only lines are skipped — see below. |
+| `check_no_real_chemical_formats` | G5 | Lexes every `.rs` file under the scanned roots and rejects identifiers or string literals containing a real chemical-format name as a whole segment — `SmilesParser`, `parse_smiles`, `"pdb"`, `read_molfile`. Comments are not tokens, so doctrine may name them freely. |
+| `check_no_crate_escapes_the_scan` | §5 + §13.1 | Every crate directory in the workspace is inside a scanned root, so no crate can be added where the textual checks do not look. |
 | `check_toolchain_pins_agree` | §18.1 | The Rust pin is the same in every place that states it. |
 | `check_no_platform_transcendentals` | §13.1 | No direct `exp`/`ln`/`sin`/`cos`/`powf` on `f64` — everything routes through `det_math`. |
 | `check_no_stream_deriving_method` | §13.1 | `Stream` does not gain a method that would silently fork a sequence. |
@@ -33,28 +34,45 @@ newtypes in `borbax-units` — `Quanta + Thermal` is a compile error — which i
 stronger than any grep. But it is not `xtask`, and a table headed "what it
 checks" that lists it is claiming a guard that is not here.
 
-**Why the format scan skips comments.** G5 forbids *importing or exporting*
-these formats. A parser lives in an identifier, a match arm or a file extension —
-never in a comment. Scanning prose as well made it impossible to write the
-prohibition down: a doc comment reading "Borbax will never import or export
-SMILES, InChI, MOL format or FASTA" failed the gate. A guard that fires on its
-own doctrine being documented is one somebody eventually disables, so it now
-scans code and lets the doctrine be written.
+**Why the format check lexes instead of grepping, and what that cost to learn.**
+Two versions of this check failed before the current one:
 
-Things this gate does **not** do, stated because their absence is easy to assume
-away:
+1. A case-sensitive substring scan for `"SMILES"`, `"InChI"`, `"PDB format"` …
+   which read **one file**, so planting `SMILES` in `bonds.rs` passed.
+2. The same scan widened to every file — which then fired on *doc comments
+   stating the prohibition*, including a sentence lifted from `CLAUDE.md`. Fixed
+   by skipping comment-only lines, which quietly **deleted half the list**:
+   `"MOL format"`, `"PDB format"` and `"SDF format"` are English phrases that
+   occur only in prose.
 
-- **No mapping-table check.** G5 also forbids a Borbax↔real correspondence table;
-  nothing here looks for one.
-- **Substring matching, case-sensitive.** `MOL` and `PDB` are spelled `MOL
-  format` and `PDB format` so they do not fire on `MOLECULE` or on ordinary
-  prose — and `parse_smiles` slips through where `parse_SMILES` would not.
-- **It cannot scan itself.** `xtask` is outside the scan roots, necessarily: the
-  token list would match.
+Then a review wrote a working six-format importer/exporter — `SmilesParser`,
+`parse_smiles`, `read_molfile`, `read_pdb`, `write_fasta`, an extension table
+`["smi", "smiles", "inchi", "mol", "sdf", "pdb", "fasta"]`, and the real↔Borbax
+mapping table G5 also forbids — and the gate reported **all checks passed**,
+with `clippy -D warnings` clean. Nobody writing Rust types `SMILESParser`.
 
-None of that is an argument for widening it until it cries wolf. The value is
-that adding a real parser becomes awkward and visible, and §5 sits at the top of
-the review precedence with a human on it regardless.
+`xtask/Cargo.toml` had already written the verdict, about a different check:
+*"Hand-rolling was tried twice and failed twice … a textual matcher covers the
+shapes someone thought to probe."* `syn` and `proc-macro2` were already
+dependencies for that reason.
+
+So it lexes. An identifier is an identifier, a comment is not a token, and
+matching is on whole lowercase **segments** — `SmilesParser` splits to
+`["smiles", "parser"]`. That parser now produces 11 failures; the doctrine
+sentence produces none. Four adversarial tests pin both directions.
+
+Things this gate still does **not** do:
+
+- **No mapping-table check.** G5 forbids a Borbax↔real correspondence table;
+  nothing looks for one. The review's `REAL_MAPPING` const passed on its name.
+- **`mol` is not in the vocabulary.** It collides with `fn embed(mol: &Molecule)`
+  six times in `experiments/`. `sdf` and `molfile` cover the same import path.
+- **It cannot scan itself.** `xtask` is necessarily outside the roots — the
+  vocabulary would match its own definition.
+- **A determined obfuscator wins.** `concat!("SMI", "LES")` and a string split
+  across lines both pass. The job is accident and casual addition, not sabotage.
+
+§5 sits at the top of the review precedence with a human on it regardless.
 
 ## Why a program and not a review checklist
 

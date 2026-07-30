@@ -31,30 +31,66 @@ const CHEMISTRY_CRATES: &[&str] = &[
 ];
 
 /// Real chemical-format tokens that must never appear anywhere (G5).
-/// §5, G5 — real chemical interchange formats Borbax will never read or write.
+/// §5, G5 — real chemical interchange formats, as **identifier segments**.
 ///
-/// **Spelled to avoid substring collisions, which is why two carry the word
-/// "format".** Bare `MOL` matches `MOLECULE` and bare `PDB` is a common
-/// abbreviation; both would fire on ordinary prose in a codebase whose subject
-/// is molecules. `SDF` is included because it is the multi-record form of MOL
-/// and would otherwise be the obvious way round this list.
+/// **Matched against lexed identifiers and string literals, case-insensitively
+/// and segment by segment — not as substrings of raw source.** The predecessor
+/// scanned for `"SMILES"`, `"InChI"`, `"PDB format"` and friends, and a review
+/// defeated it completely: a working six-format importer/exporter —
+/// `SmilesParser`, `parse_smiles`, `read_molfile`, `read_pdb`, `write_fasta`, an
+/// extension table `["smi", "smiles", "inchi", "mol", "sdf", "pdb", "fasta"]`
+/// and the real-to-Borbax mapping table G5 also forbids — passed with **zero**
+/// hits while `clippy -D warnings` stayed clean. Nobody writing Rust types
+/// `SMILESParser`.
 ///
-/// **What this check is and is not.** A textual tripwire on *code*, not a proof.
-/// It is case-sensitive, so `parse_smiles` slips through where `parse_SMILES`
-/// does not; it skips comment-only lines by design (the scan says why); and it
-/// cannot scan `xtask` itself, because this list would match. None of that is a
-/// reason to widen it into something that cries wolf — the value is that adding
-/// a real parser becomes awkward and visible, and the review precedence puts a
-/// human on §5 regardless.
-const FORBIDDEN_FORMAT_TOKENS: &[&str] = &[
-    "SMILES",
-    "InChI",
-    "FASTA",
-    "PDB format",
-    "MOL format",
-    "SDF format",
+/// Worse, three of the six were already *dead*: `"MOL format"`, `"PDB format"`
+/// and `"SDF format"` are English phrases occurring only in prose, and the
+/// commit before this one taught the scan to skip prose. A fix meant to narrow
+/// the check had deleted half of it.
+///
+/// `xtask/Cargo.toml` already carried the verdict, about a different check:
+/// *"Hand-rolling was tried twice and failed twice … a textual matcher covers
+/// the shapes someone thought to probe."* `syn` and `proc-macro2` are
+/// dependencies for that reason, and this check now uses them.
+///
+/// **`mol` is deliberately absent**: it appears six times in
+/// `experiments/src/embed.rs` as `fn embed(mol: &Molecule)`, and `sdf` /
+/// `molfile` cover the same import path. `xyz` and `cif` are absent for now but
+/// are the obvious next entries once 3D geometry lands.
+const FORMAT_SEGMENTS: &[&str] = &[
+    "smiles", "smi", "smarts", "inchi", "inchikey", "molfile", "sdfile", "sdf", "pdb", "pdbx",
+    "mmcif", "fasta", "fastq",
 ];
 
+/// Split an identifier into lowercase segments on `_`, `-`, `.` and camelCase
+/// boundaries.
+///
+/// `SmilesParser` -> `["smiles", "parser"]`; `read_pdb_file` -> `["read", "pdb",
+/// "file"]`; `SMILES` -> `["smiles"]`. Whole-segment matching is what lets `smi`
+/// be in the vocabulary without firing on `smith`.
+fn identifier_segments(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut prev_upper = false;
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' || ch == '.' {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            prev_upper = false;
+            continue;
+        }
+        if ch.is_uppercase() && !prev_upper && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        prev_upper = ch.is_uppercase();
+        cur.push(ch.to_ascii_lowercase());
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
 /// §13.1 — float operations that are not specified exactly by IEEE-754, so two
 /// correct libm implementations may return different bits for the same input.
 /// Every one of these must route through `borbax_units::det_math`.
@@ -226,6 +262,12 @@ const BANNED_PARALLEL_CALLS: &[&str] = &[
 /// as a literal, so scanning it would mean exempting it, which is worse.
 const TRANSCENDENTAL_SCAN_ROOTS: &[&str] = &["crates", "experiments"];
 
+/// Workspace directories that hold crates and are deliberately **not** scanned.
+///
+/// Only `xtask` — it cannot scan itself, because [`FORMAT_SEGMENTS`] and
+/// the banned-call lists would match their own definitions.
+const UNSCANNED_CRATE_DIRS: &[&str] = &["xtask"];
+
 fn main() -> Result<(), String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -303,6 +345,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_no_data_files(root, &mut failures)?;
     check_blocklist_present(root, &mut failures)?;
     check_no_real_chemical_formats(root, &mut failures)?;
+    check_no_crate_escapes_the_scan(root, &mut failures)?;
     check_toolchain_pins_agree(root, &mut failures)?;
     check_no_platform_transcendentals(root, &mut failures)?;
     check_no_stream_deriving_method(root, &mut failures)?;
@@ -881,18 +924,73 @@ fn check_blocklist_present(root: &Path, failures: &mut Vec<String>) -> Result<()
     Ok(())
 }
 
+/// Every crate in the workspace is inside a scanned root.
+///
+/// **The scan roots are hand-kept, and a crate added outside them escapes every
+/// textual check at once** — G5's format scan, §13.1's transcendental scan and
+/// §13.4's parallel-call scan all iterate `TRANSCENDENTAL_SCAN_ROOTS`. A review
+/// verified it: a workspace member at `tools/borbax-import/` containing both
+/// `pub const SMILES: &str = "SMILES";` and `(-e / t).exp()` produced
+/// "all checks passed".
+///
+/// §13.1 keeps a second guard there — `clippy::disallowed_methods` is
+/// warn-by-default and `clippy.toml` is read from the workspace root, so the
+/// `exp` would still be caught. **§5 has no second guard at all**, which is what
+/// makes this precedence 1 rather than housekeeping.
+///
+/// So rather than trusting the list, fail when a `Cargo.toml` turns up outside
+/// it. That is the same self-maintaining argument
+/// `check_no_platform_transcendentals` already makes against a hand-kept crate
+/// list, applied one level up.
+fn check_no_crate_escapes_the_scan(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(root).map_err(|e| e.to_string())?;
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+    for dir in dirs {
+        let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') || name == "target" || name == "docs" {
+            continue;
+        }
+        if TRANSCENDENTAL_SCAN_ROOTS.contains(&name) || UNSCANNED_CRATE_DIRS.contains(&name) {
+            continue;
+        }
+        // A directory is a crate root if it, or any child, declares a manifest.
+        let mut manifests = vec![dir.join("Cargo.toml")];
+        if let Ok(children) = std::fs::read_dir(&dir) {
+            for child in children.flatten() {
+                manifests.push(child.path().join("Cargo.toml"));
+            }
+        }
+        if manifests.iter().any(|m| m.exists()) {
+            failures.push(format!(
+                "§5/§13.1: crate directory {name:?} is outside every scan root, so the \
+                 G5 format, transcendental and parallel-call checks do not see it. Add it \
+                 to TRANSCENDENTAL_SCAN_ROOTS, or to UNSCANNED_CRATE_DIRS with a reason"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// §5, G5 — no real chemical interchange format is read or written anywhere.
 ///
-/// **This used to live inside the G2 blocklist check and therefore scanned
-/// exactly one file, `naming.rs`.** A review planted `SMILES`, `InChI`, `FASTA`
-/// and `MOL` in `bonds.rs` and the gate reported all checks passed — while
-/// `xtask`'s own README described the check as covering the repository. G5 says
-/// Borbax "will never import or export real chemical formats"; a scan of the
-/// one file where a blocklist might be smuggled in as *data* does not say that.
+/// **Lexes rather than greps, for the reason `xtask/Cargo.toml` already
+/// records.** Tokenising makes an identifier an identifier and a comment not a
+/// token at all, so this can be strict about code and silent about prose
+/// without a hand-rolled rule for either — the previous version hand-rolled
+/// `starts_with("//")` and got block comments and trailing comments wrong in
+/// opposite directions.
 ///
-/// Scanned wholesale rather than from a crate list, for the reason
-/// `check_no_platform_transcendentals` already gives: a hand-kept list silently
-/// exempts every crate added after it was written.
+/// Doc comments arrive as `#[doc = "..."]` and are skipped explicitly; `//` and
+/// `/* */` never reach the token stream at all.
 fn check_no_real_chemical_formats(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
     for scan_root in TRANSCENDENTAL_SCAN_ROOTS {
         let dir = root.join(scan_root);
@@ -905,32 +1003,60 @@ fn check_no_real_chemical_formats(root: &Path, failures: &mut Vec<String>) -> Re
             }
             let src = std::fs::read_to_string(&entry).map_err(|e| e.to_string())?;
             let rel = entry.strip_prefix(root).unwrap_or(&entry);
-            for (n, line) in src.lines().enumerate() {
-                // **Comment-only lines are skipped, and that is the check
-                // working rather than a hole in it.** G5 forbids *importing or
-                // exporting* these formats; a parser lives in an identifier, a
-                // match arm or a file extension, never in a comment. Scanning
-                // prose too made it impossible to write the prohibition down —
-                // verified: a doc comment reading "Borbax will never import or
-                // export SMILES, InChI, MOL format or FASTA" failed this gate.
-                // A guard that fires on its own doctrine being documented is
-                // one somebody eventually disables.
-                if line.trim_start().starts_with("//") {
-                    continue;
-                }
-                for token in FORBIDDEN_FORMAT_TOKENS {
-                    if line.contains(token) {
-                        failures.push(format!(
-                            "G5: forbidden format token {token:?} in {}:{}",
-                            rel.display(),
-                            n + 1
-                        ));
-                    }
-                }
+            let Ok(stream) = src.parse::<proc_macro2::TokenStream>() else {
+                // **Loud, not skipped.** A file this cannot lex is one it cannot
+                // vouch for, and passing it silently is how a scanner reports
+                // green over the only file that needed it.
+                failures.push(format!("G5: {} could not be tokenised", rel.display()));
+                continue;
+            };
+            let mut hits: Vec<(String, String)> = Vec::new();
+            scan_format_tokens(stream, &mut hits);
+            for (seg, ctx) in hits {
+                failures.push(format!(
+                    "G5: real chemical format {seg:?} in {} (as {ctx})",
+                    rel.display()
+                ));
             }
         }
     }
     Ok(())
+}
+
+/// Walk a token stream, reporting identifiers and string literals that contain a
+/// [`FORMAT_SEGMENTS`] entry as a whole segment.
+fn scan_format_tokens(stream: proc_macro2::TokenStream, hits: &mut Vec<(String, String)>) {
+    for tt in stream {
+        match tt {
+            proc_macro2::TokenTree::Group(g) => {
+                let is_doc = matches!(g.delimiter(), proc_macro2::Delimiter::Bracket)
+                    && g.stream().into_iter().next().is_some_and(
+                        |t| matches!(&t, proc_macro2::TokenTree::Ident(i) if i == "doc"),
+                    );
+                if !is_doc {
+                    scan_format_tokens(g.stream(), hits);
+                }
+            }
+            proc_macro2::TokenTree::Ident(id) => {
+                let name = id.to_string();
+                for seg in identifier_segments(&name) {
+                    if FORMAT_SEGMENTS.contains(&seg.as_str()) {
+                        hits.push((seg, format!("identifier `{name}`")));
+                    }
+                }
+            }
+            proc_macro2::TokenTree::Literal(lit) => {
+                let text = lit.to_string();
+                let inner = text.trim_matches(|c| c == '"' || c == 'r' || c == '#');
+                for seg in identifier_segments(inner) {
+                    if FORMAT_SEGMENTS.contains(&seg.as_str()) {
+                        hits.push((seg, format!("string literal {text}")));
+                    }
+                }
+            }
+            proc_macro2::TokenTree::Punct(_) => {}
+        }
+    }
 }
 
 /// §13.1 — every transcendental must route through `borbax_units::det_math`.
@@ -1756,6 +1882,7 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 mod tests {
     use super::scan_for_derived_streams;
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
+    use super::{identifier_segments, scan_format_tokens};
 
     /// A `{` inside a comment between `fn NAME(` and the real body must not be
     /// mistaken for the body brace. The two files are near-copies including
@@ -2629,6 +2756,87 @@ mod tests {
     fn a_cfg_test_item_that_opens_no_block_does_not_start_a_region() {
         let src = "#[cfg(test)]\nuse std::f64;\nfn real(y: f64) -> f64 { y.cos() }\n";
         assert_eq!(scan(src).len(), 1, "{:?}", scan(src));
+    }
+
+    /// Lex a source string for G5 hits the way the real check does.
+    fn g5(src: &str) -> Vec<(String, String)> {
+        let mut hits = Vec::new();
+        // Neither `unwrap`, `expect` nor `panic!` is available — all three are
+        // denied workspace-wide and the deny reaches inside `#[cfg(test)]`. The
+        // emptiness assert is not decoration: a source that failed to lex would
+        // make every assertion below pass vacuously.
+        let stream: proc_macro2::TokenStream = src.parse().unwrap_or_default();
+        assert!(!stream.is_empty(), "test source did not lex: {src:?}");
+        scan_format_tokens(stream, &mut hits);
+        hits
+    }
+
+    /// **The parser that defeated the predecessor.** A case-sensitive substring
+    /// scan reported zero hits on this while `clippy -D warnings` stayed clean.
+    #[test]
+    fn a_real_format_parser_is_caught_however_it_is_spelled() {
+        let src = r#"
+            pub struct SmilesParser { depth: usize }
+            impl SmilesParser {
+                pub fn parse_smiles(&mut self, s: &str) -> usize { s.len() }
+                pub fn to_smiles(&self) -> String { String::new() }
+            }
+            pub const IMPORT_EXTENSIONS: &[&str] =
+                &["smi", "smiles", "inchi", "sdf", "pdb", "fasta"];
+            pub fn read_molfile(t: &str) -> usize { t.len() }
+            pub fn write_fasta() -> String { String::new() }
+        "#;
+        let found = g5(src);
+        assert!(found.len() >= 10, "only {} hits: {found:?}", found.len());
+        for want in ["smiles", "smi", "inchi", "sdf", "pdb", "fasta", "molfile"] {
+            assert!(
+                found.iter().any(|(seg, _)| seg == want),
+                "missed {want}: {found:?}"
+            );
+        }
+    }
+
+    /// Doctrine must be writable where it matters. The predecessor failed on a
+    /// sentence lifted from CLAUDE.md, and a gate that fires on its own
+    /// rationale is one somebody disables.
+    #[test]
+    fn every_comment_form_may_state_the_prohibition() {
+        for src in [
+            "/// Never import SMILES, InChI, MOL format or FASTA.\nfn f() {}\n",
+            "//! No FASTA, no InChI, no SMILES anywhere.\nfn f() {}\n",
+            "/* Borbax will never read SMILES or PDB format files. */\nfn f() {}\n",
+            "fn f() {}\n// a SMILES parser does not live here\n",
+            "pub const Q: u8 = 1; // no SMILES parser here\n",
+        ] {
+            assert!(g5(src).is_empty(), "fired on prose: {src:?}");
+        }
+    }
+
+    /// `mol` is deliberately out of the vocabulary: `fn embed(mol: &Molecule)`
+    /// appears six times in `experiments/`, and `sdf`/`molfile` cover the same
+    /// import path without the collision.
+    #[test]
+    fn ordinary_molecule_vocabulary_does_not_fire() {
+        for src in [
+            "fn embed(mol: &Molecule) -> usize { 0 }\n",
+            "fn f() { let smith = 1; let summary = 2; }\n",
+            "struct Molecule { atoms: usize }\n",
+        ] {
+            assert!(g5(src).is_empty(), "false positive: {src:?}");
+        }
+    }
+
+    /// Segment splitting is what makes `smi` safe to carry: it matches
+    /// `parse_smi` and not `smith`.
+    #[test]
+    fn identifiers_split_on_underscores_and_camel_case() {
+        assert_eq!(identifier_segments("SmilesParser"), ["smiles", "parser"]);
+        assert_eq!(
+            identifier_segments("read_pdb_file"),
+            ["read", "pdb", "file"]
+        );
+        assert_eq!(identifier_segments("SMILES"), ["smiles"]);
+        assert_eq!(identifier_segments("smith"), ["smith"]);
     }
 
     #[test]
