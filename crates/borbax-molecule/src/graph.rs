@@ -159,7 +159,11 @@ impl Mol12 {
 
     /// The adjacency bit for atom `b`, or `None` if `b` names no atom.
     ///
-    /// **Every shift in this file goes through here, and that is the point.**
+    /// **Every shift on a caller-supplied index goes through here, and that is
+    /// the point.** (`is_connected` shifts a loop counter it just bounded by
+    /// `self.n`; the qualifier is there because an unqualified "every shift in
+    /// this file" was false, and CLAUDE.md records two shipped defects that were
+    /// exactly a doc asserting a bound it did not have.)
     /// An earlier version spelled `1u16 << u32::from(b)` inline in
     /// [`Self::bond_order`] and twice more in `clear_bond`, guarded in neither —
     /// so the bound was enforced by `row`/`set_row`'s `.get()` calls, which
@@ -289,15 +293,35 @@ impl Mol12 {
             }
         }
 
-        // Past every fallible step. Both of these are infallible, so the write
-        // is a commit rather than a mutation that might need undoing.
-        self.clear_pair(a, b, bit_a, bit_b);
+        // Past every fallible step, so this is a commit rather than a mutation
+        // that might need undoing.
         self.write_pair(a, b, bit_a, bit_b, order);
         Ok(())
     }
 
-    /// Set the plane bits for a pair whose bits are already known valid.
+    /// Set the plane bits for a pair, **clearing every other plane first**.
+    ///
+    /// The predecessor was documented "assumes the pair is already clear" and
+    /// left the clearing to its caller. A restructure then reworded the doc to
+    /// "whose bits are already known valid" — which is about the bit *masks* —
+    /// and the precondition vanished with nothing in its place.
+    ///
+    /// Two planes set for one pair is the illegal state [`Mol12`]'s own doc
+    /// names: [`Mol12::bond_order`] returns the *lowest* order while
+    /// [`Mol12::valence_used`] counts them all, so `encode` and `refine`
+    /// disagree about the graph. Measured: a pair written SINGLE then TRIPLE
+    /// interns as the **single-bonded species** while carrying four spent
+    /// valence slots — a species collision, in which a whole class of
+    /// higher-order bonds silently collapses onto the single-bonded form.
+    ///
+    /// So the clear happens here rather than in a comment asking callers to do
+    /// it. The struct doc names Task 11's `Polymer` as the next in-crate builder,
+    /// which is exactly who the old precondition was waiting for. Same six
+    /// `set_row`s either way, one caller obligation fewer — and a clear cannot
+    /// be absent from the profile that mints goldens the way a `debug_assert`
+    /// can, which is why it is not one.
     fn write_pair(&mut self, a: u8, b: u8, bit_a: u16, bit_b: u16, order: BondOrder) {
+        self.clear_pair(a, b, bit_a, bit_b);
         let plane = order.plane_index();
         self.set_row(plane, a, self.row(plane, a) | bit_b);
         self.set_row(plane, b, self.row(plane, b) | bit_a);
@@ -668,6 +692,66 @@ mod tests {
             Err(BondError::NoSuchAtom { .. })
         ));
         assert_eq!(m, before);
+    }
+
+    /// **At most one plane may hold any pair — the invariant `Mol12`'s struct
+    /// doc names and nothing asserted.**
+    ///
+    /// Two planes for one pair is not a slow answer, it is a species collision:
+    /// `bond_order` returns the *lowest* order while `valence_used` counts all
+    /// of them, so `encode` and `refine` disagree about what graph they are
+    /// looking at. Measured on a build where `write_pair` did not clear first, a
+    /// pair written SINGLE then TRIPLE interned as the single-bonded species
+    /// while carrying four spent valence slots.
+    ///
+    /// Asserted over the whole random corpus rather than one fixture, because
+    /// the states that reach it are the ones a *future* builder constructs.
+    #[test]
+    fn a_pair_never_occupies_two_planes() {
+        let t = table();
+        let two = valence_exactly(&t, 2);
+        let four = valence_exactly(&t, 4);
+
+        let mut m = Mol12::new();
+        atom(&mut m, four);
+        atom(&mut m, four);
+        // Every replacement path, in both directions.
+        for (first, second) in [(1u8, 3u8), (3, 1), (2, 2), (1, 4), (4, 1)] {
+            bond(&mut m, 0, 1, order(first), &t);
+            bond(&mut m, 0, 1, order(second), &t);
+            let planes = BondOrder::ALL
+                .into_iter()
+                .filter(|o| m.neighbours_at(*o, 0) & (1u16 << 1) != 0)
+                .count();
+            assert_eq!(
+                planes, 1,
+                "order {first} then {second} left {planes} planes set"
+            );
+            assert_eq!(m.bond_order(0, 1), Some(order(second)));
+            assert_eq!(
+                m.valence_used(0),
+                u32::from(second),
+                "valence_used counts every plane, so it exposes a stale one"
+            );
+        }
+
+        // And a chain, where clear_bond is the other route in.
+        let mut c = Mol12::new();
+        for _ in 0..3 {
+            atom(&mut c, two);
+        }
+        bond(&mut c, 0, 1, BondOrder::SINGLE, &t);
+        bond(&mut c, 1, 2, BondOrder::SINGLE, &t);
+        assert!(c.clear_bond(0, 1).is_ok());
+        for a in 0..3u8 {
+            for b in (a + 1)..3u8 {
+                let planes = BondOrder::ALL
+                    .into_iter()
+                    .filter(|o| c.neighbours_at(*o, a) & (1u16 << b) != 0)
+                    .count();
+                assert!(planes <= 1, "pair {a}-{b} is in {planes} planes");
+            }
+        }
     }
 
     /// **An index past the atom count must be refused before anything shifts.**
