@@ -11,6 +11,8 @@
 //! the species and are computed once, at intern time. No code reachable from a
 //! simulation step may call any of them.
 
+pub mod canonical;
 pub mod graph;
 
+pub use canonical::{CanonForm, SEARCH_LEAF_CAP, SearchStats, canonicalise};
 pub use graph::{BondError, MAX_ATOMS, Mol12, N_ORDERS};
