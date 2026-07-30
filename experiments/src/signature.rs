@@ -38,7 +38,7 @@ use crate::molecule::{ELEMENT_RADII, Molecule, N_ELEMENTS};
 /// {12, 42, 162} and nothing between them preserves the exact permutation.
 pub const D: usize = 42;
 
-/// The support function of the union of atom spheres, sampled along `g.dirs`.
+/// The support function of the union of atom spheres, sampled along `g.dirs()`.
 ///
 /// Written as an explicit max over atoms in index order rather than a
 /// `fold`/`max_by`, so the traversal order is fixed and no float comparison
@@ -46,7 +46,7 @@ pub const D: usize = 42;
 #[must_use]
 pub fn signature<const N: usize>(g: &Geodesic<N>, coords: &[Point], elements: &[u8]) -> Vec<f64> {
     let mut out = vec![f64::NEG_INFINITY; N];
-    for (i, u) in g.dirs.iter().enumerate() {
+    for (i, u) in g.dirs().iter().enumerate() {
         let mut best = f64::NEG_INFINITY;
         for (a, p) in coords.iter().enumerate() {
             let radius = ELEMENT_RADII
@@ -197,7 +197,7 @@ pub fn d_group<const N: usize>(g: &Geodesic<N>, a: &[f64], b: &[f64]) -> f64 {
     for r in 0..N_ROTATIONS {
         let mut total = 0.0;
         for i in 0..N {
-            let e = a[i] - b[usize::from(g.perms[r][i])];
+            let e = a[i] - b[usize::from(g.rotation_perms(r)[i])];
             total += e * e;
         }
         if total < best {
@@ -353,7 +353,7 @@ mod tests {
         let coords = [[3.0, 0.0, 0.0], [-3.0, 0.0, 0.0]];
         let sig = signature(&g, &coords, &[0, 3]);
         for (i, &s) in sig.iter().enumerate() {
-            let u = g.dirs[i];
+            let u = g.dirs()[i];
             // Spelled as a comparison, not `f64::max`, for the reason in
             // `min_pair_dist2` — and because a test that reaches for the
             // banned spelling is how the ban gets relaxed later.
@@ -386,7 +386,7 @@ mod tests {
             let sig = signature(&g, &turned, &m.elements);
             for i in 0..D {
                 let want = base[i];
-                let got = sig[g.perms[r][i] as usize];
+                let got = sig[g.rotation_perms(r)[i] as usize];
                 assert!(
                     (got - want).abs() < 1e-9,
                     "rotation {r}, direction {i}: {got} != {want}"

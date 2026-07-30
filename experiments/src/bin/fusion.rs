@@ -1032,7 +1032,7 @@ mod tests {
             let mut min_d2 = f64::MAX;
             for i in 0..D {
                 for j in (i + 1)..D {
-                    let d2 = dist2(g.dirs[i], g.dirs[j]);
+                    let d2 = dist2(g.dirs()[i], g.dirs()[j]);
                     if d2 < min_d2 {
                         min_d2 = d2;
                     }
@@ -1042,7 +1042,7 @@ mod tests {
             (0..D)
                 .map(|i| {
                     (0..D)
-                        .filter(|&j| j != i && dist2(g.dirs[i], g.dirs[j]) < cut)
+                        .filter(|&j| j != i && dist2(g.dirs()[i], g.dirs()[j]) < cut)
                         .collect()
                 })
                 .collect()
@@ -1080,7 +1080,7 @@ mod tests {
             // by construction — asserted anyway, because "by construction" is
             // what the last three defects in this file were also confident of.
             assert!(
-                g.dirs.iter().all(|d| d[2].is_finite()),
+                g.dirs().iter().all(|d| d[2].is_finite()),
                 "geodesic directions must be finite"
             );
             #[expect(
@@ -1089,7 +1089,7 @@ mod tests {
                           index tie-break keeps the order total across equal \
                           heights — which are common on a geodesic"
             )]
-            idx.sort_by(|&a, &b| g.dirs[b][2].total_cmp(&g.dirs[a][2]).then(a.cmp(&b)));
+            idx.sort_by(|&a, &b| g.dirs()[b][2].total_cmp(&g.dirs()[a][2]).then(a.cmp(&b)));
             idx
         }
 

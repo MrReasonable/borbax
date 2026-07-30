@@ -217,8 +217,8 @@ fn under_ceiling(got: f64, max: f64) -> bool {
 ///   not a pure function of direction fails here.
 ///
 /// **A dropped `ANTI` cannot fail either of those, and an earlier version of
-/// this comment claimed it could.** `d_group` reads `g.perms` and never touches
-/// `g.anti` — correctly, because `ANTI` exists for the binding kernel, where two
+/// this comment claimed it could.** `d_group` reads `g.rotation_perms()` and never touches
+/// `g.anti()` — correctly, because `ANTI` exists for the binding kernel, where two
 /// bodies in contact touch along *opposite* directions, and this compares one
 /// shape against itself in two poses. That coverage has to come from Task 8's
 /// kernel tests; advertising it here is worse than the gap, because it is the

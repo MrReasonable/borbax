@@ -291,7 +291,7 @@ fn signature_with(
     radii: &[f64],
 ) -> Vec<f64> {
     let mut out = vec![f64::NEG_INFINITY; D];
-    for (i, u) in g.dirs.iter().enumerate() {
+    for (i, u) in g.dirs().iter().enumerate() {
         let mut best = f64::NEG_INFINITY;
         for (a, p) in coords.iter().enumerate() {
             let r = radii.get(usize::from(elements[a])).copied().unwrap_or(0.0);
