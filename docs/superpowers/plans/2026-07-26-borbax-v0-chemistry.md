@@ -21,7 +21,7 @@ Task 4's review routed into Task 5, not oversights:
 | `ElementId(3)` from another crate | `ElementId::from_index(3)` → `Option` | the field is `pub(crate)`; `elements[id.0 as usize]` was a panic site at every call site, under `indexing_slicing` |
 | `u.elements`, `u.shell` | `u.table` — `PeriodicTable` with `get`/`iter`/`len`/`pattern` | names the tuple `generate_elements` returned |
 | `u.element(id).decay_rate` | `u.element(id)` → `Option<&Element>` | clamping an out-of-range id answered with a *different element's* properties, which nothing downstream could detect |
-| `u.bonds.energy(&a, &b, 1)` | `u.bonds.energy(id_a, id_b, BondOrder::Single)` | a rate path holds ids, not structs 48 bytes of which are `String`; and `order: u8` had no honest answer for `0` — clamping it to `1` gives a non-bond the energy of a single bond |
+| `u.bonds.energy(&a, &b, 1)` | `u.bonds.energy(id_a, id_b, BondOrder::SINGLE)` — and `BondOrder` is a validated newtype over `1..=BondOrder::MAX` (6), not a three-variant enum; build one with `BondOrder::new`/`try_from`, iterate `BondOrder::ALL` | a rate path holds ids, not structs 48 bytes of which are `String`; and `order: u8` had no honest answer for `0` — clamping it to `1` gives a non-bond the energy of a single bond |
 
 `Element::energy_per_unit` is `Quanta` rather than `f64` (§5 G4, decided in
 Task 5 rather than inherited). `Quanta / Quanta` is `f64`, so ratios and
@@ -1694,8 +1694,20 @@ it expecting it to work.
 **Requirement: retire `borbax-universe`'s known-wrong sentinel.**
 `BondEnergyMatrix::energy` returns `Quanta::ZERO` for an id outside its table.
 Under `k = A·exp(−E_bond/T)` that is the **fastest-cleaving** value, not an inert
-one. Today the error is ~3% because `E/T` is in the linear regime — but once this
-task applies its own `Ea/T` sizing the same sentinel becomes a factor of ~10²–10⁵.
+one.
+
+**The "~3% today, 10²–10⁵ once `E/T` rises" sizing an earlier version gave here
+is retired by this task's own READ FIRST block above** — `E/T` already rose, in
+the commit that derived the bond scale. Measured at Task 5's HEAD over 2000
+universes, the sentinel rates **1.05×–1.31× the fastest** genuine bondable bond
+and up to **16.7× the slowest**. It is a per-universe range with a long tail, not
+a 3% constant, and it is not deferrable on the old number.
+
+There is a second meaning on the same value now, which is the harder half: the
+**monomer** has no contacts and genuinely prices `Quanta::ZERO`. So a consumer
+cannot distinguish "not from this universe" from "a legitimate zero" by
+inspecting the value, and the monomer is the most abundant species in every
+beaker.
 **So the sentinel must die in the same commit as the coupling, not after it.**
 The shape with the property is an id that cannot be built without a successful
 lookup against the table it will be used with; `ElementId::from_index` is
@@ -3316,6 +3328,56 @@ makes that easy to do quickly rather than impossible to do wrongly.
 ---
 
 ### Task 20: The beaker battery and metrics
+
+**Two items were reported as routed here and were written nowhere. A grep of
+this task for `Ea/T`, `E/T`, "rate spread" and "strain exponent" returned zero
+before this block existed.**
+
+## The `Ea/T` band — Task 14 fixes the *group*, this task chooses the *value*
+
+`borbax-universe` derives the bond scale from the table's own `eps`; Task 14
+couples it to temperature so the dimensionless group `Ea/T` stops depending on
+two independent draws. Neither decides **what band `Ea/T` should sit in**, and
+that is a chemistry judgement this battery is the instrument for.
+
+What is already known, measured at Task 5's HEAD and to be re-measured here
+rather than trusted:
+
+- `Ea/T` reaches ~14.5; the cleave-rate ratio across all representable orders at
+  `temp_min` spans several orders of magnitude and exceeds 2.0 in every drawn
+  universe. Before the derivation change it was near 1 in all of them.
+- Under a constant multiplier the `Ea/T` spread across universes is ~4.4×;
+  drawing the energy in units of the universe's own temperature collapses it to
+  ~1.09×. That is Task 14's remedy and it has a measured target: **`Ea/T` within
+  roughly ±6% of nominal across universes.**
+
+*Discriminator:* the criterion must read a **realised lifetime ratio** — the
+abundance-weighted spread of species half-lives the beaker actually produces —
+not the bond-energy spread that feeds it. §22.6 asks for durable and fragile
+*linkages*; a matrix with a wide energy spread and a dead exponent satisfies the
+input and not the requirement, which is the defect Task 5's review spent four
+rounds on. A criterion expressible as a function of `hi/lo` alone is the wrong
+one.
+
+## The strain exponent `N^(2/3)` is chosen, not derived
+
+`element.rs` states this in its own comment and defers here: per-*shell* strain
+proportional to `n²`, summed and divided by `N`, gives `1/k` — a constant, not
+`N^(2/3)`. Reaching 2/3 needs per-*site* strain proportional to `n²`, which is a
+different claim. Accumulating shell-by-shell instead, as `contacts_upto` already
+does for the identical reason, **moves the binding peak in 48.1% of drawn
+universes**.
+
+It matters here because `peak` is load-bearing in two places that did not exist
+when it was deferred: it is the stellar/supernova boundary in Task 5b's
+abundance profile, and it sets `decay_rate` for every element. A 48% chance of
+the peak moving is a 48% chance of both moving with it.
+
+*Discriminator:* the sweep must compare the shell-by-shell accumulation against
+the closed form and report how far the peak moves, per universe — not assert a
+band on the exponent, which is the quantity in question. If the shell-by-shell
+form is adopted, every figure quoting a peak position requotes with it.
+
 
 **Carried in from Task 4's review — the decay band sweep cannot move the
 dominant channel.** `borbax band --sweep decay_scale` bisects `decay_scale`,
