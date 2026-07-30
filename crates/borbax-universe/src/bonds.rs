@@ -288,14 +288,22 @@ impl BondOrder {
 
     /// How many per-order planes a consumer must allocate to hold every order.
     ///
-    /// **Not `ALL.len()`, and the difference is a live out-of-bounds.** A
-    /// consumer storing one plane per order indexes it as `order - 1`, so what
-    /// it needs is `MAX`, not the *count* of representable orders. Those agree
-    /// today only because of the `const _` below — which lives in this crate and
-    /// which `borbax-molecule` can neither see nor cite. Make `ALL` sparse
-    /// (`[1, 2, 3, 6]` is not absurd while formability is still being decided)
-    /// and `ALL.len()` is 4 while `MAX` is 6, so order 6 indexes plane 5 of a
-    /// 4-plane array. Task 6's draft wrote `ALL.len()` and had exactly that gap.
+    /// **Naming, not a new guarantee — the doc here previously overstated it.**
+    /// A consumer storing one plane per order indexes it as `order - 1`, so
+    /// `[T; PLANES]` says what it means, where `[T; ALL.len()]` says an adjacent
+    /// thing that coincides. It was claimed that a sparse `ALL` (`[1, 2, 3, 6]`)
+    /// would make `ALL.len()` 4 against a `MAX` of 6 and put order 6 out of
+    /// bounds. A review checked: **that does not compile.** The `const _` below
+    /// rejects it with `E0080`, in this file, so introducing a sparse `ALL` is a
+    /// deliberate act of deleting an assertion rather than an accident waiting
+    /// to happen.
+    ///
+    /// What remains true and is the reason to keep this: `borbax-molecule` can
+    /// neither see nor cite that `const _`, so `PLANES` is the name it can
+    /// depend on without depending on an invariant it cannot read. Task 6's
+    /// draft wrote `ALL.len()`, and so — until a review caught it — did
+    /// `OrderScale::mult`, the one consumer of this pattern already in the
+    /// crate.
     #[expect(
         clippy::as_conversions,
         reason = "`usize::from` is not stable as a const fn on 1.97.1 (`From` is \
@@ -449,7 +457,13 @@ pub struct BondEnergyMatrix {
 /// `[2.2, 3.0]`) with one constant instead of two.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct OrderScale {
-    mult: [f64; BondOrder::ALL.len()],
+    // **`PLANES`, not `ALL.len()`.** This array is indexed at `order - 1` by
+    // `of()`, so what it needs is `MAX`. They coincide only while `ALL` is
+    // dense. A review pointed out that this — the one existing consumer of the
+    // one-slot-per-order pattern — still said `ALL.len()` in the commit that
+    // introduced `PLANES` to say otherwise; measured under a sparse `ALL` it
+    // prices the top order as `NaN` and fails five tests including the digest.
+    mult: [f64; BondOrder::PLANES],
 }
 
 impl OrderScale {
@@ -468,7 +482,7 @@ impl OrderScale {
     /// baseline was wrong, and a per-lookup cost is exactly the number someone
     /// sizes a budget against later.
     fn new(gamma: f64) -> Self {
-        let mut mult = [1.0; BondOrder::ALL.len()];
+        let mut mult = [1.0; BondOrder::PLANES];
         for (i, m) in mult.iter_mut().enumerate() {
             // `i` runs 0..ALL.len(), so the narrowing is lossless; `as` is
             // denied. **`NAN` on the impossible branch, not `0`.** `0` there
@@ -1789,11 +1803,21 @@ mod tests {
             "an order indexes past PLANES ({}): {planes:?}",
             BondOrder::PLANES
         );
-        assert_eq!(
-            planes.into_iter().collect::<Vec<_>>(),
-            (0..BondOrder::PLANES).collect::<Vec<_>>(),
-            "the planes are not exactly 0..PLANES — a consumer sizing on PLANES \
-             would allocate a row nothing writes, or index one that does not exist"
-        );
+        // **The half `ALL` cannot state.** `new` bounds on `1..=MAX` and never
+        // consults `ALL`'s membership, so under a sparse `ALL` a `BondOrder`
+        // can exist that `ALL` does not list — `new(4)` would still return
+        // `Some`. That is the value an unvalidated `u8` actually reaches, and
+        // it is a wider gap than the plane arithmetic. Assert over everything
+        // `new` admits, not everything `ALL` lists.
+        for n in 0..=u8::MAX {
+            if let Some(o) = BondOrder::new(n) {
+                assert!(
+                    o.plane_index() < BondOrder::PLANES,
+                    "order {n} indexes plane {} past PLANES {}",
+                    o.plane_index(),
+                    BondOrder::PLANES
+                );
+            }
+        }
     }
 }
