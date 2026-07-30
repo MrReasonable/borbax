@@ -1375,7 +1375,18 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
             if meta.is_symlink() {
                 out.push(path);
             } else if meta.is_dir() {
-                if path.file_name().and_then(|n| n.to_str()) != Some("target") {
+                // **Prune cargo's build directory, not every directory called
+                // `target`.** `.gitignore` anchors `/target/`, so a nested
+                // `experiments/src/target/` is *committed* — and pruning by name
+                // at any depth meant it was never scanned. Measured: a real
+                // element table at `experiments/src/target/elements.json` passed
+                // the whole gate, while the identical file one directory up
+                // failed `check_no_data_files` as it should. That is a **G1**
+                // hole, not merely G5, because `walk` is shared with the
+                // data-file check.
+                let is_build_dir = path.file_name().and_then(|n| n.to_str()) == Some("target")
+                    && path.parent().and_then(|p| p.file_name()).is_none();
+                if !is_build_dir {
                     stack.push(path);
                 }
             } else {
