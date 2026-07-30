@@ -130,13 +130,26 @@
 //! of them.
 //!
 //! **But that is carried by bond order, not by the energy scale.** For *single*
-//! bonds alone, max `E/T` is below 1 in **218 of 500** universes — so the
-//! pre-derivation diagnosis ("`E/T` sits in `exp`'s linear regime") is still true
-//! in 44% of universes for the only order many pairs can form. An earlier version
-//! of this paragraph said "no longer near zero" without that split, and priced
-//! every pair at order 6 to say it: measured, **78.1% of universes cannot form an
-//! order-6 bond at all**, so the figure came from an energy no bond in four
-//! universes out of five can carry.
+//! bonds alone, max `E/T` is below 1 in **218 of 500** universes (41.5% at 200
+//! seeds, 43.6% at 500, 45.0% at 2000 — it is a sample statistic, not a
+//! constant). Order 1 is not "the only order many pairs can form" — only 11.0%
+//! of bondable pairs are capped there. The true and stronger statement is that
+//! order 1 is the only order **every** pair can form, and the floor for all of
+//! them, so this is a claim about the whole chemistry's baseline.
+//!
+//! **Do not read that as "the old diagnosis still holds in 44%".** It does not,
+//! and the difference is a Task 14 sizing input. Conditioning on exactly the
+//! flagged universes, at `T_min` over 2000 seeds, the single-bond rate ratio
+//! there is **[1.3616, 2.4430], mean 1.9657** — against the **1.04–1.24x** that
+//! prompted the original finding. The worst flagged universe now beats the best
+//! pre-change one. What is true is the weaker claim: those universes sit where
+//! `exp` is nearly linear, so composition alone cannot lift the ratio past `e`
+//! there. (Elsewhere: [2.3625, 12.7144], mean 3.6620.)
+//!
+//! An earlier version of this paragraph said "no longer near zero" without the
+//! order split at all, and priced every pair at order 6 to say it: measured,
+//! **78.1% of universes cannot form an order-6 bond**, so the figure came from
+//! an energy no bond in four universes out of five can carry.
 //!
 //! Task 14 must size against the formable numbers. `the_header_figures_are_current`
 //! now caps at the per-pair valence bound and measures `[11.40, 2370.55]` energy,
@@ -144,34 +157,44 @@
 //!
 //! **The absolute energy scale rose about fivefold, and that was not stated
 //! when it happened.** Capacity was normalised onto `[w, 1]` and is now contact
-//! density, which runs toward `z/2` — so bond energies moved from roughly
-//! `6.6..42.7` to `23.9..221.0` on seed 0. The new single-bond rate *minimum* is
-//! roughly the old *maximum*, and orders reaching 6 multiply the exponent again.
+//! density, which runs toward `z/2`. On seed 0, over **formable** orders across
+//! bondable pairs, energies now span `38.98..1729.49`. The new single-bond rate
+//! *minimum* is roughly the old *maximum*, and orders reaching 6 multiply the
+//! exponent again.
 //!
 //! **A third consequence rode along and is worth naming separately**: the draw
 //! count on `Domain::Universe` index 1 went from four to two, so every constant
-//! after the bond draws shifted. Seed 0's `temp_min` moved from 206.09 to
-//! 222.68, and its solvent with it. That is not "the bond derivation changed";
-//! it is every shared seed naming a different universe, which is exactly what a
-//! digest exists to make visible rather than silent.
+//! after the bond draws shifted — and then the bond generator moved to its own
+//! index 2, shifting them again. Seed 0's `temp_min` is now **197.2437**; this
+//! paragraph has quoted 206.09 and then 222.68, each true of a tree two commits
+//! back. That is not "the bond derivation changed"; it is every shared seed
+//! naming a different universe, which is exactly what a digest exists to make
+//! visible rather than silent.
 //!
 //! **What that does and does not settle.** §22.6 wants "some linkages durable
-//! and others fragile", and a 1.19–3.73x lifetime ratio from composition alone —
-//! with bond order supplying five further orders of magnitude — is a different
-//! situation from the 1.04–1.24x that prompted the finding. Whether it *suffices*
-//! is a chemistry judgement for Task 20's battery, not a claim this file should
-//! make. What it does settle is that any sizing done against the old numbers is
-//! wrong: an implementer applying Task 14's coupling on top of these while
-//! reading `1.043–1.243` would oversize it badly.
+//! and others fragile". From composition alone — order held at `SINGLE`, so the
+//! only variation is which two elements are joined — the cleave-rate ratio over
+//! 500 seeds is **[1.1886, 4.2678] at `T_mid`** and **[1.4182, 12.7144] at
+//! `T_min`**. Both are a different situation from the 1.04–1.24x that prompted
+//! the finding. Whether either *suffices* is a chemistry judgement for Task 20's
+//! battery, not a claim this file should make.
 //!
-//! `the_single_bond_rate_spread_at_mid_temperature_is_narrow` now sits **1.75x**
-//! from firing, not the ~5.8x its own comment claimed under the old map. The
-//! test that exists to say when the regime changed is close to saying so.
+//! **Name the temperature or the number means nothing.** An earlier version of
+//! this paragraph said "1.19–3.73x", which took its low end from `T_mid` and its
+//! high end from no sample that reproduces, then argued in the next clause from
+//! a `T_min` figure — one sentence, two temperatures, neither labelled. Every
+//! rate figure in this header now carries `(T, sample)` or is not here.
+//!
+//! What it does settle is that any sizing done against the old numbers is wrong:
+//! an implementer applying Task 14's coupling on top of these while reading
+//! `1.043–1.243` would oversize it badly.
 //!
 //! **A STOP stood here and it was a false alarm — recorded because a Task 14
 //! implementer opens this file first.** It said drawing the energy in units of
 //! the universe's own temperature "would collapse a cleave-rate spread of 3 to
-//! 217 758 down to 1.09x, deleting §9.4's differential persistence". That does
+//! 217 758 down to 1.09x, deleting §9.4's differential persistence". Both of
+//! those endpoints are stale too — measured at 2000 seeds the spread is
+//! **2.4018 to 1.6094e6** — but the figures are the smaller problem. That does
 //! not follow. `E = base·sqrt(c_a c_b)·n^gamma` is separable, so pinning
 //! `base/T` across universes does not collapse the *within*-universe rate ratio
 //! — it makes every universe have the *same* ratio, at whatever level the
@@ -397,9 +420,16 @@ impl OrderScale {
     fn new(gamma: f64) -> Self {
         let mut mult = [1.0; BondOrder::ALL.len()];
         for (i, m) in mult.iter_mut().enumerate() {
-            // `i` runs 0..ALL.len(), so the narrowing is lossless; `as` is denied.
-            let order = u8::try_from(i).unwrap_or(0).saturating_add(1);
-            *m = det_math::powf(f64::from(order), gamma);
+            // `i` runs 0..ALL.len(), so the narrowing is lossless; `as` is
+            // denied. **`NAN` on the impossible branch, not `0`.** `0` there
+            // saturates to order 1 and prices at `powf(1, gamma) == 1.0` —
+            // *exactly* order 1's multiplier, which is the precise
+            // silent-wrong-number `BondOrder::ALL`'s own doc says this type
+            // exists to prevent. This file states the rule twice already, at
+            // `contact_density` and at `of`: an unreachable fallback is `NAN`,
+            // so it cannot be mistaken for a real answer.
+            let order = u8::try_from(i).map_or(f64::NAN, |n| f64::from(n.saturating_add(1)));
+            *m = det_math::powf(order, gamma);
         }
         Self { mult }
     }
@@ -433,6 +463,24 @@ impl OrderScale {
 }
 
 impl BondEnergyMatrix {
+    /// The multiple of [`crate::element::ShellPattern::eps`] that sets this bond
+    /// energy scale, as a `(lo, hi)` draw range.
+    ///
+    /// **One definition, deliberately, because two identical ones do not pin a
+    /// retune.** `both_bond_constants_are_this_universes_own_draws` replays the
+    /// production stream to prove the constants are the seed's own. When that
+    /// replay re-typed the literals, a single find-and-replace across the file —
+    /// or a multi-cursor edit, which is how a range actually gets retuned —
+    /// updated both copies and the test re-derived the *new* constant: measured,
+    /// `s/84.0/84.5/` left 58 of 59 green, the digest alone firing. Sharing the
+    /// range leaves the replay pinning what it can genuinely pin, the **order
+    /// and count** of the draws, and leaves "the range itself moved" to the
+    /// digest, which is the guard that is actually re-pinned by hand.
+    pub(crate) const SCALE_RANGE: (f64, f64) = (28.0, 84.0);
+    /// The bond-order exponent's draw range. See [`Self::SCALE_RANGE`] for why
+    /// this is one definition rather than two.
+    pub(crate) const GAMMA_RANGE: (f64, f64) = (0.68, 1.0);
+
     /// Derive the matrix from a table's binding energies.
     ///
     /// **Two constants are drawn and both are dimensionless** — the multiple of
@@ -469,7 +517,7 @@ impl BondEnergyMatrix {
         // energy. Drawing an independent `base` in Quanta encoded that quantity
         // twice, and a review measured the consequence — the matrix was exactly
         // invariant to `energy_per_unit`'s magnitude, 3.7e-16 under a x1000.
-        let scale = rng.next_f64_range(28.0, 84.0);
+        let scale = rng.next_f64_range(Self::SCALE_RANGE.0, Self::SCALE_RANGE.1);
         let base = pattern.eps * scale;
         // The order exponent. See `OrderScale`.
         // **`gamma <= 1` is CHOSEN, not derived, and it is load-bearing.** It
@@ -483,7 +531,8 @@ impl BondEnergyMatrix {
         // be the mechanism for bond order here. Stated as chosen, on the
         // precedent of `element.rs`'s own `N^(2/3)` note, until something
         // derives it. `the_order_series_diminishes` asserts it.
-        let order_scale = OrderScale::new(rng.next_f64_range(0.68, 1.0));
+        let order_scale =
+            OrderScale::new(rng.next_f64_range(Self::GAMMA_RANGE.0, Self::GAMMA_RANGE.1));
 
         // **Capacity is contact density, not net binding energy**, and the
         // difference is the mechanism rather than a detail. `energy_per_unit` is
@@ -627,10 +676,20 @@ impl BondEnergyMatrix {
     ///
     /// **The fix is to make the invalid case unrepresentable, and it belongs
     /// with the consumer.** An id validated against a table once, at the
-    /// boundary, makes this lookup total and deletes the question. There is no
-    /// consumer today, so nothing is presently wrong — the hazard is entirely
-    /// prospective, which is exactly why it is written into Task 14 (reaction rates)
-    /// rather than left in this comment. `the_zero_sentinel_is_the_fastest_cleaving_value`
+    /// boundary, makes this lookup total and deletes the question.
+    ///
+    /// **Split the two halves of "prospective", because conflating them is what
+    /// this whole comment has twice got wrong.** The *magnitude* is present
+    /// today — 3.8x to 4.36e4x, measured above. What is prospective is only the
+    /// *exposure*: nothing outside this crate's tests calls `energy` yet. An
+    /// earlier version of this paragraph said "the hazard is entirely
+    /// prospective" **four lines below** the paragraph that exists to retract
+    /// exactly that phrase, so a Task 14 implementer reading to the end — which
+    /// is where the what-do-I-do-about-it sentence lives — took away
+    /// "deferrable" from the comment written to prevent it. It is not: the first
+    /// consumer is Task 14's rate path and it inherits the full 4.4e4x on day
+    /// one. That is why this is written into Task 14 (reaction rates) rather
+    /// than left here. `the_zero_sentinel_is_the_fastest_cleaving_value`
     /// pins the current value *and* names it as wrong, so a future reader
     /// cannot mistake a green test for a blessing.
     #[must_use]
@@ -1159,24 +1218,57 @@ mod tests {
     /// Forward direction, not a recovery, so there is no tolerance — which also
     /// makes this the §13.4 association pin for `base * (ca * cb).sqrt()`, today
     /// caught only by the digest.
+    ///
+    /// **It reads the real universe, not a re-typed copy of it.** An earlier
+    /// version opened its own `Stream::new(seed, Domain::Universe, 2)` and so
+    /// pinned "this test's index equals this test's index" — both copies inside
+    /// `#[cfg(test)]`. Measured: changing the *production* index at
+    /// `lib.rs`'s `generate_under` from 2 to 3 left this green and fired only
+    /// the digest, while `lib.rs`'s own header explains that this index exists
+    /// so an added bond constant cannot shift `temp_min` and with it the decay
+    /// band — the most sensitive parameter in the system.
     #[test]
     fn both_bond_constants_are_this_universes_own_draws() {
         for seed in 0..24 {
-            let (table, m) = universe(seed);
+            let u = crate::Universe::generate(seed);
+            let (table, m) = (&u.table, &u.bonds);
             let pack = crate::packing::PackingConsts::new(table.pattern().k);
-            // Same stream, same index, same order. A reordered draw, a changed
-            // index or a narrowed range all fail here.
+            // Same stream, same index, same order — and the index is the
+            // production one, because `Universe::generate` above is what chose
+            // it. A reordered draw or an inserted one fails here; a *retuned
+            // range* does not, by construction, and is the digest's job (see
+            // `SCALE_RANGE`).
             let mut rng = Stream::new(seed, Domain::Universe, 2);
-            let scale = rng.next_f64_range(28.0, 84.0);
-            let gamma = rng.next_f64_range(0.68, 1.0);
+            let scale = rng.next_f64_range(
+                BondEnergyMatrix::SCALE_RANGE.0,
+                BondEnergyMatrix::SCALE_RANGE.1,
+            );
+            let gamma = rng.next_f64_range(
+                BondEnergyMatrix::GAMMA_RANGE.0,
+                BondEnergyMatrix::GAMMA_RANGE.1,
+            );
             let base = table.pattern().eps * scale;
-            for (id, el) in table.iter() {
-                let c = contact_density(pack, el.units);
-                assert_eq!(
-                    m.energy(id, id, BondOrder::SINGLE).get().to_bits(),
-                    (base * (c * c).sqrt()).get().to_bits(),
-                    "seed {seed}: the bond scale is no longer `eps * <the draw>`"
-                );
+            // **Every ordered pair, not the diagonal.** On the diagonal
+            // `(c * c).sqrt()` is exactly `c` — 2e6 of 2e6 samples over the
+            // range contact density occupies, the standard binary-FP result
+            // that `sqrt(fl(x^2)) == |x|` absent over/underflow — so a
+            // diagonal-only assertion never exercises the sqrt-of-product at
+            // all, which is the association this test claims to pin. Measured:
+            // reassociating **only** off-diagonal cells to
+            // `base * ca.sqrt() * cb.sqrt()` left this green and fired the
+            // digest alone.
+            let cs: Vec<(ElementId, f64)> = table
+                .iter()
+                .map(|(id, el)| (id, contact_density(pack, el.units)))
+                .collect();
+            for &(ia, ca) in &cs {
+                for &(ib, cb) in &cs {
+                    assert_eq!(
+                        m.energy(ia, ib, BondOrder::SINGLE).get().to_bits(),
+                        (base * (ca * cb).sqrt()).get().to_bits(),
+                        "seed {seed}: the bond scale is no longer `eps * <the draw>`"
+                    );
+                }
             }
             let two = BondOrder::new(2).unwrap_or(BondOrder::SINGLE);
             assert_eq!(
@@ -1202,8 +1294,15 @@ mod tests {
     #[test]
     fn the_header_figures_are_current() {
         let (mut e_lo, mut e_hi) = (f64::MAX, f64::MIN);
-        let (mut rate_hi, mut et_hi) = (f64::MIN, f64::MIN);
-        for seed in 0..200 {
+        let (mut ln_rate_hi, mut et_hi) = (f64::MIN, f64::MIN);
+        let mut r_min = f64::MAX;
+        // **500, because that is the sample the header quotes.** It ran 200
+        // while the header attributed 500-seed figures to it, and three of the
+        // five disagreed — `e_lo` 11.81 vs 11.40, `e_hi` 2361.69 vs 2370.55,
+        // and the per-seed rate floor 4.15 vs 3.58, the last off by 16%. That
+        // is the same stale-figure class the paragraph immediately above this
+        // test declares closed, committed in the act of declaring it.
+        for seed in 0..500 {
             let u = crate::Universe::generate(seed);
             let b: Vec<(ElementId, u8)> = u
                 .table
@@ -1222,9 +1321,14 @@ mod tests {
                     // Measured over 20 000 seeds the per-universe ceiling is 4
                     // in 27.2%, 5 in 50.9%, 6 in 21.9%: pricing every pair at
                     // order 6 reports an energy **no bond in 78.1% of universes
-                    // can carry**, overstating `e_hi` by up to 1.63x and the
-                    // rate-ratio margin by 1.35x. Task 14 is told by this file
-                    // to size its coupling against these numbers.
+                    // can carry**, overstating `e_hi` by up to **1.6310x**
+                    // per-seed worst case (and `E/T` by the same factor, since
+                    // `T` is fixed within a seed). An earlier version added "and
+                    // the rate-ratio margin by 1.35x", which matches none of the
+                    // three readings — ratio of rate ratios is 119.83x, of `ln`
+                    // rate ratios 1.6533x, of `E/T` 1.6310x. An unnamed "margin"
+                    // in a comment Task 14 sizes against is exactly the class of
+                    // figure this file has lost four rounds to.
                     let cap = if vx < vy { vx } else { vy };
                     for o in BondOrder::ALL.into_iter().filter(|o| u8::from(*o) <= cap) {
                         let v = u.bonds.energy(x, y, o).get();
@@ -1234,6 +1338,18 @@ mod tests {
                         // `the_matrix_is_exactly_rank_one` records for zero
                         // cells. Measured: a NaN at order 5 left this test
                         // green; at order 6 it failed by a 13% margin, on luck.
+                        //
+                        // Verified by injection at every order — a NaN in
+                        // `OrderScale::mult[k]` fails this assert for all
+                        // k in 1..=6, order 6 failing on the assert itself.
+                        // **Coverage note:** the formable cap means order 6 is
+                        // now read in only 21.9% of universes (0.59% of pairs)
+                        // and order 5 in 72.8%, where before it was every order
+                        // for every pair. Sound today because every NaN source
+                        // here is universe-wide — `contact_density`'s branch and
+                        // a NaN `gamma` both poison all orders. If `mult` ever
+                        // becomes per-universe conditional, scan all of `ALL`
+                        // for finiteness and apply the cap only to the min/max.
                         assert!(v.is_finite(), "seed {seed}: {x:?}-{y:?} {o:?} is {v}");
                         if v < lo {
                             lo = v;
@@ -1250,17 +1366,31 @@ mod tests {
             if hi > e_hi {
                 e_hi = hi;
             }
-            let r = borbax_units::det_math::exp((hi - lo) / t_min);
-            if r > rate_hi {
-                rate_hi = r;
+            // Kept unexponentiated. `exp` of it is what the header quotes, but
+            // the *assertion* belongs on the log — see the band block below.
+            let ln_r = (hi - lo) / t_min;
+            if ln_r > ln_rate_hi {
+                ln_rate_hi = ln_r;
             }
             if hi / t_min > et_hi {
                 et_hi = hi / t_min;
             }
+            let r = borbax_units::det_math::exp(ln_r);
+            if r < r_min {
+                r_min = r;
+            }
+            // **A tail claim, so it degrades with sample size by construction**
+            // — it asserts a property of *every* universe from a prefix of the
+            // seed space. Measured minima: 4.15 over 200 seeds, 3.58 over 500,
+            // 2.40 over 1000, 2.35 over 10 000, 2.16 over 200 000. It does not
+            // cross 2.0 within 200 000, but the margin is 42% smaller at 1000
+            // than at 200, so raising this loop is not a free edit and the
+            // header must not state this as a property of the physics.
             assert!(
                 r > 2.0,
                 "seed {seed}: cleave-rate ratio {r} across all orders is below 2.0 — \
-                 the header says every drawn universe exceeds it"
+                 the header says every drawn universe exceeds it. This is a tail \
+                 statistic: check the sample size before concluding the physics moved"
             );
         }
         assert!(
@@ -1272,9 +1402,27 @@ mod tests {
             (7.0..=30.0).contains(&et_hi),
             "max E/T is {et_hi}; the header describes a regime, and this moved out of it"
         );
+        // **On the log, because the header's factor-of-two contract lives on the
+        // exponent.** `rate_hi > 1e4` is `exp(ln_rate_hi)`, so it fires at a
+        // 1.138x change in the energy scale, not a 2x one — bisected under a
+        // uniform scaling α of every bond energy, which is exactly what
+        // retuning the `scale` draw does: the composite window across all four
+        // bands was α ∈ (0.8789, 2.1176), and `rate_hi` was the binding edge on
+        // the low side. Stating a 2x tolerance while enforcing 1.14x is how a
+        // pure-retune commit comes back as a red suite with no physics in it.
         assert!(
-            rate_hi > 1e4,
-            "max cleave-rate ratio {rate_hi} — the header says several orders of magnitude"
+            (5.0..=21.0).contains(&ln_rate_hi),
+            "max ln(cleave-rate ratio) {ln_rate_hi} (ratio {}) — a factor-of-two band on \
+             the exponent, which is the scale the header's tolerance is stated on",
+            borbax_units::det_math::exp(ln_rate_hi)
+        );
+        // Emitted, not asserted: the header quotes these and has now been
+        // falsified four rounds running by quoting a different sample than the
+        // test ran. Regenerate the header block from this line's output.
+        println!(
+            "header figures @500 seeds: e_lo={e_lo:.2} e_hi={e_hi:.2} \
+             rate_hi={:.4e} et_hi={et_hi:.2} per_seed_r_min={r_min:.4}",
+            borbax_units::det_math::exp(ln_rate_hi)
         );
     }
 
