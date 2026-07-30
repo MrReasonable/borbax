@@ -103,11 +103,25 @@ pub const SEARCH_LEAF_CAP: u32 = 50_000;
 /// less than the previous doc claimed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "canonicalisation explored {leaves} leaves without finishing: the result would be a partial \
-     minimum, which interns as a second species rather than being merely slow"
+    "canonicalisation explored {leaves} leaves without finishing, so the minimum it found is over \
+     a prefix of the leaf set and is not established to be the minimum over all of it"
 )]
 pub struct Capped {
-    /// Leaves explored before the budget ran out — always [`SEARCH_LEAF_CAP`].
+    /// Leaves explored before the search stopped: [`SEARCH_LEAF_CAP`] on the
+    /// budget path.
+    ///
+    /// **Not "always the cap" — an earlier version of this line said so and the
+    /// type does not agree.** [`canonicalise`]'s `ok_or` fallback constructs one
+    /// with whatever count it has, which on that path is `0`, and the `Display`
+    /// message then reads "explored 0 leaves without finishing". The path is
+    /// unreachable — `classes <= n` always, and `classes < n` forces a
+    /// non-singleton cell by pigeonhole, so a target always exists — but a doc
+    /// that denies what the type admits is the shape this file has already
+    /// corrected twice.
+    ///
+    /// Do **not** close it by seeding `Search::best` with the identity ordering:
+    /// the identity is not isomorphism-invariant, so a minimum over
+    /// `{identity} ∪ leaves` is not a canonical form.
     pub leaves: u32,
 }
 
@@ -361,7 +375,15 @@ struct Search {
 
 #[expect(
     clippy::indexing_slicing,
-    reason = "`v` and `w` run over `0..n <= MAX_ATOMS`, the length of both colour arrays"
+    reason = "three sites, needing two arguments. `colour[v]` twice: `v` runs over \
+              `0..n <= MAX_ATOMS`, the array's length. `order[colour[v]]` is the one \
+              that is not obvious and an earlier reason omitted it while calling \
+              `order` a colour array — it is a `Vec<u8>` of length `n`, the inverse \
+              permutation, indexed by a colour VALUE. That is in range only because \
+              this branch runs when `classes == n` and `refine` emits dense ranks, so \
+              `colour[..n]` is a permutation of `0..n`. There is no `w` in this \
+              function; that was `refine`'s justification pasted onto a different \
+              index shape"
 )]
 fn search(m: &Mol12, mut colour: [u8; MAX_ATOMS], s: &mut Search) {
     let n = m.len();

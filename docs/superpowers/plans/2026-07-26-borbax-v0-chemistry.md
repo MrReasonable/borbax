@@ -1538,6 +1538,27 @@ the step loop only ever reads it.
 - Consumes: `borbax_molecule::{Mol12, Signature, Geodesic, canonicalise, embed, signature, affinity_ordered}`, `Universe`
 - Produces: `SpeciesId(u32)`, `SpeciesRecord`, `Interner::{new, intern, record, len}`, `ReactionKind`, `Reaction`, `rate(&Reaction, Thermal, &[f64], f64) -> f64`, `AffinityMemo`
 
+**ROUTED FROM TASK 6 — `intern`'s signature below is no longer implementable
+as written, and it is the return type that changed.**
+
+Task 6's review found `SEARCH_LEAF_CAP` reachable from legal input: K(6,6) over a
+valence-6 element is connected, valence-legal, has every one of its 36 bonds
+accepted, and exhausts the cap. So `canonicalise` now returns
+`Result<(CanonForm, SearchStats), Capped>` rather than a tuple with a droppable
+`cap_hit` flag.
+
+The sketch further down still reads `pub fn intern(...) -> SpeciesId` with
+`let (canon, _) = canonicalise(m);`. That cannot compile, and neither of the easy
+escapes is available: `unwrap` is denied workspace-wide, and `Option<SpeciesId>`
+discards the reason. **`intern` becomes `Result<SpeciesId, Capped>`**, and the
+`?` ripples to `record`, to `decay_propensity` in Task 15, and to every consumer
+that assumes interning is infallible. Cheaper to absorb now than mid-task.
+
+*Discriminator:* the plan's own `intern` sketch must compile against
+`borbax_molecule::canonicalise`'s actual signature. A version that keeps
+`-> SpeciesId` by swallowing the error has reintroduced exactly the droppable
+flag Task 6 removed.
+
 **Species naming is specified and deliberately not scheduled — see
 `docs/superpowers/plans/2026-07-30-borbax-species-naming.md`.** This task is its
 home when it is picked up, because a species first exists here. Two constraints

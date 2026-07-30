@@ -122,6 +122,19 @@ Drawn, memorable, undecodable — the `water` to the systematic `-ath-im`.
 Reuse `naming::mint`'s grammar and its blocklist. Two things differ from element
 naming, and both are load-bearing.
 
+**Drop `taken`, and accept collisions.** `naming::mint` is
+`mint(rng, taken: &mut Vec<String>)` and retries on collision, so a name drawn
+through it is a function of `(CanonForm, everything named before it and in what
+order)` — **not** a pure function of `CanonForm`. That makes the promise below
+false as designed, and a lazy display-layer naming pass would make visit order
+the deciding factor. It is a defect this note's own placement change created.
+
+Dropping `taken` buys genuine purity, and the cost is already licensed: a
+collision is confusing rather than corrupting, since `SpeciesId` remains the
+identity. Element collisions then need the disjoint-sub-grammar option rather
+than a shared `taken` list — see the measurements below. (Note `taken` holds
+*symbols*, not names, so it never prevented name collisions in the first place.)
+
 **Key it on `CanonForm`, never on `SpeciesId`.** Ids are assigned in first-seen
 order, so an id-keyed name would differ between a run and its neutral shadow,
 and between two world seeds in the same universe — the same molecule called two
@@ -187,9 +200,38 @@ Keeping names out of `SpeciesRecord` remains right, and also keeps it free of tw
 in §23's exit criteria requires a species to be nameable, which is why this is a
 note and not a task.
 
-**Its home when picked up is Task 14**, where a species first exists — the
-systematic name beside `canonicalise`, the common name at intern, the side
-table owned by `borbax-cli` and `borbax-render`.
+**Its home is a new leaf crate, `borbax-naming`** — depending on
+`borbax-molecule` for `CanonForm` and `borbax-universe` for the grammar, and
+depended on by nobody at or below `borbax-reaction`.
+
+*An earlier version of this line said "beside `canonicalise`, the common name at
+intern, the side table owned by `borbax-cli` and `borbax-render`" — which is
+precisely the placement the section above rejects, left standing as the plan of
+record while the correction sat forty lines up.* That is the
+claims-land-in-more-places-than-they-are-corrected pattern, occurring inside a
+correction about it. The grep after the edit is what caught it.
+
+**Do not read the boundary as "at or above `borbax-render`".** The crate order
+branches — `borbax-geometry` and `borbax-render` hang off `borbax-molecule` on a
+side branch — so *no position in a chain* expresses the property, and
+`borbax-geometry` already satisfies it. State the property, which is mechanical:
+the naming crate must not appear in `cargo tree -p borbax-reaction -e normal`.
+**`-e normal` is load-bearing**: `cargo tree` includes dev-dependencies by
+default, so the obvious spelling fires on any test that prints a name.
+
+**And one constraint that follows, which the placement rule needs.**
+`borbax-beaker` and `borbax-render` are siblings, so a beaker cannot reach a
+naming crate above render. The Chronicle must therefore store `SpeciesId`s and
+let the display layer resolve them at render time — which is better design
+anyway, since an event log holding rendered strings is a smell. Without it,
+`borbax-beaker` ends up depending on naming and the selection rule, which lives
+in the beaker, can read a name again.
+
+**Also forbid `impl Display` on `CanonForm`, `Mol12` and `SpeciesId`.** The
+orphan rule puts such an impl in the crate that owns the type — i.e. below
+`borbax-reaction` — so the one spelling a reader reaches for first is exactly
+the one the placement rule cannot cover. The naming crate wraps them in a
+newtype instead.
 
 **Mixtures are out of scope.** Real chemistry names some mixtures (brass,
 brine) and they are not systematic. Borbax's beaker is a population of species,
