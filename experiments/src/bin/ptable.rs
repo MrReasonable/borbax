@@ -65,6 +65,18 @@ use borbax_experiments::rng::Stream;
 use borbax_experiments::signature::d_group;
 use borbax_units::det_math;
 
+/// Seed for the molecule generator. Arbitrary but fixed — see the note in
+/// `g2.rs`; a measurement is reproducible only if its stream is.
+const MOLECULE_SEED: u64 = 0x0B0B_BA05;
+
+/// Seed for periodic-table generation, distinct from [`MOLECULE_SEED`] so the
+/// table and the molecules drawn against it cannot share a sequence.
+const TABLE_SEED: u64 = 0x5EED_D2A4;
+
+/// Seed for the spin-up / warm-up phase, kept separate so lengthening it cannot
+/// shift the measured draws.
+const SPIN_SEED: u64 = 0x5717_0001;
+
 /// Sample directions. Matches the harness so the numbers are comparable.
 const D: usize = 42;
 
@@ -518,7 +530,7 @@ fn main() {
     let mut paired = Vec::new();
     let (mut collapsed_l, mut collapsed_s) = (0_usize, 0_usize);
     for seed_ix in 0..8_u64 {
-        let mut rng = Stream::new(0x0B0B_BA05 ^ seed_ix);
+        let mut rng = Stream::new(MOLECULE_SEED ^ seed_ix);
         let mols: Vec<Molecule> = (0..MOLS_PER_SEED)
             .map(|_| Molecule::random_tree(&mut rng, 14))
             .collect();
@@ -573,8 +585,8 @@ fn main() {
     );
 
     // --- How much of that is the *element draw* rather than the scheme?
-    let mut rng = Stream::new(0x5EED_D2A4);
-    let mut mols_rng = Stream::new(0x0B0B_BA05);
+    let mut rng = Stream::new(TABLE_SEED);
+    let mut mols_rng = Stream::new(MOLECULE_SEED);
     let mols: Vec<Molecule> = (0..MOLS_PER_SEED)
         .map(|_| Molecule::random_tree(&mut mols_rng, 14))
         .collect();
@@ -621,7 +633,7 @@ fn main() {
     // Spin every molecule by a group element. `D_group` is exactly invariant to
     // that, so no shape changes. Anything the statistic reports as a change is
     // the statistic's own artefact.
-    let mut spin = Stream::new(0x5717_0001);
+    let mut spin = Stream::new(SPIN_SEED);
     let spun: Vec<Vec<[f64; 3]>> = coords
         .iter()
         .map(|c| {

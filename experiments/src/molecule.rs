@@ -20,6 +20,17 @@
 
 use crate::rng::Stream;
 
+/// FNV-1a's 64-bit offset basis — the starting value of the hash.
+///
+/// Both this and [`FNV_PRIME`] are the published 64-bit FNV parameters
+/// (Fowler–Noll–Vo, 1991). The prime is chosen so that repeated multiplication
+/// spreads byte values across the whole register; the basis is arbitrary but
+/// fixed, and exists so that hashing the empty string is not zero.
+const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
+
+/// FNV-1a's 64-bit prime. See [`FNV_OFFSET_BASIS`].
+const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+
 /// How many element types the harness draws from.
 pub const N_ELEMENTS: usize = 4;
 
@@ -269,15 +280,12 @@ impl Molecule {
         // to avalanche. FNV alone leaves low-order structure that would let
         // similar forms land near each other — which for a negative control
         // would be a false result rather than a mild flaw.
-        let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+        let mut h: u64 = FNV_OFFSET_BASIS;
         for b in self.canonical_form().bytes() {
             h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01B3);
+            h = h.wrapping_mul(FNV_PRIME);
         }
-        let mut z = h;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
+        crate::rng::mix64(h)
     }
 
     /// Change one atom's element to a different one.

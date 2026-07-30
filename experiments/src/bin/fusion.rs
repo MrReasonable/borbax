@@ -48,6 +48,13 @@
 use borbax_experiments::rng::Stream;
 use borbax_units::det_math;
 
+/// Base seed for this experiment, `XOR`ed with a per-trial index.
+///
+/// Arbitrary but fixed. XOR rather than addition so adjacent trial indices do
+/// not produce adjacent seeds — `Stream`'s finaliser decorrelates them either
+/// way, but XOR makes that independent of the mixer's quality.
+const FUSION_SEED: u64 = 0x00F0_5100;
+
 /// Units in the `n`th packing shell: `k*n^2 + 2`.
 ///
 /// **Only `k` is drawn; the rest is polyhedral combinatorics.** For any convex
@@ -744,7 +751,7 @@ fn main() {
     let mut max_valences = Vec::new();
     let mut gel_extents = Vec::new();
     for seed in 0..24_u64 {
-        let mut rng = Stream::new(0xF0_51_00 ^ seed);
+        let mut rng = Stream::new(FUSION_SEED ^ seed);
         let c = draw_consts(&mut rng);
         let table = derive_table(c, c.n_elements);
 
@@ -792,7 +799,7 @@ fn main() {
         {
             let mut ps: Vec<usize> = Vec::new();
             for seed in 0..24_u64 {
-                let mut r = Stream::new(0xF0_51_00 ^ seed);
+                let mut r = Stream::new(FUSION_SEED ^ seed);
                 let cc = draw_consts(&mut r);
                 let p = peak_of(&derive_table(cc, cc.n_elements));
                 if !ps.contains(&p) {
@@ -811,7 +818,7 @@ fn main() {
 
     // -- Q4: the gel lever, in detail on one universe ---------------------
     println!("\n-- Q4: does abundance keep the beaker off the gel point? --\n");
-    let mut rng = Stream::new(0xF0_51_00);
+    let mut rng = Stream::new(FUSION_SEED);
     let c = draw_consts(&mut rng);
     let table = derive_table(c, c.n_elements);
     println!(
@@ -1095,7 +1102,7 @@ mod tests {
     }
 
     fn consts() -> Consts {
-        let mut rng = Stream::new(0xF0_51_00);
+        let mut rng = Stream::new(FUSION_SEED);
         draw_consts(&mut rng)
     }
 
@@ -1238,7 +1245,7 @@ mod tests {
     #[test]
     fn coordination_agrees_with_the_first_shell() {
         for k in 6..=14_usize {
-            let mut rng = Stream::new(0xF0_51_00 ^ k as u64);
+            let mut rng = Stream::new(FUSION_SEED ^ k as u64);
             let c = draw_consts(&mut rng);
             assert!(
                 (shell_size(c.k, 1) as f64 - c.z).abs() < f64::EPSILON,
@@ -1348,7 +1355,7 @@ mod tests {
     fn gel_band_holds() {
         let mut extents: Vec<f64> = (0..24_u64)
             .map(|seed| {
-                let mut rng = Stream::new(0xF0_51_00 ^ seed);
+                let mut rng = Stream::new(FUSION_SEED ^ seed);
                 let c = draw_consts(&mut rng);
                 let w: Vec<(u8, f64)> = derive_table(c, c.n_elements)
                     .iter()
@@ -1505,7 +1512,7 @@ mod tests {
     #[test]
     fn every_mass_is_exact_on_the_fixed_point_grid() {
         for seed in 0..24_u64 {
-            let mut rng = Stream::new(0xF0_51_00 ^ seed);
+            let mut rng = Stream::new(FUSION_SEED ^ seed);
             let c = draw_consts(&mut rng);
             for e in derive_table(c, c.n_elements) {
                 let scaled = e.mass * 1024.0;
@@ -1592,7 +1599,7 @@ mod tests {
     fn the_peak_moves_with_the_generated_constants() {
         let mut peaks = std::collections::BTreeSet::new();
         for seed in 0..24_u64 {
-            let mut rng = Stream::new(0xF0_51_00 ^ seed);
+            let mut rng = Stream::new(FUSION_SEED ^ seed);
             let c = draw_consts(&mut rng);
             peaks.insert(peak_of(&derive_table(c, c.n_elements)));
         }

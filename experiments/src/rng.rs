@@ -1,7 +1,10 @@
 //! A deterministic stream, standing in for `borbax_rng::Stream`.
 //!
 //! `SplitMix64`: a fixed odd increment added to the state, then a strong
-//! finalising mix. The mix is what makes seeds 0, 1, 2... behave as
+//! finalising mix. Steele, Lea & Flood, *"Fast splittable pseudorandom number
+//! generators"*, OOPSLA 2014, doi:10.1145/2660193.2660195 — the algorithm behind
+//! Java's `SplittableRandom`. The finaliser's constants are `MurmurHash3`'s,
+//! found by search rather than derived. The mix is what makes seeds 0, 1, 2... behave as
 //! independent streams rather than correlated ones, which matters here
 //! because the harness derives one stream per trial index.
 //!
@@ -12,15 +15,66 @@
 //! copy would silently fork the sequence and replay the same draws, and the
 //! resulting duplicate "random" molecules would look like a chemistry result.
 
+/// `SplitMix64`'s finalising mix, on its own.
+///
+/// Exposed because `molecule.rs` needs to avalanche an FNV hash and had grown a
+/// second, byte-identical copy of these five lines. Two copies of a constant
+/// drift under any find-and-replace — a lesson this workspace has already paid
+/// for once in `bonds.rs`.
+#[must_use]
+pub const fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> MIX_SHIFT_1)).wrapping_mul(MIX_MULTIPLIER_1);
+    z = (z ^ (z >> MIX_SHIFT_2)).wrapping_mul(MIX_MULTIPLIER_2);
+    z ^ (z >> MIX_SHIFT_3)
+}
+
 /// A deterministic pseudo-random stream.
 #[derive(Debug, Clone)]
 pub struct Stream {
     state: u64,
 }
 
-/// 2^64 divided by the golden ratio — odd, so adding it repeatedly visits
-/// every 64-bit state before repeating.
+/// The step added to the state on every draw: 2^64 divided by the golden ratio.
+///
+/// **Odd**, which is the whole requirement — an odd increment added repeatedly
+/// to a 64-bit register visits all 2^64 states before repeating, so the period
+/// is maximal for any seed. The golden-ratio value in particular spreads
+/// successive states as evenly as possible around the register rather than
+/// clustering them (a Weyl sequence).
 const GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// First multiplier of the finalising mix.
+///
+/// The two multipliers and the three shift widths below are **not arbitrary and
+/// must not be "tidied"** — they are the published MurmurHash3-derived finaliser
+/// that `SplitMix64` uses, chosen by search to maximise avalanche (one input bit
+/// flipping changes each output bit with probability ~1/2). Substituting
+/// round-looking values silently destroys that property while leaving every test
+/// here green except `adjacent_seeds_decorrelate_immediately`.
+const MIX_MULTIPLIER_1: u64 = 0xBF58_476D_1CE4_E5B9;
+
+/// Second multiplier of the finalising mix. See [`MIX_MULTIPLIER_1`].
+const MIX_MULTIPLIER_2: u64 = 0x94D0_49BB_1331_11EB;
+
+/// Right-shift before the first multiply. See [`MIX_MULTIPLIER_1`].
+const MIX_SHIFT_1: u32 = 30;
+
+/// Right-shift before the second multiply. See [`MIX_MULTIPLIER_1`].
+const MIX_SHIFT_2: u32 = 27;
+
+/// Final right-shift, folding the high bits down over the low ones.
+const MIX_SHIFT_3: u32 = 31;
+
+/// Bits in an `f64` significand, counting the implicit leading one.
+///
+/// A `u64` shifted right by `64 - MANTISSA_BITS` leaves exactly this many
+/// significant bits, so the integer-to-float conversion below is **exact** —
+/// no value is rounded, and every representable float in `[0, 1)` at this
+/// spacing is reachable.
+const MANTISSA_BITS: u32 = 53;
+
+/// How far to shift a 64-bit draw down to leave [`MANTISSA_BITS`] bits.
+const UNIT_SHIFT: u32 = u64::BITS - MANTISSA_BITS;
 
 impl Stream {
     /// A stream for `seed`. Any seed is valid, including zero.
@@ -32,10 +86,7 @@ impl Stream {
     /// The next 64 bits.
     pub const fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(GAMMA);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
+        mix64(self.state)
     }
 
     /// A uniform value in `0..n`.
@@ -102,8 +153,9 @@ impl Stream {
                   the lint warns about is what the shift already removed"
     )]
     pub const fn f64_unit(&mut self) -> f64 {
-        // 2^-53, written as a division by a power of two so it is exact.
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+        // Divide by 2^MANTISSA_BITS. Written as a division by a power of two
+        // rather than a multiply by a decimal literal so the scaling is exact.
+        (self.next_u64() >> UNIT_SHIFT) as f64 / (1u64 << MANTISSA_BITS) as f64
     }
 }
 

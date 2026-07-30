@@ -40,6 +40,18 @@ use crate::molecule::Molecule;
 use crate::rng::Stream;
 use crate::signature::{D, Descriptor, d_group, d_raw, profile, signature};
 
+/// Seed for the molecule generator in this experiment.
+///
+/// **Arbitrary but fixed**, and that is the whole requirement: a measurement is
+/// only reproducible if the stream it drew from is. Any value works; this one is
+/// spelled memorably so a divergent result is obviously a *different run* rather
+/// than a different chemistry.
+const MOLECULE_SEED: u64 = 0x0B0B_BA05;
+
+/// Seed for the neutral-shadow control run. Distinct from [`MOLECULE_SEED`] so
+/// the control cannot accidentally replay the treatment's draws (§2.7).
+const NEUTRAL_SHADOW_SEED: u64 = 0x006E_01E7;
+
 /// The positive control must clear this, or the harness cannot see locality.
 ///
 /// Not tuned to the observed value. A one-atom edit changes composition by at
@@ -84,7 +96,7 @@ impl Default for Config {
             trials: 2000,
             min_atoms: 8,
             max_atoms: 20,
-            seed: 0x0B0B_BA05,
+            seed: MOLECULE_SEED,
             size_matched: false,
         }
     }
@@ -242,7 +254,7 @@ fn check_geometry_is_live() -> Result<(), ControlFailure> {
         .find(|m| !is_identity(m))
         .ok_or(ControlFailure::ControlMissing("a non-identity rotation"))?;
 
-    let mut rng = Stream::new(0x006E_01E7);
+    let mut rng = Stream::new(NEUTRAL_SHADOW_SEED);
     let m = Molecule::random_tree(&mut rng, 12);
     let coords = embed(&m);
     let turned: Vec<Point> = coords.iter().map(|&p| apply_mat(mat, p)).collect();
@@ -858,7 +870,7 @@ mod tests {
     fn a_rotated_copy_moves_the_unaligned_descriptor_and_not_the_aligned_one() {
         let g = Geodesic::<D>::build().unwrap();
         let mats = rotation_matrices().unwrap();
-        let mut rng = Stream::new(0x006E_01E7);
+        let mut rng = Stream::new(NEUTRAL_SHADOW_SEED);
         let m = Molecule::random_tree(&mut rng, 12);
         let coords = embed(&m);
         let a = signature(&g, &coords, &m.elements);
