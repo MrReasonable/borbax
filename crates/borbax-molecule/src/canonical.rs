@@ -102,18 +102,31 @@ pub const SEARCH_LEAF_CAP: u32 = 50_000;
 /// profile — the one CLAUDE.md designates for beaker work — blaming a cause that
 /// had been falsified.
 ///
-/// **What is NOT established, stated because the previous version asserted it.**
-/// That doc said a partial form "interns as a second species". A review went
-/// looking for that and could not produce it: 200 relabellings of K(6,6), 200 of
-/// 3×K₄ and 12 of twelve isolated atoms each yielded exactly **one** canonical
-/// form. The structural reason offered — that exceeding this many leaves at
-/// twelve atoms forces a graph homogeneous enough for the first root branch's
-/// subtree minimum to already be the global one — is on paper and untested, and
-/// explicitly not expected to survive a rise in [`MAX_ATOMS`].
+/// **The sharp version, which took three rounds to reach.** The first doc claimed
+/// a partial form "interns as a second species". Three review lanes went looking
+/// and could not produce one, so it was weakened to "could not be produced" —
+/// which reads as absence of evidence. A fourth lane then swept 13 fixtures × 7
+/// cap values × 12 relabellings and got the real answer, which is neither:
 ///
-/// So the honest claim is the weaker one: a capped search has not *proved* it
-/// found the minimum. That is reason enough to refuse to return it, and it is
-/// less than the previous doc claimed.
+/// **Divergence is real for this algorithm** — C₃+C₄+C₅ yields *five* distinct
+/// forms from one molecule at a cap of 8, and K(3,3)+prism yields two. The
+/// original strong claim was not fantasy.
+///
+/// **But divergence and capping are disjoint at twelve atoms.** Every fixture
+/// that diverges completes far under this cap; every fixture that caps never
+/// diverges, at any cap down to 8. Measured over 1200 random molecules: 380
+/// capped, 3040 relabellings, zero divergences.
+///
+/// The mechanism is now stateable rather than "on paper": divergence needs a
+/// 1-WL colour class spanning **two or more orbits**, while capping needs
+/// `|Aut| × #encodings` above the cap — and at twelve vertices the graphs with
+/// an automorphism group that large are exactly the homogeneous ones whose
+/// colour classes *coincide* with orbits. The two conditions compete.
+///
+/// So refusing to return a capped form stays correct and conservative: the
+/// divergence mechanism exists and is separated from capping only by an
+/// atom-count coincidence, which is precisely what a rise in [`MAX_ATOMS`] would
+/// remove. What is *not* claimed is that a capped form is wrong today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
     "canonicalisation explored {leaves} leaves without finishing, so the minimum it found is over \
@@ -290,6 +303,11 @@ fn refine(m: &Mol12, colour: &mut [u8; MAX_ATOMS], stats: &mut SearchStats) -> u
         // instead by a digest over canonical forms across four alphabet sizes
         // (100, 3, 2 and 1 elements — the small ones branch 28% to 100% of the
         // time) plus the twelve-cycle, byte-identical either way.
+        // **This array must stay inside the round loop.** Hoisting the
+        // allocation out — the obvious next optimisation — leaks the previous
+        // round's flags into this one, and nothing but its placement prevents
+        // that. The leak would be silent: stale flags change ranks, which change
+        // colours, which change the canonical form.
         let mut first_occurrence = [false; MAX_ATOMS];
         for w in 0..n {
             first_occurrence[w] = !(0..w).any(|x| sig[x] == sig[w]);
@@ -383,8 +401,13 @@ pub fn canonicalise(m: &Mol12) -> Result<(CanonForm, SearchStats), Capped> {
     // For n > 0 an uncapped search always reaches a leaf: refinement either
     // discretises, or the target cell is non-empty by pigeonhole and every
     // child is explored, so depth is bounded by n.
+    // `SEARCH_LEAF_CAP`, not `s.stats.leaves`: this path is unreachable — a
+    // review proved it by pigeonhole, `classes < n` forces a colour with two or
+    // more members and colours are dense ranks, so `target` is always `Some` —
+    // but the field doc promises the cap and this is the one spelling that would
+    // falsify it.
     s.best.map(|form| (form, s.stats)).ok_or(Capped {
-        leaves: s.stats.leaves,
+        leaves: SEARCH_LEAF_CAP,
     })
 }
 
@@ -972,9 +995,12 @@ mod tests {
             worst_overall < SEARCH_LEAF_CAP,
             "hit the search cap — investigate, do not raise it"
         );
+        // 32, not 64. The measured worst across every palette is 18, so a
+        // 64-leaf bound needs a 3.5x regression before it says anything. This
+        // still has headroom against 18 while being able to fail.
         assert!(
-            worst_overall <= 64,
-            "worst case grew past anything previously measured: {worst_overall}"
+            worst_overall <= 32,
+            "worst case grew past anything previously measured (18): {worst_overall}"
         );
     }
 }

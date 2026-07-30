@@ -692,6 +692,14 @@ mod tests {
             Err(BondError::NoSuchAtom { .. })
         ));
         assert_eq!(m, before);
+        // The comment used to say "both spellings" while testing only an
+        // out-of-range `b`. `a` goes through the same let-else, so this is
+        // coverage rather than a second code path — but the claim was untrue.
+        assert!(matches!(
+            m.add_bond(9, 0, BondOrder::SINGLE, &big),
+            Err(BondError::NoSuchAtom { .. })
+        ));
+        assert_eq!(m, before);
     }
 
     /// **At most one plane may hold any pair — the invariant `Mol12`'s struct

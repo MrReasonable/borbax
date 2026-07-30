@@ -1588,6 +1588,40 @@ produces passes while this stands** — that generator emits 84% two-atom molecu
 at small palettes and never exceeds cyclomatic number 3, so it cannot reach the
 case at all.
 
+**ALSO ROUTED FROM TASK 6 — nothing binds a `Mol12` to the `PeriodicTable` it was
+built against, and `NoSuchElement` implies a guard that does not exist.**
+
+`Mol12::add_atom` accepts any `ElementId`; `add_bond` and `mass` take a
+`&PeriodicTable` per call. So valence-legality and mass are properties of a
+*pair*, and the molecule records only half of it. Measured over 500 seeds: table
+lengths take 61 distinct values and **every seed shares its length with another**
+— length 105 is shared by 14 seeds. Seeds 93 and 169 both hold 105 elements and
+**all 105 ids differ in valence or mass**.
+
+So `BondError::NoSuchElement` catches a *length* mismatch only. In the generic
+wrong-table case every id resolves, to the wrong element, and `mass()` returns
+`Some(wrong)` rather than `None` — which is worse than the failure the `Option`
+was added to prevent, and `graph.rs`'s own doc for `mass` argues against exactly
+that outcome.
+
+Not live in V0: one universe per run, and `intern` takes `&Universe`. It becomes
+live the moment anything holds molecules across two universes — a battery sweep,
+a golden matrix, a shadow run.
+
+*Property a fix must have:* the table is bound once, where the molecule starts
+existing, rather than re-supplied per call. A `u64` digest of the table stored on
+first `add_atom` and checked by `add_bond`/`mass` achieves it with one field, no
+lifetime parameter, and `Mol12` still `Copy` — and it collapses three things at
+once: `NoSuchElement` becomes unrepresentable, `mass()` becomes infallible, and
+the cross-table hole closes. A builder borrowing `&PeriodicTable` and yielding an
+owned `Mol12` is the heavier alternative.
+
+*Discriminator:* build a molecule against seed 93's table and `mass()` it against
+seed 169's. It must not return `Some`. A test using one table cannot fail.
+
+*Deferred rather than done because* it changes a type Tasks 11–13 build on, and
+this task is the first with a real caller to design against.
+
 **Species naming is specified and deliberately not scheduled — see
 `docs/superpowers/plans/2026-07-30-borbax-species-naming.md`.** This task is its
 home when it is picked up, because a species first exists here. Two constraints
