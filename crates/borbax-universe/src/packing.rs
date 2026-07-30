@@ -462,6 +462,14 @@ mod tests {
     /// `FRONTIER_COEFF`'s admitted band was located against a latitude ordering
     /// the shipped geodesic does not reproduce.
     ///
+    /// **No `§` reference, deliberately.** The convention is to cite the PRD
+    /// when documenting a specification requirement, and this is not one: the
+    /// spec says nothing about vertex visitation order, because "an oracle's
+    /// answer must not depend on the order it visits its own inputs" is a
+    /// property of *this probe's* validity as ground truth, not an obligation
+    /// the simulation carries. §13.1's determinism is a different claim — this
+    /// code is perfectly deterministic and would still be wrong.
+    ///
     /// **The obvious discriminator tests the wrong thing.** Re-running the
     /// probe with the reciprocal-multiply form would demonstrate the six-index
     /// difference, which is already known. The question underneath is sharper:

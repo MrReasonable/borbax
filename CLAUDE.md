@@ -257,9 +257,24 @@ back into a sweep over every molecule.
   under it. Measured at all three resolutions:
   `anti[contact_perms[r][i]] == rotation_perms[r][i]` in **100% of entries**
   (720/720, 2520/2520, 9720/9720). The apparently-defensive second `anti`
-  produces exactly the defect. Because `−I` is not in the rotation group, either
-  mistake converts the search into the 60 *improper* elements — reflections only
-  — and nothing fails.
+  produces exactly the defect.
+
+  **Say which object is improper, because the two readings invert.** As
+  *index permutations*, `anti` is `−I` and the correct composition
+  `anti ∘ rotation` has determinant −1, so the correct table is the improper
+  coset and both mistakes land on the 60 *proper* rotations. As *transformations
+  of the partner body* it is the other way round: the correct kernel searches 60
+  proper poses of B, and dropping the antipode searches B point-inverted, which
+  is improper. An earlier version of this bullet asserted the second reading
+  while the surrounding sentences were about the first, which is how it managed
+  to be simultaneously right and backwards.
+
+  **The consequence needs neither framing and is provable, not measured.** Since
+  `mirror(B)[i] = B[anti[i]]`, pairing `a[i]` with `b[rotation_perms(r)[i]]` is
+  *exactly* the correct kernel evaluated against `mirror(B)`. So the defect does
+  not merely score wrongly — it computes A's affinity with B's enantiomer, which
+  makes enantiomers interchangeable and homochirality (§22.8) impossible by
+  construction rather than emergent. Nothing fails.
 
   **A complement built at the same index does not merely fail to test this — it
   inverts.** Measured at D=42 during Task 7's review, §8.3's kernel scored four
