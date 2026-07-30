@@ -18,10 +18,23 @@
 //! failures — with the checking machinery independently validated by
 //! reproducing 156 unlabelled graphs on six vertices (OEIS A000088).
 //!
-//! 1-WL weakness is nonetheless real inside the atom cap: `K(3,3)` and the
-//! triangular prism are both 3-regular on six vertices, both collapse to one
-//! colour class, and only the search separates them. Drop it and species
-//! identity breaks at six atoms.
+//! 1-WL weakness is nonetheless real inside the atom cap, but **an earlier
+//! version of this paragraph said the wrong thing about it**. It claimed that
+//! `K(3,3)` and the triangular prism — both 3-regular on six vertices, both
+//! collapsing to one colour class — are separated only by the search, and that
+//! dropping it "breaks species identity at six atoms". Measured: replace the
+//! search with a greedy tie-break and the two are still separated, to
+//! bit-identical forms, because `encode` is faithful and paragraph 1 already
+//! said so. What refinement fails to supply for them is **an ordering at all** —
+//! that is what the search is for.
+//!
+//! What is at stake is therefore invariance, not separation. And the six-atom
+//! claim was false too: over **all 38 + 728 + 26 704 connected labelled graphs
+//! on 4, 5 and 6 vertices** (counts matching OEIS A001187) every one has exactly
+//! one distinct leaf encoding, so greedy tie-breaking cannot disagree with
+//! itself. The first graph where dropping the search actually loses invariance
+//! has **seven** vertices: 4-regular, 14 edges, `|Aut| = 48`, 96 leaves, two
+//! orbits.
 //!
 //! The governing cost relation, derived and measured by review:
 //! **`#leaves = |Aut(G)| x (number of distinct leaf encodings)`**. Valence
@@ -818,6 +831,12 @@ mod tests {
         // order 24, so this is an exact expected value rather than a bound — and
         // it is the cheapest available check that the search explores the orbit
         // it should, no more and no less.
+        // **This pins the absence of automorphism pruning, and will fail the day
+        // pruning lands — deliberately.** The relation `#leaves = |Aut| x
+        // distinct` holds only for the unpruned tree, so a pruning change must
+        // move this number and must NOT move `PETERSEN_SINGLE_PLANE`. One that
+        // leaves both intact has not pruned anything; one that moves the plane
+        // constant has changed the canonical form, which is physics.
         assert_eq!(stats.leaves, 24, "|Aut(C12)| is 24: the dihedral group");
 
         // And the whole point still holds: every relabelling agrees.
@@ -875,6 +894,10 @@ mod tests {
         let (form, stats) = canon(&m);
         // |Aut(Petersen)| = 120, and it has one leaf orbit, so
         // `#leaves = |Aut| x (distinct encodings)` predicts exactly 120.
+        // Given |Aut| = 120, this asserts `distinct == 1` — the whole leaf set
+        // is one orbit. It could have been 240 or 360; a review's scan of
+        // regular graphs found orbit counts up to 16. Like the twelve-cycle's,
+        // it pins the absence of pruning and must fail when pruning lands.
         assert_eq!(stats.leaves, 120, "|Aut(Petersen)| is 120");
         assert_eq!(form.n, 10);
         assert_eq!(
@@ -905,6 +928,7 @@ mod tests {
             let ids: Vec<ElementId> = all.iter().copied().take(palette).collect();
             let mut rng = Stream::new(2, Domain::Molecule, 0);
             let (mut total, mut branched, mut worst) = (0u32, 0u32, 0u32);
+            let (mut total_full, mut branched_full, mut worst_full) = (0u32, 0u32, 0u32);
             for _ in 0..2_000 {
                 let m = random_molecule(&mut rng, &t, &ids);
                 let (_, stats) = canon(&m);
@@ -913,9 +937,33 @@ mod tests {
                     branched += 1;
                 }
                 worst = worst.max(stats.leaves);
+                if m.len() == MAX_ATOMS {
+                    total_full += 1;
+                    if stats.leaves > 1 {
+                        branched_full += 1;
+                    }
+                    worst_full = worst_full.max(stats.leaves);
+                }
             }
             let pct = 100.0 * f64::from(branched) / f64::from(total);
-            println!("palette {palette:3}: branched {pct:5.1}%, worst {worst} leaves");
+            // **Report the full-size population separately, because the palette
+            // axis is confounded with molecule size.** `random_molecule` draws
+            // the bond order uniformly from `BondOrder::ALL` while the lowest-id
+            // tree-capable elements are valence-2, so at a small palette the
+            // first bond saturates both ends 5 of 6 times and the molecule stops
+            // at two atoms: 84% dimers, each costing exactly 2 leaves and
+            // counted as "the search ran". The headline curve is monotone and
+            // reads as a story about element diversity; restricted to twelve
+            // atoms — the population the cap is actually about — it is flat near
+            // zero above palette 1 and not monotone at all.
+            let pct_full = if total_full > 0 {
+                100.0 * f64::from(branched_full) / f64::from(total_full)
+            } else {
+                0.0
+            };
+            println!(
+                "palette {palette:3}: branched {pct:5.1}% (worst {worst})  |                   at n={MAX_ATOMS}: {pct_full:5.1}% of {total_full} (worst {worst_full})"
+            );
             worst_overall = worst_overall.max(worst);
         }
         // The conclusion the module doc rests on, asserted over every palette
