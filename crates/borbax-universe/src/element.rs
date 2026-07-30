@@ -172,7 +172,7 @@ pub struct Element {
     /// How far this element sits below the binding-energy peak, on `0..=1`.
     /// 0 at the peak, rising toward both extremes.
     ///
-    /// **Renamed from `instability`, because "decay" already meant something
+    /// **Renamed from `decay_rate`, because "decay" already meant something
     /// else in this project and the collision was actively misleading.** Borbax
     /// has two unrelated processes that the word covers:
     ///
