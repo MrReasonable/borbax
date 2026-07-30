@@ -18,9 +18,17 @@ workspace = true
 
 [dependencies]
 borbax-units = { workspace = true }
-borbax-rng = { workspace = true }
 borbax-universe = { workspace = true }
 # Already compiled into this crate's tree via `borbax-units`, so this adds zero
 # crates and zero build time. It is a proc macro emitting `Display`, and cannot
 # reach a result-affecting path — the dependency doctrine's expensive case.
 thiserror = { workspace = true }
+
+# Test-only today: the sole reference is `canonical.rs`'s molecule generator,
+# inside `#[cfg(test)]`. It moves back under `[dependencies]` at Task 11, where
+# `fold.rs` draws from `Domain::Fold` at runtime. Placed honestly in the
+# meantime, because this workspace's dependency doctrine turns on exactly the
+# runtime/dev distinction — a runtime dep in a result-affecting path is a
+# physics change, a dev-dependency cannot reach one.
+[dev-dependencies]
+borbax-rng = { workspace = true }

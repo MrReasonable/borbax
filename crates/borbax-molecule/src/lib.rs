@@ -14,5 +14,5 @@
 pub mod canonical;
 pub mod graph;
 
-pub use canonical::{CanonForm, SEARCH_LEAF_CAP, SearchStats, canonicalise};
+pub use canonical::{CanonForm, Capped, SEARCH_LEAF_CAP, SearchStats, canonicalise};
 pub use graph::{BondError, MAX_ATOMS, Mol12, N_ORDERS};
