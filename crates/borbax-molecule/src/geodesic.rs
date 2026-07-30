@@ -694,12 +694,10 @@ pub fn apply_mat(m: &Mat3, p: Vec3) -> Vec3 {
 /// `is_identity_selects_exactly_one_of_the_sixty` was written during the lift
 /// rather than leaving the predicate to ship here untested.
 ///
-/// An earlier version of this line said "Task 10's binding kernel needs the
-/// same predicate". Task 10's plan section consumes `Geodesic` and its
-/// permutation tables and asks for neither this nor [`rotation_matrices`], so
-/// the claim was
-/// a forward reference with nothing behind it. The placement rests on the
-/// harness use, which is real and current.
+/// **The binding kernel does not need it.** Task 10's plan section consumes
+/// `Geodesic` and its permutation tables and asks for neither this nor
+/// [`rotation_matrices`]; the placement here rests on the harness use above,
+/// which is real and current.
 ///
 /// Not `m == IDENTITY`: the 60 elements are frame products, so the identity
 /// arrives with entries at `1.0000000000000004` and `-5.6e-17`, and an exact
