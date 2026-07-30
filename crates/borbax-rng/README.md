@@ -51,9 +51,14 @@ the other number using XOR. Swap. Repeat **ten times**.
 
 ```
    L, R  ──►  multiply L by M  ──►  hi, lo
-              R XOR hi  ──►  new L
-              lo        ──►  new R          … ten rounds
+              R XOR hi XOR key  ──►  new L
+              lo               ──►  new R          … ten rounds
 ```
+
+The `key` is the part that matters for Borbax — it is what makes
+`Domain::Universe` and `Domain::Naming` independent sequences rather than
+offsets into one. (It is also bumped by a fixed constant each round, so the ten
+rounds do not all mix in the same value.)
 
 Two properties matter, and only the second needed a paper:
 
@@ -72,8 +77,10 @@ leaving most tests passing.
 ## Why only whole-number arithmetic
 
 Everything here is shifts, XOR, and multiplication that wraps around on
-overflow. Those operations are **exactly specified** by the hardware standard:
-they give bit-identical answers on every processor.
+overflow. Those operations are **exactly specified by Rust's own semantics** —
+two's complement, defined wrapping behaviour, no undefined cases — so they give
+bit-identical answers on every processor. (Not by IEEE-754, which governs the
+floating-point side and is `borbax-units`' subject, not this crate's.)
 
 Anything involving decimals would not. That is why `sin`, `exp` and friends are
 banned from this crate entirely — see [`borbax-units`](../borbax-units/README.md).
