@@ -38,6 +38,14 @@ const CHEMISTRY_CRATES: &[&str] = &[
 /// abbreviation; both would fire on ordinary prose in a codebase whose subject
 /// is molecules. `SDF` is included because it is the multi-record form of MOL
 /// and would otherwise be the obvious way round this list.
+///
+/// **What this check is and is not.** A textual tripwire on *code*, not a proof.
+/// It is case-sensitive, so `parse_smiles` slips through where `parse_SMILES`
+/// does not; it skips comment-only lines by design (the scan says why); and it
+/// cannot scan `xtask` itself, because this list would match. None of that is a
+/// reason to widen it into something that cries wolf — the value is that adding
+/// a real parser becomes awkward and visible, and the review precedence puts a
+/// human on §5 regardless.
 const FORBIDDEN_FORMAT_TOKENS: &[&str] = &[
     "SMILES",
     "InChI",
@@ -897,12 +905,27 @@ fn check_no_real_chemical_formats(root: &Path, failures: &mut Vec<String>) -> Re
             }
             let src = std::fs::read_to_string(&entry).map_err(|e| e.to_string())?;
             let rel = entry.strip_prefix(root).unwrap_or(&entry);
-            for token in FORBIDDEN_FORMAT_TOKENS {
-                if src.contains(token) {
-                    failures.push(format!(
-                        "G5: forbidden format token {token:?} in {}",
-                        rel.display()
-                    ));
+            for (n, line) in src.lines().enumerate() {
+                // **Comment-only lines are skipped, and that is the check
+                // working rather than a hole in it.** G5 forbids *importing or
+                // exporting* these formats; a parser lives in an identifier, a
+                // match arm or a file extension, never in a comment. Scanning
+                // prose too made it impossible to write the prohibition down —
+                // verified: a doc comment reading "Borbax will never import or
+                // export SMILES, InChI, MOL format or FASTA" failed this gate.
+                // A guard that fires on its own doctrine being documented is
+                // one somebody eventually disables.
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for token in FORBIDDEN_FORMAT_TOKENS {
+                    if line.contains(token) {
+                        failures.push(format!(
+                            "G5: forbidden format token {token:?} in {}:{}",
+                            rel.display(),
+                            n + 1
+                        ));
+                    }
                 }
             }
         }

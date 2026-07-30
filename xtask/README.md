@@ -21,7 +21,7 @@ rather than documented around.)
 |---|---|---|
 | `check_no_data_files` | G1 | No data files under the chemistry crates — no element tables, reaction databases, structures or sequence data. |
 | `check_blocklist_present` | G2 | `naming.rs` exists and contains `REAL_ELEMENT_SYMBOLS`. Fails loudly if the file is missing, rather than reporting green for a path that moved. |
-| `check_no_real_chemical_formats` | G5 | No `SMILES`, `InChI`, `FASTA`, `PDB format`, `MOL format` or `SDF format` in any `.rs` file under the scanned roots. |
+| `check_no_real_chemical_formats` | G5 | No `SMILES`, `InChI`, `FASTA`, `PDB format`, `MOL format` or `SDF format` in the **code** of any `.rs` file under the scanned roots. Comment-only lines are skipped — see below. |
 | `check_toolchain_pins_agree` | §18.1 | The Rust pin is the same in every place that states it. |
 | `check_no_platform_transcendentals` | §13.1 | No direct `exp`/`ln`/`sin`/`cos`/`powf` on `f64` — everything routes through `det_math`. |
 | `check_no_stream_deriving_method` | §13.1 | `Stream` does not gain a method that would silently fork a sequence. |
@@ -33,10 +33,28 @@ newtypes in `borbax-units` — `Quanta + Thermal` is a compile error — which i
 stronger than any grep. But it is not `xtask`, and a table headed "what it
 checks" that lists it is claiming a guard that is not here.
 
-Two other things this gate does **not** do, stated because their absence is easy
-to assume away: there is no Borbax↔real mapping-table check, and the format
-tokens are matched as substrings, so `MOL` and `PDB` are spelled `MOL format`
-and `PDB format` to avoid firing on `MOLECULE` and on ordinary prose.
+**Why the format scan skips comments.** G5 forbids *importing or exporting*
+these formats. A parser lives in an identifier, a match arm or a file extension —
+never in a comment. Scanning prose as well made it impossible to write the
+prohibition down: a doc comment reading "Borbax will never import or export
+SMILES, InChI, MOL format or FASTA" failed the gate. A guard that fires on its
+own doctrine being documented is one somebody eventually disables, so it now
+scans code and lets the doctrine be written.
+
+Things this gate does **not** do, stated because their absence is easy to assume
+away:
+
+- **No mapping-table check.** G5 also forbids a Borbax↔real correspondence table;
+  nothing here looks for one.
+- **Substring matching, case-sensitive.** `MOL` and `PDB` are spelled `MOL
+  format` and `PDB format` so they do not fire on `MOLECULE` or on ordinary
+  prose — and `parse_smiles` slips through where `parse_SMILES` would not.
+- **It cannot scan itself.** `xtask` is outside the scan roots, necessarily: the
+  token list would match.
+
+None of that is an argument for widening it until it cries wolf. The value is
+that adding a real parser becomes awkward and visible, and §5 sits at the top of
+the review precedence with a human on it regardless.
 
 ## Why a program and not a review checklist
 
