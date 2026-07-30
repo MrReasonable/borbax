@@ -1,0 +1,644 @@
+//! Small-molecule atom graphs (spec §8.1).
+//!
+//! Capped at twelve atoms. Adjacency is stored as bitset rows, one plane per
+//! representable bond order. That matters more than it might appear: colour
+//! refinement in `canonical.rs` becomes a sequence of popcounts over masks,
+//! with no allocation and no hashing anywhere in it.
+
+use borbax_units::Mass;
+use borbax_universe::{BondOrder, ElementId, PeriodicTable};
+
+/// The atom cap. Twelve, so an adjacency row is a `u16` and every reachability
+/// sweep is a handful of popcounts.
+pub const MAX_ATOMS: usize = 12;
+
+/// One bitset plane per representable bond order.
+///
+/// **`BondOrder::PLANES`, not `BondOrder::ALL.len()`.** This array is indexed at
+/// `order - 1`, so what it needs is `MAX` — the *count* of representable orders
+/// is an adjacent quantity that currently coincides. They agree only while `ALL`
+/// is dense, which is guaranteed by a `const _` inside `borbax-universe` that
+/// this crate can neither see nor cite. A sparse `ALL` — `[1, 2, 3, 6]`, not
+/// absurd while formability is being decided — would make `ALL.len()` 4 while
+/// `MAX` is 6, and order 6 would index plane 5 of a 4-plane array.
+/// `every_representable_order_has_a_plane` asserts the relation here rather than
+/// trusting the invisible one.
+pub const N_ORDERS: usize = BondOrder::PLANES;
+
+/// Why a bond could not be formed.
+///
+/// **Every variant is a caller bug, and none of them is a silent early return.**
+/// [`Mol12::add_atom`] argues the opposite for its own out-of-range case and the
+/// two are not inconsistent: a molecule at capacity is chemically meaningful — it
+/// simply does not react that way — whereas an out-of-range atom index or an
+/// unpayable bond order has no chemical reading at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BondError {
+    /// The two indices were equal, or one of them named no atom.
+    #[error("no bond between atoms {a} and {b}: a molecule of {n} cannot have both, distinctly")]
+    NoSuchAtom {
+        /// The first index as given.
+        a: u8,
+        /// The second index as given.
+        b: u8,
+        /// How many atoms the molecule actually has.
+        n: u8,
+    },
+    /// The atom's element is not in the table this bond was checked against.
+    #[error("atom {atom} holds an element id the table does not have")]
+    NoSuchElement {
+        /// The atom whose element could not be resolved.
+        atom: u8,
+    },
+    /// The bond would spend slots the atom does not have.
+    ///
+    /// Carries the atom rather than the pair, because the per-atom budget is
+    /// what was exceeded — `min(valence_a, valence_b)` cannot say which end ran
+    /// out, and at twelve atoms it admits eleven times the budget.
+    #[error("atom {atom} has valence {valence} but the bond would take it to {would_use}")]
+    ValenceExceeded {
+        /// The end that ran out of slots.
+        atom: u8,
+        /// That atom's element's valence — its whole budget.
+        valence: u8,
+        /// What the budget would have had to be for the bond to form.
+        would_use: u32,
+    },
+}
+
+/// **Fields are private, and `elem` holds [`ElementId`] rather than `u8`.**
+///
+/// Two findings, one shape. A public `adj` lets any write set two planes for one
+/// pair, after which [`Mol12::bond_order`] returns the *lowest* order and
+/// [`Mol12::valence_used`] counts both — an illegal state maintained only by
+/// `add_bond` remembering to call `clear_bond` first. `pub(crate)` would not
+/// close it either, because Task 11's `Polymer` will be the first thing to build
+/// a `Mol12` by another route and it lives in this same crate; private fields
+/// plus read-only accessors is what actually holds.
+///
+/// And `[u8; _]` cannot be written or read at all from here: `ElementId`'s field
+/// and its `index()` are both `pub(crate)` in `borbax-universe`, deliberately, so
+/// `self.elem[i] = e.0` is a hard compile error outside that crate.
+/// `[ElementId; MAX_ATOMS]` is the same byte — asserted by a `const _` there —
+/// stays `Copy`, and cannot hold a value that was never an id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mol12 {
+    n: u8,
+    elem: [ElementId; MAX_ATOMS],
+    /// `adj[order.plane_index()][i]` is a bitset of atoms bonded to `i` at that
+    /// order.
+    adj: [[u16; MAX_ATOMS]; N_ORDERS],
+}
+
+impl Default for Mol12 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Mol12 {
+    /// The empty molecule: no atoms, no bonds.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            n: 0,
+            elem: [ElementId::ZERO; MAX_ATOMS],
+            adj: [[0; MAX_ATOMS]; N_ORDERS],
+        }
+    }
+
+    /// How many atoms this molecule has.
+    ///
+    /// Not `const`, so this can use `usize::from` rather than `as` — the same
+    /// trade `BondOrder::plane_index` makes, and for the same reason: a silent
+    /// widening cast is the spelling `clippy::as_conversions` exists to refuse.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        usize::from(self.n)
+    }
+
+    /// Whether this molecule has no atoms at all.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// The element at atom `i`, or `None` if there is no such atom.
+    #[must_use]
+    pub fn element(&self, i: u8) -> Option<ElementId> {
+        if i < self.n {
+            self.elem.get(usize::from(i)).copied()
+        } else {
+            None
+        }
+    }
+
+    /// Append an atom, returning its index.
+    ///
+    /// `None` at capacity — a molecule that cannot grow is chemically meaningful
+    /// (it simply does not react that way), whereas a panic here would take down
+    /// a simulation step. The return is `#[must_use]` so "silently ignored"
+    /// cannot be what a caller accidentally chooses.
+    #[must_use = "at capacity this adds nothing, and the index is how you know"]
+    pub fn add_atom(&mut self, e: ElementId) -> Option<u8> {
+        let idx = self.n;
+        let slot = self.elem.get_mut(usize::from(idx))?;
+        *slot = e;
+        self.n += 1;
+        Some(idx)
+    }
+
+    /// One adjacency row, or an empty one for an index that names no atom.
+    ///
+    /// Out-of-range reads as "no neighbours" rather than panicking, which is the
+    /// same answer [`Self::bond_order`] gives and keeps every public reader
+    /// total. Writes go through [`Self::set_row`], which cannot invent a slot.
+    fn row(&self, plane: usize, a: u8) -> u16 {
+        self.adj
+            .get(plane)
+            .and_then(|p| p.get(usize::from(a)))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn set_row(&mut self, plane: usize, a: u8, bits: u16) {
+        if let Some(slot) = self
+            .adj
+            .get_mut(plane)
+            .and_then(|p| p.get_mut(usize::from(a)))
+        {
+            *slot = bits;
+        }
+    }
+
+    /// Add or replace a bond, refusing any order the two atoms cannot pay for.
+    ///
+    /// **Takes a [`PeriodicTable`], and the reason it is not a `&Universe` is
+    /// that valence is all it needs.** The bond-energy matrix and the universe
+    /// constants have nothing to say about whether a bond can form. It is not
+    /// two `&Element`s either: the molecule already knows which ids sit at `a`
+    /// and `b`, and a caller passing the elements could pass ones that do not
+    /// match those atoms — a fresh illegal state, in the function whose whole
+    /// job is refusing them.
+    ///
+    /// **The budget is per-atom, not per-bond.** Task 5 routed
+    /// `min(valence_a, valence_b)` here, which is necessary and *not sufficient*:
+    /// a hub with eleven single bonds to eleven valence-1 partners satisfies it
+    /// at every bond and overspends its own budget elevenfold. Maintaining
+    /// `valence_used(x) + order <= valence(x)` at each addition gives the
+    /// whole-molecule property by induction, and implies the pairwise check at
+    /// the first bond — see `the_per_atom_budget_outlives_the_pairwise_check`.
+    ///
+    /// The order is a [`BondOrder`], so `0` and `7` are unrepresentable rather
+    /// than guarded. A predecessor took `u8` and computed `(order - 1) as usize`,
+    /// where `0` underflows in debug and wraps to 255 in release.
+    ///
+    /// # Errors
+    ///
+    /// [`BondError::NoSuchAtom`] if the indices are equal or either names no
+    /// atom; [`BondError::NoSuchElement`] if an atom's element is absent from
+    /// `table`; [`BondError::ValenceExceeded`] if either end lacks the slots.
+    /// **A refused bond leaves the molecule exactly as it was found**, including
+    /// any bond this call would have replaced.
+    pub fn add_bond(
+        &mut self,
+        a: u8,
+        b: u8,
+        order: BondOrder,
+        table: &PeriodicTable,
+    ) -> Result<(), BondError> {
+        if a == b || a >= self.n || b >= self.n {
+            return Err(BondError::NoSuchAtom { a, b, n: self.n });
+        }
+
+        // Clear first, so *replacing* a bond returns the slots the old one held.
+        // Checking before clearing would make re-stating an existing bond
+        // progressively bankrupt the molecule — see
+        // `replacing_a_bond_returns_its_slots_first`.
+        let previous = self.bond_order(a, b);
+        self.clear_bond(a, b);
+
+        let cost = u32::from(u8::from(order));
+        for atom in [a, b] {
+            let id = self
+                .element(atom)
+                .ok_or(BondError::NoSuchElement { atom })?;
+            let valence = table
+                .get(id)
+                .ok_or(BondError::NoSuchElement { atom })?
+                .valence;
+            let would_use = self.valence_used(atom) + cost;
+            if would_use > u32::from(valence) {
+                // Put the molecule back the way it was found. A refused bond
+                // must not be a mutation, or a caller that handles the error
+                // still carries the damage.
+                if let Some(o) = previous {
+                    self.write_bond(a, b, o);
+                }
+                return Err(BondError::ValenceExceeded {
+                    atom,
+                    valence,
+                    would_use,
+                });
+            }
+        }
+
+        self.write_bond(a, b, order);
+        Ok(())
+    }
+
+    /// Set the plane bits for a pair. Assumes the pair is already clear.
+    fn write_bond(&mut self, a: u8, b: u8, order: BondOrder) {
+        let plane = order.plane_index();
+        self.set_row(plane, a, self.row(plane, a) | (1u16 << u32::from(b)));
+        self.set_row(plane, b, self.row(plane, b) | (1u16 << u32::from(a)));
+    }
+
+    /// Remove any bond between `a` and `b`, at whatever order it was held.
+    pub fn clear_bond(&mut self, a: u8, b: u8) {
+        for plane in 0..N_ORDERS {
+            self.set_row(plane, a, self.row(plane, a) & !(1u16 << u32::from(b)));
+            self.set_row(plane, b, self.row(plane, b) & !(1u16 << u32::from(a)));
+        }
+    }
+
+    /// The order of the bond between `a` and `b`, if there is one.
+    ///
+    /// **`Option<BondOrder>`, not a `0`-means-absent `u8`.** The sentinel form is
+    /// what let a predecessor's `permute` feed a `0` back into `add_bond`, and it
+    /// is the same shape `bonds.rs` spends forty lines condemning in
+    /// `Quanta::ZERO` — in a type where `0` is unrepresentable and
+    /// `Option<BondOrder>` is two bytes.
+    #[must_use]
+    pub fn bond_order(&self, a: u8, b: u8) -> Option<BondOrder> {
+        BondOrder::ALL
+            .into_iter()
+            .find(|o| self.row(o.plane_index(), a) & (1u16 << u32::from(b)) != 0)
+    }
+
+    /// Bitset of all neighbours of `a`, at any order.
+    #[must_use]
+    pub fn neighbours(&self, a: u8) -> u16 {
+        (0..N_ORDERS).fold(0, |acc, plane| acc | self.row(plane, a))
+    }
+
+    /// Bitset of the neighbours of `a` held at exactly this order.
+    ///
+    /// `canonical.rs` needs the planes separately — a vertex signature counts
+    /// neighbours per (order, colour) pair — and this is how it reads them
+    /// without the fields being visible.
+    #[must_use]
+    pub fn neighbours_at(&self, order: BondOrder, a: u8) -> u16 {
+        self.row(order.plane_index(), a)
+    }
+
+    /// Number of bonded neighbours, regardless of order.
+    #[must_use]
+    pub fn degree(&self, a: u8) -> u32 {
+        self.neighbours(a).count_ones()
+    }
+
+    /// Total valence consumed by bonds at `a`, counting order.
+    ///
+    /// Integer addition over a fixed-length array in plane order, so there is no
+    /// accumulation-order question here (§13.1 is about float sums and
+    /// scheduler-ordered reductions).
+    #[must_use]
+    pub fn valence_used(&self, a: u8) -> u32 {
+        BondOrder::ALL
+            .into_iter()
+            .map(|o| u32::from(u8::from(o)) * self.row(o.plane_index(), a).count_ones())
+            .sum()
+    }
+
+    /// Exact total mass, or `None` if any atom's element is absent from `table`.
+    ///
+    /// Integer addition, so this is a guarantee rather than a tolerance (§13.1).
+    /// Fallible because `add_atom` accepts any [`ElementId`] and an id is only
+    /// meaningful against a particular table — answering with a silent zero for a
+    /// missing element would put a wrong mass into a conservation check whose
+    /// whole purpose is being exact.
+    #[must_use]
+    pub fn mass(&self, table: &PeriodicTable) -> Option<Mass> {
+        (0..self.n)
+            .map(|i| self.element(i).and_then(|id| table.get(id)).map(|e| e.mass))
+            .sum()
+    }
+
+    /// Whether every atom is reachable from atom zero.
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        if self.n == 0 {
+            return true;
+        }
+        let mut seen: u16 = 1;
+        let mut frontier: u16 = 1;
+        while frontier != 0 {
+            let mut next: u16 = 0;
+            for i in 0..self.n {
+                if frontier & (1u16 << u32::from(i)) != 0 {
+                    next |= self.neighbours(i);
+                }
+            }
+            next &= !seen;
+            seen |= next;
+            frontier = next;
+        }
+        seen.count_ones() == u32::from(self.n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use borbax_universe::element::generate_elements;
+    use borbax_universe::{BondOrder, ElementId, PeriodicTable};
+
+    /// A real drawn element table.
+    ///
+    /// **`generate_elements`, not `Universe::generate`.** A graph needs element
+    /// *properties* — valence to bound bond orders, mass to sum — and nothing
+    /// from the bond-energy matrix or the universe constants. Building a whole
+    /// `Universe` here would borrow two subsystems this file never consults and
+    /// would put `Universe` in `graph.rs`'s dependency surface, where it does
+    /// not belong until Task 8 embeds something.
+    fn table() -> PeriodicTable {
+        generate_elements(5)
+    }
+
+    /// The lowest-id element with exactly this valence.
+    ///
+    /// Exact rather than "at least", because the valence tests need to know the
+    /// budget precisely — "at least 1" would let a valence-6 element satisfy a
+    /// test meaning to exhaust a valence-1 one, and it would pass for the wrong
+    /// reason.
+    ///
+    /// `unreachable!` rather than a silent skip: seed 5's table is fixed, so
+    /// these classes provably exist, and if element generation ever moves these
+    /// fixtures must fail loudly rather than quietly stop testing anything.
+    /// `clippy::panic` is denied workspace-wide and reaches inside
+    /// `#[cfg(test)]`, so this is the sanctioned spelling.
+    fn valence_exactly(t: &PeriodicTable, v: u8) -> ElementId {
+        t.iter().find(|(_, e)| e.valence == v).map_or_else(
+            || unreachable!("seed 5's table has no valence-{v} element; the fixture is stale"),
+            |(id, _)| id,
+        )
+    }
+
+    /// The first `count` distinct elements with at least `v` valence.
+    fn bondable(t: &PeriodicTable, v: u8, count: usize) -> Vec<ElementId> {
+        let ids: Vec<ElementId> = t
+            .iter()
+            .filter(|(_, e)| e.valence >= v)
+            .map(|(id, _)| id)
+            .take(count)
+            .collect();
+        assert_eq!(
+            ids.len(),
+            count,
+            "seed 5's table has too few valence-{v}+ elements"
+        );
+        ids
+    }
+
+    /// The `i`th element of a fixture list, cycling.
+    fn nth(ids: &[ElementId], i: usize) -> ElementId {
+        ids.get(i % ids.len()).map_or_else(
+            || unreachable!("bondable() guarantees a non-empty list"),
+            |id| *id,
+        )
+    }
+
+    fn order(n: u8) -> BondOrder {
+        BondOrder::new(n).unwrap_or_else(|| unreachable!("{n} is outside 1..=BondOrder::MAX"))
+    }
+
+    /// Append an atom, asserting the molecule had room.
+    fn atom(mol: &mut Mol12, elem: ElementId) -> u8 {
+        mol.add_atom(elem)
+            .unwrap_or_else(|| unreachable!("the molecule was unexpectedly at capacity"))
+    }
+
+    /// Add a bond that the fixture expects to be legal.
+    fn bond(mol: &mut Mol12, a: u8, b: u8, ord: BondOrder, table: &PeriodicTable) {
+        assert!(
+            mol.add_bond(a, b, ord, table).is_ok(),
+            "fixture bond {a}-{b} at order {ord:?} was refused"
+        );
+    }
+
+    /// An unbranched chain of `n` atoms, cycling through four distinct elements
+    /// so the mass sum is a sum of *different* numbers rather than a multiple.
+    fn chain(t: &PeriodicTable, n: u8) -> Mol12 {
+        // Interior atoms carry two single bonds, so two slots is the floor.
+        let ids = bondable(t, 2, 4);
+        let mut m = Mol12::new();
+        for i in 0..n {
+            atom(&mut m, nth(&ids, usize::from(i)));
+        }
+        for i in 0..n.saturating_sub(1) {
+            bond(&mut m, i, i + 1, BondOrder::SINGLE, t);
+        }
+        m
+    }
+
+    #[test]
+    fn bonds_are_symmetric() {
+        let t = table();
+        let m = chain(&t, 4);
+        for i in 0..4u8 {
+            for j in 0..4u8 {
+                assert_eq!(m.bond_order(i, j), m.bond_order(j, i));
+            }
+        }
+    }
+
+    #[test]
+    fn degree_counts_all_orders() {
+        let t = table();
+        // Atom 0 carries a single *and* a triple, so it needs four slots.
+        let hub = valence_exactly(&t, 4);
+        let mut m = Mol12::new();
+        for _ in 0..3 {
+            atom(&mut m, hub);
+        }
+        bond(&mut m, 0, 1, BondOrder::SINGLE, &t);
+        bond(&mut m, 0, 2, order(3), &t);
+        assert_eq!(m.degree(0), 2, "two neighbours, regardless of order");
+        assert_eq!(m.degree(1), 1);
+        assert_eq!(m.valence_used(0), 4, "one slot plus three");
+    }
+
+    #[test]
+    fn mass_is_the_exact_sum_of_atoms() {
+        let t = table();
+        let ids = bondable(&t, 2, 4);
+        let m = chain(&t, 6);
+        let expected: Option<borbax_units::Mass> =
+            (0..6).map(|i| t.get(nth(&ids, i)).map(|e| e.mass)).sum();
+        // Stated rather than assumed: a `None == None` comparison below would
+        // pass while measuring nothing.
+        assert!(
+            expected.is_some(),
+            "every fixture element must be in the table"
+        );
+        // Exact equality, not a tolerance — this is why Mass is fixed-point.
+        assert_eq!(m.mass(&t), expected);
+    }
+
+    #[test]
+    fn connectivity_is_detected() {
+        let t = table();
+        assert!(chain(&t, 5).is_connected());
+        let mut m = chain(&t, 4);
+        atom(&mut m, valence_exactly(&t, 2)); // isolated fifth atom
+        assert!(!m.is_connected());
+    }
+
+    #[test]
+    fn capacity_is_respected() {
+        let t = table();
+        let e = valence_exactly(&t, 2);
+        let mut m = Mol12::new();
+        let mut accepted = 0;
+        for _ in 0..MAX_ATOMS + 3 {
+            if m.add_atom(e).is_some() {
+                accepted += 1;
+            }
+        }
+        assert_eq!(
+            accepted, MAX_ATOMS,
+            "add_atom reports refusal past capacity"
+        );
+        assert_eq!(m.len(), MAX_ATOMS);
+    }
+
+    /// **A refused bond must not be a mutation.**
+    ///
+    /// `add_bond` clears the pair *before* checking the budget, so that replacing
+    /// a bond returns its slots. That ordering means a refusal happens with the
+    /// old bond already gone — so without an explicit restore, a caller that
+    /// handles the error correctly still silently loses a bond it had. The
+    /// `# Errors` section promises this; a promise with no test is the shape this
+    /// project keeps finding.
+    #[test]
+    fn a_refused_bond_leaves_the_molecule_untouched() {
+        let t = table();
+        let two = valence_exactly(&t, 2);
+        let mut m = Mol12::new();
+        for _ in 0..2 {
+            atom(&mut m, two);
+        }
+        bond(&mut m, 0, 1, order(2), &t);
+        let before = m;
+
+        // Both ends are now full, so re-stating the pair at a *higher* order is
+        // refused — after the existing double has already been cleared.
+        assert!(matches!(
+            m.add_bond(0, 1, order(3), &t),
+            Err(BondError::ValenceExceeded { .. })
+        ));
+        assert_eq!(
+            m, before,
+            "the refused bond destroyed the one that was there"
+        );
+        assert_eq!(m.bond_order(0, 1), Some(order(2)));
+    }
+
+    /// The requirement Task 5 routed here: `BondEnergyMatrix::energy` will price
+    /// any order in `1..=BondOrder::MAX` for any pair, including orders the pair
+    /// cannot physically support. Nothing in `borbax-universe` can refuse them.
+    #[test]
+    fn an_order_above_the_shared_valence_is_refused() {
+        let t = table();
+        let one = valence_exactly(&t, 1);
+        let four = valence_exactly(&t, 4);
+        let mut m = Mol12::new();
+        atom(&mut m, one);
+        atom(&mut m, four);
+        // min(1, 4) == 1, so a double bond is unpayable at the valence-1 end
+        // even though the other end has slots to spare.
+        assert!(matches!(
+            m.add_bond(0, 1, order(2), &t),
+            Err(BondError::ValenceExceeded { atom: 0, .. })
+        ));
+        // ...and the legal order at the same pair is accepted, so the test is
+        // not passing because everything is refused.
+        assert!(m.add_bond(0, 1, BondOrder::SINGLE, &t).is_ok());
+    }
+
+    /// **The case `min(valence_a, valence_b)` cannot see, and the reason the
+    /// check is per-atom rather than per-bond.**
+    ///
+    /// Every bond here is order 1 between two valence-1 elements, so every one
+    /// of them satisfies `order <= min(v_a, v_b)`. The hub still runs out of
+    /// slots after the first. At twelve atoms a pairwise check admits eleven
+    /// times the hub's budget; this asserts the second bond is already refused.
+    #[test]
+    fn the_per_atom_budget_outlives_the_pairwise_check() {
+        let t = table();
+        let one = valence_exactly(&t, 1);
+        let mut m = Mol12::new();
+        for _ in 0..3 {
+            atom(&mut m, one);
+        }
+        assert!(m.add_bond(0, 1, BondOrder::SINGLE, &t).is_ok());
+        assert!(
+            matches!(
+                m.add_bond(0, 2, BondOrder::SINGLE, &t),
+                Err(BondError::ValenceExceeded { .. })
+            ),
+            "the hub's one slot was spent by the first bond"
+        );
+    }
+
+    /// Replacing a bond must free the slots the old one held, or a molecule
+    /// becomes progressively unbondable by re-stating bonds it already has.
+    #[test]
+    fn replacing_a_bond_returns_its_slots_first() {
+        let t = table();
+        let two = valence_exactly(&t, 2);
+        let mut m = Mol12::new();
+        atom(&mut m, two);
+        atom(&mut m, two);
+        bond(&mut m, 0, 1, BondOrder::SINGLE, &t);
+        // Both ends have two slots and one is spent. Upgrading the *same* pair
+        // to a double is legal only if the single's slot is returned first.
+        assert!(m.add_bond(0, 1, order(2), &t).is_ok());
+        assert_eq!(
+            m.bond_order(0, 1),
+            Some(order(2)),
+            "the orders did not accumulate"
+        );
+        assert_eq!(m.valence_used(0), 2);
+    }
+
+    #[test]
+    fn a_bond_needs_two_distinct_atoms_that_exist() {
+        let t = table();
+        let mut m = chain(&t, 3);
+        assert!(matches!(
+            m.add_bond(0, 0, BondOrder::SINGLE, &t),
+            Err(BondError::NoSuchAtom { .. })
+        ));
+        assert!(matches!(
+            m.add_bond(0, 7, BondOrder::SINGLE, &t),
+            Err(BondError::NoSuchAtom { .. })
+        ));
+    }
+
+    /// `N_ORDERS` is the plane count and is indexed at `order - 1`, so it must
+    /// track `BondOrder::MAX` rather than `BondOrder::ALL.len()`. Those coincide
+    /// only while `ALL` is dense, which a `const _` inside `borbax-universe`
+    /// guarantees and this crate can neither see nor cite.
+    #[test]
+    fn every_representable_order_has_a_plane() {
+        assert_eq!(N_ORDERS, usize::from(BondOrder::MAX));
+        for o in BondOrder::ALL {
+            assert!(
+                o.plane_index() < N_ORDERS,
+                "order {o:?} indexes past the planes"
+            );
+        }
+    }
+}

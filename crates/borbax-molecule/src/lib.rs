@@ -1,0 +1,16 @@
+//! Molecule graphs, canonical form, geometry and shape signatures (spec §8).
+//!
+//! This crate carries the conceptual weight of Borbax: a molecule becomes a
+//! graph, the graph becomes a canonical form, the canonical form becomes a 3D
+//! embedding, and the embedding becomes a shape signature that
+//! [`borbax_universe`]'s chemistry can score against another one. It is split
+//! into small files because that is where nearly all iteration happens.
+//!
+//! **Everything here is per-species.** Spec §8.6: canonicalisation, embedding,
+//! signature construction, folding and cavity extraction are pure functions of
+//! the species and are computed once, at intern time. No code reachable from a
+//! simulation step may call any of them.
+
+pub mod graph;
+
+pub use graph::{BondError, MAX_ATOMS, Mol12, N_ORDERS};

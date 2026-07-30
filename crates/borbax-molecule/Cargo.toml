@@ -1,0 +1,26 @@
+[package]
+name = "borbax-molecule"
+edition.workspace = true
+# `[workspace.package] rust-version` is not applied to a member unless the
+# member asks for it. Omitting this line means the crate has no MSRV at all,
+# not that it inherits one — and the pin is part of the determinism contract
+# (spec §18.1).
+rust-version.workspace = true
+license.workspace = true
+version = "0.1.0"
+publish = false
+
+# Same trap, one line down: `[workspace.lints]` is inert for a member that
+# omits this, so `unsafe_code = "forbid"` forbids nothing and
+# `unwrap_used = "deny"` denies nothing.
+[lints]
+workspace = true
+
+[dependencies]
+borbax-units = { workspace = true }
+borbax-rng = { workspace = true }
+borbax-universe = { workspace = true }
+# Already compiled into this crate's tree via `borbax-units`, so this adds zero
+# crates and zero build time. It is a proc macro emitting `Display`, and cannot
+# reach a result-affecting path — the dependency doctrine's expensive case.
+thiserror = { workspace = true }
