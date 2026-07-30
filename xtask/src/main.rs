@@ -57,9 +57,24 @@ const CHEMISTRY_CRATES: &[&str] = &[
 /// `experiments/src/embed.rs` as `fn embed(mol: &Molecule)`, and `sdf` /
 /// `molfile` cover the same import path. `xyz` and `cif` are absent for now but
 /// are the obvious next entries once 3D geometry lands.
-const FORMAT_SEGMENTS: &[&str] = &[
-    "smiles", "smi", "smarts", "inchi", "inchikey", "molfile", "sdfile", "sdf", "pdb", "pdbx",
-    "mmcif", "fasta", "fastq",
+const FORMAT_SEGMENTS: &[&str] = &["smi", "sdf", "pdb"];
+
+/// Format names long enough to match as a **substring** of a squashed
+/// identifier, rather than as a whole segment.
+///
+/// **Segmentation alone cannot reach `InChI`**: its own capitalisation splits to
+/// `in`-`ch`-`i`, so no boundary rule recovers it. Matching these against the
+/// identifier with non-alphanumerics removed catches `InChIString`,
+/// `MOLFile`, `SDFile` and `PDBx` — measured, 46 of 47 probe spellings, the miss
+/// being `mol`, which is a deliberate exclusion.
+///
+/// The cost, stated because it is real: substring matching means the
+/// `inching`/`pinching`/`flinching` family would hit on `inchi`. A
+/// segment-prefix variant removes them and loses `InChI`, `MOLFile`, `SDFile`
+/// and `PDBx` — measured — so substring is the right trade. Zero hits across
+/// every `.rs` file in `crates/` and `experiments/` today.
+const FORMAT_SUBSTRINGS: &[&str] = &[
+    "smiles", "smarts", "inchi", "molfile", "sdfile", "mmcif", "fasta", "fastq", "pdbx",
 ];
 
 /// Split an identifier into lowercase segments on `_`, `-`, `.` and camelCase
@@ -69,26 +84,43 @@ const FORMAT_SEGMENTS: &[&str] = &[
 /// "file"]`; `SMILES` -> `["smiles"]`; `b"pdb"` -> `["b", "pdb"]`. Whole-segment
 /// matching is what lets `smi` be in the vocabulary without firing on `smith`.
 fn identifier_segments(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
     let mut out = Vec::new();
     let mut cur = String::new();
-    let mut prev_upper = false;
-    for ch in name.chars() {
-        // **Any non-alphanumeric is a boundary**, not just `_`/`-`/`.`. A
-        // review probe found `b"pdb"` scoring zero: the byte-string prefix
-        // stayed glued to the token, so the segment was `b"pdb` and matched
-        // nothing. Splitting on the quote as well makes prefixes, suffixes and
-        // path separators all fall out without enumerating them.
-        if !ch.is_alphanumeric() {
+    for (i, ch) in chars.iter().enumerate() {
+        // **Any non-alphanumeric is a boundary.** A review probe found `b"pdb"`
+        // scoring zero because the byte-string prefix stayed glued on. ASCII
+        // rather than Unicode, to match an ASCII-only vocabulary and to stay
+        // consistent with `to_ascii_lowercase` below.
+        if !ch.is_ascii_alphanumeric() {
             if !cur.is_empty() {
                 out.push(std::mem::take(&mut cur));
             }
-            prev_upper = false;
             continue;
         }
-        if ch.is_uppercase() && !prev_upper && !cur.is_empty() {
+        let prev = i
+            .checked_sub(1)
+            .and_then(|j| chars.get(j))
+            .copied()
+            .unwrap_or('\0');
+        let next = chars.get(i + 1).copied().unwrap_or('\0');
+        // Three boundaries, and the middle one is the fix for a real defect:
+        //   `fooBar`   -> foo|Bar   (lower then upper)
+        //   `PDBFile`  -> PDB|File  (upper run, then an upper followed by lower)
+        //   `pdb2`     -> pdb|2     (digit run starts or ends)
+        // Without the ACRONYMWord case an acronym absorbs the word after it, so
+        // `SMILESParser` becomes one segment `smilesparser` and matches nothing
+        // — measured, and it made this check *weaker* than the substring scan it
+        // replaced, which caught `SMILES` inside it.
+        let boundary = !cur.is_empty()
+            && ((ch.is_ascii_uppercase() && !prev.is_ascii_uppercase())
+                || (ch.is_ascii_uppercase()
+                    && prev.is_ascii_uppercase()
+                    && next.is_ascii_lowercase())
+                || (ch.is_ascii_digit() != prev.is_ascii_digit()));
+        if boundary {
             out.push(std::mem::take(&mut cur));
         }
-        prev_upper = ch.is_uppercase();
         cur.push(ch.to_ascii_lowercase());
     }
     if !cur.is_empty() {
@@ -351,6 +383,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_blocklist_present(root, &mut failures)?;
     check_no_real_chemical_formats(root, &mut failures)?;
     check_no_crate_escapes_the_scan(root, &mut failures)?;
+    check_no_unscanned_includes(root, &mut failures)?;
     check_toolchain_pins_agree(root, &mut failures)?;
     check_no_platform_transcendentals(root, &mut failures)?;
     check_no_stream_deriving_method(root, &mut failures)?;
@@ -985,6 +1018,55 @@ fn check_no_crate_escapes_the_scan(root: &Path, failures: &mut Vec<String>) -> R
     Ok(())
 }
 
+/// §5 — no scanned file may pull in source the scanner cannot see.
+///
+/// **Two defeats of the format check went through here, both built and run
+/// green.** `tables.rs` containing `include!("tables.in")` puts a full
+/// six-format importer in the public API while the only literal is `"tables.in"`,
+/// which names nothing — confirmed present in `cargo doc` output. And
+/// `#[path = "../../tools/importer.rs"]` reaches a file in a directory with no
+/// manifest, so `check_no_crate_escapes_the_scan` never fires either.
+///
+/// A blanket ban is exact rather than blunt: there are **zero** occurrences of
+/// any of these in `crates/` or `experiments/` today, so this forbids nothing
+/// that exists. Following the literal instead — resolving each path and lexing
+/// it — is the better fix if one is ever wanted; it is more code for a case
+/// nobody needs yet.
+fn check_no_unscanned_includes(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    const FORMS: &[&str] = &["include!", "include_str!", "include_bytes!", "#[path"];
+    for scan_root in TRANSCENDENTAL_SCAN_ROOTS {
+        let dir = root.join(scan_root);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in walk(&dir)? {
+            if entry.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&entry).map_err(|e| e.to_string())?;
+            let rel = entry.strip_prefix(root).unwrap_or(&entry);
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for form in FORMS {
+                    if line.contains(form) {
+                        failures.push(format!(
+                            "§5: {} at {}:{} pulls in source the §5 scanners do not lex. \
+                             Move the content into a scanned `.rs` file, or add the target \
+                             to the scan explicitly",
+                            form,
+                            rel.display(),
+                            n + 1
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// §5, G5 — no real chemical interchange format is read or written anywhere.
 ///
 /// **Lexes rather than greps, for the reason `xtask/Cargo.toml` already
@@ -1028,6 +1110,29 @@ fn check_no_real_chemical_formats(root: &Path, failures: &mut Vec<String>) -> Re
     Ok(())
 }
 
+/// Match one identifier or literal against both tiers of the vocabulary.
+///
+/// Short names are whole **segments** — `smi` must not fire on `smith`. Long
+/// names are substrings of the squashed text, because segmentation cannot reach
+/// a name whose own capitalisation splits it (`InChI` -> `in`|`ch`|`i`).
+fn check_text(text: &str, ctx: &str, hits: &mut Vec<(String, String)>) {
+    for seg in identifier_segments(text) {
+        if FORMAT_SEGMENTS.contains(&seg.as_str()) {
+            hits.push((seg, ctx.to_owned()));
+        }
+    }
+    let squashed: String = text
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    for name in FORMAT_SUBSTRINGS {
+        if squashed.contains(name) {
+            hits.push(((*name).to_owned(), ctx.to_owned()));
+        }
+    }
+}
+
 /// Walk a token stream, reporting identifiers and string literals that contain a
 /// [`FORMAT_SEGMENTS`] entry as a whole segment.
 fn scan_format_tokens(stream: proc_macro2::TokenStream, hits: &mut Vec<(String, String)>) {
@@ -1044,20 +1149,16 @@ fn scan_format_tokens(stream: proc_macro2::TokenStream, hits: &mut Vec<(String, 
             }
             proc_macro2::TokenTree::Ident(id) => {
                 let name = id.to_string();
-                for seg in identifier_segments(&name) {
-                    if FORMAT_SEGMENTS.contains(&seg.as_str()) {
-                        hits.push((seg, format!("identifier `{name}`")));
-                    }
-                }
+                check_text(&name, &format!("identifier `{name}`"), hits);
             }
             proc_macro2::TokenTree::Literal(lit) => {
+                // **No `trim_matches` on the quotes.** It stripped `r` from the
+                // *content* as well as the prefix, so `"pdbr"` and `"rpdbr"`
+                // both scored a false hit on `pdb`. `identifier_segments`
+                // already treats `"`, `#` and the `b`/`r`/`c` prefixes as
+                // boundaries, so the raw token text is what to pass.
                 let text = lit.to_string();
-                let inner = text.trim_matches(|c| c == '"' || c == 'r' || c == '#');
-                for seg in identifier_segments(inner) {
-                    if FORMAT_SEGMENTS.contains(&seg.as_str()) {
-                        hits.push((seg, format!("string literal {text}")));
-                    }
-                }
+                check_text(&text, &format!("string literal {text}"), hits);
             }
             proc_macro2::TokenTree::Punct(_) => {}
         }
@@ -2844,6 +2945,37 @@ mod tests {
 
     /// Segment splitting is what makes `smi` safe to carry: it matches
     /// `parse_smi` and not `smith`.
+    /// **The acronym defeat.** A review built a working six-format importer
+    /// using only all-caps type names and scored **zero** — which made this
+    /// check *weaker* than the substring scan it replaced, since that one
+    /// caught `SMILES` inside `SMILESParser` and matched `InChI` exactly.
+    #[test]
+    fn acronym_cased_identifiers_are_caught() {
+        for src in [
+            "pub struct SMILESParser { d: usize }",
+            "pub struct PDBReader { d: usize }",
+            "pub struct InChIString(String);",
+            "pub struct FASTAWriter;",
+            "pub struct MMCIFParser;",
+            "pub fn read_pdb2_file(t: &str) -> usize { t.len() }",
+            r#"pub const K: &str = "InChI";"#,
+        ] {
+            assert!(!g5(src).is_empty(), "escaped: {src}");
+        }
+    }
+
+    /// `trim_matches` stripped `r` from the literal's *content*, not just its
+    /// prefix, so these scored a false hit on `pdb`.
+    #[test]
+    fn a_literal_ending_in_r_is_not_a_format() {
+        for src in [
+            r#"pub const A: &str = "pdbr";"#,
+            r#"pub const B: &str = "rpdbr";"#,
+        ] {
+            assert!(g5(src).is_empty(), "false positive: {src}");
+        }
+    }
+
     /// Literal prefixes and quotes must not glue to the segment. `b"pdb"` once
     /// scored zero because the `b` stayed attached.
     #[test]

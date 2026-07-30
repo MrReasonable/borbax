@@ -23,6 +23,7 @@ rather than documented around.)
 | `check_blocklist_present` | G2 | `naming.rs` exists and contains `REAL_ELEMENT_SYMBOLS`. Fails loudly if the file is missing, rather than reporting green for a path that moved. |
 | `check_no_real_chemical_formats` | G5 | Lexes every `.rs` file under the scanned roots and rejects identifiers or string literals containing a real chemical-format name as a whole segment — `SmilesParser`, `parse_smiles`, `"pdb"`, `read_molfile`. Comments are not tokens, so doctrine may name them freely. |
 | `check_no_crate_escapes_the_scan` | §5 + §13.1 | Every crate directory in the workspace is inside a scanned root, so no crate can be added where the textual checks do not look. |
+| `check_no_unscanned_includes` | §5 | No `include!`, `include_str!`, `include_bytes!` or `#[path]` in scanned code — each reaches source the scanners never lex. |
 | `check_toolchain_pins_agree` | §18.1 | The Rust pin is the same in every place that states it. |
 | `check_no_platform_transcendentals` | §13.1 | No direct `exp`/`ln`/`sin`/`cos`/`powf` on `f64` — everything routes through `det_math`. |
 | `check_no_stream_deriving_method` | §13.1 | `Stream` does not gain a method that would silently fork a sequence. |
@@ -44,6 +45,28 @@ Two versions of this check failed before the current one:
    by skipping comment-only lines, which quietly **deleted half the list**:
    `"MOL format"`, `"PDB format"` and `"SDF format"` are English phrases that
    occur only in prose.
+
+A **fourth** version followed, because the third was defeated four more times —
+each defeat built, compiled and run green. The two that mattered most:
+
+- **Acronym-cased identifiers scored zero.** `SMILESParser`, `PDBReader`,
+  `FASTAWriter`, `MMCIFParser` and `InChI` itself all missed, because the
+  camelCase split only fired after a lowercase letter, so an acronym absorbed the
+  word following it. That made version 3 **strictly weaker than version 1** for
+  all-caps spellings — the substring scan had caught them. Fixed with an
+  `ACRONYMWord` boundary, plus a second vocabulary tier matched as a substring,
+  because `InChI`'s own capitalisation splits to `in`-`ch`-`i` and no boundary
+  rule recovers it.
+- **A committed `experiments/src/target/` escaped every scan** — `.gitignore`
+  anchors `/target/` to the root while the walker pruned the name at any depth.
+  That is a **G1** hole, not G5: a real element table planted there passed the
+  whole gate, while the identical file one directory up failed as it should.
+
+Plus `include!` of a non-`.rs` file (verified to put a full importer in the
+public API with no format name anywhere in the `.rs` source) and `#[path]` into a
+directory with no manifest, which walks past the crate-escape check too. Both now
+banned outright — there were zero occurrences in the tree, so the ban forbids
+nothing that exists.
 
 Then a review wrote a working six-format importer/exporter — `SmilesParser`,
 `parse_smiles`, `read_molfile`, `read_pdb`, `write_fasta`, an extension table
