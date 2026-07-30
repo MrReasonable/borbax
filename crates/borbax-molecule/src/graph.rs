@@ -12,6 +12,15 @@ use borbax_universe::{BondOrder, ElementId, PeriodicTable};
 /// sweep is a handful of popcounts.
 pub const MAX_ATOMS: usize = 12;
 
+/// **The row width bound, asserted where the row lives.**
+///
+/// An adjacency row is a `u16`, so an atom index is shifted into it and the cap
+/// must not exceed its width. `canonical.rs` asserts the *corresponding* `u128`
+/// bound for its pair bitsets, and `N_PAIRS <= 128` happens to coincide with
+/// `MAX_ATOMS <= 16` exactly — by accident, in another file, about another
+/// array. A bound that holds by coincidence somewhere else is not enforced here.
+const _: () = assert!(MAX_ATOMS <= 16, "an adjacency row is a u16");
+
 /// One bitset plane per representable bond order.
 ///
 /// **`BondOrder::PLANES`, not `BondOrder::ALL.len()`.** This array is indexed at
@@ -148,11 +157,36 @@ impl Mol12 {
         Some(idx)
     }
 
+    /// The adjacency bit for atom `b`, or `None` if `b` names no atom.
+    ///
+    /// **Every shift in this file goes through here, and that is the point.**
+    /// An earlier version spelled `1u16 << u32::from(b)` inline in
+    /// [`Self::bond_order`] and twice more in `clear_bond`, guarded in neither —
+    /// so the bound was enforced by `row`/`set_row`'s `.get()` calls, which
+    /// happen *after* the shift has already been evaluated. Measured on the
+    /// committed code: `b = 17` panicked with "attempt to shift left with
+    /// overflow" in debug, and in release the shift **masked** to `b % 16`, so
+    /// `bond_order(0, 17)` answered `Some(SINGLE)` for a bond that did not exist
+    /// and `clear_bond(0, 17)` cleared one row of a pair, leaving adjacency
+    /// asymmetric — `degree(0) = 0` against `degree(1) = 1`, `is_connected`
+    /// flipped, and a different `CanonForm`. Green in `cargo test`, wrong in the
+    /// profile that mints goldens, which is the split CLAUDE.md names twice.
+    ///
+    /// Returning the *bit* rather than validating an index is what makes the
+    /// hazard unspellable: there is no way to reach the shift without having
+    /// asked whether the atom exists.
+    fn bit(&self, b: u8) -> Option<u16> {
+        // `b < self.n <= MAX_ATOMS <= 16` (asserted above), so the shift is in
+        // range by construction rather than by inspection.
+        (b < self.n).then(|| 1u16 << u32::from(b))
+    }
+
     /// One adjacency row, or an empty one for an index that names no atom.
     ///
-    /// Out-of-range reads as "no neighbours" rather than panicking, which is the
-    /// same answer [`Self::bond_order`] gives and keeps every public reader
-    /// total. Writes go through [`Self::set_row`], which cannot invent a slot.
+    /// Out-of-range reads as an empty row rather than panicking. Note this is
+    /// **not** on its own what keeps the public readers total — the shift in
+    /// [`Self::bit`] is the part that had to be guarded, and this `.get()` is
+    /// what makes the row index safe once it has been.
     fn row(&self, plane: usize, a: u8) -> u16 {
         self.adj
             .get(plane)
@@ -207,7 +241,10 @@ impl Mol12 {
         order: BondOrder,
         table: &PeriodicTable,
     ) -> Result<(), BondError> {
-        if a == b || a >= self.n || b >= self.n {
+        let (Some(bit_a), Some(bit_b)) = (self.bit(a), self.bit(b)) else {
+            return Err(BondError::NoSuchAtom { a, b, n: self.n });
+        };
+        if a == b {
             return Err(BondError::NoSuchAtom { a, b, n: self.n });
         }
 
@@ -216,7 +253,7 @@ impl Mol12 {
         // progressively bankrupt the molecule — see
         // `replacing_a_bond_returns_its_slots_first`.
         let previous = self.bond_order(a, b);
-        self.clear_bond(a, b);
+        self.clear_pair(a, b, bit_a, bit_b);
 
         let cost = u32::from(u8::from(order));
         for atom in [a, b] {
@@ -233,7 +270,7 @@ impl Mol12 {
                 // must not be a mutation, or a caller that handles the error
                 // still carries the damage.
                 if let Some(o) = previous {
-                    self.write_bond(a, b, o);
+                    self.write_pair(a, b, bit_a, bit_b, o);
                 }
                 return Err(BondError::ValenceExceeded {
                     atom,
@@ -243,23 +280,43 @@ impl Mol12 {
             }
         }
 
-        self.write_bond(a, b, order);
+        self.write_pair(a, b, bit_a, bit_b, order);
         Ok(())
     }
 
-    /// Set the plane bits for a pair. Assumes the pair is already clear.
-    fn write_bond(&mut self, a: u8, b: u8, order: BondOrder) {
+    /// Set the plane bits for a pair whose bits are already known valid.
+    fn write_pair(&mut self, a: u8, b: u8, bit_a: u16, bit_b: u16, order: BondOrder) {
         let plane = order.plane_index();
-        self.set_row(plane, a, self.row(plane, a) | (1u16 << u32::from(b)));
-        self.set_row(plane, b, self.row(plane, b) | (1u16 << u32::from(a)));
+        self.set_row(plane, a, self.row(plane, a) | bit_b);
+        self.set_row(plane, b, self.row(plane, b) | bit_a);
+    }
+
+    /// Clear a pair whose bits are already known valid.
+    fn clear_pair(&mut self, a: u8, b: u8, bit_a: u16, bit_b: u16) {
+        for plane in 0..N_ORDERS {
+            self.set_row(plane, a, self.row(plane, a) & !bit_b);
+            self.set_row(plane, b, self.row(plane, b) & !bit_a);
+        }
     }
 
     /// Remove any bond between `a` and `b`, at whatever order it was held.
-    pub fn clear_bond(&mut self, a: u8, b: u8) {
-        for plane in 0..N_ORDERS {
-            self.set_row(plane, a, self.row(plane, a) & !(1u16 << u32::from(b)));
-            self.set_row(plane, b, self.row(plane, b) & !(1u16 << u32::from(a)));
-        }
+    ///
+    /// **Fallible, and symmetric with [`Self::add_bond`] on purpose.** It has no
+    /// caller yet; the first will be Task 12/13's bond breaking, taking indices
+    /// from a reaction site. A silent no-op on a bad index there would be a
+    /// species split nothing reports, so the refusal is a value the caller has
+    /// to handle rather than a comment promising it cannot happen.
+    ///
+    /// # Errors
+    ///
+    /// [`BondError::NoSuchAtom`] if either index names no atom. The molecule is
+    /// unchanged in that case — the check precedes every write.
+    pub fn clear_bond(&mut self, a: u8, b: u8) -> Result<(), BondError> {
+        let (Some(bit_a), Some(bit_b)) = (self.bit(a), self.bit(b)) else {
+            return Err(BondError::NoSuchAtom { a, b, n: self.n });
+        };
+        self.clear_pair(a, b, bit_a, bit_b);
+        Ok(())
     }
 
     /// The order of the bond between `a` and `b`, if there is one.
@@ -269,11 +326,17 @@ impl Mol12 {
     /// is the same shape `bonds.rs` spends forty lines condemning in
     /// `Quanta::ZERO` — in a type where `0` is unrepresentable and
     /// `Option<BondOrder>` is two bytes.
+    /// `None` also when either index names no atom — asking about a bond
+    /// between atoms that do not exist has one honest answer, and the private
+    /// `bit` helper is what makes the shift unreachable until that has been
+    /// established.
     #[must_use]
     pub fn bond_order(&self, a: u8, b: u8) -> Option<BondOrder> {
+        let bit_b = self.bit(b)?;
+        self.bit(a)?;
         BondOrder::ALL
             .into_iter()
-            .find(|o| self.row(o.plane_index(), a) & (1u16 << u32::from(b)) != 0)
+            .find(|o| self.row(o.plane_index(), a) & bit_b != 0)
     }
 
     /// Bitset of all neighbours of `a`, at any order.
@@ -543,6 +606,54 @@ mod tests {
             "the refused bond destroyed the one that was there"
         );
         assert_eq!(m.bond_order(0, 1), Some(order(2)));
+    }
+
+    /// **An index past the atom count must be refused before anything shifts.**
+    ///
+    /// This is a regression test for a defect that behaved differently in each
+    /// profile, which is why it asserts state rather than expecting a panic.
+    /// Measured on the code before the fix: `b = 17` panicked with "attempt to
+    /// shift left with overflow" under `overflow-checks`, and in release the
+    /// shift masked to `b % 16`, so `bond_order(0, 17)` answered `Some(SINGLE)`
+    /// for a bond that did not exist and `clear_bond(0, 17)` cleared one row of
+    /// a bonded pair — leaving `degree(0) = 0` against `degree(1) = 1`,
+    /// `is_connected()` false for a connected dimer, and a different
+    /// `CanonForm`. A test that only expected a panic would pass in debug and
+    /// assert nothing in the profile that mints goldens.
+    #[test]
+    fn an_index_past_the_atom_count_shifts_nothing() {
+        let t = table();
+        let two = valence_exactly(&t, 2);
+        let mut m = Mol12::new();
+        atom(&mut m, two);
+        atom(&mut m, two);
+        bond(&mut m, 0, 1, BondOrder::SINGLE, &t);
+        let before = m;
+
+        // Past `n`, past `MAX_ATOMS`, and past the row width — the last is the
+        // one that used to wrap rather than fail.
+        for bad in [2u8, 12, 16, 17, 200, u8::MAX] {
+            assert_eq!(
+                m.bond_order(0, bad),
+                None,
+                "bond_order invented a bond at {bad}"
+            );
+            assert_eq!(
+                m.bond_order(bad, 0),
+                None,
+                "bond_order invented a bond at {bad}"
+            );
+            assert!(
+                matches!(m.clear_bond(0, bad), Err(BondError::NoSuchAtom { .. })),
+                "clear_bond accepted {bad}"
+            );
+            assert_eq!(m, before, "clear_bond({bad}) mutated the molecule");
+        }
+
+        // The real bond is still there and still symmetric.
+        assert_eq!(m.bond_order(0, 1), Some(BondOrder::SINGLE));
+        assert_eq!(m.degree(0), m.degree(1));
+        assert!(m.is_connected());
     }
 
     /// The requirement Task 5 routed here: `BondEnergyMatrix::energy` will price
