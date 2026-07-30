@@ -92,8 +92,13 @@ pub struct Element {
     // two elements transposed made `iter` and `get` disagree, and priced the
     // wrong pair — in range, plausible and silent, which `get`'s own doc calls
     // the worse of the two failures this type exists to prevent. The id now has
-    // exactly one source, [`PeriodicTable::iter`], and cannot disagree with
-    // anything because there is nothing left to disagree with.
+    // no *duplicate* source: position is the only thing that determines it, so
+    // nothing can disagree with anything because there is nothing left to
+    // disagree with. (Not "exactly one source" — [`ElementId::from_index`] is
+    // public and `Universe::generate` mints one from a draw. Neither can
+    // disagree with position, since both take a position as input, but the
+    // stronger sentence stood here for two rounds after being retracted 190
+    // lines below. When a claim is retracted, grep the file for the claim.)
     /// Generated symbol, 1–2 characters (§5, G2).
     pub symbol: String,
     /// Generated name (§5, G2).
@@ -222,7 +227,7 @@ impl PeriodicTable {
     /// Assemble a table. In-crate only: outside, a table comes from
     /// [`generate_elements`] and nowhere else, so no caller can build one whose
     /// elements disagree with its shell law.
-    pub(crate) const fn new(pattern: ShellPattern, elements: Vec<Element>) -> Self {
+    pub(crate) fn new(pattern: ShellPattern, elements: Vec<Element>) -> Self {
         // **The bound belongs here, not at the read site.** An `ElementId` is a
         // `u8`, so a table longer than 256 cannot round-trip position through an
         // id: measured, a 300-slot table hands out 256 distinct ids, 44 slots
@@ -230,21 +235,37 @@ impl PeriodicTable {
         // prices slot 299 as slot 255 — in range, plausible and silent, which is
         // the exact failure removing `Element::id` was meant to close.
         //
-        // `assert!`, not `debug_assert!`: this crate has already shipped a guard
-        // present in `cargo test` and absent from the profile that mints
-        // goldens. It costs one compare against a 146 us generation.
-        assert!(elements.len() <= Self::MAX_ELEMENTS);
+        // `assert!`, not `debug_assert!`: the workspace has already shipped a
+        // guard present in `cargo test` and absent from the profile that mints
+        // goldens — twice, in `borbax-units` (Task 2), not in this crate, which
+        // an earlier version of this line misattributed. It costs one compare
+        // against a 146 us generation.
+        //
+        // What it guards is *not* the production path: `table_size_is_workable`
+        // already pins 60..=120 over 30 seeds. It guards `new`'s other callers —
+        // two tests today, and any future production one — so it is not
+        // redundant with that test and should not be deleted as though it were.
+        //
+        // Note `clippy::panic` does not see `assert!` (measured), so the green
+        // gate is not clearance for this; it is a deliberate ruling.
+        assert!(
+            elements.len() <= Self::MAX_ELEMENTS,
+            "a PeriodicTable of {} elements cannot address its own slots: an \
+             ElementId is a u8, so position stops round-tripping past {}",
+            elements.len(),
+            Self::MAX_ELEMENTS
+        );
         Self { pattern, elements }
     }
 
     /// The largest table an [`ElementId`] can address.
-    #[expect(
-        clippy::as_conversions,
-        reason = "widening `u8` to `usize` is lossless, and `usize::from` is not \
-                  const on the pinned toolchain (E0658), so the derivation has to \
-                  stay visible as an `as` rather than becoming a literal 256"
-    )]
-    pub(crate) const MAX_ELEMENTS: usize = 1 + u8::MAX as usize;
+    /// The number of distinct `u8` values — which is *why* the cap is what it
+    /// is, stated better than `1 + u8::MAX as usize` stated it. That form needed
+    /// an `#[expect(clippy::as_conversions)]` whose reason claimed the cast
+    /// "has to" stay because `usize::from` is not const (true, E0658) — but the
+    /// conclusion was false, and a suppression whose reason begins "has to"
+    /// should be tested against `rustc` before it is written.
+    pub(crate) const MAX_ELEMENTS: usize = 1 << u8::BITS;
 
     /// The shell law this table was built under.
     #[must_use]
@@ -252,8 +273,12 @@ impl PeriodicTable {
         &self.pattern
     }
 
-    /// Take the table apart. In-crate only, and used only by tests that predate
-    /// this type.
+    /// Take the table apart. In-crate only, and used only by tests.
+    ///
+    /// An earlier version said "tests that predate this type" — round 3 then
+    /// added `a_table_too_long_to_address_is_refused_at_construction`, which
+    /// calls this and postdates it by 200 lines, falsifying a doc it never
+    /// touched.
     ///
     /// Keeping them destructuring the same pair they always did is what lets
     /// `the_universe_digest_is_pinned` keep its **destructuring** unchanged
@@ -295,10 +320,15 @@ impl PeriodicTable {
     /// slot 0"; it would alias slot **255**, which is a real slot in any table
     /// where it could fire. `Self::new` now caps the length so it cannot.
     pub fn iter(&self) -> impl Iterator<Item = (ElementId, &Element)> {
+        // `map_while`, not `unwrap_or(u8::MAX)`. The old form aliased every
+        // slot past 255 onto id 255 — the exact silent-wrong-answer this type
+        // exists to prevent, kept alive as a second line of defence that fails
+        // the same way. Stopping instead makes `len()` and `iter().count()`
+        // disagree, which is visible. `Self::new`'s assert means neither fires.
         self.elements
             .iter()
             .enumerate()
-            .map(|(i, e)| (ElementId(u8::try_from(i).unwrap_or(u8::MAX)), e))
+            .map_while(|(i, e)| u8::try_from(i).ok().map(|b| (ElementId(b), e)))
     }
 
     /// How many elements this universe drew.
@@ -1345,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "assertion failed")]
+    #[should_panic(expected = "cannot address its own slots")]
     fn a_table_too_long_to_address_is_refused_at_construction() {
         // 300 slots: measured before the guard, `iter` handed out 256 distinct
         // ids, 44 slots disagreed with `get`, and the bond matrix priced slot

@@ -1,7 +1,8 @@
 //! Generated bond energies (spec §7.1).
 //!
-//! **Bond energy is a function of the two elements' per-unit binding energies,
-//! and that is this file's entire content.** §7.1's `bond_energies` was the last
+//! **Bond energy's *ordering* is a function of the two elements' per-unit
+//! binding energies. Its *magnitude* is not, and that is a defect this file
+//! records rather than one it has fixed.** §7.1's `bond_energies` was the last
 //! substantive property of a universe still without a cause: Task 4 derived
 //! `period`, `group`, `valence`, `radius`, `affinity` and `mass` from how a
 //! cluster packs, and left this one to be drawn. Drawing it reproduces exactly
@@ -13,6 +14,31 @@
 //! other elements, because a bond is the same kind of contact as the ones
 //! holding the cluster together. That is principle 1 — one mechanism reused —
 //! rather than a second axis invented for bonding.
+//!
+//! # The half that is not derived, measured
+//!
+//! `capacity = w + (1-w)·(x-lo)/span` is **affine-invariant in `x`**: multiply
+//! every `energy_per_unit` by 1000 and the worst relative change in any bond
+//! energy is **3.7e-16**, one ulp. So the whole matrix is invariant to the
+//! table's energy *scale*, and the scale that survives is `base`, drawn from a
+//! chosen `[30, 90]` that traces to nothing.
+//!
+//! **That is this file's own stated defect, one axis over.** "How strongly
+//! things bind" is encoded twice — as `energy_per_unit` in Quanta, and as
+//! `base` in a chosen interval — and neither can check the other. It matters
+//! because magnitude, not order, is what enters `exp(-E/T)`, so it is what
+//! §9.4's differential persistence is made of. The dead-`E/T` finding recorded
+//! below is a *symptom* of this rather than a separate problem: a scale
+//! unmoored from the table has no reason to sit anywhere in particular relative
+//! to `T`.
+//!
+//! The fix derives the scale from `eps`, the drawn per-contact energy in
+//! `element.rs` — if a bond is a contact, its energy scale is the contact
+//! energy, which is the mechanism the paragraph above already claims.
+//! *Discriminator:* scale every `energy_per_unit` by α and every bond energy
+//! must scale by α. Today that measures 1.0 where it wants α, and widening
+//! `base`'s interval leaves it at 1.0 — which is what separates the real fix
+//! from the plausible one.
 //!
 //! # Two things the first draft of this file got wrong, both measured
 //!
@@ -59,10 +85,16 @@
 //! There is no selective covalent bond in this chemistry and no exchange
 //! reaction whose sign depends on the spectator.
 //!
-//! That is deliberate rather than a shortfall. Principle 2 says shape is the
-//! only mechanism, so partner selectivity belongs to §8.3's signature
-//! complementarity; a per-pair covalent energy axis would be the second
-//! mechanism principle 2 exists to refuse. It is stated here because the type is
+//! **That is a deliberate departure from §7.1, which specifies `bond_energies`
+//! as a "per-partner-group bond strength matrix" — i.e. the spec asks for pair
+//! structure and this does not supply it.** Recording it as a departure rather
+//! than as principle 2 enforcing itself, because the stronger claim does not
+//! hold: §3.2 enumerates *recognition* phenomena, and covalent dissociation
+//! energy is §9.2's axis. The narrower argument does hold, and is the reason:
+//! a pair-structured covalent energy would give partner preference a **second
+//! source** alongside §8.3's complementarity — two independent axes scoring
+//! "does A prefer B" — and §3.2's "if a feature needs a second mechanism,
+//! question the feature" applies to that duplication. It is stated here because the type is
 //! called a matrix, and a reader building §9.1's energetics on top will
 //! otherwise assume pair structure exists. If selectivity is ever wanted here,
 //! the question to answer first is what the shape model failed to do.
@@ -229,7 +261,12 @@ impl BondEnergyMatrix {
 
         // Drawn before anything reads the table, so the draw order is a
         // property of this function rather than of the table handed to it.
-        let base = rng.next_f64_range(30.0, 90.0);
+        // `Quanta`, not a bare `f64`: unlike `eps`/`sigma` in `element.rs`,
+        // whose typing is correctly declined because they are compared and
+        // scaled as raw numbers, `base`'s only operation is to become a
+        // `Quanta` — so typing it here costs nothing and closes the G4 shape at
+        // the one place in this file where it applies.
+        let base = Quanta(rng.next_f64_range(30.0, 90.0));
         // What the *weakest* element in the table brings to a bond, as a
         // fraction of what the strongest brings.
         //
@@ -334,7 +371,7 @@ impl BondEnergyMatrix {
                 // disagreeing about which direction is safe is the finding,
                 // regardless of whether either can fire.
                 let cb = capacity.get(b).copied().unwrap_or(weakest_share);
-                let v = Quanta(base * (ca * cb).sqrt());
+                let v = base * (ca * cb).sqrt();
                 if let Some(cell) = e.get_mut(a * n + b) {
                     *cell = v;
                 }
@@ -556,9 +593,17 @@ mod tests {
                 (ratio - 1.0 / weakest_share).abs() < 1e-12,
                 "seed {seed}: spread {ratio} is not 1/{weakest_share}"
             );
+            // **Not a physics assertion — a tripwire on a draw range.** The
+            // whole-matrix ratio is exactly `1/weakest_share` by the identity
+            // above, so this can only fire if `weakest_share`'s upper bound is
+            // moved above 1/3. Measured minimum over 2000 universes is 3.5750
+            // against the analytic floor 1/0.28 = 3.5714, so `3.0` carries 20%
+            // slack. It named "the spread floor", which was
+            // `energies_have_useful_spread` — deleted two rounds ago.
             assert!(
                 ratio > 3.0,
-                "seed {seed}: spread {ratio} fell to the spread floor"
+                "seed {seed}: spread {ratio} — `weakest_share`'s upper bound must \
+                 have moved above 1/3, since the identity above fixes this ratio"
             );
         }
     }
@@ -670,8 +715,12 @@ mod tests {
                  longer separable. This does NOT mean the combiner stopped being a \
                  geometric mean: a non-geometric separable combiner keeps rank 1, and \
                  a geometric mean plus a derived pair factor breaks it. If a pair \
-                 factor was added deliberately, it needs a substitution-cycle test \
-                 first — rank 1 is what guarantees no exchange cycle is net-favourable"
+                 factor was added deliberately, what rank 1 buys is that the sign of \
+                 a substitution does not depend on the spectator. It is NOT what keeps \
+                 a cycle from being net-favourable — bond energy is a state function of \
+                 the graph for any symmetric matrix, so no cycle is net-favourable \
+                 regardless, and treating this as a free-energy-pump guard would \
+                 wrongly veto a legitimate change"
             );
         }
     }
@@ -763,6 +812,13 @@ mod tests {
             // own median** binding energy. The median is derived from the table
             // under test, so nothing is fitted, and the assertion still fails
             // the moment the bondable set collapses toward either end.
+            //
+            // **Honest scope: this guards against total collapse, not against
+            // the bond scale being badly set.** Measured over 2000 universes the
+            // tightest seed still has 28 bondable elements below the median and
+            // 27 above, so there is enormous slack before it fires. A green
+            // result here is not evidence the scale is well-set — see the module
+            // header for the quantity that actually is not.
             //
             // `total_cmp` is legitimate here and nowhere else in this crate:
             // `energy_per_unit` is finite by construction (asserted over 2000
