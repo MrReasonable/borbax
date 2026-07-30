@@ -16,7 +16,16 @@ Nine call sites are affected (`ElementId(..)` at lines ~39, 297, 776, 1079,
 arguments at ~1736). They are the *intended* consequence of the three decisions
 Task 4's review routed into Task 5, not oversights:
 
-| Was | Is now | Why |
+**The "is now" column is a copy of a fact, and nothing compiles it — so this
+table went stale in the very commit that changed the type, still spelling a
+`BondOrder::Single` that no longer exists.** The authoritative version is now a
+**doctest** in `borbax-universe`'s `lib.rs`, which `cargo test --locked
+--workspace` runs: a rename is a build failure there rather than a stale row
+here. It is the mechanism this workspace already trusts for `borbax-units`'
+`compile_fail` unit-mixing tests. Read it for the spelling; read the "why"
+column below for the reason, which is genuinely a plan's job.
+
+| Was | Is now (see the `lib.rs` doctest) | Why |
 |---|---|---|
 | `ElementId(3)` from another crate | `ElementId::from_index(3)` → `Option` | the field is `pub(crate)`; `elements[id.0 as usize]` was a panic site at every call site, under `indexing_slicing` |
 | `u.elements`, `u.shell` | `u.table` — `PeriodicTable` with `get`/`iter`/`len`/`pattern` | names the tuple `generate_elements` returned |
@@ -1700,8 +1709,17 @@ one.
 is retired by this task's own READ FIRST block above** — `E/T` already rose, in
 the commit that derived the bond scale. Measured at Task 5's HEAD over 2000
 universes, the sentinel rates **1.05×–1.31× the fastest** genuine bondable bond
-and up to **16.7× the slowest**. It is a per-universe range with a long tail, not
-a 3% constant, and it is not deferrable on the old number.
+and up to **2.09e6× the slowest**. It is a per-universe range with a long tail,
+not a 3% constant, and it is not deferrable on the old number.
+
+**That second figure read 16.7× and was wrong by five orders of magnitude, in
+the block rewritten to stop understating it.** 16.7× is the **single-bond-only**
+comparison presented unqualified; against the slowest *formable* bond it is
+2.09e6× over 2000 universes (`bonds.rs` quotes 4.36e4× over 500 — the same
+statistic, and a maximum over universes, so it grows with the sample; quote the
+population with it). This is exactly the single-vs-formable elision that
+`bonds.rs`'s own header was rewritten to call out in the same commit, made in
+the copy a Task 14 implementer actually reads.
 
 There is a second meaning on the same value now, which is the harder half: the
 **monomer** has no contacts and genuinely prices `Quanta::ZERO`. So a consumer

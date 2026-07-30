@@ -286,6 +286,42 @@ impl BondOrder {
         None => panic!("BondOrder::ALL is empty"),
     };
 
+    /// How many per-order planes a consumer must allocate to hold every order.
+    ///
+    /// **Not `ALL.len()`, and the difference is a live out-of-bounds.** A
+    /// consumer storing one plane per order indexes it as `order - 1`, so what
+    /// it needs is `MAX`, not the *count* of representable orders. Those agree
+    /// today only because of the `const _` below — which lives in this crate and
+    /// which `borbax-molecule` can neither see nor cite. Make `ALL` sparse
+    /// (`[1, 2, 3, 6]` is not absurd while formability is still being decided)
+    /// and `ALL.len()` is 4 while `MAX` is 6, so order 6 indexes plane 5 of a
+    /// 4-plane array. Task 6's draft wrote `ALL.len()` and had exactly that gap.
+    #[expect(
+        clippy::as_conversions,
+        reason = "`usize::from` is not stable as a const fn on 1.97.1 (`From` is \
+                  not yet a const trait), and this must be a `const` because \
+                  consumers use it as an array length. Widening u8 -> usize is \
+                  lossless on every target this workspace supports."
+    )]
+    pub const PLANES: usize = Self::MAX as usize;
+
+    /// This order's plane, for a consumer holding one array per order.
+    ///
+    /// **The arithmetic lives here so no call site does it.** Task 6's draft
+    /// wrote `let plane = (order - 1) as usize` against an unvalidated `u8`,
+    /// which panics at `order == 0` (subtraction overflow in debug; wraps to 255
+    /// and indexes out of bounds in release, where `overflow-checks` is off) and
+    /// at `order >= 7`. Both profiles verified. Taking `self` means the value
+    /// was already validated by [`Self::new`] or came from [`Self::ALL`], so the
+    /// result is in `0..PLANES` by construction and the call site has no `- 1`,
+    /// no cast, and no `#[expect]`.
+    #[must_use]
+    pub fn plane_index(self) -> usize {
+        // Not `const`, so this can use `usize::from` rather than `as`. `- 1`
+        // cannot underflow: `self.0 >= 1` for every constructible value.
+        usize::from(self.0) - 1
+    }
+
     /// An order, or `None` outside `1..=MAX`.
     #[must_use]
     pub const fn new(n: u8) -> Option<Self> {
@@ -1727,5 +1763,37 @@ mod tests {
         }
         assert!(BondOrder::try_from(0).is_err());
         assert!(BondOrder::try_from(BondOrder::MAX + 1).is_err());
+    }
+
+    /// **`PLANES` is an array length for a downstream crate, so an off-by-one
+    /// here is an out-of-bounds there.**
+    ///
+    /// Task 6's draft sized its per-order adjacency at `ALL.len()` and indexed
+    /// it at `order - 1`. Those agree only while `ALL` is dense — which is
+    /// asserted by a `const _` in *this* crate that `borbax-molecule` cannot see
+    /// or cite. This test states the property the consumer actually needs:
+    /// every representable order has a distinct plane, and every plane in
+    /// `0..PLANES` belongs to one. A sparse `ALL` fails it here rather than
+    /// panicking there.
+    #[test]
+    fn every_order_has_its_own_plane_and_they_fill_the_array() {
+        let planes: std::collections::BTreeSet<usize> =
+            BondOrder::ALL.iter().map(|o| o.plane_index()).collect();
+        assert_eq!(
+            planes.len(),
+            BondOrder::ALL.len(),
+            "two orders share a plane: {planes:?}"
+        );
+        assert!(
+            planes.iter().all(|p| *p < BondOrder::PLANES),
+            "an order indexes past PLANES ({}): {planes:?}",
+            BondOrder::PLANES
+        );
+        assert_eq!(
+            planes.into_iter().collect::<Vec<_>>(),
+            (0..BondOrder::PLANES).collect::<Vec<_>>(),
+            "the planes are not exactly 0..PLANES — a consumer sizing on PLANES \
+             would allocate a row nothing writes, or index one that does not exist"
+        );
     }
 }
