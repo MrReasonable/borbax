@@ -3336,65 +3336,134 @@ before this block existed.**
 ## The `Ea/T` band — Task 14 fixes the *group*, this task chooses the *value*
 
 `borbax-universe` derives the bond scale from the table's own `eps`; Task 14
-couples it to temperature so the dimensionless group `Ea/T` stops depending on
-two independent draws. Neither decides **what band `Ea/T` should sit in**, and
-that is a chemistry judgement this battery is the instrument for.
+couples it to temperature so the dimensionless group stops depending on two
+independent draws. Neither decides **what the chemistry needs**, and that is what
+this battery is the instrument for.
 
-What is already known, measured at Task 5's HEAD and to be re-measured here
-rather than trusted:
+**Name the observable, not the group.** An earlier version of this block said
+"`Ea/T` within roughly ±6% of nominal", and a review showed that phrase is read
+two incompatible ways on this same branch — `bonds.rs` carries a STOP against the
+identical remedy while this block adopted it as a target. The arithmetic settles
+it: `E = base·sqrt(c_a·c_b)·n^gamma` is separable, so `log R` is **exactly
+linear** in `base/T`. ±6% on the group is ±6% on the *logarithm* of the rate
+ratio — which at the measured high end is a **3.5x cross-universe spread** in the
+quantity §9.4 cares about, not a pin. Write every assertion against
+`exp((E_hi - E_lo)/T)` computed over the **realised** bond population, and bound
+its cross-universe spread. Once the assertion names a thing you can print, the
+two readings cannot diverge.
 
-- `Ea/T` reaches ~14.5; the cleave-rate ratio across all representable orders at
-  `temp_min` spans several orders of magnitude and exceeds 2.0 in every drawn
-  universe. Before the derivation change it was near 1 in all of them.
-- Under a constant multiplier the `Ea/T` spread across universes is ~4.4×;
-  drawing the energy in units of the universe's own temperature collapses it to
-  ~1.09×. That is Task 14's remedy and it has a measured target: **`Ea/T` within
-  roughly ±6% of nominal across universes.**
+**±6% was a copied measurement and should not survive.** `hi/lo = 1.09` is
+±4.40%; ±6% is that with headroom bolted on, and nothing anywhere states what
+chemistry *needs*. It also conflates two things that must be separated:
 
-*Discriminator:* the criterion must read a **realised lifetime ratio** — the
-abundance-weighted spread of species half-lives the beaker actually produces —
-not the bond-energy spread that feeds it. §22.6 asks for durable and fragile
-*linkages*; a matrix with a wide energy spread and a dead exponent satisfies the
-input and not the requirement, which is the defect Task 5's review spent four
-rounds on. A criterion expressible as a function of `hi/lo` alone is the wrong
-one.
+- **The double-draw artefact.** `base` (Quanta) and `temp_min` (Thermal) are two
+  independent draws of what the rate law sees as one quantity. Removing it is
+  right and loses nothing.
+- **Genuine variation.** "How hot is this chemistry relative to its bonds" is
+  among the most consequential properties a seed could decide. Pinning it makes
+  every Borbax universe run in the same Arrhenius regime — homogenising generated
+  physics because the battery found the variation inconvenient, against §3's
+  whole claim.
 
-## The strain exponent `N^(2/3)` is chosen, not derived
+**So draw the group itself:** `base = kappa * t_mid`, one draw rather than the
+ratio of two. Artefact gone, variation preserved. Then sweep `kappa` and report
+battery pass rate *and* the §9.4 ratio spread as functions of it. If the workable
+region is wide, draw across it and say why. If it is narrow, the pin is honest
+and earned. Either way the number arrives with an argument.
 
-`element.rs` states this in its own comment and defers here: per-*shell* strain
-proportional to `n²`, summed and divided by `N`, gives `1/k` — a constant, not
-`N^(2/3)`. Reaching 2/3 needs per-*site* strain proportional to `n²`, which is a
-different claim. Accumulating shell-by-shell instead, as `contacts_upto` already
-does for the identical reason, **moves the binding peak in 48.1% of drawn
-universes**.
+## The criterion must be per-BOND, not per-species
 
-It matters here because `peak` is load-bearing in two places that did not exist
-when it was deferred: it is the stellar/supernova boundary in Task 5b's
-abundance profile, and it sets `decay_rate` for every element. A 48% chance of
-the peak moving is a 48% chance of both moving with it.
+**A review measured that the obvious form is broken, and the failure is
+non-monotonic rather than merely lossy.** A species' cleave propensity is the sum
+over its bonds (§9.5, one Poisson channel), so a species half-life is set by *how
+many bonds it has* first and *which bonds* second — the exact confound the READ
+FIRST block above already names.
 
-*Discriminator:* the sweep must compare the shell-by-shell accumulation against
-the closed form and report how far the peak moves, per universe — not assert a
-band on the exponent, which is the quantity in question. If the shell-by-shell
-form is adopted, every figure quoting a peak position requotes with it.
+Measured with §22.6's own construction, per-bond rates redistributed about the
+global mean, chains 2..20:
 
+| per-bond spread (the truth) | abundance-weighted p95/p5 of species half-life |
+|---|---|
+| **1.000x — flat matrix, zero signal** | **16.0** |
+| 1.245x | 17.6 |
+| 3.728x | 29.5 |
 
-**Carried in from Task 4's review — the decay band sweep cannot move the
-dominant channel.** `borbax band --sweep decay_scale` bisects `decay_scale`,
-which appears in the cleave and solvent propensities and **not** in the
-radiogenic one (Task 15, requirement 4). Since radiogenic dominates the other
-two by 10³–10⁷ as drafted, the battery's decay-band search is bisecting a
-constant that moves ~10⁻⁵ of total turnover. Whatever band it reports is a
-property of the two minority channels.
+and *unweighted*, the flat matrix scores **19.0** against the real matrix's
+**13.5** — inverted. An implementer writing `assert!(ratio > 15.0)` passes a
+chemistry with no per-bond variation at all.
 
-Fix Task 15's requirement 4 first — a drawn radiogenic scale — then decide
-whether this sweeps one constant or two. A band located before that is not a
-band.
+Worse, the baseline moves with the sweep knob. Holding the matrix flat and
+changing only the realised chain length: max length 5 → 4.0, 20 → 16.0, 80 →
+62.0. That is **15.5x of movement with no physics in it**, against 1.85x for the
+entire signal — and it moves under `decay_scale` and `rate_prefactor`, which are
+exactly what this task bisects. The confound is **8.4x the signal**.
 
-**Files:** Create `crates/borbax-beaker/src/{battery.rs,metrics.rs}`; test both.
+And the signal collapses as `1/sqrt(n)` in chain length, which is analytic: the
+sum of *n* iid rates has `CV = CV_1/sqrt(n)`. A per-bond truth of 3.728x reads as
+3.27x at L=2 and **1.33x at L=20** — weakest exactly where §7.2's polymer
+criterion lives.
 
-**Interfaces:**
-- Produces: `BatteryReport`, `run_battery(&Universe, &Geodesic<D>) -> BatteryReport`, `BatteryReport::passes()`, `Metrics`, `MetricFamily`
+*So the criterion is:* for each species, for each bond it contains, weight by
+that species' count; report the spread of the **per-bond cleave rate** over that
+realised bond population. Realised rather than nominal, so the original intent
+survives; per-bond, so it matches what §22.6 literally asks for; and no
+bond-count confound by construction. Per-species data only — §8.6 clean.
+
+*And add a second, separate criterion for §9.4*, because §22.6 and §9.4 ask
+different questions: stratify species half-life **by chain length** and require
+the within-length spread to be non-trivial. That is the statement "persistence
+differs for a reason other than size", which one aggregate number cannot make.
+
+## Sweep the two rate channels separately, and gate on the weaker one
+
+Because `E` is separable, the channels decompose in closed form independently of
+`e_lo` and `T`. Using this file's own measured `c_ratio ∈ [6.6, 10.8]`, drawn
+`gamma ∈ [0.68, 1.0]` and the formable census (`n_max` = 4 in 27.2% of universes,
+5 in 50.9%, 6 in 21.9%):
+
+**Bond order carries 1.73x to 5.89x more log-rate than the element pair,
+everywhere in the drawn box. It is never smaller.**
+
+That matters because a condensation backbone is a chain of bonds, and if those
+are predominantly single, the durability variation *along a molecule* is the pair
+channel only — the weak one. The order channel produces variation *between*
+structural classes, not along a chain, and §9.5's "shape determines lifespan"
+needs the former. Round 7's measurement is the same fact from the other side: the
+pair channel alone gives max `E/T < 1` in 218 of 500 universes.
+
+*So:* sweep and report both channels separately — pair-channel spread at the
+formable single-bond restriction, and order-channel spread at fixed pair. **Gate
+on the first.** A sweep on total `E/T` over all formable orders reports success
+while the backbone sits in the linear regime, which is a green battery that does
+not mean what it says.
+
+## The strain exponent `N^(2/3)` is chosen, not derived — and this task must not choose it
+
+`element.rs` states this in its own comment: per-*shell* strain proportional to
+`n^2`, summed and divided by `N`, gives `1/k` — a constant, not `N^(2/3)`.
+Reaching 2/3 needs per-*site* strain proportional to `n^2`, a different claim.
+Accumulating shell-by-shell moves the binding peak in **48.1%** of universes.
+
+**Ownership, corrected.** Which of the two physical claims the lattice is making
+is a *derivation* question and cannot be swept to. It belongs where the strain
+model is written down — `element.rs` already states both candidates precisely,
+which is most of the work. This task's job is only to check the peak is
+**usable**: interior to the element range, not pinned at the table edge, not
+degenerate.
+
+**And a rule, because the alternative is rigging.** `peak` sets `decay_rate` for
+every element, and CLAUDE.md calls the decay band the most sensitive parameter in
+the system. Choosing the exponent by where the peak lands would be choosing the
+decay landscape by hand, one indirection removed. **The battery's pass rate may
+not be an input to the strain-exponent choice.** If it ever is, §22.6's band has
+been fitted to make life happen.
+
+- [ ] **Step 0: write the two criteria as failing tests before sweeping.**
+  Neither of the blocks above adds a step or a test, and the test immediately
+  below exists because someone made exactly that observation about the gel
+  ceiling: "a criterion with no test is prose, and the defect being repaired here
+  is precisely a criterion that exists on paper while the failure it names
+  passes."
 
 - [ ] **Step 1: Write the failing tests**
 
