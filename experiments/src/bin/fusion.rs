@@ -50,9 +50,18 @@ use borbax_units::det_math;
 
 /// Base seed for this experiment, `XOR`ed with a per-trial index.
 ///
-/// Arbitrary but fixed. XOR rather than addition so adjacent trial indices do
-/// not produce adjacent seeds — `Stream`'s finaliser decorrelates them either
-/// way, but XOR makes that independent of the mixer's quality.
+/// Arbitrary but fixed.
+///
+/// **The `XOR` is not doing what an earlier version of this doc claimed.** It
+/// said XOR was chosen over addition "so adjacent trial indices do not produce
+/// adjacent seeds". For *this* constant that is vacuous: the low byte is `0x00`,
+/// so `FUSION_SEED ^ s == FUSION_SEED + s` for every `s < 256`, verified
+/// exhaustively — and every call site passes `s < 24`. It produces byte-identical
+/// seeds to the addition it claimed to avoid.
+///
+/// Adjacent seeds are harmless anyway: `Stream`'s finaliser handles them, and
+/// `adjacent_seeds_decorrelate_immediately` measures it. Keep the XOR because it
+/// is the idiom, not because it buys anything here.
 const FUSION_SEED: u64 = 0x00F0_5100;
 
 /// Units in the `n`th packing shell: `k*n^2 + 2`.

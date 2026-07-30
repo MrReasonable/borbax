@@ -9,13 +9,34 @@ CI and in the pre-commit hook.
 
 ## What it checks
 
-| Guarantee | The check |
-|---|---|
-| **G1** — no real chemistry data | No data files under the chemistry crates. No element tables, reaction databases, molecular structures or sequence data anywhere. |
-| **G2** — generated names cannot collide with real ones | The name generator's blocklist is present and consulted. |
-| **G4** — no real-world units | Temperature is `Thermal`, energy `Quanta`, distance `Span`, time `WorldYear`, mass `Mass`. |
-| **G5** — permanent non-goals | No SMILES, InChI, MOL, PDB or FASTA anywhere; no Borbax↔real mapping table. |
-| §13.1 | Textual checks on determinism hazards — though `clippy::disallowed_methods` is the real authority here. |
+**This table lists the checks `check_guarantees` actually calls, and nothing
+else.** An earlier version described a gate about four times wider than the code:
+it claimed G5 was enforced "anywhere" when the scan read one file, listed G4 as a
+check when nothing tests it, and omitted four checks that do run. A review
+planted `SMILES`, `InChI`, `FASTA` and `MOL` in `bonds.rs` and the gate reported
+all checks passed. (The scan is now genuinely repository-wide — that was fixed
+rather than documented around.)
+
+| Function | Guarantee | What it does |
+|---|---|---|
+| `check_no_data_files` | G1 | No data files under the chemistry crates — no element tables, reaction databases, structures or sequence data. |
+| `check_blocklist_present` | G2 | `naming.rs` exists and contains `REAL_ELEMENT_SYMBOLS`. Fails loudly if the file is missing, rather than reporting green for a path that moved. |
+| `check_no_real_chemical_formats` | G5 | No `SMILES`, `InChI`, `FASTA`, `PDB format`, `MOL format` or `SDF format` in any `.rs` file under the scanned roots. |
+| `check_toolchain_pins_agree` | §18.1 | The Rust pin is the same in every place that states it. |
+| `check_no_platform_transcendentals` | §13.1 | No direct `exp`/`ln`/`sin`/`cos`/`powf` on `f64` — everything routes through `det_math`. |
+| `check_no_stream_deriving_method` | §13.1 | `Stream` does not gain a method that would silently fork a sequence. |
+| `check_no_closure_predicate_branch` | §13.1 | The shell-closure predicate has not sprouted a second spelling. |
+| `check_packing_matches_probe` | §7.1 | The shipped packing model still agrees with the experiment that established it. |
+
+**G4 is not in this list, deliberately.** No-real-world-units is enforced by the
+newtypes in `borbax-units` — `Quanta + Thermal` is a compile error — which is
+stronger than any grep. But it is not `xtask`, and a table headed "what it
+checks" that lists it is claiming a guard that is not here.
+
+Two other things this gate does **not** do, stated because their absence is easy
+to assume away: there is no Borbax↔real mapping-table check, and the format
+tokens are matched as substrings, so `MOL` and `PDB` are spelled `MOL format`
+and `PDB format` to avoid firing on `MOLECULE` and on ordinary prose.
 
 ## Why a program and not a review checklist
 

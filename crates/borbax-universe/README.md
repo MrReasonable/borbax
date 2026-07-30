@@ -140,8 +140,12 @@ is how a figure goes stale with nobody noticing.)
 | `abundance` — how common | Falls off with cluster size |
 | `radius`, `mass` | Direct consequences of unit count and packing |
 
-Note `instability` is the **nuclear-side** analogue — how likely this element is
-to fall apart on its own. It is *not* the chemical decay of bonds breaking; see
+Note `instability` is the **nuclear-side** analogue — a dimensionless measure of
+how far this element sits from the most tightly bound one. Deliberately *not* "a
+probability that it falls apart": the field was renamed away from `decay_rate`
+specifically because §7.1 and its consumer disagree about whether it is a
+probability or an unbounded rate, and a likelihood gloss re-installs the reading
+the rename exists to refuse. It is *not* the chemical decay of bonds breaking; see
 the note in §7.1 of the spec, because the two were once confusingly both called
 "decay".
 

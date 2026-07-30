@@ -17,11 +17,19 @@ use borbax_experiments::signature::Descriptor;
 
 /// Independent seeds, one per regime.
 ///
-/// **Arbitrary values, deliberately unrelated to one another.** The requirement
-/// is only that they are fixed (so a measurement reproduces) and not adjacent
-/// (so two regimes cannot accidentally share a stream prefix). They are written
-/// as recognisable bit patterns rather than 1, 2, 3 precisely so that a value
-/// appearing somewhere unexpected is obviously *this array* and not a count.
+/// **Arbitrary values. The only requirement is that they are fixed and
+/// distinct.**
+///
+/// An earlier version of this doc said they must also be "not adjacent, so two
+/// regimes cannot accidentally share a stream prefix". That is false, and this
+/// crate proves it: `adjacent_seeds_decorrelate_immediately` shows seeds 0..63
+/// give first draws differing in at least 18 of 64 bits across all 2016 pairs.
+/// The finaliser is what makes adjacency harmless — asserting a requirement the
+/// mixer already discharges invites someone to "fix" a perfectly good seed set.
+///
+/// Fixed, because a measurement reproduces only if its stream does. Written as
+/// recognisable bit patterns rather than 1, 2, 3 so a value appearing somewhere
+/// unexpected is obviously *this array* and not a count.
 const SEEDS: [u64; 5] = [
     0x0B0B_BA05,
     0x1234_5678,

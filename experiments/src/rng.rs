@@ -17,12 +17,18 @@
 
 /// `SplitMix64`'s finalising mix, on its own.
 ///
-/// Exposed because `molecule.rs` needs to avalanche an FNV hash and had grown a
-/// second, byte-identical copy of these five lines. Two copies of a constant
-/// drift under any find-and-replace — a lesson this workspace has already paid
-/// for once in `bonds.rs`.
+/// `pub(crate)`, not `pub`: the only caller outside this file is
+/// `molecule.rs`'s `form_hash`, and this module's own header says it stands in
+/// for `borbax_rng::Stream` — which exports `Stream` and `Domain` and no bare
+/// mixer. A `pub` mixer makes the stand-in diverge from the thing it stands in
+/// for, in the direction that sends a reader looking for `borbax_rng::mix64`.
+///
+/// It exists because `molecule.rs` had grown a second, byte-identical copy of
+/// these five lines, and two copies of a constant drift when one is edited and
+/// the other is not — which is exactly how `bonds.rs` came to hold a `MAX` and
+/// a `MAX_LEN` that disagreed, pricing bond order 7 at order 1's multiplier.
 #[must_use]
-pub const fn mix64(mut z: u64) -> u64 {
+pub(crate) const fn mix64(mut z: u64) -> u64 {
     z = (z ^ (z >> MIX_SHIFT_1)).wrapping_mul(MIX_MULTIPLIER_1);
     z = (z ^ (z >> MIX_SHIFT_2)).wrapping_mul(MIX_MULTIPLIER_2);
     z ^ (z >> MIX_SHIFT_3)
@@ -45,12 +51,26 @@ const GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// First multiplier of the finalising mix.
 ///
-/// The two multipliers and the three shift widths below are **not arbitrary and
-/// must not be "tidied"** — they are the published MurmurHash3-derived finaliser
-/// that `SplitMix64` uses, chosen by search to maximise avalanche (one input bit
-/// flipping changes each output bit with probability ~1/2). Substituting
-/// round-looking values silently destroys that property while leaving every test
-/// here green except `adjacent_seeds_decorrelate_immediately`.
+/// **The multipliers and the shifts must not be "tidied", but for two different
+/// reasons — and an earlier version of this comment gave one reason for both,
+/// wrongly.**
+///
+/// *The multipliers* are load-bearing for avalanche, and the claim was measured:
+/// substituting `0x1000…0001`, `0xFFFF…FFFF` or small primes each collapses the
+/// worst pairwise Hamming distance in
+/// `adjacent_seeds_decorrelate_immediately` from 18 bits to 1 or 2, and that
+/// test fails.
+///
+/// *The shifts* are **not** guarded by any test in this file, and are not
+/// load-bearing for avalanche either. Measured: `(32,32,32)`, `(30,27,32)`,
+/// `(30,27,1)` and `(1,1,1)` all leave the whole suite green, and a strict
+/// avalanche measurement puts the published `(30,27,31)` at 0.0283 against
+/// `(32,32,32)`'s 0.0293 — indistinguishable. What makes them load-bearing is
+/// **reproducibility**: every figure in `docs/experiments/` was produced by this
+/// exact sequence, so changing 30 to 32 silently re-bases published results
+/// rather than degrading anything measurable.
+///
+/// They are the published MurmurHash3-derived finaliser `SplitMix64` uses.
 const MIX_MULTIPLIER_1: u64 = 0xBF58_476D_1CE4_E5B9;
 
 /// Second multiplier of the finalising mix. See [`MIX_MULTIPLIER_1`].

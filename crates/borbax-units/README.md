@@ -69,9 +69,16 @@ different universe.
 ### The fix: one door
 
 Every transcendental in the entire workspace goes through `det_math.rs`, which
-calls [`libm`](https://crates.io/crates/libm) — a pure-Rust implementation with
-no platform-specific paths for these functions. Same code, same answer,
-everywhere.
+calls [`libm`](https://crates.io/crates/libm) — a pure-Rust implementation that
+dispatches on processor architecture **only for operations IEEE-754 specifies
+exactly**. Same answer everywhere, and see the subtlety below for why that is
+the right way to state it.
+
+(An earlier version said libm has "no platform-specific paths for these
+functions". That is false for `exp`, and `CLAUDE.md` names it as *the wrong
+reason to trust libm* — precisely because it would wave through a future version
+that widened one. Stating the false version here, in the section a reader stops
+at, defeated the protection.)
 
 A direct `.exp()` or `.cos()` on an `f64` anywhere in library code is a
 **determinism bug**, not a style preference. `clippy.toml` bans them by name so
