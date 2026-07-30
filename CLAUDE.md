@@ -289,8 +289,27 @@ Windows/x86-64 and Linux/x86-64, enforced by a CI golden matrix (§13.4, §13.6)
   table, no real-world calibration targets. Feature requests implying otherwise
   are rejected on sight.
 
-**Other:** no `unwrap()`/`expect()` in library code (`clippy::unwrap_used` and
-`expect_used` are `deny` at workspace level); tests may unwrap freely.
+**Other:** no `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` in
+library code — all five are `deny` at workspace level.
+
+**"Tests may unwrap freely" is true only with an attribute, and the attribute is
+the point.** `clippy.toml` sets neither `allow-unwrap-in-tests` nor
+`allow-expect-in-tests`, so the deny **reaches inside `#[cfg(test)]`**. Two
+patterns are established and both are fine:
+
+- a module-level opt-in — `borbax-units/src/lib.rs:751` carries
+  `#[allow(clippy::unwrap_used, reason = "...")]` on its `mod tests`, and a
+  bare `#[allow]` with no reason is a review finding;
+- or no fallible spelling at all — `borbax-universe`, `borbax-rng` and
+  `borbax-molecule` contain **zero** `.unwrap()` calls between them, using
+  `assert!`/`assert_eq!` for conditions and
+  `unwrap_or_else(|| unreachable!("why this cannot happen"))` where a fixture
+  guarantees an `Option`. `clippy::unreachable` is deliberately not enabled: it
+  is the spelling that names its own precondition.
+
+Prefer the second in new code. `bonds.rs:1341` records why `unwrap` is rarely
+the fix even when it is permitted — it turns "this constant stopped being valid"
+into a different assertion firing with a message naming the wrong cause.
 
 ## Scope discipline
 
