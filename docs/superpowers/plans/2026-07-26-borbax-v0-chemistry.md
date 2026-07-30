@@ -1542,9 +1542,9 @@ never leaves its linear regime. Measured on the committed code:
 | quantity | measured |
 |---|---|
 | `exp(−Ea/T)` over 200 universes, all orders | `[0.2583, 0.9936]` |
-| cleave-rate ratio, most fragile : most durable **bondable** bond | 1.04× – 1.48× |
+| cleave-rate ratio, bondable, **single** bond, at mid-temperature | 1.044× – 1.243× |
 | same, over the abundance-weighted population a beaker holds | 1.05× – 1.20× |
-| §22.6 phase-2 redistribution as a fraction of phase-1's own range | **0.5% – 2.4%** |
+| §22.6 phase-2 redistribution vs phase-1's `decay_scale` range (1e-6..1e-4, i.e. 100×) | **0.9% – 4.7% on a log scale**; 0.04%–0.25% linearly |
 
 The consequence is not "decay is mistuned" — `decay_scale` can move that. It is
 that **a molecule's spontaneous lifespan is set by how many bonds it has**, with
@@ -1568,9 +1568,20 @@ where differential persistence is identically zero. So the test must read a
 **rate** ratio at the universe's own drawn temperatures, and must fail both for
 α = 0.001 (nothing differs) and α = 1000 (nothing ever cleaves). For sizing, not
 prescription: reaching `Ea/T = 10` for the strongest bondable single bond at
-mid-temperature needs roughly ×67 on the current scale, ×134 for `Ea/T = 20`; the
-abundance²-weighted operating point then sits at 0.552 of the bondable range, so
-a seeded beaker runs mid-band rather than pinned. `borbax-universe`'s `the_single_bond_rate_spread_at_mid_temperature_is_narrow`
+mid-temperature needs a **median** ×67 on the current scale, ×134 for
+`Ea/T = 20`; the abundance²-weighted operating point then sits at 0.552 of the
+bondable range, so a seeded beaker runs mid-band rather than pinned.
+
+**"Median" is the load-bearing word — do not implement ×67 as a constant.** The
+factor required is a per-universe quantity with a 4.4× spread: measured over 200
+seeds, min 34.0, p25 52.8, median 67.0, p75 90.4, max 149.4. A universe-wide ×67
+leaves `Ea/T` anywhere in **[4.5, 19.7]** — rates differing by ~e^15 between
+universes at one nominal setting, which is this requirement's own failure mode
+one level in. So the assertion must bound the **spread of `Ea/T` across
+universes**, not merely its magnitude in one. That is what makes "fix the
+dimensionless group, not the energy" operational: it rules out a multiplier and
+forces the group — draw `base` in units of the universe's own temperature, or
+divide by `T` where the rate law is written. `borbax-universe`'s `the_single_bond_rate_spread_at_mid_temperature_is_narrow`
 records the defect but **cannot observe this fix** — see Step 0, which retires it.
 
 **Also inherited here: the bond-energy spread is quoted over cells no molecule
@@ -1596,6 +1607,45 @@ crate's energies and temperatures untouched and its test green — a stale
 defect-record passing beside a repaired defect, which is worse than no record at
 all because nothing tells the next reader. A round-2 reviewer caught the earlier
 version of this plan claiming that test would fail on repair; it would not.
+
+**Requirement: the rate network must have no free-energy pump. This was found
+in Task 5's review, reported as "routed forward", and then written down nowhere
+— a later grep of all of `docs/` for it returned zero hits. It is recorded here
+because that is the artefact this task's implementer opens.**
+
+Condense and Cleave are forward and reverse of the same elementary step (§9.1).
+`Reaction` below carries **both** `activation: Quanta` and `delta: Quanta`, and
+`rate()` reads only `activation` — `delta` has no consumer anywhere in either
+plan file. That is "encoded twice, in incommensurable units, so neither encoding
+can check the other": the exact defect `borbax-universe`'s bond module exists to
+reject, reproduced one level up.
+
+If Condense is set from affinity and Cleave from the bond matrix with no
+constraint between them, the implied equilibrium constant is unconstrained and a
+cycle `A + B ⇌ AB` can be net-energy-producing. **Nothing will catch that on its
+own.** Gillespie's direct method derives the algorithm from whatever propensities
+it is handed and imposes no thermodynamic-consistency condition (Gillespie 1977,
+*J. Phys. Chem.* 81(25):2340–2361) — a network violating detailed balance
+simulates happily and produces a plausible steady state. In an artificial
+chemistry that is how a spurious "replicator" gets manufactured out of the rate
+law rather than out of the physics.
+
+*Discriminator:* for every Condense channel and its Cleave inverse,
+`activation_forward − activation_reverse == delta` exactly, on a stated sign
+convention, asserted at channel-creation time. A per-reaction sanity check does
+not have this property; the constraint is a relation between the pair.
+
+**Requirement: retire `borbax-universe`'s known-wrong sentinel.**
+`BondEnergyMatrix::energy` returns `Quanta::ZERO` for an id outside its table.
+Under `k = A·exp(−E_bond/T)` that is the **fastest-cleaving** value, not an inert
+one. Today the error is ~3% because `E/T` is in the linear regime — but once this
+task applies its own `Ea/T` sizing the same sentinel becomes a factor of ~10²–10⁵.
+**So the sentinel must die in the same commit as the coupling, not after it.**
+The shape with the property is an id that cannot be built without a successful
+lookup against the table it will be used with; `ElementId::from_index` is
+currently `pub` and returns `Some` for any value under 256, so a stray id is one
+public call away. This is the same decision as whether `Mol12` stores `ElementId`
+or `u8` (Task 11) — bundle them.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2074,8 +2124,8 @@ it — vents are energy-rich and corrosive, the first real environmental
 trade-off"*. It reduces to a global clock-speed change.
 
 This is dangerous rather than merely wrong, because `1/E` yields a **larger**
-durability spread (median 3.12× bondable) than true Arrhenius does at Task 5's
-scale (1.24×). A reviewer measuring only spread would conclude the factorised
+durability spread (median 3.10× bondable) than true Arrhenius does at Task 5's
+scale (median 1.11×; the 1.24× quoted here before was that set's *max* against the other's median). A reviewer measuring only spread would conclude the factorised
 law is the better one.
 
 *Discriminator:* the test must read the **mixed second difference**
@@ -2361,6 +2411,23 @@ provenance fallback would break it.
 **Interfaces:**
 - Consumes: `Cavity<D>`, `Signature<D>`, `Geodesic<D>`, `BindConsts`, `fcc`
 - Produces: `catalysis_factor<D>(&[Cavity<D>], &Signature<D>, &Signature<D>, &Geodesic<D>, &BindConsts) -> f64`, `IDEAL_SEPARATION`, `MAX_ENHANCEMENT`
+
+**Requirement from Task 5's review, and the half of the energy-balance problem
+that nobody had named: a catalyst that multiplies one direction only is a
+free-energy pump.**
+
+`catalysis_factor` returns a multiplier applied to one `Reaction` inside
+`rate()`. Nothing here requires the **reverse** channel to carry the same factor.
+A catalyst that speeds Condense and not Cleave raises the steady-state polymer
+concentration above the uncatalysed equilibrium without bound — and §21's "the
+chemistry works" then measures a broken catalyst rather than emergence. A real
+catalyst changes the path, not the equilibrium; it must multiply both directions.
+
+*Discriminator:* run the beaker **closed** — no food influx, no outflow — and
+assert that total bond energy stops rising and every cycle's net flux goes to
+zero. It has to be the closed run: an open beaker is legitimately driven, so the
+constraint is not falsifiable there and a green open-beaker test would be the
+usual green-test-over-a-dead-mechanism.
 
 - [ ] **Step 1: Write the failing tests**
 

@@ -54,7 +54,9 @@ pub struct UniverseConsts {
     /// inverse-time, and there is no `Rate` newtype to hold it. Minting one is
     /// §9.1's business — it needs the rate law in front of it to know whether
     /// the unit is per [`borbax_units::WorldYear`] or per collision — so the
-    /// decision routes to Task 9 rather than being guessed here.
+    /// decision routes to Task 14 (reaction rates) rather than being guessed
+    /// here. Task 9 is the shape signature; §9.1 is Task 14's, and reading the
+    /// spec section number as a task number is how §9 items get misrouted.
     pub rate_prefactor: f64,
     /// Global spontaneous-cleavage scale. V0 locates the decay band by
     /// moving this single number (spec §22.6); per-bond rates come later.
@@ -132,9 +134,20 @@ pub enum PhysicsVersion {
 /// `as` on a `#[non_exhaustive]` enum silently accepts a future variant, and a
 /// version number reaching an address is the last place that should happen.
 impl From<PhysicsVersion> for u8 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "the hazard this impl exists to avoid is `v as u8` on an opaque \
+                  value, which silently accepts a future variant. Inside an \
+                  exhaustive match arm the variant is already known, so writing \
+                  the discriminant this way makes the wire form and the derived \
+                  `Ord` one fact instead of two encodings that can drift — \
+                  `V2 = 2` with a hand-written `=> 3` here compiles, orders \
+                  correctly, and writes the wrong number into both the digest \
+                  and the `U-7F3A21C9@N` address"
+    )]
     fn from(v: PhysicsVersion) -> Self {
         match v {
-            PhysicsVersion::V1 => 1,
+            PhysicsVersion::V1 => PhysicsVersion::V1 as Self,
         }
     }
 }
@@ -356,40 +369,70 @@ mod tests {
     /// hash and wrong here.
     #[test]
     fn the_assembled_universe_digest_is_pinned() {
+        // FNV-1a: XOR-then-multiply, so the low k bits of the product depend
+        // only on the low k bits of the operands — there is essentially no
+        // avalanche downward. Measured: a mutation touching only exponent bits
+        // of every Single cell left the low 32 bits identical. Compare the full
+        // `u64` only — never a prefix, never truncated to a display address.
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         let mut mix = |x: u64| {
             h ^= x;
             h = h.wrapping_mul(0x0100_0000_01b3);
         };
-        for seed in 0..16 {
+        for seed in 0..64 {
             let u = Universe::generate(seed);
-            mix(u.seed);
+            // **Destructured, not field-accessed, and that is the whole guard.**
+            // A review added a ninth drawn constant three ways — appended to the
+            // stream, and on a fresh `Domain::Universe` index as this enum's own
+            // doc *recommends* — and all 54 tests stayed green each time. A
+            // hand-written field list cannot see a field that is not in it.
+            // `#[non_exhaustive]` does not bind in-crate, so destructuring makes
+            // an added field `E0027` here instead of a value silently outside
+            // the digest — the same forcing function as `generate_under`'s match.
+            let Universe {
+                seed: s,
+                physics,
+                table,
+                bonds,
+                consts,
+            } = &u;
+            let UniverseConsts {
+                ideal_gap,
+                w_shape,
+                w_charge,
+                rate_prefactor,
+                decay_scale,
+                solvent,
+                temp_min,
+                temp_max,
+            } = consts;
+            mix(*s);
             // `u8::from` on the discriminant rather than `as`: the enum is
             // `#[non_exhaustive]` and a future variant must not silently widen.
-            mix(u64::from(u8::from(u.physics)));
-            // Every constant, in a fixed order that is this test's own — so a
-            // reorder of the struct literal cannot reorder the digest with it.
-            mix(u.consts.ideal_gap.0.to_bits());
-            mix(u.consts.w_shape.to_bits());
-            mix(u.consts.w_charge.to_bits());
-            mix(u.consts.rate_prefactor.to_bits());
-            mix(u.consts.decay_scale.to_bits());
-            mix(u64::try_from(u.consts.solvent.index()).unwrap_or(u64::MAX));
-            mix(u.consts.temp_min.0.to_bits());
-            mix(u.consts.temp_max.0.to_bits());
+            mix(u64::from(u8::from(*physics)));
+            // Fixed order, this test's own — so a reorder of the struct literal
+            // cannot reorder the digest with it.
+            mix(ideal_gap.0.to_bits());
+            mix(w_shape.to_bits());
+            mix(w_charge.to_bits());
+            mix(rate_prefactor.to_bits());
+            mix(decay_scale.to_bits());
+            mix(u64::try_from(solvent.index()).unwrap_or(u64::MAX));
+            mix(temp_min.0.to_bits());
+            mix(temp_max.0.to_bits());
             // Every bond cell at every order, covering `e` and both order
             // multipliers.
-            let ids: Vec<ElementId> = u.table.iter().map(|(id, _)| id).collect();
+            let ids: Vec<ElementId> = table.iter().map(|(id, _)| id).collect();
             for &a in &ids {
                 for &b in &ids {
                     for order in [BondOrder::Single, BondOrder::Double, BondOrder::Triple] {
-                        mix(u.bonds.energy(a, b, order).get().to_bits());
+                        mix(bonds.energy(a, b, order).get().to_bits());
                     }
                 }
             }
         }
         assert_eq!(
-            h, 0xb6ac_7b75_0332_9afa,
+            h, 0x6fe1_e408_16b9_cec6,
             "the assembled-universe digest moved — say which of §18.1's three \
              this is, and check whether a draw was reordered or inserted"
         );
