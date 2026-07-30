@@ -82,8 +82,18 @@ impl ElementId {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Element {
-    /// Index into the universe's table.
-    pub id: ElementId,
+    // **There is deliberately no `id` field.** It was here, and it encoded the
+    // same fact as the element's position in [`PeriodicTable`] — which is the
+    // duplicate-encoding defect `bonds.rs`'s own header rejects one level down,
+    // reproduced inside the table. `PeriodicTable::get` indexes by position,
+    // `BondEnergyMatrix` builds its cells by position and queries them by id,
+    // and `iter` used to read the field: three consumers depending on "slot `i`
+    // holds id `i`", with nothing establishing it. A table built by hand with
+    // two elements transposed made `iter` and `get` disagree, and priced the
+    // wrong pair — in range, plausible and silent, which `get`'s own doc calls
+    // the worse of the two failures this type exists to prevent. The id now has
+    // exactly one source, [`PeriodicTable::iter`], and cannot disagree with
+    // anything because there is nothing left to disagree with.
     /// Generated symbol, 1–2 characters (§5, G2).
     pub symbol: String,
     /// Generated name (§5, G2).
@@ -223,10 +233,15 @@ impl PeriodicTable {
     }
 
     /// Take the table apart. In-crate only, and used only by tests that predate
-    /// this type — keeping them destructuring the same pair they always did is
-    /// what lets `the_universe_digest_is_pinned` stay textually unchanged
+    /// this type.
+    ///
+    /// Keeping them destructuring the same pair they always did is what lets
+    /// `the_universe_digest_is_pinned` keep its **destructuring** unchanged
     /// across this refactor, so a moved digest means moved physics rather than
-    /// a rewritten test.
+    /// a rewritten test. An earlier version of this sentence claimed the test
+    /// stayed *textually* unchanged, which the same commit falsified: one line
+    /// moved from `energy_per_unit.to_bits()` to `energy_per_unit.0.to_bits()`
+    /// when the field became `Quanta`.
     #[cfg(test)]
     pub(crate) fn into_parts(self) -> (ShellPattern, Vec<Element>) {
         (self.pattern, self.elements)
@@ -245,8 +260,18 @@ impl PeriodicTable {
     }
 
     /// Every element with its id, in table order.
+    ///
+    /// **The single source of an [`ElementId`].** Ids come from the position
+    /// here and nowhere else, which is what makes them agree with
+    /// [`Self::get`] by construction rather than by convention. The `u8`
+    /// conversion cannot fail for a 60..=120 table; a table long enough to
+    /// truncate would be a different bug, and `saturating` keeps it from
+    /// silently aliasing slot 0.
     pub fn iter(&self) -> impl Iterator<Item = (ElementId, &Element)> {
-        self.elements.iter().map(|e| (e.id, e))
+        self.elements
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (ElementId(u8::try_from(i).unwrap_or(u8::MAX)), e))
     }
 
     /// How many elements this universe drew.
@@ -255,23 +280,25 @@ impl PeriodicTable {
         self.elements.len()
     }
 
-    /// Always `false` — [`generate_elements`] draws 60..=120 elements. Present
-    /// because a `len` without one is a clippy finding, and because the day
-    /// that draw changes this should already read correctly.
+    /// Whether this table has no elements.
+    ///
+    /// **Not "always `false`"**, which an earlier version of this line claimed:
+    /// [`generate_elements`] draws 60..=120, but the in-crate constructor takes
+    /// any `Vec`, so an empty table is constructible here today. The
+    /// guarantee belongs to the generator, not to the type.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.elements.is_empty()
     }
 }
 
-impl<'a> IntoIterator for &'a PeriodicTable {
-    type Item = (ElementId, &'a Element);
-    type IntoIter = std::iter::Map<std::slice::Iter<'a, Element>, fn(&'a Element) -> Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.elements.iter().map(|e| (e.id, e))
-    }
-}
+// **No `IntoIterator for &PeriodicTable`**, deliberately. It was a second copy
+// of `iter`'s body, and a public `type IntoIter` has to name a concrete type —
+// which pinned the `map`-over-`slice::Iter` shape that reading the id off the
+// element required. Two bodies deciding what an iteration item is, where the
+// public one pinned the implementation that was wrong. `for (id, e) in
+// table.iter()` is one character longer than `for (id, e) in &table` and leaves
+// one definition.
 
 /// Convenience for tests and callers that need the universe-domain stream.
 #[must_use]
@@ -509,7 +536,6 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
         let outer_fill_band = ((outer * usize::from(n_bands)) / cap) as u8;
 
         out.push(Element {
-            id: ElementId(out.len() as u8),
             symbol,
             name,
             units,

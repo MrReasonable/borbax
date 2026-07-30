@@ -20,7 +20,10 @@ pub mod naming;
 )]
 pub(crate) mod packing;
 
-pub use bonds::{BondEnergyMatrix, BondOrder};
+// `NotABondOrder` travels with `BondOrder`: a public fallible conversion whose
+// error type is not nameable from the same path forces a downstream `match` to
+// reach into `bonds::` for one item.
+pub use bonds::{BondEnergyMatrix, BondOrder, NotABondOrder};
 pub use element::{Element, ElementId, PeriodicTable, ShellPattern};
 
 use borbax_rng::{Domain, Stream};
@@ -121,6 +124,19 @@ pub struct UniverseConsts {
 pub enum PhysicsVersion {
     /// Shape and surface character, per spec §8.3. Everything in V0 and V1.
     V1 = 1,
+}
+
+/// The wire form of a version, for digests and for `U-7F3A21C9@1` addresses.
+///
+/// Spelled out rather than `as`, for the reason [`BondOrder`]'s inverse is:
+/// `as` on a `#[non_exhaustive]` enum silently accepts a future variant, and a
+/// version number reaching an address is the last place that should happen.
+impl From<PhysicsVersion> for u8 {
+    fn from(v: PhysicsVersion) -> Self {
+        match v {
+            PhysicsVersion::V1 => 1,
+        }
+    }
 }
 
 impl PhysicsVersion {
@@ -309,6 +325,74 @@ mod tests {
         // deny reaches inside `#[cfg(test)]`. The fallback is out of range too.
         let past_the_end = ElementId::from_index(u.table.len()).unwrap_or(ElementId(u8::MAX));
         assert!(u.element(past_the_end).is_none());
+    }
+
+    /// **Pins every value Task 5 added, because nothing else can see them.**
+    ///
+    /// `the_universe_digest_is_pinned` covers `ShellPattern` and `Element` and
+    /// stops there. Task 5 added ten draws on `Domain::Universe` index 1 — four
+    /// in [`BondEnergyMatrix::generate`] and six more for the constants — and
+    /// none of them was in any digest. Three review lanes found the same gap.
+    ///
+    /// The hazard is not cross-platform, it is **cross-version**: `w_shape` and
+    /// `w_charge` draw from the identical range, so transposing two fields in
+    /// the `UniverseConsts` literal rewrites every universe while leaving every
+    /// value inside its documented range, every type check passing and every
+    /// range assertion green. A determinism lane verified exactly that — the
+    /// transposition moved all eight probed seeds and **all six gate legs stayed
+    /// green**. A seed shared before such an edit names a different universe
+    /// after it, with `PhysicsVersion` still stamped `V1`, which is the failure
+    /// §13.1's identity tuple exists to exclude.
+    ///
+    /// It is worse than it looks, because the literal's field order already
+    /// disagrees with the draw order — `solvent` and the temperatures are bound
+    /// above it. So "align the literal with the order things are drawn" reads as
+    /// pure tidying and is a physics change.
+    ///
+    /// Raw `to_bits()`, deliberately, and not `canonical_bits()`: this is a
+    /// **detector**, and canonicalisation is lossy by design — it would collapse
+    /// a `-0.0` that differs by architecture onto `+0.0` and report "unchanged"
+    /// while the value genuinely differed. Lossiness is right for a product
+    /// hash and wrong here.
+    #[test]
+    fn the_assembled_universe_digest_is_pinned() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |x: u64| {
+            h ^= x;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        };
+        for seed in 0..16 {
+            let u = Universe::generate(seed);
+            mix(u.seed);
+            // `u8::from` on the discriminant rather than `as`: the enum is
+            // `#[non_exhaustive]` and a future variant must not silently widen.
+            mix(u64::from(u8::from(u.physics)));
+            // Every constant, in a fixed order that is this test's own — so a
+            // reorder of the struct literal cannot reorder the digest with it.
+            mix(u.consts.ideal_gap.0.to_bits());
+            mix(u.consts.w_shape.to_bits());
+            mix(u.consts.w_charge.to_bits());
+            mix(u.consts.rate_prefactor.to_bits());
+            mix(u.consts.decay_scale.to_bits());
+            mix(u64::try_from(u.consts.solvent.index()).unwrap_or(u64::MAX));
+            mix(u.consts.temp_min.0.to_bits());
+            mix(u.consts.temp_max.0.to_bits());
+            // Every bond cell at every order, covering `e` and both order
+            // multipliers.
+            let ids: Vec<ElementId> = u.table.iter().map(|(id, _)| id).collect();
+            for &a in &ids {
+                for &b in &ids {
+                    for order in [BondOrder::Single, BondOrder::Double, BondOrder::Triple] {
+                        mix(u.bonds.energy(a, b, order).get().to_bits());
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            h, 0xb6ac_7b75_0332_9afa,
+            "the assembled-universe digest moved — say which of §18.1's three \
+             this is, and check whether a draw was reordered or inserted"
+        );
     }
 
     #[test]

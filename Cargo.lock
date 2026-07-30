@@ -31,6 +31,7 @@ version = "0.1.0"
 dependencies = [
  "borbax-rng",
  "borbax-units",
+ "thiserror",
 ]
 
 [[package]]
