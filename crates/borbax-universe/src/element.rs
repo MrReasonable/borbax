@@ -1341,29 +1341,70 @@ mod tests {
         };
         for seed in 0..64 {
             let (sp, els) = table(seed);
-            mix(sp.k as u64);
-            mix(sp.peak as u64);
-            mix(sp.fallback_symbols as u64);
-            for c in &sp.closures {
+            // **Destructured, for the reason the assembled-universe digest is.**
+            // A hand-written field list cannot see a field that is not in it: a
+            // review added `pub mutant_species_field: f64` to `Element`, filled
+            // it at the single construction site, and all 55 tests plus
+            // `clippy -D warnings` stayed green. `Element` is *the* type §8.6
+            // designates for per-species precomputed quantities, so Tasks 9 and
+            // 11 will add fields to it by design — this is the digest most
+            // likely to be silently outrun.
+            //
+            // **E0027 forces a field to be *mentioned*, not *mixed*.** Binding
+            // one and never hashing it is caught only by `unused_variables` in
+            // the clippy leg, and `field: _` opts out silently through all six.
+            // A `_` here is therefore a deliberate act and a review finding —
+            // there is exactly one below, and it carries its reason.
+            let ShellPattern {
+                k,
+                closures,
+                fallback_symbols,
+                peak,
+            } = &sp;
+            mix(*k as u64);
+            mix(*peak as u64);
+            mix(*fallback_symbols as u64);
+            for c in closures {
                 mix(*c as u64);
             }
             for e in &els {
-                mix(e.mass.raw() as u64);
-                mix(u64::from(e.valence));
-                mix(u64::from(e.period));
-                mix(u64::from(e.group));
-                mix(u64::from(e.outer_fill_band));
-                mix(e.affinity.to_bits());
-                mix(e.radius.0.to_bits());
+                let Element {
+                    symbol,
+                    name,
+                    // The one deliberate omission: `units` is the generator's
+                    // loop index (`for units in 1..=n_elements`, pushed in
+                    // order), so it is exactly the element's position in this
+                    // very iteration and adds no information the digest does not
+                    // already carry. Mixing it would move the constant to record
+                    // a value that cannot independently change.
+                    units: _,
+                    period,
+                    group,
+                    mass,
+                    valence,
+                    affinity,
+                    radius,
+                    energy_per_unit,
+                    decay_rate,
+                    abundance,
+                    outer_fill_band,
+                } = e;
+                mix(mass.raw() as u64);
+                mix(u64::from(*valence));
+                mix(u64::from(*period));
+                mix(u64::from(*group));
+                mix(u64::from(*outer_fill_band));
+                mix(affinity.to_bits());
+                mix(radius.0.to_bits());
                 // `.0.to_bits()`, matching the `radius` line above rather than
                 // switching to `canonical_bits()`. The point of this line
                 // during Task 5 is to prove that typing the field as `Quanta`
                 // moved no value, and it can only prove that if it hashes the
                 // same bits it hashed before.
-                mix(e.energy_per_unit.0.to_bits());
-                mix(e.decay_rate.to_bits());
-                mix(e.abundance.to_bits());
-                for b in e.symbol.bytes().chain(e.name.bytes()) {
+                mix(energy_per_unit.0.to_bits());
+                mix(decay_rate.to_bits());
+                mix(abundance.to_bits());
+                for b in symbol.bytes().chain(name.bytes()) {
                     mix(u64::from(b));
                 }
             }

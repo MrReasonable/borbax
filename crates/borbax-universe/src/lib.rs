@@ -433,8 +433,12 @@ mod tests {
         }
         assert_eq!(
             h, 0x6fe1_e408_16b9_cec6,
-            "the assembled-universe digest moved — say which of §18.1's three \
-             this is, and check whether a draw was reordered or inserted"
+            "the assembled-universe digest moved — say which of §18.1's three this \
+             is, or the fourth: the digest's own seed range widened, which moves \
+             the constant while moving no universe value. Recomputing over the \
+             previous range distinguishes them, and did — this constant's \
+             predecessor reproduces exactly at 0..16. Otherwise check whether a \
+             draw was reordered or inserted"
         );
     }
 
