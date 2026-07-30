@@ -61,7 +61,16 @@ green, linear history, no force-push, `enforce_admins` on. Bypassing is a
 deliberate, visible act:
 `gh api -X DELETE repos/MrReasonable/borbax/branches/main/protection/enforce_admins`.
 
-Next action if starting fresh: **Task 5** — bond energies and the assembled `Universe`.
+Next action if starting fresh: **Task 6** — molecule graphs and canonical
+labelling. Task 5 (bond energies and the assembled `Universe`) is built on
+`task-5-bond-energies` and not yet merged.
+
+**Task 5b is scaffolding, not a V0 task.** It respecifies `abundance` as a
+fusion/fission process and is fully written up, but it gates nothing, the shipped
+one-line profile already satisfies §7.2 in 2000 of 2000 universes (`f_w` median
+2.44, p5 2.10), and its own steps need a beaker that does not exist until Task
+19. Sequence it after the beaker runs, when its three free parameters can be
+located by §7.2's battery instead of chosen by eye.
 
 ## Commands
 
