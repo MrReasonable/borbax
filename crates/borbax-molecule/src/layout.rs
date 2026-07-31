@@ -1139,16 +1139,16 @@ mod tests {
     /// 0.8213/1089 and 0.5083/0.8650 — figures taken before the coincidence fix,
     /// which its own commit measured as moving 96.87% of species' bits. Every
     /// conclusion survives the correction; the numbers did not.)
-    fn group_distance<const D: usize>(geo: &Geodesic<D>, a: &[f64], b: &[f64]) -> f64 {
+    fn group_distance<const D: usize>(geo: &Geodesic<D>, a: &[f64; D], b: &[f64; D]) -> f64 {
         let mut best = f64::INFINITY;
         for rot in Rotation::all() {
             let perm = geo.rotation_perms(rot);
             let mut acc = 0.0f64;
             for i in 0..D {
-                let (Some(&lhs), Some(&turned_to)) = (a.get(i), perm.get(i)) else {
-                    continue;
-                };
-                let rhs = b.get(usize::from(turned_to)).copied().unwrap_or(0.0);
+                // Indexed, not `.get()`-ed: `D` now types both slices, so a
+                // length mismatch is a compile error rather than a silently
+                // partial distance. `perm` is a permutation of `0..D`.
+                let (lhs, rhs) = (a[i], b[usize::from(perm[i])]);
                 acc += (lhs - rhs) * (lhs - rhs);
             }
             if acc < best {
@@ -1162,21 +1162,25 @@ mod tests {
     /// not exist yet; this is deliberately *less* informative than it will be
     /// (atom centres rather than surfaces, and no affinity channel), so it
     /// understates locality rather than flattering it.
-    fn support<const D: usize>(species: &CanonMol, uni: &Universe, geo: &Geodesic<D>) -> Vec<f64> {
+    /// **Returns `[f64; D]`, not `Vec<f64>`.** `Geodesic` is length-typed
+    /// throughout — `dirs() -> &[Vec3; D]`, `rotation_perms(r) -> &[u8; D]` — and
+    /// erasing that here let `group_distance` be called with signatures from two
+    /// different resolutions, yielding a silently partial distance rather than a
+    /// compile error. Unreachable while one `geo` binds both calls; §22.2 sweeps
+    /// D ∈ {12, 42, 162} and is exactly the code that will hold two at once.
+    fn support<const D: usize>(species: &CanonMol, uni: &Universe, geo: &Geodesic<D>) -> [f64; D] {
         let emb = embed(species, uni);
-        (0..D)
-            .map(|d| {
-                let dir = geo.dirs().get(d).copied().unwrap_or([0.0, 0.0, 1.0]);
-                let mut best = f64::NEG_INFINITY;
-                for p in emb.coords() {
-                    let v = p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2];
-                    if v > best {
-                        best = v;
-                    }
+        let dirs = geo.dirs();
+        let mut out = [f64::NEG_INFINITY; D];
+        for (slot, dir) in out.iter_mut().zip(dirs) {
+            for p in emb.coords() {
+                let v = p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2];
+                if v > *slot {
+                    *slot = v;
                 }
-                best
-            })
-            .collect()
+            }
+        }
+        out
     }
 
     /// **The wiring proof, and it needs no corpus.** `group_distance` is invariant
@@ -1208,7 +1212,10 @@ mod tests {
                 continue;
             }
             let perm = geo.rotation_perms(rot);
-            let turned: Vec<f64> = (0..42).map(|i| base[usize::from(perm[i])]).collect();
+            let mut turned = [0.0f64; 42];
+            for (i, slot) in turned.iter_mut().enumerate() {
+                *slot = base[usize::from(perm[i])];
+            }
             // The mutation must be real, or everything below is trivially true.
             let raw = base
                 .iter()
