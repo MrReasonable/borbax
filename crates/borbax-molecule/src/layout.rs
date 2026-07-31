@@ -126,6 +126,13 @@ impl Embedding {
     /// RMS distance from the centroid — the molecule's own length scale.
     ///
     /// The embedding is centred, so this is taken about the origin.
+    ///
+    /// **`sum * inv_n`, not `sum / n`, and that shape is deliberately *not*
+    /// pinned with a measured number the way the centring block is** — because
+    /// this has no caller yet. It is the natural scale normaliser for Task 9's
+    /// signature, so it becomes result-affecting then. Pin it at the point it
+    /// acquires a consumer, not before; the same applies to `distance`'s
+    /// `(s₀² + s₁²) + s₂²` association, which *is* already on the `stress` path.
     #[must_use]
     pub fn radius_of_gyration(&self) -> Span {
         if self.n == 0 {
@@ -416,6 +423,34 @@ fn initial_layout(target: &[[f64; MAX_ATOMS]; MAX_ATOMS], n: usize) -> [[f64; 3]
 }
 
 /// Cholesky factor of `V_w + J`, the matrix the exact Guttman step solves against.
+///
+/// **No pivoting, and the reason is a proof rather than a lint.**
+/// `xᵀ(V_w + J)x = xᵀV_w x + (1ᵀx)²/n`. `V_w` is a weighted Laplacian with
+/// non-negative weights, so it is PSD with null space exactly `span{1}` — the
+/// weight graph is `K_n`, every target being strictly positive. If `1ᵀx ≠ 0` the
+/// second term is positive; if `1ᵀx = 0` then `x ⊥ null(V_w)` and the first is.
+/// Positive definite for every input, independent of the molecular graph, which
+/// only sets hop counts and never the sparsity of `w`. Measured over 28,722 cases
+/// across seven universe seeds — paths, rings, stars, all-isolated dust, every
+/// two-fragment split, K(3,3), K(6,6), Petersen — zero failures, worst surviving
+/// pivot 1.6e-2 at 0.119 of its original diagonal, worst κ₂ 88.2 against an
+/// analytic bound of 1.2e4.
+///
+/// An earlier version of this note said instead that a pivot search would need
+/// `max`, which §13.1 bans. **That is a doctrine error and is corrected here
+/// rather than deleted**: §13.1 bans `f64::max` the *method*, for its ±0.0
+/// non-determinism, and `clippy.toml`'s own prescribed replacement is
+/// `if a > b { a } else { b }` — which `initial_layout` already uses for an
+/// argmax. A §13.1-legal pivot search is perfectly writable. The reason none is
+/// needed is above. A false determinism argument matters because it gets reused
+/// later to reject something that is fine.
+///
+/// **Four accumulations below are pinned shapes** (§13.1). Reversing either
+/// `cholesky` inner loop changes **24.43%** of entries; collapsing the pivot sum
+/// to one `.sum::<f64>()` changes **28.47%**; reversing `solve`'s forward
+/// substitution **23.57%** and its back substitution **41.05%**. A blocked or
+/// tiled Cholesky is the same class. All four are invisible to every test here —
+/// they move convergence by ~1e-16, and the suite measures convergence quality.
 #[expect(
     clippy::indexing_slicing,
     reason = "every index is a loop bound over n <= MAX_ATOMS, the array's length"
@@ -605,11 +640,22 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
     // it is built once here rather than once per iteration — which is also the
     // loop-invariant hoist the performance lane measured at ~10%.
     //
-    // **Jacobi, not Gauss-Seidel**, load-bearing independently: `B(X)` is built
-    // entirely from the previous sweep's `pos`, so the result does not depend on
-    // the order atoms are visited in. Reading partially-updated coordinates would
-    // make the answer a function of the loop order — a §13.1 hazard, and an
-    // invisible one, because a Gauss-Seidel sweep also converges.
+    // **Jacobi, not Gauss-Seidel.** `B(X)` is built entirely from the previous
+    // sweep's `pos`, so reading partially-updated coordinates cannot change the
+    // answer. That is a hazard worth naming because a Gauss-Seidel sweep also
+    // converges, so the difference would be invisible.
+    //
+    // **That claim is about the mathematics, and an earlier version of it
+    // overreached into the bits.** It said "the result does not depend on the
+    // order atoms are visited in", sitting directly above the `j` loop — which it
+    // appears to license and does not. Iterating `j` descending changes **32.99%**
+    // of `rhs` entries. The `j` accumulation order is a pinned shape: `.rev()`,
+    // distance-sorted traversal and chunked partials are all forbidden.
+    //
+    // One rewrite *is* cleared, measured rather than assumed: exploiting `B(X)`'s
+    // antisymmetry to halve the loop over `i < j` is **bit-identical**, 0 of
+    // 102,660 entries differing, because contributions still reach `rhs[i]` in
+    // ascending `j` and both `-(a-b) == (b-a)` and `-(s*d) == s*(-d)` are exact.
     let mut w = [[0.0f64; MAX_ATOMS]; MAX_ATOMS];
     for i in 0..n {
         for j in 0..n {
@@ -1044,6 +1090,14 @@ mod tests {
     /// The property [`CanonMol`] was introduced for, asserted at the strength the
     /// Task 8 preamble specifies for canonical-position indexing: **bit-identical**,
     /// not merely equal up to a rigid motion.
+    ///
+    /// **"Bit-identical" is what is meant and slightly more than `assert_eq!`
+    /// delivers**: `Embedding` derives `PartialEq`, which is `f64::eq`, so
+    /// `-0.0 == +0.0` would pass. Measured live-ness: 0 of 334,734 coordinates
+    /// across 15,993 species are negative zero, including a single-element corpus
+    /// chosen to maximise symmetry. Latent, and it belongs with the already-open
+    /// "NaN canonicalisation at the state hash" item for Task 20, where
+    /// coordinates get hashed through `to_bits()`.
     ///
     /// With `embed` taking a `CanonMol` this holds by construction and the test is
     /// proving the construction rather than the solver. That is the point — the

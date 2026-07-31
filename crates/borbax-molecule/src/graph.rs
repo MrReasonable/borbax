@@ -482,12 +482,21 @@ impl Mol12 {
         // The set bits are walked with `trailing_zeros` rather than by scanning
         // every column. That is not a micro-optimisation of a hot loop — this
         // runs once per `canonicalise` — but the scan visited `N_ORDERS * n²`
-        // = 432 positions at n = 12 to find the `deg(v) <= valence` that are
+        // = 864 positions at n = 12 to find the `deg(v) <= valence` that are
         // actually set, and the walk is a measured **5.0x**. It is taken because
         // `relabelled_agrees_with_replaying_the_molecule_through_add_bond` checks
         // it against an independent implementation over 2000 (molecule,
-        // permutation) pairs, so the equivalence is established rather than
-        // argued.
+        // permutation) pairs — and exhaustively by review over all 50,360
+        // (row, permutation) pairs for n = 2..6 — so the equivalence is
+        // established rather than argued.
+        //
+        // **Scoped to rows with no bits at or above `n`**, which is where the two
+        // forms agree. Out of that range they diverge in 13 of 13 constructed
+        // cases: the walk reads `inv[w]` for a slot `order` never wrote and sets
+        // bit 0 spuriously, where the scan drops it. That range is unreachable —
+        // `self.n` is only ever incremented, and every `set_row` call site derives
+        // its bits from `bit()`, which refuses any index >= n — but the precondition
+        // is shared rather than local, so it is stated here rather than assumed.
         for plane in 0..N_ORDERS {
             for (k, &v) in order.iter().enumerate() {
                 let mut src = self.row(plane, v);
