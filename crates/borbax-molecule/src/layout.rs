@@ -752,8 +752,18 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                 // chosen deterministically rather than skipping the term, and that
                 // is a correctness fix rather than a nicety.**
                 //
-                // Skipping was the standard convention and it is wrong *here*
-                // because of how `initial_layout` works: two atoms that are
+                // **Skipping did not break descent, and saying it did would license
+                // the wrong conclusion.** Measured on 267 molecules that start
+                // coincident: the old form rises 0 times above 1e-12, worst 3.6e-15.
+                // `w` is built independently of this skip, so `V_w` was already
+                // weight-complete, and skipping is the textbook convention
+                // corresponding to the trivial bound `δ >= 0`. The defect was purely
+                // the saddle. This matters because "the old form broke descent"
+                // would tell a future reader that any descent-preserving coincidence
+                // handling is therefore correct — the old one preserved descent and
+                // was still wrong.
+                //
+                // Skipping is wrong *here* because of how `initial_layout` works: two atoms that are
                 // graph-automorphic and carry the same element have identical
                 // target rows, so they start at exactly the same point — by
                 // construction, not by accident. Dropping their mutual `B(X)` term
@@ -780,14 +790,66 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                 // and antisymmetric (`u_ij = −u_ji`), or `B(X)` stops being
                 // symmetric and the transform stops being the Guttman transform.
                 //
-                // Keyed on the canonical indices, which is sound here specifically:
-                // the atoms it separates differ only by an automorphism, so the two
-                // branches give congruent shapes and species identity is untouched.
+                // **Antisymmetry carries a second load that is easier to miss.**
+                // `cholesky` factors `V_w + J`, and `(V_w+J)⁻¹b = V_w⁺b + (1ᵀb/n)·1`,
+                // so the `J` term vanishes only while `1ᵀb` is *exactly* zero. Targets
+                // are bitwise symmetric (FP addition commutes), hence so are the
+                // weights, and `scale·(−x) == −(scale·x)` is exact — so antisymmetry
+                // is what keeps the sum exactly zero. Lose it and the step acquires a
+                // spurious translation *before* the centring pass. Verified
+                // exhaustively over all 132 ordered index pairs and all 4083 possible
+                // coincident orbits: `‖sep‖ = 1`, both orderings pick one axis, and no
+                // orbit of any size to 12 can be left with a zero differential push.
+                //
+                // **Antisymmetry is proven necessary and is NOT observable here, and
+                // that gap is stated rather than papered over.** Substituting the
+                // axis rule `(i + 2j) % 3` — deterministic and isomorphism-invariant
+                // but not antisymmetric, so `u_ij` and `u_ji` land on different axes
+                // — passes the entire suite, including
+                // `descent_holds_on_the_coincidence_path`. The reason is that the
+                // spurious translation it introduces is removed by the centring pass
+                // at the end, so it cannot reach a distance. So this is a property no
+                // test defends; it rests on the algebra above, and a future edit here
+                // will get no signal from the suite.
+                //
+                // Keyed on the canonical indices, and **the reason that is sound is
+                // not the one an earlier version of this comment gave.** It said the
+                // atoms differ only by an automorphism, so the branches give
+                // congruent shapes. Two problems: congruent is not enough — a
+                // congruent-but-rotated shape is a *different* support function at
+                // Task 9 — and the premise is measurably false. Brute-forcing the
+                // full automorphism group over all n! permutations for n <= 9 found
+                // **2 of 382** coincident pairs *not* in one orbit, equidistant from
+                // all three landmarks by arithmetic coincidence rather than symmetry
+                // (141 more at n = 10..12 were too expensive to test, so 2/382 is a
+                // lower bound).
+                //
+                // The real reason needs no automorphisms and is exact: `CanonMol`'s
+                // `mol()` is bit-identical for every relabelling of one molecule, so
+                // `embed` receives a bit-identical input and there are no "two
+                // branches" to reconcile — targets, landmarks, indices and this
+                // direction are all one value. Measured: 0 mismatches over 480
+                // relabellings of 60 species that start coincident, compared through
+                // `to_bits()` rather than `==`.
+                //
+                // What that leaves open is a *locality* question, not a determinism
+                // one: for those ~0.5% of pairs the axis is a genuine arbitrary
+                // physical choice, which is the index-keying hazard `initial_layout`
+                // was rewritten to remove, reappearing at small scale inside this
+                // branch. Routed to Task 9 rather than priced here.
                 //
                 // A NaN `raw` takes the deterministic branch, since `NaN > 1e-9` is
-                // false. That is a change from skipping, and it is the safe
-                // direction: targets are provably finite, so `raw` can only be NaN
-                // if the start already was.
+                // false. **That is the *less detectable* failure, not the safe one**,
+                // and an earlier version of this sentence had it backwards. Measured
+                // from an all-NaN start: the old form gave an all-zero embedding that
+                // `no_two_atoms_share_a_point` catches instantly; this one gives a
+                // finite, well-converged, *wrong* shape (R_g 2.186 against a correct
+                // 2.190), because iteration 1 makes `rhs` a pure function of indices
+                // and targets and the remaining 239 are ordinary SMACOF from a
+                // garbage-but-valid start. Deterministic either way, so not a §13.1
+                // hazard — a laundering one. Unreachable today because targets are
+                // provably finite; whoever breaks that unreachability (the routed
+                // Cleave item above is the candidate) gets no signal.
                 let unit = if raw > 1e-9 {
                     [diff[0] / raw, diff[1] / raw, diff[2] / raw]
                 } else {
@@ -797,6 +859,20 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                     }
                     sep
                 };
+                // **`scale = wij*dij` with `unit = diff/raw` is a pinned shape, and
+                // it is a second physics change this commit made.** The predecessor
+                // computed `scale = wij*dij/raw` and multiplied by `diff` — the same
+                // value mathematically, differing in the last bit on **35.06%** of
+                // 400,000 sampled operand quadruples. Blast radius measured over 7000
+                // species: **96.87%** change bits, against the 164 the coincidence fix
+                // was for. So the intended change touches 164 species and the
+                // incidental one touches nearly all of them.
+                //
+                // The rewrite to refuse is the one a performance pass would propose —
+                // hoisting the division back out of the branch to save two divisions
+                // per pair. Measured: **78 of 78 tests pass, debug and release**, and
+                // the corpus digest moves. Nothing in the suite can see it, and it
+                // would also structurally re-break the coincident branch.
                 let scale = wij * dij;
                 for (k, row) in rhs.iter_mut().enumerate() {
                     if let (Some(acc), Some(&dk)) = (row.get_mut(i), unit.get(k)) {
@@ -1297,6 +1373,44 @@ mod tests {
         let (tbl, uni) = fixture(17);
         let ids = chain_capable(&tbl);
         let mut rng = Stream::new(81, Domain::Molecule, 0);
+
+        // **A one-element ring first, because a chain never reaches the path this
+        // guarantee is newly at risk on.** The coincidence branch in
+        // `embed_with_budget` picks its separation direction from *canonical
+        // index*, so "identical, not merely congruent" rests on canonical order
+        // being isomorphism-invariant. A chain has |Aut| = 2 and no coincident
+        // atoms, so it exercises none of that. Measured over 400 symmetric
+        // molecules x 5 relabellings: 2000 of 2000 bit-identical, 12 of them
+        // reaching coincidence, and congruent-but-not-identical never occurred —
+        // which is what licenses the `assert_eq!` rather than a shape comparison.
+        let mut ring = Mol12::new();
+        for _ in 0..8 {
+            assert!(ring.add_atom(ids[0]).is_some());
+        }
+        for i in 0..8u8 {
+            assert!(
+                ring.add_bond(i, (i + 1) % 8, BondOrder::SINGLE, &tbl)
+                    .is_ok(),
+                "an eight-ring over a valence-2-capable element is legal"
+            );
+        }
+        let ring_want = embed(&canon(&ring), &uni);
+        for _ in 0..100 {
+            let mut perm: Vec<u8> = (0..8).collect();
+            for i in (1..perm.len()).rev() {
+                let j = usize::try_from(rng.next_range(u64::try_from(i + 1).unwrap())).unwrap();
+                perm.swap(i, j);
+            }
+            let relabelled = ring
+                .relabelled(&perm)
+                .unwrap_or_else(|| unreachable!("perm permutes 0..8"));
+            assert_eq!(
+                embed(&canon(&relabelled), &uni),
+                ring_want,
+                "relabelling a symmetric ring changed the embedding"
+            );
+        }
+
         let mol = chain(7, &tbl, &ids);
         let want = embed(&canon(&mol), &uni);
         for _ in 0..200 {
@@ -1372,8 +1486,19 @@ mod tests {
             // the plan's own preamble flags as untested by `experiments`.
             // From 2, not 3: the period-2 cycle the exact transform fixes lives
             // at exactly n = 2, and the predecessor's corpus started at 3.
+            //
+            // Every third fixture is one element throughout, for the automorphism
+            // groups. **It does not reach the coincidence branch** — measured 0 of
+            // 60 at these sizes — so descent on that path is asserted by
+            // `descent_holds_on_the_coincidence_path`, which filters for it rather
+            // than hoping a corpus wanders in. An earlier version of this comment
+            // claimed the corpus covered it; it does not.
             let n = 2 + u8::try_from(trial % 11).unwrap();
-            let mol = random_molecule(&mut rng, n, &tbl, &ids);
+            let mol = if trial % 3 == 0 {
+                symmetric_molecule(&mut rng, n, &tbl, ids[0])
+            } else {
+                random_molecule(&mut rng, n, &tbl, &ids)
+            };
             let species = canon(&mol);
             if species.len() < 2 {
                 continue;
@@ -1401,6 +1526,59 @@ mod tests {
                 "trial {trial}: stress never fell — {first} to {previous}"
             );
         }
+    }
+
+    /// **Descent on the coincidence path, which no other test reaches.**
+    ///
+    /// `stress_never_increases`' corpus starts 0 of 60 molecules coincident even
+    /// with one-element fixtures at those sizes, so the branch that picks a
+    /// deterministic separation direction was argued in a comment and asserted by
+    /// nothing. This filters for the case instead of hoping a corpus wanders into
+    /// it — the same failure `bonded_atoms_stay_apart` had.
+    #[test]
+    fn descent_holds_on_the_coincidence_path() {
+        let (tbl, uni) = fixture(4);
+        let ids = chain_capable(&tbl);
+        let mut rng = Stream::new(3131, Domain::Molecule, 0);
+        let mut examined = 0u32;
+        for _ in 0..1200 {
+            let n = 4 + u8::try_from(rng.next_range(9)).unwrap();
+            let mol = symmetric_molecule(&mut rng, n, &tbl, ids[0]);
+            let species = canon(&mol);
+            if species.len() < 3 {
+                continue;
+            }
+            // Keep only molecules whose START is coincident — that is the branch.
+            let start = initial_layout(&targets(&species, &uni), species.len());
+            let mut coincident = false;
+            for i in 0..species.len() {
+                for j in (i + 1)..species.len() {
+                    let same = (0..3).all(|k| (start[i][k] - start[j][k]).abs() < 1e-12);
+                    if same {
+                        coincident = true;
+                    }
+                }
+            }
+            if !coincident {
+                continue;
+            }
+            examined += 1;
+
+            let mut previous = f64::INFINITY;
+            for step in 0..=60usize {
+                let current = stress(&species, &uni, &embed_with_budget(&species, &uni, step));
+                assert!(
+                    current <= previous + 1e-12,
+                    "step {step}: stress rose from {previous} to {current} on a \
+                     molecule that starts coincident"
+                );
+                previous = current;
+            }
+        }
+        assert!(
+            examined > 20,
+            "only {examined} molecules started coincident; this test reached nothing"
+        );
     }
 
     /// What makes 240 a *budget choice* rather than a wrong answer: the residual
@@ -1507,7 +1685,10 @@ mod tests {
     /// pairs were non-bonded, and 0 occurred in trees at all.
     ///
     /// The corpus is deliberately **one element throughout**, which maximises the
-    /// automorphism group and is where the collapse lives. Measured before the fix
+    /// automorphism group and is where the collapse is densest — but it is not the
+    /// only place: a mixed-element corpus still starts 18 of 4000 molecules
+    /// coincident (~0.45%) against this corpus's 171 of 4000, so "one element" is
+    /// the sharpest fixture rather than the whole reach. Measured before the fix
     /// in `embed`: 160 of 4000 molecules collapsed a pair, worst violating a target
     /// of 6.75 Span. After: 0 of 4000.
     #[test]
@@ -1645,6 +1826,29 @@ mod tests {
                 let _ = mol.add_bond(p, atom, BondOrder::SINGLE, tbl);
             }
             prev = Some(atom);
+        }
+        mol
+    }
+
+    /// A ring-bearing molecule built from **one element throughout**, which
+    /// maximises the automorphism group and is what reaches `embed`'s coincidence
+    /// branch — automorphic *same-element* atoms are the ones with identical
+    /// target rows.
+    fn symmetric_molecule(rng: &mut Stream, n: u8, tbl: &PeriodicTable, one: ElementId) -> Mol12 {
+        let mut mol = Mol12::new();
+        for _ in 0..n {
+            if mol.add_atom(one).is_none() {
+                break;
+            }
+        }
+        let size = u8::try_from(mol.len()).unwrap_or(0);
+        for i in 1..size {
+            let _ = mol.add_bond(i - 1, i, BondOrder::SINGLE, tbl);
+        }
+        for _ in 0..rng.next_range(3) {
+            let a = u8::try_from(rng.next_range(u64::from(size))).unwrap_or(0);
+            let b = u8::try_from(rng.next_range(u64::from(size))).unwrap_or(0);
+            let _ = mol.add_bond(a, b, BondOrder::SINGLE, tbl);
         }
         mol
     }
