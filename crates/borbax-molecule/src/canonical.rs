@@ -909,6 +909,65 @@ mod tests {
         }
     }
 
+    /// `relabelled` rejects every non-permutation, tested directly.
+    ///
+    /// The three refusal paths are otherwise exercised only *indirectly*, through
+    /// callers that always hand it a valid permutation — so nothing would notice
+    /// if the `seen` bitmask or the `bit()` range check stopped working. That
+    /// matters more than it looks: `canonicalise` now spells the failure
+    /// `unreachable!`, so a check that silently stopped rejecting would turn a
+    /// caught error into a wrong molecule rather than a panic.
+    #[test]
+    fn relabelled_refuses_anything_that_is_not_a_permutation() {
+        let t = table(5);
+        let ids = tree_capable(&t);
+        let mut rng = Stream::new(75, Domain::Molecule, 0);
+        let m = random_molecule(&mut rng, &t, &ids);
+        let n = as_u8(m.len());
+        assert!(n >= 3, "fixture too small to permute meaningfully");
+
+        let identity: Vec<u8> = (0..n).collect();
+        assert!(
+            m.relabelled(&identity).is_some(),
+            "the identity is a permutation"
+        );
+
+        // A helper, so each case reads as "this edit to a valid permutation must
+        // be refused" rather than as index arithmetic.
+        let refused = |edit: &dyn Fn(&mut Vec<u8>)| {
+            let mut order = identity.clone();
+            edit(&mut order);
+            assert_eq!(m.relabelled(&order), None, "accepted {order:?}");
+        };
+
+        // Wrong length, both directions.
+        refused(&|o| {
+            o.pop();
+        });
+        refused(&|o| o.push(0));
+
+        // An index at or past the atom count.
+        refused(&|o| {
+            if let Some(slot) = o.first_mut() {
+                *slot = n;
+            }
+        });
+        refused(&|o| {
+            if let Some(slot) = o.first_mut() {
+                *slot = u8::MAX;
+            }
+        });
+
+        // A duplicate — the case that would silently duplicate one atom and drop
+        // another, giving a molecule with the right count and the wrong contents.
+        refused(&|o| {
+            let first = o.first().copied().unwrap_or(0);
+            if let Some(slot) = o.get_mut(1) {
+                *slot = first;
+            }
+        });
+    }
+
     /// Element ids must span the real range, not `0..6`.
     ///
     /// The colouring bug this catches is invisible with a handful of low ids:

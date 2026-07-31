@@ -276,9 +276,9 @@ fn targets(species: &CanonMol, universe: &Universe) -> [[f64; MAX_ATOMS]; MAX_AT
 /// *weighted* objective; the raw sum is a different function and is under no
 /// obligation to fall with it. The tell was that substituting uniform weights,
 /// where the two objectives are proportional, made the "defect" vanish — which
-/// is evidence about the objective, not about the solver. Raw stress is
-/// obligation to fall with it. The unweighted sum is not exported at all — see
-/// the note below on why a same-signature twin was the wrong way to keep it.
+/// is evidence about the objective, not about the solver. The unweighted sum is
+/// not exported at all — see the note below on why a same-signature twin was the
+/// wrong way to keep it.
 ///
 /// Summed in `i < j` index order and never through `.sum()` over an unordered
 /// iterator, so the accumulation order is fixed on every platform (§13.1).
@@ -622,11 +622,20 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
             }
         }
     }
-    let Some(chol) = cholesky(&w, n) else {
-        return Embedding { n, pos };
-    };
+    // **Falls through to the centring below rather than returning here**, so
+    // every path out of this function yields a centred embedding. Returning early
+    // gave an uncentred one, and since signatures are support functions measured
+    // from the origin, an uncentred result is not a degraded shape — it is a
+    // shape with an arbitrary offset baked into every extent.
+    //
+    // A breakdown means the weight matrix was not positive definite, which for a
+    // molecule with at least two atoms and finite radii cannot happen. Carried as
+    // a value rather than asserted: a panic in the profile CLAUDE.md designates
+    // for beaker work is a dead simulation.
+    let factor = cholesky(&w, n);
 
     for _ in 0..iterations {
+        let Some(chol) = factor.as_ref() else { break };
         let mut rhs = [[0.0f64; MAX_ATOMS]; 3];
         for i in 0..n {
             for j in 0..n {
@@ -677,7 +686,7 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
             }
         }
         for (k, row) in rhs.iter().enumerate() {
-            let solved = solve(&chol, row, n);
+            let solved = solve(chol, row, n);
             for i in 0..n {
                 if let (Some(dst), Some(&v)) =
                     (pos.get_mut(i).and_then(|p| p.get_mut(k)), solved.get(i))
@@ -1266,11 +1275,8 @@ mod tests {
     /// drawn strictly positive. Both halves are load-bearing and neither is
     /// local to this file, which is why this is asserted rather than commented.
     ///
-    /// This also settles the asymmetry a reviewer flagged between `stress` and
-    /// `raw_stress`: `stress`'s `tgt <= 0.0` guard exists for the division, and
-    /// `raw_stress` deliberately has none, because if a target ever *were* zero
-    /// the unweighted mismatch `δ − 0` is a real mismatch that should be
-    /// counted, not skipped. Adding the guard there would silently discard it.
+    /// It is also what lets `stress` carry a `tgt <= 0.0` guard purely for the
+    /// division rather than as a claim about reachable inputs.
     #[test]
     fn targets_between_distinct_atoms_are_strictly_positive() {
         let (tbl, uni) = (table(17), Universe::generate(4));
