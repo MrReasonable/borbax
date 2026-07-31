@@ -133,18 +133,63 @@ const fn canonical_sign(x: f64) -> f64 {
 ///
 /// The method on each unit is the one to reach for when you have a unit. This
 /// exists because the state hash will be dominated by values that are *not*
-/// units: `Signature.r`, `BindConsts::ideal_gap`, the cavity `SHELL` and
-/// `LATTICE_SPAN` are all bare `f64` today, and the signature array is the
-/// single most-hashed quantity in the system. Without an exported form, a
-/// caller holding an `f64` writes `.to_bits()` and the canonicalisation is
-/// silently skipped for exactly the data that matters most.
+/// units: `BindConsts::ideal_gap` and `LATTICE_SPAN` are bare `f64` today, and
+/// the signature array is the single most-hashed quantity in the system.
+/// Without an exported form, a caller holding an `f64` writes `.to_bits()` and
+/// the canonicalisation is silently skipped for exactly the data that matters
+/// most.
 ///
-/// Typing those quantities as [`Span`] (Task 8) shrinks the surface but does
-/// not remove it — signature bins are dimensionless.
+/// Typing those quantities as [`Span`] shrinks the surface but does not remove
+/// it. **`Signature.r` was on that list and no longer is** — Task 9 typed it,
+/// along with the signature's own `SHELL`; `ideal_gap` and `LATTICE_SPAN` are
+/// Tasks 10 and 12. What stays here regardless is the *character* channel,
+/// which is a ratio in `[-1, 1]` with no unit to carry a method, and is why
+/// [`canonical_cmp`] below exists.
 #[must_use]
 #[inline]
 pub const fn canonical_bits(x: f64) -> u64 {
     canonical_sign(x).to_bits()
+}
+
+/// The reproducible sort order, for a bare `f64`.
+///
+/// The free/method pairing here is [`canonical_bits`]', for the same reason and
+/// with the same split: reach for `Unit::canonical_cmp` when you have a unit,
+/// and for this when the quantity genuinely has none. Every unit's method
+/// delegates here, so there is one implementation of the decision rather than
+/// one per unit plus a copy at each bare-`f64` call site.
+///
+/// **NaN sorts last and `-0.0` ties with `0.0`, on every platform** — see
+/// the private `canonical_sign` for what that costs and what it deliberately
+/// leaves alone. Every caveat on `Unit::canonical_cmp` applies unchanged, including
+/// the important one: a reproducible order is necessary and not sufficient, so
+/// §13.4's ID tie-break is still the caller's job, over a *larger* tie set than
+/// `f64::total_cmp` would produce.
+///
+/// The first caller is `borbax-molecule`'s signature: §8.2 canonicalises a
+/// signature to the lexicographically smallest of its 60 rotations, and the
+/// tie-break on that ordering has to run over the surface-character channel,
+/// which is a ratio in `[-1, 1]` and has no unit to carry the method. The
+/// alternatives were wrapping a dimensionless ratio in [`Span`] — a G4 type
+/// error to dodge a lint — or an `#[expect]` on `f64::total_cmp` resting on a
+/// proof that the channel is never NaN, which a later edit invalidates
+/// silently.
+///
+/// **Do not build `Ord` from this.** It reports two NaNs `Equal` while `==`
+/// reports them unequal, so an `Ord` delegating here would violate the
+/// `Ord`/`PartialEq` consistency contract.
+#[must_use]
+#[inline]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "§13.4: after Unit::canonical_cmp was made to delegate here, this is the \
+              only caller of total_cmp in this crate — canonicalising the inputs first \
+              is what makes it safe. Three sites elsewhere carry their own #[expect] \
+              with their own reasons (geodesic.rs, packing.rs x2), so this is the \
+              sanctioned wrapper rather than the only exemption in the workspace"
+)]
+pub fn canonical_cmp(a: f64, b: f64) -> core::cmp::Ordering {
+    canonical_sign(a).total_cmp(&canonical_sign(b))
 }
 
 /// Generate a float-backed unit.
@@ -272,16 +317,15 @@ macro_rules! unit {
             /// propagate NaN, so a NaN in a selection wins; the invariant that
             /// keeps that from mattering is that signature and affinity
             /// values are finite, asserted where they are built.
+            ///
+            /// The body delegates to the free [`canonical_cmp`] so the two
+            /// spellings cannot drift: this one is reached when the quantity
+            /// has a unit, that one when it genuinely has none, and there is
+            /// one implementation of the decision rather than one per unit.
             #[must_use]
             #[inline]
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "§13.4: this is the one legitimate caller — it is what \
-                          canonicalising the inputs makes safe, and the ban exists \
-                          to route everyone else through here"
-            )]
-            pub fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
-                canonical_sign(self.0).total_cmp(&canonical_sign(other.0))
+            pub fn canonical_cmp(&self, other: &Self) -> core::cmp::Ordering {
+                crate::canonical_cmp(self.0, other.0)
             }
 
             /// The bit pattern to hash or serialise — **use this, not

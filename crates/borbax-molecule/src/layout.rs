@@ -71,6 +71,7 @@
 //! requirement in the plan.
 
 use crate::canonical::CanonMol;
+use crate::geodesic::Vec3;
 use crate::graph::{MAX_ATOMS, Mol12};
 use borbax_units::Span;
 use borbax_universe::Universe;
@@ -94,21 +95,54 @@ pub const ITERATIONS: usize = 240;
 /// spelling; the typed boundary is [`Self::distance`] and
 /// [`Self::radius_of_gyration`].
 ///
-/// **There is a third public exit and it is the one that matters: [`Self::coords`]
-/// hands out raw Span-valued lengths, untyped, deliberately.** An earlier version
-/// of this paragraph named only the two typed accessors and claimed they were
-/// where the G1 mix-up happens. They are not on that path at all — a signature is
-/// `max_i (dot(dir, coords[i]) + radius_i)`, so Task 9 reads `coords`, and that
-/// addition of an untyped projection to a `.get()`-ed `Span` is the G1 site.
-/// `Span` is `repr(transparent)` but the workspace is `forbid(unsafe_code)`, so
-/// `&[[Span; 3]]` is not free; keeping the workspace `f64` and typing the
-/// comparisons is still the right trade. Task 9's routed requirement 5 owns it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// **[`Self::coords`] hands out raw Span-valued lengths, untyped, deliberately —
+/// and Task 9 does *not* read it.** An earlier version of this paragraph said it
+/// did, and that a signature's `max_i (dot(dir, coords[i]) + radius_i)` was
+/// therefore the open G1 site. Requirement 5 closed that by adding
+/// [`Self::reaches`], which performs the untyped arithmetic once inside the type
+/// owning both the coordinates and the radii and returns `Span`. `coords` stays
+/// public and untyped for the solver's own use and for callers that genuinely
+/// want the workspace; `Span` is `repr(transparent)` but the workspace is
+/// `forbid(unsafe_code)`, so `&[[Span; 3]]` is not free, and keeping the
+/// coordinate array `f64` while typing the exits is still the right trade.
+/// **Not `Copy`, and the reasoning is the one `Signature` and `Geodesic`
+/// already use.** This grew from 296 to 488 bytes in Task 9, and
+/// `Signature<162>` declines `Copy` at 2 592 bytes on the grounds that "an
+/// implicit copy per use is not something to hand out silently", while
+/// `Geodesic` declines `Clone` outright. Three types on the same per-species
+/// path gave three different answers until now.
+///
+/// The cost of dropping it is one `.clone()` in the test-only `rotated` —
+/// measured:
+/// nothing else in the crate, tests included, relied on `Copy`. The benefit is
+/// prospective and specific: Task 10's `affinity` is the hottest loop in the
+/// system, and `fn affinity(a: Embedding, b: Embedding)` written by value would
+/// copy 976 bytes per call with no `.clone()`, no lint and nothing visible in a
+/// diff.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Embedding {
     n: usize,
     /// Slots past `n` are zero padding and are never read — [`Self::coords`]
     /// hands out the live prefix so a caller cannot index into them by accident.
     pos: [[f64; 3]; MAX_ATOMS],
+    /// Per-atom enclosing radius, indexed by canonical position, fetched once
+    /// at [`embed`] time from the same `(species, universe)` pair the
+    /// coordinates came from.
+    ///
+    /// **This is here to close a coupling, not to save a lookup.** Task 9's
+    /// routed requirement 3: the planned
+    /// `signature(m: &Mol12, e: &Embedding, ..)` reads `m`'s element at
+    /// canonical position `i` while `e` came from a `CanonMol`, with nothing
+    /// typing the agreement — any `Mol12` compiles and returns a plausible
+    /// signature. That is the defect [`CanonMol`] closed at Task 8, arriving
+    /// one task later. Carrying the data the signature needs means
+    /// `signature(&Embedding, &Geodesic<D>)` takes neither, so the pairing is
+    /// made in exactly one place: here.
+    radius: [Span; MAX_ATOMS],
+    /// Per-atom surface character in `[-1, 1]` (§7.1's `affinity`), indexed by
+    /// canonical position. Dimensionless, so it is a bare `f64` — see
+    /// [`Self::characters`].
+    character: [f64; MAX_ATOMS],
 }
 
 impl Embedding {
@@ -141,6 +175,85 @@ impl Embedding {
         Some(Span(
             (sep[0] * sep[0] + sep[1] * sep[1] + sep[2] * sep[2]).sqrt(),
         ))
+    }
+
+    /// Per-atom enclosing radii, without the padding.
+    #[must_use]
+    pub fn radii(&self) -> &[Span] {
+        self.radius.get(..self.n).unwrap_or(&[])
+    }
+
+    /// Per-atom surface character, without the padding.
+    ///
+    /// Bare `f64` and not a unit: §7.1 defines `affinity` as an exposed
+    /// *fraction* mapped to `[-1, 1]`, so there is no length, energy or time
+    /// for it to carry. `borbax_units::canonical_cmp` is where its ordering
+    /// hazard is handled instead.
+    #[must_use]
+    pub fn characters(&self) -> &[f64] {
+        self.character.get(..self.n).unwrap_or(&[])
+    }
+
+    /// How far each atom's **surface** reaches along a unit direction.
+    ///
+    /// **This is the typed exit [`Self::coords`] is not**, and Task 9's routed
+    /// requirement 5 is what makes it matter. A signature is
+    /// `max_i (dot(dir, coords[i]) + radius_i)`; written at the call site that
+    /// is an untyped projection added to a `.get()`-ed [`Span`], which is G1's
+    /// length-scale mix-up arriving through the one expression every consumer
+    /// writes. Here the untyped arithmetic happens once, inside the type that
+    /// owns both the coordinates and the radii, and every value leaving is a
+    /// `Span`.
+    ///
+    /// `dir` is dimensionless — a unit vector from [`Geodesic::dirs`](crate::geodesic::Geodesic::dirs) — so the
+    /// projection is a length and the sum is dimensionally sound.
+    ///
+    /// **The association `((p0*d0 + p1*d1) + p2*d2) + radius` is pinned as
+    /// written** (§13.1). Reassociating it moves the last bits of every extent
+    /// in the system: measured against `(p0*d0 + (p1*d1 + p2*d2)) + r` it
+    /// differs on **11.912%** of 262 080 (atom, direction) values, and against
+    /// `(p0*d0 + p1*d1) + (p2*d2 + r)` on **22.518%** — with nothing failing,
+    /// since there is no golden on `embed` yet.
+    ///
+    /// The projection matches the shape `experiments`' harness uses. It does
+    /// **not** match `layout`'s own `support` test proxy, which has no `+
+    /// radius` at all — it is deliberately centres-only. An earlier version of
+    /// this sentence named both as precedent.
+    ///
+    /// Slots past [`Self::len`] are `Span::ZERO` padding; take the live prefix.
+    #[must_use]
+    pub fn reaches(&self, dir: Vec3) -> [Span; MAX_ATOMS] {
+        let mut out = [Span::ZERO; MAX_ATOMS];
+        for ((slot, point), radius) in out
+            .iter_mut()
+            .zip(self.pos.iter())
+            .zip(self.radius.iter())
+            .take(self.n)
+        {
+            *slot = Span(point[0] * dir[0] + point[1] * dir[1] + point[2] * dir[2]) + *radius;
+        }
+        out
+    }
+
+    /// This embedding rigidly rotated by `m`.
+    ///
+    /// **Deliberately not `pub`, and only compiled for tests.** A public
+    /// version hands a caller a second configuration for one species, which is
+    /// the thing this module exists to prevent — §8.2's canonicalisation makes
+    /// the orientation irrelevant to *species identity*, and not at all
+    /// irrelevant to anything reading [`Self::coords`]. It exists because the
+    /// two tests that tie the permutation tables to actual geometry have to
+    /// rotate something real and recompute from scratch; comparing tables
+    /// against tables is the failure `contact_perms`' docstring shipped with.
+    /// A renderer that wants a pose can rotate its own copy of the coordinates.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn rotated(&self, m: &crate::geodesic::Mat3) -> Self {
+        let mut out = self.clone();
+        for (slot, point) in out.pos.iter_mut().zip(self.pos.iter()).take(self.n) {
+            *slot = crate::geodesic::apply_mat(m, *point);
+        }
+        out
     }
 
     /// RMS distance from the centroid — the molecule's own length scale.
@@ -257,36 +370,74 @@ fn hop_distances(mol: &Mol12) -> [[u8; MAX_ATOMS]; MAX_ATOMS] {
     hops
 }
 
+/// Per-atom radius and surface character, fetched once from the same
+/// `(species, universe)` pair everything downstream will use.
+///
+/// **Both fallbacks live here, and only one of them used to be documented.** A
+/// missing element leaves `radius` at `Span(1.0)` and `character` at `0.0`.
+///
+/// The radius fallback is inside the measured real range of `[0.3, 2.04]`, so a
+/// mismatched `(CanonMol, Universe)` pair yields a *plausible* shape rather than
+/// a failure. `Mol12::mass` faces the identical condition and returns `Option`
+/// instead, arguing that a silent zero would put a wrong mass into a
+/// conservation check. The two decisions disagree, and this one is deliberate:
+/// `embed` is infallible by design and the coupling is unchecked crate-wide, so
+/// making this one site fallible would buy a `Result` in every caller without
+/// closing the class. The boundary to close is the pairing itself.
+///
+/// **The character fallback is worse and is newly stated.** §7.1 draws
+/// `affinity` exhaustively in `[0.140476, 1.0]` — strictly positive — so `0.0`
+/// is a value **no real element can produce**, injected into the one channel
+/// §8.3's charge term reads. It is out of range rather than merely wrong, which
+/// makes it at least detectable; `signature`'s range assertion would not catch
+/// it, because 0.0 is inside `[-1, 1]`.
+///
+/// Measured: 405 genuine lookup misses over a 30-seed chimera corpus, every one
+/// served here. This is the live fallback — the `map_or(1.0, ..)` in [`targets`]
+/// is an index-bounds guard that cannot fire, since `i < mol.len() <= MAX_ATOMS`.
+fn per_atom(species: &CanonMol, universe: &Universe) -> ([Span; MAX_ATOMS], [f64; MAX_ATOMS]) {
+    let mol = species.mol();
+    let mut radius = [Span(1.0); MAX_ATOMS];
+    let mut character = [0.0f64; MAX_ATOMS];
+    for i in 0..mol.len() {
+        let el = u8::try_from(i)
+            .ok()
+            .and_then(|k| mol.element(k))
+            .and_then(|id| universe.element(id));
+        if let (Some(el), Some(r), Some(c)) = (el, radius.get_mut(i), character.get_mut(i)) {
+            *r = el.radius;
+            *c = el.affinity;
+        }
+    }
+    (radius, character)
+}
+
 /// Target distance matrix: hop count scaled by the two atoms' radii, so bigger
 /// atoms genuinely take up more room.
 ///
-/// **`h * (r_i + r_j)` is pinned as written.** Distributing it to
-/// `h*r_i + h*r_j` is algebraically identical, reads as a tidy-up, and differs in
-/// the last bits on **22.19%** of 74.2M sampled pairs over the measured operating
-/// range — moving every coordinate of every embedding downstream with the whole
-/// suite green. Measured by mutation: a corpus digest goes
+/// **`h * (r_i + r_j)` is pinned as written, and the expression is on the line
+/// below — not in [`per_atom`], where this paragraph spent one commit after a
+/// refactor inserted a function under its doc comment.** Distributing it to
+/// `h*r_i + h*r_j` is algebraically identical, reads as a tidy-up, and differs
+/// in the last bits on **22.19%** of 74.2M sampled pairs over the measured
+/// operating range — moving every coordinate of every embedding downstream with
+/// the whole suite green. Measured by mutation: a corpus digest goes
 /// `0xb893dc3a6ceb12a0` → `0x9027e1b01b559eb4`, 12 tests passing either way.
-/// There is no golden yet, which is exactly why the shape is written down now.
-fn targets(species: &CanonMol, universe: &Universe) -> [[f64; MAX_ATOMS]; MAX_ATOMS] {
+/// There is no golden yet, which is exactly why the shape is written down here.
+///
+/// Takes the radii rather than fetching them, so `embed` computes them once.
+/// That trades an unspellable coupling for a weaker one — any `[Span;
+/// MAX_ATOMS]` type-checks — and both call sites pass `per_atom`'s output for
+/// the same species. The test helper `targets_for` exists so tests cannot get
+/// it wrong either.
+fn targets(species: &CanonMol, radii: &[Span; MAX_ATOMS]) -> [[f64; MAX_ATOMS]; MAX_ATOMS] {
     let mol = species.mol();
     let n = mol.len();
     let hops = hop_distances(mol);
-    // **A missing element falls back to 1.0, which is inside the measured real
-    // range of [0.3, 2.04] — so a mismatched `(CanonMol, Universe)` pair yields a
-    // *plausible* shape rather than a failure.** `Mol12::mass` faces the identical
-    // condition and returns `Option` instead, arguing that a silent zero would put
-    // a wrong mass into a conservation check. The two decisions disagree, and this
-    // one is deliberate: `embed` is infallible by design and the coupling is
-    // unchecked crate-wide, so making this one site fallible would buy a `Result`
-    // in every caller without closing the class. Recorded rather than fixed, and
-    // the boundary to close is the pairing itself, not this lookup.
-    let radius = |i: usize| -> f64 {
-        u8::try_from(i)
-            .ok()
-            .and_then(|k| mol.element(k))
-            .and_then(|id| universe.element(id))
-            .map_or(1.0, |el| el.radius.get())
-    };
+    // An index-bounds guard, not the element fallback: `i < mol.len() <=
+    // MAX_ATOMS` and `radii` has `MAX_ATOMS` slots, so `1.0` is unreachable
+    // here. The live fallback is documented on `per_atom`.
+    let radius = |i: usize| -> f64 { radii.get(i).map_or(1.0, |r| r.get()) };
     let mut target = [[0.0f64; MAX_ATOMS]; MAX_ATOMS];
     for i in 0..n {
         for j in 0..n {
@@ -326,7 +477,8 @@ fn targets(species: &CanonMol, universe: &Universe) -> [[f64; MAX_ATOMS]; MAX_AT
 /// iterator, so the accumulation order is fixed on every platform (§13.1).
 #[must_use]
 pub fn stress(species: &CanonMol, universe: &Universe, emb: &Embedding) -> f64 {
-    let target = targets(species, universe);
+    let (radii, _) = per_atom(species, universe);
+    let target = targets(species, &radii);
     let n = emb.len();
     let mut total = 0.0f64;
     for i in 0..n {
@@ -662,14 +814,20 @@ pub fn embed(species: &CanonMol, universe: &Universe) -> Embedding {
 /// else — a claim that cannot be made without varying the budget.
 fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize) -> Embedding {
     let n = species.len();
+    let (radius, character) = per_atom(species, universe);
     if n <= 1 {
         let pos = [[0.0f64; 3]; MAX_ATOMS];
         // One atom sits at the origin, which is already centred; zero atoms have
         // nowhere to sit. Both skip the solver rather than being special-cased
         // inside it.
-        return Embedding { n, pos };
+        return Embedding {
+            n,
+            pos,
+            radius,
+            character,
+        };
     }
-    let target = targets(species, universe);
+    let target = targets(species, &radius);
 
     let mut pos = initial_layout(&target, n);
 
@@ -1053,7 +1211,12 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
         }
     }
 
-    Embedding { n, pos }
+    Embedding {
+        n,
+        pos,
+        radius,
+        character,
+    }
 }
 
 #[cfg(test)]
@@ -1113,6 +1276,13 @@ mod tests {
         mol
     }
 
+    /// [`targets`] with the radii fetched for you, so tests do not each
+    /// repeat the `per_atom` call and risk pairing a species with the wrong
+    /// universe's radii — the chimera `fixture` exists to prevent.
+    fn targets_for(sp: &CanonMol, uni: &Universe) -> [[f64; MAX_ATOMS]; MAX_ATOMS] {
+        targets(sp, &per_atom(sp, uni).0)
+    }
+
     fn canon(mol: &Mol12) -> CanonMol {
         canonicalise(mol)
             .unwrap_or_else(|err| unreachable!("fixture capped: {err}"))
@@ -1162,6 +1332,18 @@ mod tests {
     /// not exist yet; this is deliberately *less* informative than it will be
     /// (atom centres rather than surfaces, and no affinity channel), so it
     /// understates locality rather than flattering it.
+    ///
+    /// **That last clause is measured false and is kept only as the record of
+    /// a plausible argument that did not hold.** Paired on identical trials
+    /// against Task 9's real signature — radii, character channel and all —
+    /// this proxy scores **0.8908** against the signature's **0.8896**
+    /// (`McNemar` z = -0.19), and 0.8871 against 0.8797 on a second stream. It is
+    /// level or marginally ahead, not behind. The 0.0109 gap between the two
+    /// figures the two files ship is corpus difference (different stream, 1327
+    /// trials against 806), and unpaired it gives p = 0.45. So "less
+    /// information implies less locality" was an a-priori argument, and the
+    /// extra channels buy nothing measurable *on this statistic* — consistent
+    /// with the character channel being 2.08% of the group distance.
     /// **Returns `[f64; D]`, not `Vec<f64>`.** `Geodesic` is length-typed
     /// throughout — `dirs() -> &[Vec3; D]`, `rotation_perms(r) -> &[u8; D]` — and
     /// erasing that here let `group_distance` be called with signatures from two
@@ -1656,7 +1838,7 @@ mod tests {
         let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
         let species = canon(&chain(2, &tbl, &ids));
-        let want = targets(&species, &uni)[0][1];
+        let want = targets_for(&species, &uni)[0][1];
         assert!(want > 0.0, "the fixture has no target to hit");
 
         for budget in [1usize, 2, 3, 239, ITERATIONS, ITERATIONS + 1] {
@@ -1890,7 +2072,7 @@ mod tests {
                 continue;
             }
             // Keep only molecules whose START is coincident — that is the branch.
-            let start = initial_layout(&targets(&species, &uni), species.len());
+            let start = initial_layout(&targets_for(&species, &uni), species.len());
             let mut coincident = false;
             for i in 0..species.len() {
                 for j in (i + 1)..species.len() {
@@ -2083,7 +2265,7 @@ mod tests {
                         sep > 1e-9,
                         "atoms {i},{j} of a {}-atom molecule share a point (target {})",
                         species.len(),
-                        targets(&species, &uni)[i][j]
+                        targets_for(&species, &uni)[i][j]
                     );
                     if sep < closest {
                         closest = sep;
@@ -2138,7 +2320,7 @@ mod tests {
                 disconnected_seen += 1;
             }
             let species = canon(&mol);
-            let target = targets(&species, &uni);
+            let target = targets_for(&species, &uni);
             for (i, row) in target.iter().enumerate().take(species.len()) {
                 for (j, &tgt) in row.iter().enumerate().take(species.len()) {
                     if i == j {

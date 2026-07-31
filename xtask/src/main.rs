@@ -616,13 +616,24 @@ fn scan_for_derived_streams(rel: &str, text: &str) -> Result<Vec<String>, String
 /// residual is worth naming rather than solving. It is named in
 /// [`check_no_stream_deriving_method`]'s doc.
 fn alloc_stream_names(items: &[syn::Item]) -> Vec<String> {
-    fn walk_use(tree: &syn::UseTree, out: &mut Vec<String>) {
+    alias_names(items, "Stream")
+}
+
+/// Local aliases for `target`: `type X = Target;` and `use ... Target as X;`.
+///
+/// **Generalised for a second consumer that no longer exists.** The signature
+/// guard it was split out for was deleted in the same task for enumerating AST
+/// shapes, so there is one caller again. Kept parameterised rather than folded
+/// back: the next textual guard will want it, and the fold would be a diff with
+/// no behaviour change.
+fn alias_names(items: &[syn::Item], target: &str) -> Vec<String> {
+    fn walk_use(tree: &syn::UseTree, target: &str, out: &mut Vec<String>) {
         match tree {
-            syn::UseTree::Rename(r) if r.ident == "Stream" => out.push(r.rename.to_string()),
-            syn::UseTree::Path(p) => walk_use(&p.tree, out),
+            syn::UseTree::Rename(r) if r.ident == target => out.push(r.rename.to_string()),
+            syn::UseTree::Path(p) => walk_use(&p.tree, target, out),
             syn::UseTree::Group(g) => {
                 for t in &g.items {
-                    walk_use(t, out);
+                    walk_use(t, target, out);
                 }
             }
             _ => {}
@@ -631,13 +642,13 @@ fn alloc_stream_names(items: &[syn::Item]) -> Vec<String> {
     let mut out = Vec::new();
     for item in items {
         match item {
-            syn::Item::Type(t) if idents_of(&t.ty).iter().any(|i| i == "Stream") => {
+            syn::Item::Type(t) if idents_of(&t.ty).iter().any(|i| i == target) => {
                 out.push(t.ident.to_string());
             }
-            syn::Item::Use(u) => walk_use(&u.tree, &mut out),
+            syn::Item::Use(u) => walk_use(&u.tree, target, &mut out),
             syn::Item::Mod(m) => {
                 if let Some((_, inner)) = &m.content {
-                    out.extend(alloc_stream_names(inner));
+                    out.extend(alias_names(inner, target));
                 }
             }
             _ => {}

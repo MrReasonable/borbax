@@ -22,11 +22,48 @@ before proposing anything:
 | `docs/superpowers/plans/2026-07-26-borbax-v0.md` | V0 plan, Tasks 1–10. Holds the Global Constraints and File Structure that both plan files share. |
 | `docs/superpowers/plans/2026-07-26-borbax-v0-chemistry.md` | V0 plan, Tasks 11–21 (folding onward). Complete. |
 
-Work is plan-driven: execute tasks in order with `superpowers:subagent-driven-development`
-or `superpowers:executing-plans`, ticking the `- [ ]` checkboxes. Every task is TDD —
-write the failing test, verify it fails for the stated reason, then implement.
-Commit after every task, conventional-commit style, with the trailer
-`MrReasonable <4990954+MrReasonable@users.noreply.github.com>`.
+Work is plan-*ordered*, not plan-transcribed: execute tasks in order, ticking the
+`- [ ]` checkboxes. Commit after every task, conventional-commit style, with the
+trailer `MrReasonable <4990954+MrReasonable@users.noreply.github.com>`.
+
+**Start every task with a three-amigos session, and never drop the plan's code
+in.** Three roles, told to argue rather than defer:
+
+| Role | Asks |
+|---|---|
+| **product** | What does the spec actually require here? What is in and out of scope? Which routed requirements from earlier reviews bind this task? |
+| **developer** | What does the *current* API make possible? Where does the plan conflict with what actually shipped? What is the smallest honest design? |
+| **QA** | What are the test cases? For each, what discriminates a real implementation from a plausible one? |
+
+They must agree the **test list before any implementation**. Then deliver
+outside-in: the acceptance-level failing test first, verify it fails for the
+stated reason, work inward.
+
+**Why the plan's code blocks are history and not a starting point.** A step
+written at Task 1 is specified against an API that later tasks change. Measured
+on Task 9: the plan's Step 3 code did not compile against Task 8's shipped
+`Embedding`/`Mol12` at all — 18 errors — and after mechanical repair its
+arithmetic carried **six** §13.1/§13.4 determinism violations into a crate with
+zero. Its Step 1 test block called `embed(&Mol12, ..)`, three tasks after `embed`
+started taking a `&CanonMol`, and named two methods its own routed requirements
+forbid.
+
+The subtle part, because it caught me: the rule below — *justify a plan deviation
+with a verdict a tool can issue* — is still right, and obeying it is what
+produced the behaviour this section now forbids. I dropped the plan's code in
+**to measure it**, then reverted and wrote tests first. The measurement was
+honest and the deviation was correct; the mistake was treating the plan's code as
+a candidate at all. Once you accept that plans go stale, quantifying the
+staleness is ceremony. Read `embed`'s signature instead.
+
+The plan step keeps the two jobs it is good for: the record of intent, and the
+carrier of routed requirements and discriminators from earlier tasks' reviews.
+Those are the parts to read closely — Task 9's six routed requirements were all
+load-bearing and all correct.
+
+`superpowers:subagent-driven-development` and `superpowers:executing-plans` still
+apply for sequencing and review checkpoints; the three-amigos session replaces
+their "read the plan and follow the steps" opening.
 
 ## How work reaches `main`
 

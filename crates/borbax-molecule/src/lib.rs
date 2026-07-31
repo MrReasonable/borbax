@@ -15,6 +15,7 @@ pub mod canonical;
 pub mod geodesic;
 pub mod graph;
 pub mod layout;
+pub mod signature;
 
 pub use canonical::{CanonForm, CanonMol, Capped, SEARCH_LEAF_CAP, SearchStats, canonicalise};
 pub use geodesic::{
@@ -23,3 +24,4 @@ pub use geodesic::{
 };
 pub use graph::{BondError, MAX_ATOMS, Mol12, N_ORDERS};
 pub use layout::{Embedding, ITERATIONS, embed, stress};
+pub use signature::{Signature, signature};
