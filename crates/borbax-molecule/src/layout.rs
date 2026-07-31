@@ -77,6 +77,13 @@ use borbax_universe::Universe;
 
 /// Iterations of the Guttman transform. Fixed for the reason in the module docs;
 /// changing it is a physics change that moves every downstream number.
+///
+/// **It is also quadratic in the test suite, which is worth knowing before Task
+/// 20's sweep touches it.** `stress_never_increases` restarts the solver at every
+/// budget 1..=`ITERATIONS`, so it costs `O(ITERATIONS²)` — 60 trials × 240
+/// restarts is ~1.74M SMACOF iterations, 782 ms in release, **44.3% of this
+/// crate's test CPU and its critical path**. Doubling this constant does not
+/// double that test; it quadruples it, to ~4 s.
 pub const ITERATIONS: usize = 240;
 
 /// A molecule's atoms placed in space, indexed by **canonical position**.
@@ -486,6 +493,13 @@ fn initial_layout(target: &[[f64; MAX_ATOMS]; MAX_ATOMS], n: usize) -> [[f64; 3]
 ///
 /// Two properties, both exhaustively checkable and both load-bearing:
 ///
+/// (A note for whoever profiles this next: hoisting `1.0 / lower[row][row]` and
+/// multiplying is the obvious rewrite and is refused — it moves **93.5%** of every
+/// coordinate. Worth recording that it is also nearly worthless now: 19.7% alone,
+/// but only a further **8.1%** once the three dimensions are batched, because it
+/// was attacking latency the batching already hides. A 8.1% gain for a golden
+/// regeneration is not a trade.)
+///
 /// - **Antisymmetric** (`u_ij = −u_ji`), or `B(X)` is not symmetric and the
 ///   transform is not the Guttman transform. That reason is sufficient on its own,
 ///   and it is the only one that survives measurement.
@@ -659,6 +673,30 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
 
     let mut pos = initial_layout(&target, n);
 
+    // **What this costs, measured, because a correctness fix with an unstated
+    // price invites someone to undo it.** End-to-end `embed` over a 1000-species
+    // corpus: the row-wise form this replaced ran at 36.45 µs, the exact transform
+    // runs at 108.51 µs — **2.98× slower**, 2.87× at n = 12. The triangular solve
+    // is 39.6% of that, attributed by measurement (running each solve twice and
+    // discarding one costs +21.35 ms on a 53.89 ms base), and at n = 12 an embed
+    // performs 17,280 divisions in serially dependent chains of 12.
+    //
+    // The row-wise form is 3× cheaper and wrong — it cycles forever at n = 2 and
+    // converges to a saddle whenever two atoms start coincident. This is what the
+    // fixes cost.
+    //
+    // **About half is recoverable bit-identically and is deliberately not taken
+    // here.** Measured: batching the three dimensions into one triangular solve
+    // (the divider is pipelined — three interleaved chains reach 3.16× the
+    // throughput of one), plus the antisymmetric `i < j` halving this file already
+    // clears as bit-free, plus a register accumulator for `rhs[k][i]`, together
+    // give **108.51 → 52.14 µs, 2.08×**, with **0 of 150,660 coordinates differing
+    // across 12 universe seeds**. None of it touches a pinned accumulation shape.
+    // It is left undone because it is an optimisation rather than a defect, on a
+    // path §8.6 keeps out of the simulation step and with no stated intern budget
+    // to breach; the operational consequence is Task 20's sweep, where 100 points
+    // at 10⁴ species costs 110 s of embedding against a possible 52 s.
+    //
     // SMACOF, with the **exact** weighted Guttman transform `X' = V_w⁺ B(X) X`.
     //
     // Weight `1/d²` is **Kamada–Kawai's** choice (Inf. Process. Lett. 31(1), 1989,

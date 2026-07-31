@@ -483,7 +483,10 @@ impl Mol12 {
         // every column. That is not a micro-optimisation of a hot loop — this
         // runs once per `canonicalise` — but the scan visited `N_ORDERS * n²`
         // = 864 positions at n = 12 to find the `deg(v) <= valence` that are
-        // actually set, and the walk is a measured **5.0x**. It is taken because
+        // actually set, and the walk is a measured **5.0x on trees at n = 12**
+        // (4.11x on a tree-plus-cycles corpus — the ratio tracks `12/deg(v)`, so it
+        // is fixture-sensitive by construction, and an earlier version of this line
+        // gave the number with no corpus attached). It is taken because
         // `relabelled_agrees_with_replaying_the_molecule_through_add_bond` checks
         // it against an independent implementation over 2000 (molecule,
         // permutation) pairs — and exhaustively by review over all 50,360
