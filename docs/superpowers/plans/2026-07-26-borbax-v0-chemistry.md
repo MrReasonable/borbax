@@ -2652,6 +2652,23 @@ fn radiogenic_rate<const D: usize>(id: SpeciesId, it: &Interner<D>, u: &Universe
 }
 ```
 
+**ROUTED FROM TASK 8 — a requirement of this task, not an aside.** `embed`
+places unreachable atom pairs at `diameter + 1` hops, which is finite (the Task 2
+hazard) but is a *chosen* separation with no physical justification: with two
+isolated atoms `diameter = 0`, so the fill is `1`, the same value a bond gets.
+
+**Its safety argument is a schedule, not a property, and this task is what
+expires it.** Nothing in V0 interns a disconnected species only because
+`ReactionKind::Cleave` names no products — which this plan flags at its own
+`§ Cleave` note as a defect to close for §9.1 microscopic reversibility. Nothing
+*enforces* it: `Mol12::clear_bond` is public, `canonicalise` accepts a
+disconnected molecule, and `embed` takes a `CanonMol` with no connectivity check.
+
+*Discriminator, writable today* — `Mol12::is_connected` is public
+(`graph.rs`): assert `embed` is never reached with `!mol.is_connected()`, or
+make `embed` refuse. Do this **when Cleave gains products**, in this task,
+rather than leaving it conditioned on an event no task schedules.
+
 - [ ] **Step 4: Run**, then **Step 5: Commit** with a message noting that decay
 being O(1) per species depends on implicit damage, and that the §22.7
 provenance fallback would break it.

@@ -181,6 +181,61 @@ pub struct CanonForm {
     pub planes: [u128; N_ORDERS],
 }
 
+/// A molecule together with its own canonical labelling.
+///
+/// **This type exists to make one defect unrepresentable**, and the defect is
+/// specific: everything downstream of here — the 3D embedding, the signature,
+/// the fold, the cavities — is a pure function of the *species* (§8.6), but each
+/// is written against a [`Mol12`], whose atom numbering is whatever the caller
+/// happened to build. `embed(&Mol12, ..)` would therefore compile, run, and
+/// return a plausible shape that depends on the caller. Two callers building the
+/// same molecule by different routes would get two shapes and, after Task 9, two
+/// species ids.
+///
+/// So [`canonicalise`] hands back the molecule *already renumbered*, and
+/// `layout::embed` takes one of these rather than a `Mol12`. The invariance is
+/// then a property of the constructor rather than a property the solver has to
+/// be tested for — there is no way to spell the caller-dependent call.
+///
+/// The `Mol12` and the [`CanonForm`] carry the same information: `mol` is `form`
+/// with its bitsets expanded back into adjacency rows.
+/// `the_molecule_and_the_form_agree` asserts that, so the pair cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonMol {
+    mol: Mol12,
+    form: CanonForm,
+}
+
+impl CanonMol {
+    /// The molecule in canonical atom order.
+    ///
+    /// Bit-identical for every relabelling of one molecule — see the note on
+    /// `Search::best` (private, in this file) for why that survives ties in the
+    /// search.
+    #[must_use]
+    pub const fn mol(&self) -> &Mol12 {
+        &self.mol
+    }
+
+    /// The canonical encoding: the species key.
+    #[must_use]
+    pub const fn form(&self) -> &CanonForm {
+        &self.form
+    }
+
+    /// Atom count.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.mol.len()
+    }
+
+    /// Whether this is the empty molecule.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.mol.is_empty()
+    }
+}
+
 /// Canonical index for the unordered pair `{i, j}`.
 #[inline]
 fn pair_bit(i: usize, j: usize) -> u32 {
@@ -350,14 +405,17 @@ fn count_classes(colour: &[u8; MAX_ATOMS], n: usize) -> usize {
 /// [`Capped`] if the search exhausted [`SEARCH_LEAF_CAP`] leaves. That is
 /// reachable from legal input — see the constant — so it is a value the caller
 /// must handle rather than a condition asserted away.
-pub fn canonicalise(m: &Mol12) -> Result<(CanonForm, SearchStats), Capped> {
+pub fn canonicalise(m: &Mol12) -> Result<(CanonMol, SearchStats), Capped> {
     let n = m.len();
     if n == 0 {
         return Ok((
-            CanonForm {
-                n: 0,
-                elem: [ElementId::ZERO; MAX_ATOMS],
-                planes: [0; N_ORDERS],
+            CanonMol {
+                mol: Mol12::new(),
+                form: CanonForm {
+                    n: 0,
+                    elem: [ElementId::ZERO; MAX_ATOMS],
+                    planes: [0; N_ORDERS],
+                },
             },
             SearchStats::default(),
         ));
@@ -406,16 +464,49 @@ pub fn canonicalise(m: &Mol12) -> Result<(CanonForm, SearchStats), Capped> {
     // more members and colours are dense ranks, so `target` is always `Some` —
     // but the field doc promises the cap and this is the one spelling that would
     // falsify it.
-    s.best.map(|form| (form, s.stats)).ok_or(Capped {
+    let (form, order) = s.best.ok_or(Capped {
         leaves: SEARCH_LEAF_CAP,
-    })
+    })?;
+    // **Not `Capped`, and an earlier version of this line reused it.** `order`
+    // came out of `search`, which builds it by inverting a dense colouring of
+    // `0..n`, so it is a permutation by construction and `relabelled` cannot
+    // reject it. Reporting a rejection as `Capped` would print "explored 50000
+    // leaves without finishing" for a search that finished — and `SEARCH_LEAF_CAP`'s
+    // own doc sends a reader who hits the cap to bind nauty (§18.2), C FFI against
+    // a `forbid(unsafe_code)` workspace. A one-line disagreement between `search`
+    // and `relabelled` would hand the next person a multi-day task as the
+    // diagnosis.
+    //
+    // `unreachable!` is the spelling CLAUDE.md prefers here precisely because it
+    // names its own precondition, and `clippy::unreachable` is deliberately not
+    // enabled for that reason.
+    let mol = m
+        .relabelled(&order)
+        .unwrap_or_else(|| unreachable!("search emits a dense permutation of 0..n"));
+    Ok((CanonMol { mol, form }, s.stats))
 }
 
 /// The search's working state. Bundled so `capped` cannot be dropped on the way
 /// out the way `SearchStats::cap_hit` could be dropped by the caller.
 #[derive(Default)]
 struct Search {
-    best: Option<CanonForm>,
+    /// The smallest encoding seen, and the ordering that produced it.
+    ///
+    /// **The ordering is not isomorphism-invariant and the molecule it builds
+    /// is** — which is the only reason keeping "the first order to attain the
+    /// minimum" is sound. Automorphisms give several leaves the *same* minimal
+    /// form (the twelve-cycle reaches 24, `|Aut(C₁₂)|`), the `<` below keeps
+    /// whichever arrived first, and different input labellings explore the tree
+    /// in different sequences — so the stored order genuinely does vary between
+    /// relabellings of one molecule.
+    ///
+    /// It cannot leak. `Mol12::relabelled(order)` reads `order` only through the
+    /// elements it places and the pairs it carries — exactly the two things
+    /// `encode` reads — so any two orders with equal `CanonForm` build the
+    /// identical `Mol12`. Provable rather than measured, and
+    /// `the_canonical_molecule_is_invariant_under_relabelling` pins it anyway
+    /// because the argument depends on the two functions staying in step.
+    best: Option<(CanonForm, Vec<u8>)>,
     stats: SearchStats,
     capped: bool,
 }
@@ -455,8 +546,8 @@ fn search(m: &Mol12, mut colour: [u8; MAX_ATOMS], s: &mut Search) {
             order[usize::from(colour[v])] = u8::try_from(v).unwrap_or(0);
         }
         let form = encode(m, &order);
-        if s.best.as_ref().is_none_or(|b| form < *b) {
-            s.best = Some(form);
+        if s.best.as_ref().is_none_or(|(b, _)| form < *b) {
+            s.best = Some((form, order));
         }
         return;
     }
@@ -562,7 +653,15 @@ mod tests {
     /// mean the fixture changed into something else, so it fails loudly rather
     /// than being absorbed.
     fn canon(m: &Mol12) -> (CanonForm, SearchStats) {
-        canonicalise(m).unwrap_or_else(|e| unreachable!("fixture capped: {e}"))
+        let (c, stats) = canonicalise(m).unwrap_or_else(|e| unreachable!("fixture capped: {e}"));
+        (*c.form(), stats)
+    }
+
+    /// The same, keeping the canonical molecule instead of discarding it.
+    fn canon_mol(m: &Mol12) -> CanonMol {
+        canonicalise(m)
+            .unwrap_or_else(|e| unreachable!("fixture capped: {e}"))
+            .0
     }
 
     fn as_u8(i: usize) -> u8 {
@@ -675,6 +774,198 @@ mod tests {
             p.swap(i, j);
         }
         p
+    }
+
+    /// The canonical molecule and the canonical form must say the same thing.
+    ///
+    /// They are built by different routes — `relabelled` permutes adjacency
+    /// rows, `encode` writes pair bitsets — and [`CanonMol`]'s whole claim is
+    /// that the two agree. Re-encoding the canonical molecule under the identity
+    /// ordering has to reproduce the form it was packaged with; if it does not,
+    /// one of the two reads `order` in the opposite direction and every
+    /// downstream shape is built from a molecule the species key does not
+    /// describe.
+    #[test]
+    fn the_molecule_and_the_form_agree() {
+        let t = table(17);
+        let ids = tree_capable(&t);
+        let mut rng = Stream::new(71, Domain::Molecule, 0);
+        for _ in 0..2_000 {
+            let m = random_molecule(&mut rng, &t, &ids);
+            let c = canon_mol(&m);
+            let identity: Vec<u8> = (0..as_u8(c.len())).collect();
+            assert_eq!(
+                encode(c.mol(), &identity),
+                *c.form(),
+                "the canonical molecule does not re-encode to its own form"
+            );
+        }
+    }
+
+    /// The property [`CanonMol`] exists for, and the one the `Search::best` note
+    /// argues from structure: the canonical *molecule* is bit-identical across
+    /// relabellings even though the winning search order is not.
+    ///
+    /// **This is the test that would fail if ties were resolved differently, and
+    /// it is not implied by the form test above.** Two orders attaining the same
+    /// minimal form must build the same `Mol12`; that follows from `relabelled`
+    /// and `encode` reading `order` through the same two quantities, and this
+    /// pins the two functions to each other so a change to either is caught.
+    #[test]
+    fn the_canonical_molecule_is_invariant_under_relabelling() {
+        let t = table(17);
+        let ids = tree_capable(&t);
+        let mut rng = Stream::new(72, Domain::Molecule, 0);
+        for _ in 0..2_000 {
+            let m = random_molecule(&mut rng, &t, &ids);
+            let want = canon_mol(&m);
+            let p = shuffle(&mut rng, as_u8(m.len()));
+            assert_eq!(
+                canon_mol(&permute(&m, &p, &t)),
+                want,
+                "relabelling changed the canonical molecule"
+            );
+        }
+
+        // **The random corpus above never reaches a nontrivial automorphism
+        // group** — measured, its largest minimal-form tie group is 2, in 25 of
+        // 2000 draws. So it exercises the property but not the case where the
+        // tie-break is load-bearing: several leaves attaining the *same* minimal
+        // form by different orders. The twelve-cycle reaches 24 leaves, which is
+        // |Aut(C12)|, and is the fixture that does.
+        let mut ring = Mol12::new();
+        let single = tree_capable(&t)
+            .first()
+            .copied()
+            .unwrap_or_else(|| unreachable!("the table has tree-capable elements"));
+        for _ in 0..12 {
+            assert!(ring.add_atom(single).is_some());
+        }
+        for i in 0..12u8 {
+            assert!(
+                ring.add_bond(i, (i + 1) % 12, BondOrder::SINGLE, &t)
+                    .is_ok(),
+                "a twelve-cycle over a valence-2-capable element is legal"
+            );
+        }
+        let (want, stats) = canon(&ring);
+        assert!(
+            stats.leaves > 1,
+            "the ring fixture did not branch, so it does not test the tie-break"
+        );
+        let want_mol = canon_mol(&ring);
+        for _ in 0..40 {
+            let p = shuffle(&mut rng, 12);
+            let relabelled = permute(&ring, &p, &t);
+            assert_eq!(canon(&relabelled).0, want, "ring: form moved");
+            assert_eq!(canon_mol(&relabelled), want_mol, "ring: molecule moved");
+        }
+    }
+
+    /// Canonicalising an already-canonical molecule changes nothing.
+    ///
+    /// This is the plan's stated test for a `CanonForm -> Mol12` inverse, in the
+    /// form this design actually takes: `mol()` *is* the inverse, so idempotence
+    /// is what says it lands in the same place the search did. A `relabelled`
+    /// that ran the permutation backwards would still produce an isomorphic
+    /// molecule with the same form — so the form half passes — and would fail
+    /// here, because the inverse ordering is not itself canonical.
+    #[test]
+    fn canonicalising_a_canonical_molecule_is_a_fixed_point() {
+        let t = table(5);
+        let ids = tree_capable(&t);
+        let mut rng = Stream::new(73, Domain::Molecule, 0);
+        for _ in 0..2_000 {
+            let m = random_molecule(&mut rng, &t, &ids);
+            let once = canon_mol(&m);
+            assert_eq!(
+                canon_mol(once.mol()),
+                once,
+                "canonicalisation is not idempotent"
+            );
+        }
+    }
+
+    /// `relabelled` and the test suite's own `permute` are two independent
+    /// implementations of one operation — one permutes adjacency rows in place,
+    /// the other replays the molecule through `add_bond`. They must agree.
+    ///
+    /// Worth having because `relabelled` skips the valence check that `permute`
+    /// goes through, on the argument that a relabelling of a legal molecule is
+    /// legal. This is what checks the argument rather than restating it.
+    #[test]
+    fn relabelled_agrees_with_replaying_the_molecule_through_add_bond() {
+        let t = table(17);
+        let ids = tree_capable(&t);
+        let mut rng = Stream::new(74, Domain::Molecule, 0);
+        for _ in 0..2_000 {
+            let m = random_molecule(&mut rng, &t, &ids);
+            let p = shuffle(&mut rng, as_u8(m.len()));
+            assert_eq!(
+                m.relabelled(&p),
+                Some(permute(&m, &p, &t)),
+                "the two relabellings disagree"
+            );
+        }
+    }
+
+    /// `relabelled` rejects every non-permutation, tested directly.
+    ///
+    /// The three refusal paths are otherwise exercised only *indirectly*, through
+    /// callers that always hand it a valid permutation — so nothing would notice
+    /// if the `seen` bitmask or the `bit()` range check stopped working. That
+    /// matters more than it looks: `canonicalise` now spells the failure
+    /// `unreachable!`, so a check that silently stopped rejecting would turn a
+    /// caught error into a wrong molecule rather than a panic.
+    #[test]
+    fn relabelled_refuses_anything_that_is_not_a_permutation() {
+        let t = table(5);
+        let ids = tree_capable(&t);
+        let mut rng = Stream::new(75, Domain::Molecule, 0);
+        let m = random_molecule(&mut rng, &t, &ids);
+        let n = as_u8(m.len());
+        assert!(n >= 3, "fixture too small to permute meaningfully");
+
+        let identity: Vec<u8> = (0..n).collect();
+        assert!(
+            m.relabelled(&identity).is_some(),
+            "the identity is a permutation"
+        );
+
+        // A helper, so each case reads as "this edit to a valid permutation must
+        // be refused" rather than as index arithmetic.
+        let refused = |edit: &dyn Fn(&mut Vec<u8>)| {
+            let mut order = identity.clone();
+            edit(&mut order);
+            assert_eq!(m.relabelled(&order), None, "accepted {order:?}");
+        };
+
+        // Wrong length, both directions.
+        refused(&|o| {
+            o.pop();
+        });
+        refused(&|o| o.push(0));
+
+        // An index at or past the atom count.
+        refused(&|o| {
+            if let Some(slot) = o.first_mut() {
+                *slot = n;
+            }
+        });
+        refused(&|o| {
+            if let Some(slot) = o.first_mut() {
+                *slot = u8::MAX;
+            }
+        });
+
+        // A duplicate — the case that would silently duplicate one atom and drop
+        // another, giving a molecule with the right count and the wrong contents.
+        refused(&|o| {
+            let first = o.first().copied().unwrap_or(0);
+            if let Some(slot) = o.get_mut(1) {
+                *slot = first;
+            }
+        });
     }
 
     /// Element ids must span the real range, not `0..6`.
