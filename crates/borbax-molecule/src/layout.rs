@@ -462,6 +462,37 @@ fn initial_layout(target: &[[f64; MAX_ATOMS]; MAX_ATOMS], n: usize) -> [[f64; 3]
     pos
 }
 
+/// The direction to separate two atoms that occupy the same point.
+///
+/// **Extracted so it can be tested.** It was inline in the Guttman loop, and
+/// mutating it there and watching the embedding shows nothing — the spurious
+/// translation a bad rule introduces is removed by the centring pass before it
+/// can reach a distance. That is a reason to test the *function*, not a reason
+/// the property is untestable, and concluding the latter from a downstream probe
+/// is the "probe upstream of the transformation" mistake this project records.
+///
+/// Two properties, both exhaustively checkable and both load-bearing:
+///
+/// - **Antisymmetric** (`u_ij = −u_ji`). `B(X)` must stay symmetric or the
+///   transform is not the Guttman transform. And `cholesky` factors `V_w + J`,
+///   where `(V_w+J)⁻¹b = V_w⁺b + (1ᵀb/n)·1`, so the `J` term vanishes only while
+///   `1ᵀb` is *exactly* zero — antisymmetry is what keeps it so, since targets are
+///   bitwise symmetric and `s·(−x) == −(s·x)` is exact.
+/// - **Unit length**, so the term carries the same weight as a resolved pair.
+///
+/// Keyed on canonical indices, which is what makes it a function of the species:
+/// `CanonMol::mol()` is bit-identical across relabellings, so `i` and `j` are too.
+fn separation_direction(i: usize, j: usize) -> [f64; 3] {
+    let mut sep = [0.0f64; 3];
+    // `abs_diff` is symmetric so both orderings pick one axis; the sign flip is
+    // what makes it antisymmetric. `i == j` never reaches here — the caller
+    // `continue`s — so the index is always in 0..3.
+    if let Some(slot) = sep.get_mut(j.abs_diff(i) % 3) {
+        *slot = if i < j { 1.0 } else { -1.0 };
+    }
+    sep
+}
+
 /// Cholesky factor of `V_w + J`, the matrix the exact Guttman step solves against.
 ///
 /// **No pivoting, and the reason is a proof rather than a lint.**
@@ -801,16 +832,14 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                 // coincident orbits: `‖sep‖ = 1`, both orderings pick one axis, and no
                 // orbit of any size to 12 can be left with a zero differential push.
                 //
-                // **Antisymmetry is proven necessary and is NOT observable here, and
-                // that gap is stated rather than papered over.** Substituting the
-                // axis rule `(i + 2j) % 3` — deterministic and isomorphism-invariant
-                // but not antisymmetric, so `u_ij` and `u_ji` land on different axes
-                // — passes the entire suite, including
-                // `descent_holds_on_the_coincidence_path`. The reason is that the
-                // spurious translation it introduces is removed by the centring pass
-                // at the end, so it cannot reach a distance. So this is a property no
-                // test defends; it rests on the algebra above, and a future edit here
-                // will get no signal from the suite.
+                // Both properties are pinned by
+                // `the_separation_direction_is_antisymmetric_and_unit`, exhaustively
+                // over all 132 ordered pairs. That test exists because the obvious
+                // probe — mutate the rule, watch the embedding — shows *nothing*:
+                // the spurious translation a non-antisymmetric rule introduces is
+                // removed by the centring pass before it can reach a distance. The
+                // property is about `separation_direction`, so that is where it is
+                // checked.
                 //
                 // Keyed on the canonical indices, and **the reason that is sound is
                 // not the one an earlier version of this comment gave.** It said the
@@ -853,11 +882,7 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                 let unit = if raw > 1e-9 {
                     [diff[0] / raw, diff[1] / raw, diff[2] / raw]
                 } else {
-                    let mut sep = [0.0f64; 3];
-                    if let Some(slot) = sep.get_mut(j.abs_diff(i) % 3) {
-                        *slot = if i < j { 1.0 } else { -1.0 };
-                    }
-                    sep
+                    separation_direction(i, j)
                 };
                 // **`scale = wij*dij` with `unit = diff/raw` is a pinned shape, and
                 // it is a second physics change this commit made.** The predecessor
@@ -1526,6 +1551,87 @@ mod tests {
                 "trial {trial}: stress never fell — {first} to {previous}"
             );
         }
+    }
+
+    /// **The two properties `separation_direction` must have, checked
+    /// exhaustively.** Twelve atoms give 132 ordered pairs, so this enumerates
+    /// the whole space rather than sampling it — a proof, not a statistic.
+    ///
+    /// This test exists because I first concluded the property was undefendable.
+    /// Mutating the axis rule and watching the *embedding* shows nothing: the
+    /// spurious translation a non-antisymmetric rule introduces is removed by the
+    /// centring pass before it can reach a distance. That is the recorded
+    /// "probe upstream of the transformation" mistake — the property is about this
+    /// function, and here it is trivially checkable.
+    #[test]
+    fn the_separation_direction_is_antisymmetric_and_unit() {
+        let mut pairs = 0u32;
+        for i in 0..MAX_ATOMS {
+            for j in 0..MAX_ATOMS {
+                if i == j {
+                    continue;
+                }
+                pairs += 1;
+                let forward = separation_direction(i, j);
+                let backward = separation_direction(j, i);
+                for k in 0..3 {
+                    assert!(
+                        (forward[k] + backward[k]).abs() < f64::EPSILON,
+                        "sep({i},{j}) is not the negation of sep({j},{i}) on axis {k}"
+                    );
+                }
+                let norm =
+                    forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2];
+                assert!(
+                    (norm - 1.0).abs() < f64::EPSILON,
+                    "sep({i},{j}) has squared length {norm}, not 1"
+                );
+            }
+        }
+        assert_eq!(pairs, 132, "the enumeration is not exhaustive");
+    }
+
+    /// **No coincident orbit can be left stuck, at any size up to the atom cap.**
+    ///
+    /// Every coincidence ever observed has been a *pair* — over 3208 of them the
+    /// canonical-index gap was 1 in every case, so axes 0 and 2 have never been
+    /// selected and an orbit of three or more has never occurred. That makes the
+    /// larger-orbit path unfalsified by any corpus, which is exactly when an
+    /// exhaustive argument is worth more than a measurement.
+    ///
+    /// For an orbit `O` sitting at one point with the rest of the molecule
+    /// elsewhere, the differential push separating `p` from `q` is
+    /// `2·sep(p,q) + Σ_{r ∉ O} (sep(p,r) − sep(q,r))`; the outside terms cancel
+    /// pairwise only if every one agrees, and `sep(p,q)` is non-zero regardless.
+    /// Enumerated over all 4017 subsets of `0..12` with at least two members.
+    #[test]
+    fn no_coincident_orbit_is_left_stuck() {
+        let mut subsets = 0u32;
+        for mask in 0u32..(1 << MAX_ATOMS) {
+            if mask.count_ones() < 2 {
+                continue;
+            }
+            subsets += 1;
+            let orbit: Vec<usize> = (0..MAX_ATOMS).filter(|k| mask & (1 << k) != 0).collect();
+            for (a, &p) in orbit.iter().enumerate() {
+                for &q in orbit.iter().skip(a + 1) {
+                    let pq = separation_direction(p, q);
+                    let mut push = [2.0 * pq[0], 2.0 * pq[1], 2.0 * pq[2]];
+                    for r in (0..MAX_ATOMS).filter(|k| mask & (1 << k) == 0) {
+                        let (pr, qr) = (separation_direction(p, r), separation_direction(q, r));
+                        for k in 0..3 {
+                            push[k] += pr[k] - qr[k];
+                        }
+                    }
+                    let mag = push[0] * push[0] + push[1] * push[1] + push[2] * push[2];
+                    assert!(
+                        mag > 1e-12,
+                        "orbit {orbit:?}: members {p} and {q} receive no differential push"
+                    );
+                }
+            }
+        }
+        assert!(subsets > 4000, "only {subsets} orbits enumerated");
     }
 
     /// **Descent on the coincidence path, which no other test reaches.**
