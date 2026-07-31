@@ -7,9 +7,13 @@
 //! sidesteps the problem rather than managing it.
 //!
 //! **No randomness at all**, and no transcendental. The Guttman transform needs
-//! only `sqrt` and the four arithmetic operations, and the starting layout is a
-//! fixed rational table rather than a trigonometric spiral — precisely so that
-//! stays true (§13.1). The iteration count is fixed rather than
+//! only `sqrt` and the four arithmetic operations, and the starting layout is
+//! built from graph distances rather than a trigonometric spiral — precisely so
+//! that stays true (§13.1). (An earlier version of this line said "a fixed
+//! rational table", which described the *predecessor* `initial_layout` that
+//! `layout.rs`'s own doc measures at 0.6878 locality and buries. The
+//! no-transcendental conclusion survived the rewrite; the mechanism it named did
+//! not, and a header that describes a deleted design is how it gets restored.) The iteration count is fixed rather than
 //! convergence-tested, because a tolerance makes the *number* of iterations
 //! depend on float details that vary by platform, and a configuration that
 //! stopped one iteration earlier is a different configuration (§13.4). That is
@@ -81,8 +85,17 @@ pub const ITERATIONS: usize = 240;
 /// `Element::radius`, which is a `Span`. The coordinate array itself stays `f64`
 /// because it is the solver's workspace and a squared length has no `Span`
 /// spelling; the typed boundary is [`Self::distance`] and
-/// [`Self::radius_of_gyration`], which is where a length is compared against
-/// another length and therefore where the G1 class of mix-up actually happens.
+/// [`Self::radius_of_gyration`].
+///
+/// **There is a third public exit and it is the one that matters: [`Self::coords`]
+/// hands out raw Span-valued lengths, untyped, deliberately.** An earlier version
+/// of this paragraph named only the two typed accessors and claimed they were
+/// where the G1 mix-up happens. They are not on that path at all — a signature is
+/// `max_i (dot(dir, coords[i]) + radius_i)`, so Task 9 reads `coords`, and that
+/// addition of an untyped projection to a `.get()`-ed `Span` is the G1 site.
+/// `Span` is `repr(transparent)` but the workspace is `forbid(unsafe_code)`, so
+/// `&[[Span; 3]]` is not free; keeping the workspace `f64` and typing the
+/// comparisons is still the right trade. Task 9's routed requirement 5 owns it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Embedding {
     n: usize,
@@ -352,7 +365,7 @@ pub fn stress(species: &CanonMol, universe: &Universe, emb: &Embedding) -> f64 {
 ///
 /// ```text
 /// index-keyed START   0.6878
-/// landmark start      0.8092
+/// landmark start      0.8092   (1073/1326)
 /// ```
 ///
 /// **Those are this crate's numbers.** An earlier version of this block gave
@@ -385,13 +398,13 @@ pub fn stress(species: &CanonMol, universe: &Universe, emb: &Embedding) -> f64 {
 /// 1 and 2 left the locality test green. That evidence was worthless: the test
 /// scored the *un-aligned* distance at the time, which ranks embeddings backwards
 /// (see `group_distance`). Measured on the group-minimised distance instead, the
-/// pivot rule spans **0.7624 to 0.8356** across eight variants — a 7.3-point range
+/// pivot rule spans roughly **0.76 to 0.84** across eight variants — a 7.3-point range
 /// on a statistic whose total headroom above chance is about 0.32.
 ///
 /// What genuinely does not matter, measured: the tie-break direction (flipping
 /// `>` to `>=` moves group locality by +0.0045), and making the *first* landmark
 /// index-free — two structural alternatives both scored **below** canonical index
-/// 0 (0.7888 and 0.7956 against 0.8213), so index 0 as the first pivot is
+/// 0 (0.7888 and 0.7956 against 0.8092), so index 0 as the first pivot is
 /// empirically fine and is not the weak point it looks like.
 ///
 /// Landmarks are picked from the graph metric, so the construction stays a pure
@@ -473,11 +486,21 @@ fn initial_layout(target: &[[f64; MAX_ATOMS]; MAX_ATOMS], n: usize) -> [[f64; 3]
 ///
 /// Two properties, both exhaustively checkable and both load-bearing:
 ///
-/// - **Antisymmetric** (`u_ij = −u_ji`). `B(X)` must stay symmetric or the
-///   transform is not the Guttman transform. And `cholesky` factors `V_w + J`,
-///   where `(V_w+J)⁻¹b = V_w⁺b + (1ᵀb/n)·1`, so the `J` term vanishes only while
-///   `1ᵀb` is *exactly* zero — antisymmetry is what keeps it so, since targets are
-///   bitwise symmetric and `s·(−x) == −(s·x)` is exact.
+/// - **Antisymmetric** (`u_ij = −u_ji`), or `B(X)` is not symmetric and the
+///   transform is not the Guttman transform. That reason is sufficient on its own,
+///   and it is the only one that survives measurement.
+///
+///   **A second reason was offered here and is false.** It claimed antisymmetry
+///   keeps `1ᵀb` *exactly* zero, so the `J` term in
+///   `(V_w+J)⁻¹b = V_w⁺b + (1ᵀb/n)·1` vanishes. Antisymmetry makes the terms
+///   cancel in exact arithmetic; it does not make a floating-point row sum zero,
+///   because each entry is an independently-rounded accumulation of up to eleven
+///   terms. Measured with compensated summation over 9,012,501 right-hand-side
+///   rows: **exactly zero in 15.3%, non-zero in 84.7%**, worst 2.0e-15. The dimer
+///   is exactly zero, which is presumably where it was checked. The residual is a
+///   uniform translation of ~1.7e-16 that the centring pass removes — which is
+///   the same reason this property is unobservable downstream, three paragraphs
+///   below. A reason stronger than the truth is what the next reader reuses.
 /// - **Unit length**, so the term carries the same weight as a resolved pair.
 ///
 /// Keyed on canonical indices, which is what makes it a function of the species:
@@ -709,10 +732,13 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
     // `diag(V)` with something strictly smaller and breaks the descent argument
     // (measured: stress rose in 10 of 3000 artificially collapsed starts, worst
     // 6.60 → 27.00 in one step). Here `V` is built from the weights alone, before
-    // the loop, and `cholesky` sees all of them — the `raw > 1e-9` skip below
-    // touches only the `B(X)` term, which is the only part that depends on `X`.
-    // That is the standard convention and it is correct by construction rather
-    // than by luck.
+    // the loop, and `cholesky` sees all of them — the `raw > 1e-9` **branch**
+    // below touches only the `B(X)` term, which is the only part that depends on
+    // `X`. (An earlier version said "skip", naming the `continue` that a later
+    // commit replaced with a deterministic direction. A reader stopping here would
+    // conclude the solver still skips, and read this as endorsing a convention the
+    // code below explicitly departs from — the "the rename landed in the code and
+    // not in the comments" shape this repo has recorded before.)
     //
     // `B(X)X` has zero column sums, so `J·(B(X)X) = 0` and
     // `V_w⁺ = (V_w + J)⁻¹ − J` reduces to a solve against the Cholesky factor.
@@ -826,8 +852,10 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                 // so the `J` term vanishes only while `1ᵀb` is *exactly* zero. Targets
                 // are bitwise symmetric (FP addition commutes), hence so are the
                 // weights, and `scale·(−x) == −(scale·x)` is exact — so antisymmetry
-                // is what keeps the sum exactly zero. Lose it and the step acquires a
-                // spurious translation *before* the centring pass. Verified
+                // bounds `1ᵀb` at accumulated rounding, O(n·ulp), rather than at
+                // O(1) — *not* at exactly zero, which an earlier version claimed
+                // and which is false in 84.7% of rows. The residual is a uniform
+                // translation the centring pass removes. Verified
                 // exhaustively over all 132 ordered index pairs and all 4083 possible
                 // coincident orbits: `‖sep‖ = 1`, both orderings pick one axis, and no
                 // orbit of any size to 12 can be left with a zero differential push.
@@ -895,9 +923,13 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                 //
                 // The rewrite to refuse is the one a performance pass would propose —
                 // hoisting the division back out of the branch to save two divisions
-                // per pair. Measured: **78 of 78 tests pass, debug and release**, and
-                // the corpus digest moves. Nothing in the suite can see it, and it
-                // would also structurally re-break the coincident branch.
+                // per pair. Measured: **the whole suite passes, debug and release**,
+                // and the corpus digest moves. (An earlier version of this line said
+                // "78 of 78 tests", a count that reproduces on no revision of this
+                // branch — `borbax-molecule` has 66 — in a file whose own header
+                // says to quote a number with its provenance or not at all.)
+                // Nothing in the suite can see it, and it would also structurally
+                // re-break the coincident branch.
                 let scale = wij * dij;
                 for (k, row) in rhs.iter_mut().enumerate() {
                     if let (Some(acc), Some(&dk)) = (row.get_mut(i), unit.get(k)) {
@@ -1025,11 +1057,16 @@ mod tests {
     /// §8.2's canonicalisation quotients by it — but the raw distance sees it as
     /// total shape change. Measured: a variant that cyclically permutes the three
     /// landmark axes on `n mod 3` (a genuine frame discontinuity, but one that
-    /// lands on rotation index 6 of the 60) scores **0.5083 raw — "no locality" —
-    /// and 0.8213 grouped, byte-identical to the shipped embedder at 1089/1326.**
-    /// Meanwhile fixing the pivots to indices 0,1,2 scores *better* raw (0.8650)
+    /// lands on rotation index 6 of the 60) scores **0.5113 raw — "no locality" —
+    /// and 0.8092 grouped, byte-identical to the shipped embedder at 1073/1326.**
+    /// Meanwhile fixing the pivots to indices 0,1,2 scores *better* raw (0.8643)
     /// while being 0.049 *worse* grouped. Raw would have failed a correct
     /// implementation and rewarded a worse one.
+    ///
+    /// (Re-measured at this revision. The first version of this block quoted
+    /// 0.8213/1089 and 0.5083/0.8650 — figures taken before the coincidence fix,
+    /// which its own commit measured as moving 96.87% of species' bits. Every
+    /// conclusion survives the correction; the numbers did not.)
     fn group_distance<const D: usize>(geo: &Geodesic<D>, a: &[f64], b: &[f64]) -> f64 {
         let mut best = f64::INFINITY;
         for rot in Rotation::all() {
@@ -1147,6 +1184,15 @@ mod tests {
 
         let (mut nearer, mut trials) = (0u32, 0u32);
         let (mut null_nearer, mut null_trials) = (0u32, 0u32);
+        // **The corpus must contain rings, and that is asserted rather than
+        // commented.** `random_molecule`, `random_tree` and `disconnected_molecule`
+        // share one signature, so swapping the generator is a silent edit — probed,
+        // `random_tree` here leaves this test green while removing every cycle from
+        // the corpus. That is the deficiency this file complains about twice: in
+        // `experiments`' harness, and in the `bonded_atoms_stay_apart` it replaced.
+        // `targets_between_distinct_atoms_are_strictly_positive` already carries the
+        // right shape with its `disconnected_seen > 0`.
+        let mut cyclic = 0u32;
         for _ in 0..2000 {
             let n = 6 + u8::try_from(rng.next_range(5)).unwrap();
             let parent = random_molecule(&mut rng, n, &tbl, &ids);
@@ -1170,6 +1216,13 @@ mod tests {
             let (cp, cm, cs) = (canon(&parent), canon(&mutant), canon(&stranger));
             if cp.len() < 3 {
                 continue;
+            }
+            let bonds: u32 = (0..u8::try_from(cp.len()).unwrap_or(0))
+                .map(|a| cp.mol().degree(a))
+                .sum::<u32>()
+                / 2;
+            if bonds > u32::try_from(cp.len()).unwrap_or(0).saturating_sub(1) {
+                cyclic += 1;
             }
             let base = support(&cp, &uni, &geo);
             let dm = group_distance(&geo, &base, &support(&cm, &uni, &geo));
@@ -1200,13 +1253,19 @@ mod tests {
         }
 
         assert!(trials > 1000, "only {trials} usable trials");
+        assert!(
+            cyclic > 100,
+            "only {cyclic} of {trials} fixtures had a cycle; the corpus is \
+             effectively tree-only and this test is not measuring what it claims"
+        );
         let concordance = f64::from(nearer) / f64::from(trials);
         let null = f64::from(null_nearer) / f64::from(null_trials);
         assert!(
             concordance - null > 0.20,
             "locality is not beating a composition-only null: concordance {concordance:.4} \
-             ({nearer}/{trials}), null {null:.4}, margin {:.4}. 0.5 is no locality; the \
-             index-keyed start scored 0.6041 raw.",
+             ({nearer}/{trials}), null {null:.4}, margin {:.4}. 0.5 is no locality; \
+             the index-keyed start scores 0.6878 on this same group-minimised \
+             statistic.",
             concordance - null
         );
     }
@@ -1498,7 +1557,10 @@ mod tests {
     ///
     /// Lifted from `experiments/src/embed.rs`, which is the half of that file the
     /// plan's Step 3 does not have. It is also what decides the weighting
-    /// question: the row-wise weighted update is the diagonal approximation to
+    /// question: the row-wise weighted update is one Jacobi sweep of `V X' = B(X)X`
+    /// (**not** the diagonal approximation — an earlier version of this line said
+    /// so and it is retracted at `embed_with_budget`; those differ by O(1)), and
+    /// the published monotonicity proof is for the sequential sweep, not to
     /// `V_w⁺ B(X) X`, and the textbook monotonicity proof is for the exact form.
     #[test]
     fn stress_never_increases() {
@@ -1599,11 +1661,26 @@ mod tests {
     /// larger-orbit path unfalsified by any corpus, which is exactly when an
     /// exhaustive argument is worth more than a measurement.
     ///
-    /// For an orbit `O` sitting at one point with the rest of the molecule
-    /// elsewhere, the differential push separating `p` from `q` is
-    /// `2·sep(p,q) + Σ_{r ∉ O} (sep(p,r) − sep(q,r))`; the outside terms cancel
-    /// pairwise only if every one agrees, and `sep(p,q)` is non-zero regardless.
-    /// Enumerated over all 4017 subsets of `0..12` with at least two members.
+    /// **The sum runs over the orbit, and an earlier version of this test summed
+    /// its complement.** `separation_direction` is called only when `raw <= 1e-9`,
+    /// i.e. only between atoms already at one point — which are exactly the orbit
+    /// members. For `r ∉ O` the solver takes the real `diff/raw`, and since
+    /// `pos[p] == pos[q]` bitwise those contributions to `rhs[p]` and `rhs[q]` are
+    /// bit-identical and cancel. So the differential push separating `p` from `q`
+    /// is `2·sep(p,q) + Σ_{s ∈ O\{p,q}} (sep(p,s) − sep(q,s))`.
+    ///
+    /// The predecessor summed `r ∉ O`, which inverted the coverage: at `|O| = 12`
+    /// there are no outside atoms, so it collapsed to `2·sep(p,q)` — non-zero by
+    /// inspection — meaning the largest orbit, the case this docstring argues is
+    /// most worth an exhaustive treatment, was where it proved least. Found
+    /// independently by two lanes. The property is true under either reading
+    /// (`min |push|² = 2`, zero failures both ways); the published reasoning was
+    /// not, and a comment that states the wrong mechanism is how a defect
+    /// survives.
+    ///
+    /// Enumerated over all 4083 subsets of `0..12` with at least two members
+    /// (`2^12 − 1 − 12`; an earlier version said 4017, and `> 4000` was too loose
+    /// to catch it — the sibling test spells its exhaustiveness `assert_eq!`).
     #[test]
     fn no_coincident_orbit_is_left_stuck() {
         let mut subsets = 0u32;
@@ -1617,21 +1694,26 @@ mod tests {
                 for &q in orbit.iter().skip(a + 1) {
                     let pq = separation_direction(p, q);
                     let mut push = [2.0 * pq[0], 2.0 * pq[1], 2.0 * pq[2]];
-                    for r in (0..MAX_ATOMS).filter(|k| mask & (1 << k) == 0) {
-                        let (pr, qr) = (separation_direction(p, r), separation_direction(q, r));
+                    for &s in orbit.iter().filter(|&&k| k != p && k != q) {
+                        let (ps, qs) = (separation_direction(p, s), separation_direction(q, s));
                         for k in 0..3 {
-                            push[k] += pr[k] - qr[k];
+                            push[k] += ps[k] - qs[k];
                         }
                     }
+                    // Every component is an exact small integer bounded by 8, so
+                    // every partial sum is exactly representable and the smallest
+                    // achievable non-zero magnitude is exactly 2 — twelve orders
+                    // above the `1e-12` an earlier version used, which implied a
+                    // numerical tolerance this computation does not have.
                     let mag = push[0] * push[0] + push[1] * push[1] + push[2] * push[2];
                     assert!(
-                        mag > 1e-12,
+                        mag >= 2.0,
                         "orbit {orbit:?}: members {p} and {q} receive no differential push"
                     );
                 }
             }
         }
-        assert!(subsets > 4000, "only {subsets} orbits enumerated");
+        assert_eq!(subsets, 4083, "the orbit enumeration is not exhaustive");
     }
 
     /// **Descent on the coincidence path, which no other test reaches.**
