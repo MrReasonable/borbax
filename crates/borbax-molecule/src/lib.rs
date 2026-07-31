@@ -14,10 +14,12 @@
 pub mod canonical;
 pub mod geodesic;
 pub mod graph;
+pub mod layout;
 
-pub use canonical::{CanonForm, Capped, SEARCH_LEAF_CAP, SearchStats, canonicalise};
+pub use canonical::{CanonForm, CanonMol, Capped, SEARCH_LEAF_CAP, SearchStats, canonicalise};
 pub use geodesic::{
     GeoError, Geodesic, Mat3, N_ROTATIONS, Rotation, Vec3, apply_mat, is_identity,
     rotation_matrices, vertex_count,
 };
 pub use graph::{BondError, MAX_ATOMS, Mol12, N_ORDERS};
+pub use layout::{Embedding, ITERATIONS, embed, raw_stress, stress};

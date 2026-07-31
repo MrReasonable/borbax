@@ -424,6 +424,77 @@ impl Mol12 {
             .sum()
     }
 
+    /// This molecule with its atoms renumbered: `order[k]` is the atom that ends
+    /// up at position `k`.
+    ///
+    /// That is the same convention `canonical.rs`'s `encode` uses, deliberately —
+    /// [`canonicalise`](crate::canonicalise) applies the winning search order
+    /// through here to build the canonical molecule, so the two must agree on
+    /// which direction the permutation runs. Reading it backwards produces the
+    /// inverse relabelling, which is *also* a legal molecule and also isomorphic,
+    /// so nothing downstream fails — it silently interns a different labelling.
+    ///
+    /// **No [`PeriodicTable`] and no valence check, and that is sound rather than
+    /// a shortcut.** Valence is a per-atom sum of bond orders; a relabelling
+    /// carries every bond to a renumbered pair with its order intact, so the sum
+    /// at atom `order[k]` becomes the sum at `k` unchanged. A relabelling of a
+    /// legal molecule is legal, which is why this can write the rows directly.
+    ///
+    /// `None` if `order` is not a permutation of `0..n` — a repeated entry would
+    /// duplicate one atom and drop another, giving a molecule with the right atom
+    /// count and the wrong contents, which is exactly the failure that would
+    /// survive every test asserting only a count.
+    #[must_use]
+    pub fn relabelled(&self, order: &[u8]) -> Option<Self> {
+        let n = usize::from(self.n);
+        if order.len() != n {
+            return None;
+        }
+
+        // Permutation check and the inverse in one pass. `inv[v]` is the new
+        // position of original atom `v`; `bit` rejects any `v >= n` before it is
+        // used as an index, which is the same guard every public reader goes
+        // through.
+        let mut seen: u16 = 0;
+        let mut inv = [0u8; MAX_ATOMS];
+        for (k, &v) in order.iter().enumerate() {
+            let bit = self.bit(v)?;
+            if seen & bit != 0 {
+                return None;
+            }
+            seen |= bit;
+            *inv.get_mut(usize::from(v))? = u8::try_from(k).ok()?;
+        }
+
+        let mut out = Self::new();
+        out.n = self.n;
+        for (k, &v) in order.iter().enumerate() {
+            *out.elem.get_mut(k)? = *self.elem.get(usize::from(v))?;
+        }
+
+        // Rows are rebuilt bit by bit rather than permuted wholesale: a row is a
+        // bitset over *atom indices*, so moving the row to its new owner is only
+        // half the job — every bit inside it names an atom that has also moved.
+        // Permuting only the outer index leaves adjacency asymmetric, which
+        // `bond_order` would then answer inconsistently depending on which end
+        // it is asked from.
+        for plane in 0..N_ORDERS {
+            for (k, &v) in order.iter().enumerate() {
+                let src = self.row(plane, v);
+                let mut dst: u16 = 0;
+                for w in 0..self.n {
+                    let Some(bit_w) = self.bit(w) else { continue };
+                    if src & bit_w != 0 {
+                        let moved = *inv.get(usize::from(w))?;
+                        dst |= self.bit(moved)?;
+                    }
+                }
+                out.set_row(plane, u8::try_from(k).ok()?, dst);
+            }
+        }
+        Some(out)
+    }
+
     /// Whether every atom is reachable from atom zero.
     #[must_use]
     pub fn is_connected(&self) -> bool {
