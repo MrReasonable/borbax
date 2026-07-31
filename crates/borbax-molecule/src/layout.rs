@@ -1170,11 +1170,25 @@ mod tests {
     /// [`group_distance`], not the raw one — see its docs for why the raw version
     /// ranked embeddings backwards.
     ///
-    /// **Asserted as a margin over a null measured on the same corpus, not as an
-    /// absolute.** An absolute bar cannot distinguish geometry from composition: a
-    /// composition-only null — sum of atomic radii, no graph, no solver — scored
-    /// 0.7428 on the *mismatched* fixture this test used to carry, against a 0.75
-    /// bar. On a matched fixture the null collapses to ~0.5 and the margin is real.
+    /// **The composition confound is removed by construction, not measured
+    /// against.** The stranger carries the mutant's *exact element multiset*,
+    /// rewired from scratch, so a composition-only statistic is 0.5 structurally —
+    /// measured, 100% exact ties. What is left is graph locality and nothing else.
+    ///
+    /// That replaces a weaker framing, and the review that forced it is worth
+    /// recording. The previous null was the scalar **sum** of radii, close to the
+    /// weakest composition statistic available: `|bc − mc|` is just the added
+    /// atom's radius, so it is near coin-flip by construction and scored 0.5151.
+    /// A fairer null on the identical corpus — the sorted radius multiset under
+    /// L2 — scores **0.6373**, and the 0.20 margin **fails** against it. The gate
+    /// was green while its own claim was unsupported for a null a reader would
+    /// consider at least as reasonable. Choosing the null and the threshold
+    /// together is exactly the objection.
+    ///
+    /// Measured on the composition-matched corpus across four seeds: 0.7656 to
+    /// 0.8029, against a 0.5 that is 0.5 by construction. **So §8.2's property is
+    /// real and it is graph locality** — a stronger result than the old framing
+    /// could produce, and it needs no threshold argument.
     #[test]
     fn a_one_atom_edit_moves_the_shape_less_than_an_unrelated_molecule_does() {
         let (tbl, uni) = fixture(17);
@@ -1183,7 +1197,7 @@ mod tests {
         let mut rng = Stream::new(777, Domain::Molecule, 0);
 
         let (mut nearer, mut trials) = (0u32, 0u32);
-        let (mut null_nearer, mut null_trials) = (0u32, 0u32);
+        let (mut null_hits, mut null_trials) = (0u32, 0u32);
         // **The corpus must contain rings, and that is asserted rather than
         // commented.** `random_molecule`, `random_tree` and `disconnected_molecule`
         // share one signature, so swapping the generator is a silent edit — probed,
@@ -1208,11 +1222,12 @@ mod tests {
             {
                 continue;
             }
-            let stranger =
-                random_molecule(&mut rng, u8::try_from(mutant.len()).unwrap(), &tbl, &ids);
-            if stranger.len() != mutant.len() {
+            // **The stranger carries the mutant's exact element multiset**, rewired
+            // from scratch. That removes the composition confound by construction
+            // rather than measuring against it — see the doc above.
+            let Some(stranger) = rewired(&mut rng, &mutant, &tbl) else {
                 continue;
-            }
+            };
             let (cp, cm, cs) = (canon(&parent), canon(&mutant), canon(&stranger));
             if cp.len() < 3 {
                 continue;
@@ -1233,7 +1248,9 @@ mod tests {
             trials += 1;
 
             // The null reads only the element multiset — no graph, no bonds, no
-            // solver. If the gate cannot beat this, it is measuring composition.
+            // solver. With a composition-matched stranger it is 0.5 *structurally*
+            // (measured: 100% exact ties), so this is now a self-check on the
+            // corpus rather than a threshold argument.
             let comp = |sp: &CanonMol| -> f64 {
                 let mut total = 0.0f64;
                 for i in 0..sp.len() {
@@ -1245,9 +1262,18 @@ mod tests {
                 }
                 total
             };
+            // **Half credit for a tie**, which is the AUC convention and is
+            // load-bearing here rather than a nicety: with a composition-matched
+            // stranger the two sums are *exactly* equal, so scoring only strict
+            // `<` makes the null 0.0 instead of 0.5 — and a margin over 0.0 is no
+            // bar at all. Probed: with the null at 0.0 the index-keyed START start
+            // passes this gate.
             let (bc, mc, sc) = (comp(&cp), comp(&cm), comp(&cs));
-            if (bc - mc).abs() < (bc - sc).abs() {
-                null_nearer += 1;
+            let (dm, ds) = ((bc - mc).abs(), (bc - sc).abs());
+            if dm < ds {
+                null_hits += 2;
+            } else if (dm - ds).abs() <= f64::EPSILON {
+                null_hits += 1;
             }
             null_trials += 1;
         }
@@ -1259,14 +1285,33 @@ mod tests {
              effectively tree-only and this test is not measuring what it claims"
         );
         let concordance = f64::from(nearer) / f64::from(trials);
-        let null = f64::from(null_nearer) / f64::from(null_trials);
+        let null = f64::from(null_hits) / (2.0 * f64::from(null_trials));
+        // **Two assertions, because this test has two jobs and one bar cannot do
+        // both.** The first is §8.2's property; the second is a regression guard.
+        assert!(
+            (null - 0.5).abs() < 1e-12,
+            "the composition null is {null:.4}, not 0.5 — the stranger is no longer \
+             composition-matched, so the margin below is measuring the confound"
+        );
         assert!(
             concordance - null > 0.20,
-            "locality is not beating a composition-only null: concordance {concordance:.4} \
-             ({nearer}/{trials}), null {null:.4}, margin {:.4}. 0.5 is no locality; \
-             the index-keyed start scores 0.6878 on this same group-minimised \
-             statistic.",
+            "locality is not beating a composition-only null: concordance \
+             {concordance:.4} ({nearer}/{trials}), null {null:.4}, margin {:.4}",
             concordance - null
+        );
+        // A pinned pair of measured values, not a tuned threshold: the shipped
+        // landmark start scores 0.8787 and the index-keyed predecessor 0.8063, so
+        // this catches a regression to it. Both are exact — the corpus is
+        // seed-fixed — so there is no flakiness budget being spent here.
+        //
+        // It is a separate assertion from the margin above deliberately.
+        // Composition-matching the stranger made the task easier for *both*
+        // starts and narrowed the gap from 0.121 to 0.072, so the margin that
+        // proves the property no longer discriminates the initialisation.
+        assert!(
+            concordance > 0.85,
+            "locality regressed: concordance {concordance:.4} ({nearer}/{trials}). \
+             The landmark start scores 0.8787 here and the index-keyed table 0.8063"
         );
     }
 
@@ -1655,11 +1700,18 @@ mod tests {
 
     /// **No coincident orbit can be left stuck, at any size up to the atom cap.**
     ///
-    /// Every coincidence ever observed has been a *pair* — over 3208 of them the
-    /// canonical-index gap was 1 in every case, so axes 0 and 2 have never been
-    /// selected and an orbit of three or more has never occurred. That makes the
-    /// larger-orbit path unfalsified by any corpus, which is exactly when an
-    /// exhaustive argument is worth more than a measurement.
+    /// **An earlier version of this said orbits of three or more "have never
+    /// occurred". That is false and the corpus was the reason.** Every coincidence
+    /// the random corpus produces is an adjacent-index *pair* (4591 of 4591), so
+    /// axes 0 and 2 are never selected — but that corpus is `path + a few edges`,
+    /// which structurally cannot build a **dumbbell**: two bonded hubs each
+    /// carrying k identical leaves. That does, in **10 of 10** universe seeds at
+    /// k = 3, and 5 of 10 at k = 4. A dumbbell is an ordinary molecular shape.
+    ///
+    /// Those orbits separate cleanly — 0.90 to 1.91 Span, no descent violation, in
+    /// 25 of 25 (seed, k) cells — so this was a documentation defect rather than a
+    /// live one. The damage was pointing the next reader at a corpus that cannot
+    /// contain the case while telling them the case cannot arise.
     ///
     /// **The sum runs over the orbit, and an earlier version of this test summed
     /// its complement.** `separation_direction` is called only when `raw <= 1e-9`,
@@ -1677,6 +1729,14 @@ mod tests {
     /// (`min |push|² = 2`, zero failures both ways); the published reasoning was
     /// not, and a comment that states the wrong mechanism is how a defect
     /// survives.
+    ///
+    /// **And a non-zero push does not by itself mean they separate** — `x' =
+    /// (V+J)⁻¹b` mixes every row, so `b_p ≠ b_q` needs a bridge. It is this:
+    /// `(V+J)` commutes with the transposition `T` swapping `p` and `q`, so
+    /// `(V+J)⁻¹` preserves `T`'s eigenspaces; `T`'s −1 eigenspace is the
+    /// one-dimensional `span{e_p − e_q}`; hence `x'_p − x'_q = λ(b_p − b_q)` with
+    /// `λ ≠ 0`. Stated because without it this test proves nothing about
+    /// separation even with the right formula.
     ///
     /// Enumerated over all 4083 subsets of `0..12` with at least two members
     /// (`2^12 − 1 − 12`; an earlier version said 4017, and `> 4000` was too loose
@@ -1752,6 +1812,11 @@ mod tests {
             }
             examined += 1;
 
+            // The coincidence branch is live at exactly **one** step — instrumented,
+            // it fires 132 times, all at iteration 1, never at 2..8 — so 0..=2 would
+            // cover the named path identically. The rest duplicates
+            // `stress_never_increases`; 60 is headroom, not a load-bearing number.
+            let first = stress(&species, &uni, &embed_with_budget(&species, &uni, 0));
             let mut previous = f64::INFINITY;
             for step in 0..=60usize {
                 let current = stress(&species, &uni, &embed_with_budget(&species, &uni, step));
@@ -1762,6 +1827,13 @@ mod tests {
                 );
                 previous = current;
             }
+            // **"Never increases" is also true of an iteration that does nothing**,
+            // which the sibling test records and this one omitted — a transform
+            // returning `pos` untouched passed it.
+            assert!(
+                previous < first,
+                "stress never fell on a coincident molecule: {first} to {previous}"
+            );
         }
         assert!(
             examined > 20,
@@ -2016,6 +2088,34 @@ mod tests {
             prev = Some(atom);
         }
         mol
+    }
+
+    /// The same atoms, rewired: identical element multiset, fresh random bonds.
+    ///
+    /// Exists so the locality test's stranger cannot differ from the mutant in
+    /// composition, which makes a composition-only null exactly 0.5 rather than
+    /// something to measure and argue about.
+    fn rewired(rng: &mut Stream, from: &Mol12, tbl: &PeriodicTable) -> Option<Mol12> {
+        let mut out = Mol12::new();
+        for i in 0..u8::try_from(from.len()).ok()? {
+            out.add_atom(from.element(i)?)?;
+        }
+        let size = u8::try_from(out.len()).ok()?;
+        // A spanning path first, so the result is connected, then extra edges.
+        let mut order: Vec<u8> = (0..size).collect();
+        for i in (1..order.len()).rev() {
+            let j = usize::try_from(rng.next_range(u64::try_from(i + 1).ok()?)).ok()?;
+            order.swap(i, j);
+        }
+        for pair in order.windows(2) {
+            let _ = out.add_bond(pair[0], pair[1], BondOrder::SINGLE, tbl);
+        }
+        for _ in 0..rng.next_range(4) {
+            let a = u8::try_from(rng.next_range(u64::from(size))).ok()?;
+            let b = u8::try_from(rng.next_range(u64::from(size))).ok()?;
+            let _ = out.add_bond(a, b, BondOrder::SINGLE, tbl);
+        }
+        Some(out)
     }
 
     /// A ring-bearing molecule built from **one element throughout**, which
