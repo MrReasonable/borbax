@@ -467,16 +467,22 @@ pub fn canonicalise(m: &Mol12) -> Result<(CanonMol, SearchStats), Capped> {
     let (form, order) = s.best.ok_or(Capped {
         leaves: SEARCH_LEAF_CAP,
     })?;
-    // `order` came out of `search`, which builds it by inverting a dense
-    // colouring of `0..n` — so it is a permutation of `0..n` by construction and
-    // `relabelled` cannot reject it. Spelled as a value rather than an
-    // `unwrap`: CLAUDE.md's `bonds.rs:1341` note is that an `unwrap` here would
-    // report "this constant stopped being valid" as an unrelated panic, and the
-    // honest failure is the one `Capped` already means — the search did not
-    // deliver a usable ordering.
-    let mol = m.relabelled(&order).ok_or(Capped {
-        leaves: SEARCH_LEAF_CAP,
-    })?;
+    // **Not `Capped`, and an earlier version of this line reused it.** `order`
+    // came out of `search`, which builds it by inverting a dense colouring of
+    // `0..n`, so it is a permutation by construction and `relabelled` cannot
+    // reject it. Reporting a rejection as `Capped` would print "explored 50000
+    // leaves without finishing" for a search that finished — and `SEARCH_LEAF_CAP`'s
+    // own doc sends a reader who hits the cap to bind nauty (§18.2), C FFI against
+    // a `forbid(unsafe_code)` workspace. A one-line disagreement between `search`
+    // and `relabelled` would hand the next person a multi-day task as the
+    // diagnosis.
+    //
+    // `unreachable!` is the spelling CLAUDE.md prefers here precisely because it
+    // names its own precondition, and `clippy::unreachable` is deliberately not
+    // enabled for that reason.
+    let mol = m
+        .relabelled(&order)
+        .unwrap_or_else(|| unreachable!("search emits a dense permutation of 0..n"));
     Ok((CanonMol { mol, form }, s.stats))
 }
 
@@ -819,6 +825,40 @@ mod tests {
                 want,
                 "relabelling changed the canonical molecule"
             );
+        }
+
+        // **The random corpus above never reaches a nontrivial automorphism
+        // group** — measured, its largest minimal-form tie group is 2, in 25 of
+        // 2000 draws. So it exercises the property but not the case where the
+        // tie-break is load-bearing: several leaves attaining the *same* minimal
+        // form by different orders. The twelve-cycle reaches 24 leaves, which is
+        // |Aut(C12)|, and is the fixture that does.
+        let mut ring = Mol12::new();
+        let single = tree_capable(&t)
+            .first()
+            .copied()
+            .unwrap_or_else(|| unreachable!("the table has tree-capable elements"));
+        for _ in 0..12 {
+            assert!(ring.add_atom(single).is_some());
+        }
+        for i in 0..12u8 {
+            assert!(
+                ring.add_bond(i, (i + 1) % 12, BondOrder::SINGLE, &t)
+                    .is_ok(),
+                "a twelve-cycle over a valence-2-capable element is legal"
+            );
+        }
+        let (want, stats) = canon(&ring);
+        assert!(
+            stats.leaves > 1,
+            "the ring fixture did not branch, so it does not test the tie-break"
+        );
+        let want_mol = canon_mol(&ring);
+        for _ in 0..40 {
+            let p = shuffle(&mut rng, 12);
+            let relabelled = permute(&ring, &p, &t);
+            assert_eq!(canon(&relabelled).0, want, "ring: form moved");
+            assert_eq!(canon_mol(&relabelled), want_mol, "ring: molecule moved");
         }
     }
 

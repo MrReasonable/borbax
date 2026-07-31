@@ -22,4 +22,4 @@ pub use geodesic::{
     rotation_matrices, vertex_count,
 };
 pub use graph::{BondError, MAX_ATOMS, Mol12, N_ORDERS};
-pub use layout::{Embedding, ITERATIONS, embed, raw_stress, stress};
+pub use layout::{Embedding, ITERATIONS, embed, stress};
