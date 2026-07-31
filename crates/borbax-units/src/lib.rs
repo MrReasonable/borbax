@@ -182,9 +182,11 @@ pub const fn canonical_bits(x: f64) -> u64 {
 #[inline]
 #[expect(
     clippy::disallowed_methods,
-    reason = "§13.4: this and Unit::canonical_cmp are the two legitimate callers — \
-              canonicalising the inputs first is what makes total_cmp safe, and the \
-              ban exists to route everyone else through one of them"
+    reason = "§13.4: after Unit::canonical_cmp was made to delegate here, this is the \
+              only caller of total_cmp in this crate — canonicalising the inputs first \
+              is what makes it safe. Three sites elsewhere carry their own #[expect] \
+              with their own reasons (geodesic.rs, packing.rs x2), so this is the \
+              sanctioned wrapper rather than the only exemption in the workspace"
 )]
 pub fn canonical_cmp(a: f64, b: f64) -> core::cmp::Ordering {
     canonical_sign(a).total_cmp(&canonical_sign(b))

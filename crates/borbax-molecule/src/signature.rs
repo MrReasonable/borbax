@@ -5,91 +5,98 @@
 //! that way ([`Signature::characters`]). Everything downstream — binding,
 //! catalysis, membranes, permeability — is a comparison between two of these.
 //!
-//! # Every comparison is group-minimised, and that is enforced
+//! # Every comparison is group-minimised, and nothing enforces it
 //!
-//! [`Signature::group_distance`] is the **only** distance this module offers,
-//! and `xtask`'s `check_no_ungrouped_signature_comparison` is what keeps it
-//! that way. The reason is measured rather than stylistic. G2 scored five ways
-//! of comparing signatures; ranked by how well a one-atom edit stays near its
-//! parent, size-matched over the sizes [`Mol12`](crate::graph::Mol12) admits:
+//! [`Signature::group_distance`] is the **only** distance this module offers.
+//! That is a convention, not a guarantee, and the distinction is this section's
+//! whole point.
 //!
-//! | descriptor | size-matched |
-//! |---|---|
-//! | `D_group` — minimise over the 60 rotations | 0.9230–0.9415 |
-//! | `D_raw` — no alignment at all | 0.9075–0.9355 |
-//! | `D_sorted` — orientation discarded by sorting | 0.8840–0.9075 |
-//! | `D_frame` — deleted at Task 8 for being worse than nothing | 0.8585–0.8885 |
-//! | **`D_lexmin` — §8.2's canonicalisation, as written** | **0.7510–0.7745** |
+//! **Why it matters.** §8.2 stores a signature as the lexicographically
+//! smallest of its 60 rotations, and that form is the **worst** of five
+//! descriptors G2 compared — 0.7510–0.7745 size-matched, against `D_group`'s
+//! 0.9230–0.9415. Re-measured on the shipped signature (seed 17, 806 trials,
+//! composition-matched stranger): `D_lexmin` **0.7953**, `D_group` **0.8896**,
+//! `D_raw` 0.9194, `D_sorted` 0.8102. The ordering that matters survives —
+//! lex-min is clearly worst — but note that those two rows are **different
+//! descriptors**: G2's are the atom-centre proxy with no radii and no character
+//! channel, so the bands are not this module's numbers and are quoted here only
+//! for provenance.
 //!
-//! §8.2 specifies that a signature is *stored* as the lexicographically
-//! smallest of its 60 rotations, and that form is the **worst of the five** —
-//! below the frame `layout` deleted for scoring below no-alignment at all.
+//! Storing lex-min is nonetheless safe, and exactly conditionally so. Lex-min is
+//! itself a group element, so `D_group(lexmin(A), lexmin(B))` equals
+//! `D_group(A, B)` — measured: the worst `group_distance` between a molecule and
+//! 60 real rotations of its own embedding is **1.13e-14**. It costs nothing
+//! *provided every consumer compares group-minimised*, and is severe for any
+//! consumer that subtracts two stored signatures directly. §8.2 names three:
+//! species identity and the fold cache read the stored form for **equality**,
+//! which [`Signature::canonicalise`] serves and which is fine; §15.2's novelty
+//! histogram takes **distances**, and is the one that would be hurt.
 //!
-//! **It is nonetheless safe, and exactly conditionally so.** Lex-min is itself
-//! a group element, so `D_group(lexmin(A), lexmin(B))` is bit-identical to
-//! `D_group(A, B)`: storing the canonical form costs nothing *provided every
-//! consumer compares with the group-minimised distance*, and is severe for any
-//! consumer that subtracts two stored signatures directly. §8.2 names three
-//! consumers. Species identity and the fold cache read the stored form for
-//! **equality**, which is what [`Signature::canonicalise`] is for and is fine.
-//! The third is §15.2's shape-space novelty histogram, which takes
-//! **distances** and is read against a neutral shadow — where a descriptor
-//! with poor locality inflates apparent novelty as a pure representation
-//! artefact, in the one metric whose job is to say which differences are not
-//! significant.
+//! **How it would be hurt matters, because the obvious answer is wrong.** The
+//! damage is *not* that a poor descriptor inflates distances — that is a bias,
+//! and §15.3's neutral shadow is exactly a bias-removal device, so a reviewer
+//! would rightly answer "the shadow handles that". What survives `run - shadow`
+//! is the loss of **discriminability**: a representative-choosing map does not
+//! merely raise distances, it maps some genuinely-near pairs to far while
+//! leaving far pairs far, destroying the *ordering*. A shadow subtracts a
+//! location parameter; it cannot restore ordering lost to noise. The second
+//! surviving mechanism is a within-run temporal flip — a persistent species
+//! whose representative changes between timesteps reports novelty for something
+//! that has not changed, and the shadow does not reproduce that flip pattern so
+//! the residue does not cancel. §15.3's own stated limits are about persistence
+//! and RAF, not about representation, so it was never offered as a control here.
 //!
-//! So §8.2 needs no amendment. The storage form is absorbed exactly by the
-//! comparison rule, and the comparison rule is the thing with teeth.
+//! So §8.2 needs no amendment. The storage form is absorbed by the comparison
+//! rule.
 //!
-//! ## What the enforcement decides, and what is outside it
+//! ## There is no guard, and that is deliberate rather than an oversight
 //!
-//! A group-minimised comparison cannot be written without a [`Geodesic`] — it
-//! is the only source of `rotation_perms`. A plain Euclidean one needs no such
-//! argument. The check therefore reads this file's public surface and requires
-//! that **every `pub fn` mentioning `Signature` in two or more of its inputs
-//! also takes a `Geodesic`**. `Signature::distance(&self, &Self) -> f64` has
-//! no spelling that passes.
+//! An `xtask` check shipped here briefly and was **deleted**. It read
+//! `signature.rs`'s public surface and required that any `pub fn` mentioning
+//! `Signature` twice also take a [`Geodesic`]. Review found **four independent
+//! escapes** — an out-of-line `mod`, an `impl` in any other file of the crate,
+//! an `impl` nested in a function body, and `Self` counted per-argument where a
+//! named `Signature` was counted per-mention — and **two classes of false
+//! positive**, one of which was a `Geodesic` *receiver*, i.e. `g.affinity(&a,
+//! &b)`, which is how §8.3's kernel reads most naturally.
 //!
-//! Stated as a bound rather than as "by construction", because three guards in
-//! this project have shipped documenting a requirement without enforcing it:
+//! The rule this project applies to a repaired guard is: state the class of
+//! thing it enumerates and name what is outside it; if that sentence cannot be
+//! written, the repair is another enumeration. It could not be written. The
+//! guard enumerated AST shapes.
 //!
-//! - a function that takes a `Geodesic` and then ignores it is **not** caught;
-//!   `syn` reads signatures, not bodies;
-//! - a consumer crate can fold over [`Signature::extents`] and subtract. Those
-//!   accessors exist because §8.3's kernel needs the components, so this
-//!   cannot be closed by privacy without breaking Task 10;
-//! - a comparison against something that is not a `Signature` — a bare
-//!   `[Span; D]` — is outside the framing entirely.
+//! It was also **pointed the wrong way**. Its corpus caught `impl PartialOrd for
+//! Signature` — but §8.2's own consumers need an ordering, and a
+//! determinism-safe intern table is a `BTreeMap`, which needs `Ord`. So the
+//! guard forbade what the spec requires, and the cheapest way past it was to
+//! move the `impl` to another file, which it could not see. A guard that fires
+//! on correct code gets deleted, and the pressure to evade this one was
+//! structural.
 //!
-//! What it does cover is the place a `Signature::distance` would actually be
-//! added, which is here.
+//! **What holds the property today is this paragraph and code review.** That is
+//! weaker than a check and is stated plainly rather than dressed up: a green
+//! build is *not* evidence that no ungrouped comparison exists. Task 10 owns the
+//! replacement, where the binding kernel makes the right shape visible — an
+//! API-surface snapshot (`public-api`-style) is crate-wide by construction and
+//! would close all four escapes, which an AST walker over one file cannot.
 //!
 //! ## Why there is no `sorted_extents`
 //!
-//! The plan's interface list carries one and it is deliberately not
-//! implemented. Both halves of the argument are worth keeping, because the
-//! first is a real point in its favour:
+//! The plan's interface list carries one; it is deliberately not implemented.
+//! The point in its favour is real: as a *filter* it is sound, since two
+//! signatures in the same proper orbit have equal sorted extents, and being
+//! invariant under a larger group only makes a filter more permissive — the safe
+//! direction.
 //!
-//! **For.** As a *filter*, sorting is sound. Two signatures in the same proper
-//! orbit have equal sorted extents, so it is a genuine necessary condition,
-//! and being invariant under a *larger* group than the 60 only makes it more
-//! permissive — which is the safe direction for a filter.
-//!
-//! **Against, and it decides.** §8.3 does not ask for a filter, it asks for "a
-//! rotation-invariant **upper bound on the score**", and adds that "a filter
+//! What decides against it is that §8.3 does not ask for a filter. It asks for
+//! "a rotation-invariant **upper bound on the score**", and adds that "a filter
 //! that cannot state the property it guarantees is not conservative, it is
-//! merely untested". A sorted extent vector is not that bound; constructing it
-//! is Task 10's job and it needs the binding constants to do it. Meanwhile
-//! `D_sorted` is invariant under the **full** icosahedral group including the
-//! improper elements — a configuration and its point inversion have identical
-//! sorted extents — so any distance built on it makes enantiomers
-//! indistinguishable and §22.8 impossible by construction, the same shape as
-//! the dropped `ANTI`. It currently ranks third of five, so a future
-//! measurement where it edges ahead is a live trap.
-//!
-//! Shipping it now would publish a rotation-invariant-looking handle that is
-//! neither the bound §8.3 needs nor safe as a distance, guarded only by a doc
-//! comment saying "do not compare with this". Routed to Task 10.
+//! merely untested". A sorted extent vector is not that bound, and building it
+//! needs Task 10's binding constants. Meanwhile a *distance* on sorted extents
+//! identifies a shape with its mirror — in Kendall's terms it is the reflection
+//! shape space `RΣ` (quotient by `O(m)`) where `D_group` is the shape space `Σ`
+//! (quotient by `SO(m)`), so §22.8 would be impossible by construction. Routed
+//! to Task 10.
 
 use crate::geodesic::{Geodesic, Rotation};
 use crate::layout::Embedding;
@@ -102,16 +109,45 @@ use core::cmp::Ordering;
 /// **Chosen, not derived**, and named as such for the reason `bonds.rs`
 /// records about the strain exponent — a constant whose justification is "it
 /// looked right" invites a later reader to treat it as load-bearing physics.
-/// It sets how much of the molecule the character channel can see: at zero
-/// only the single extremal atom contributes, and above the molecular diameter
-/// every atom does and the channel becomes a composition average with no
-/// geometry in it. Drawn element radii span roughly `[0.3, 2.04]`, so 0.75
-/// admits the extremal atom's immediate neighbours and little else.
+/// It sets how much of the molecule the character channel can see. Measured
+/// mean atoms admitted per direction (mean n = 8.37): `SHELL = 0` -> **0.000**,
+/// `0.1` -> 1.056, `0.75` -> **1.572**, `3.0` -> 5.214.
 ///
-/// It has no measurement behind it and no sweep yet. Task 20 owns that; the
-/// test `the_character_averages_only_the_atoms_facing_that_way` at least
-/// asserts the shell is excluding *something*, so a value that quietly admits
-/// everything fails rather than passing as a plain average.
+/// **Three statements that stood here are false and are corrected rather than
+/// deleted, because each would mislead a sweep.** (1) "At zero only the single
+/// extremal atom contributes" — at zero the extremal atom's own weight is
+/// `extent - extent = 0`, so `den == 0` and the channel is identically zero in
+/// every direction. (2) "0.75 admits the extremal atom's immediate neighbours"
+/// overstates by about two: it admits the extremal atom plus ~0.57 of one
+/// neighbour, against a 10th-percentile interatomic distance of 1.656. (3)
+/// "Above the molecular diameter ... the channel becomes a composition average
+/// with no geometry in it" — the weight is `reach - extent + SHELL`, linear in
+/// `reach` with slope 1 for *every* `SHELL`, so it never becomes uniform; at
+/// `SHELL = 50` the character channel still scores 0.7343 on the locality
+/// statistic, which a composition average could not.
+///
+/// **It is chosen, not derived**, and named as such for the reason `bonds.rs`
+/// records about the strain exponent. Two things Task 20 needs before sweeping
+/// it. First, a **prior**: the natural scale is angular, not a length — a
+/// direction owns a patch of half-angle 15.86° at D = 42 (nearest-neighbour
+/// spacing 31.717°, uniform over all 42 vertices), whose depth on a body of
+/// radius `R` is `R(1 - cos 15.86°) = 0.0381 R`, giving ~0.114 for V0 extents
+/// of ~3. The shipped 0.75 corresponds to `R ~ 19.7`, roughly 6x larger than
+/// `Mol12` can build. That derivation is in-house, not a literature value.
+///
+/// Second, an **instrument**, because the obvious one is blind: whole-signature
+/// concordance varies by 2 trials in 399 across `SHELL` in `[0, 50]`. The
+/// character-channel-only concordance does vary (0.727-0.792, peaking at 3.0),
+/// so the sweep needs a channel-isolating statistic — and note that peak sits
+/// *outside* the bracket `the_character_averages_only_the_atoms_facing_that_way`
+/// admits, so the two criteria disagree and Task 20 must say which wins.
+///
+/// A further property worth keeping: `SHELL` is an absolute length while the
+/// embedding scales with the drawn radius series, so it means somewhat
+/// different things in different universes (1.24 atoms admitted at seed 10
+/// against 1.78 at seed 11, a 1.43x spread). Within a universe it is
+/// size-*stable* — 1.64 atoms at n = 2 against 1.57 at n = 12 while max extent
+/// grows 1.72 -> 7.90 — so it does not leak molecule size into the descriptor.
 const SHELL: Span = Span(0.75);
 
 /// A molecule's shape, as §8.3's binding kernel sees it.
@@ -201,29 +237,38 @@ impl<const D: usize> Signature<D> {
     /// asserts both halves: that the 60-element search keeps them apart, and
     /// that extending it to 120 collapses them.
     ///
-    /// The tie-break runs over the character channel as well as the extents.
-    /// **It is necessary in principle and has never once decided anything, and
-    /// both halves of that are worth stating.**
+    /// The tie-break runs over the character channel as well as the extents,
+    /// and **it fires** — which an earlier version of this comment denied on the
+    /// strength of a corpus that could not see it.
     ///
-    /// In principle: with an extents-only order, "first among equals in
+    /// Why it is needed: with an extents-only order, "first among equals in
     /// `Rotation::all()` order" is *not* a function of the orbit. `S` and `S∘g`
-    /// present the same candidate multiset indexed differently, so if the
-    /// minimal set held two candidates with different characters, the two
-    /// enumerations would return different answers and `canonicalise` would
-    /// stop being well-defined. A total order removes that.
+    /// present the same candidate multiset indexed differently, so when the
+    /// minimal set holds two candidates with different characters the two
+    /// enumerations return different answers and `canonicalise` stops being
+    /// well-defined.
     ///
-    /// In practice: measured over 600 molecules at n = 1..12, all 1 770 pose
-    /// pairs each, extent ties are **common** — 91 500 of them, concentrated at
-    /// n <= 2 where the shape has a continuous symmetry the discrete group
-    /// cannot break — and in **0** of them do the characters differ. So the
-    /// character comparison has never been reached as a tie-break on any input
-    /// this crate can produce.
+    /// That is not hypothetical. Measured over **all 900 dimers** on the first
+    /// 30 chain-capable elements of seed 6, an extents-only `lex_cmp` gives a
+    /// canonical form that is **not orbit-invariant on 40 of them** (26 at seed
+    /// 0, 25 at seed 17); over 1 680 random molecules across 14 universes the
+    /// hits are 9, **all at n = 2**. In a pose-pair census, 360 of ~90 000
+    /// extent ties differ in the character channel.
     ///
-    /// An earlier version of this paragraph called it "load-bearing", which the
-    /// measurement refutes. It is retained because 91 500 measured ties are
-    /// evidence about a corpus and not a proof that a character-differing tie
-    /// is unreachable, and because the cost of keeping it is one comparison
-    /// that never runs. Do not delete it on the strength of the zero.
+    /// **The withdrawn claim, kept because the way it failed is instructive.**
+    /// This comment previously read "it has never once decided anything ... in
+    /// **0** of them do the characters differ", from a 600-molecule corpus
+    /// drawing `n = 1 + trial % 12`. That gives ~50 dimers, and at a 4.4% hit
+    /// rate a zero is entirely likely — and ~97% of the ties counted were
+    /// monomers, where all 60 poses are trivially identical. It was a sampling
+    /// artefact reported as a property, and it argued for deleting code that
+    /// keeps species identity well-defined on the size class a beaker is mostly
+    /// made of. `the_character_tie_break_is_reached` now pins it with an
+    /// exhaustive dimer enumeration rather than a random draw.
+    ///
+    /// The mechanism is not understood: the failing dimers do **not** have equal
+    /// radii (0.485 against 1.123 in one case), so the obvious explanation is
+    /// wrong and no guess is recorded here in its place.
     #[must_use]
     pub fn canonicalise(&self, g: &Geodesic<D>) -> Self {
         // `Rotation::all()` is never empty, but the type does not say so, so
@@ -322,7 +367,10 @@ impl<const D: usize> Signature<D> {
 /// task earlier. [`Embedding`] now carries the per-atom radius and character
 /// it was already fetching, so the mismatched call has no spelling. It also
 /// stops the projection being computed twice per (direction, atom), which the
-/// planned two-pass form did — 3 888 duplicated dot products at `D = 162`.
+/// planned two-pass form did — at `D = 162` that is 162 x 12 = 1 944 pairs, so
+/// **1 944 duplicated** dot products of 3 888 total. (An earlier version of this
+/// sentence, and the plan it came from, called 3 888 the duplicate count, which
+/// doubles the saving.)
 ///
 /// The character weighting is polynomial rather than an exponential falloff on
 /// purpose: `exp` is not portable between platform libm implementations
@@ -850,8 +898,15 @@ mod tests {
         // positive. §8.3's charge term `-(a_A + a_B)^2` is maximised at zero
         // when the two are *opposite*, so an all-positive channel degenerates
         // it from a complementarity test into a monotone penalty on total
-        // surface affinity, and §5's membrane mechanism — one flank positive,
-        // the opposite negative — is unreachable.
+        // surface affinity. Measured: `corr(min_R C, D(m_A+m_B)^2) = 0.99991`,
+        // so 99.98% of the between-pair variance in the charge term is just the
+        // two molecules' mean affinities — almost *only* the monotone penalty.
+        // §10.1's membrane mechanism (one flank positive, the opposite
+        // negative) is therefore unreachable. Cited as §5 until now, which is
+        // the fiction guarantees; §10.1 puts it more strongly than the
+        // paraphrase — amphiphile-analogues "are a region of signature space,
+        // and the sim discovers which of its molecules live there", and with an
+        // all-positive channel that region is provably empty.
         //
         // **This assertion pins the bounds; it deliberately does not assert
         // that they fail to straddle zero.** A test asserting the defect would
@@ -864,10 +919,12 @@ mod tests {
         assert!(
             (lo - 0.477_560).abs() < 5e-6 && (hi - 0.888_889).abs() < 5e-6,
             "the character channel attained [{lo:.6}, {hi:.6}], not the pinned \
-             [0.477560, 0.888889]. If you have just centred or mean-subtracted it per \
-             Task 10's carried-in note on §8.3's charge term, this is the expected \
-             failure and the bounds want updating — check the new range straddles zero. \
-             If you have not, something upstream in §7.1's affinity draw has moved."
+             [0.477560, 0.888889]. If you have just taken Task 10's carried-in remedy \
+             on §8.3's charge term, this is the expected failure and the bounds want \
+             updating — but check WHICH remedy: centring the channel here is measurably \
+             inert (an exact rotation-invariant constant shift, 2400/2400) and the real \
+             edit is the affine remap at borbax-universe's affinity draw. If you have \
+             changed nothing, something upstream in §7.1 has moved."
         );
     }
 
@@ -884,15 +941,208 @@ mod tests {
         let g = geo();
         let ids = chain_capable(&tbl);
         let mut rng = Stream::new(905, Domain::Molecule, 0);
-        let base = sig(&random_tree(&mut rng, 9, &tbl, &ids), &uni, &g);
-        let want = base.canonicalise(&g);
-        for r in Rotation::all() {
-            assert_eq!(
-                base.permuted(g.rotation_perms(r)).canonicalise(&g),
-                want,
-                "rotation {r} broke invariance"
-            );
+        let mats = rotation_matrices().unwrap_or_else(|_| unreachable!("the matrices build"));
+
+        // **n >= 3 only, and the exclusion of n = 2 is a measured finding, not
+        // a convenience.** At n = 2 the canonical form is genuinely unstable
+        // under rotating the embedding: 24 of 60 poses give a different
+        // representative, worst extent movement **0.352** — not float noise, a
+        // third of a Span. At n >= 3 the movement is 8.9e-16 to 1.8e-15, i.e.
+        // rounding and nothing else. The dimer case is asserted separately
+        // below with its consequence bounded rather than pinned green here.
+        for n in 3..=10u8 {
+            let species = canon(&random_tree(&mut rng, n, &tbl, &ids));
+            let emb = embed(&species, &uni);
+            let want = signature(&emb, &g).canonicalise(&g);
+            for r in Rotation::all() {
+                // **Rotate the embedding and recompute**, do not permute the
+                // table. This is the whole content of the test and an earlier
+                // version got it wrong: `base.permuted(rotation_perms(r))` is a
+                // bit-exact relabelling, so `canonicalise` of it equals
+                // `canonicalise` of the original *algebraically*, for any
+                // implementation that minimises over a closed group. No
+                // arithmetic on coordinates is involved, so nothing could fail
+                // it — while its own doc claimed to guard against an embedding
+                // "happening to land" differently, which is precisely a claim
+                // about that arithmetic.
+                let got = signature(&emb.rotated(&mats[r.index()]), &g).canonicalise(&g);
+                for i in 0..D {
+                    assert!(
+                        (got.extents()[i] - want.extents()[i]).get().abs() < 1e-9
+                            && (got.characters()[i] - want.characters()[i]).abs() < 1e-9,
+                        "n={n} rotation {r} direction {i}: the canonical form moved when \
+                         the molecule was rotated, so one species can intern as two"
+                    );
+                }
+            }
         }
+    }
+
+    /// **A dimer's canonical form is not stable under rotation, and this pins
+    /// what that does and does not cost.**
+    ///
+    /// Measured: rotating a dimer's embedding by the 60 matrices and
+    /// recanonicalising gives a different representative on **24 of 60** poses,
+    /// worst extent movement **0.352**. The cause is §8.2's own hazard —
+    /// choosing a representative jumps wherever the choice is degenerate — and
+    /// it is the reason Task 8 deleted `canonicalise_frame`. A dimer's sampled
+    /// signature has near-ties in the lex order between poses that are genuinely
+    /// different signatures, so last-bit noise selects between them.
+    ///
+    /// **What it costs, bounded here rather than left as a worry.**
+    /// [`Signature::group_distance`] absorbs the representative choice exactly,
+    /// so binding, novelty and every distance-taking consumer are unaffected —
+    /// that is what this test asserts. What is *not* absorbed is **equality**,
+    /// so species identity for a dimer is well-defined only because `embed` is
+    /// deterministic for a given species. Two consequences follow and both are
+    /// routed rather than fixed here: a cross-platform last-bit difference in
+    /// `embed` could flip the representative and mint a second species from one
+    /// molecule (Task 20's golden matrix would report that with no visible
+    /// cause), and Task 12's folding is the first thing that holds two
+    /// conformations of one chain at once.
+    ///
+    /// A dimer is the first product of every condensation, so this is not an
+    /// exotic size class.
+    #[test]
+    fn a_dimer_canonical_form_is_unstable_but_its_distance_is_not() {
+        let (tbl, uni) = fixture(6);
+        let g = geo();
+        let ids = chain_capable(&tbl);
+        let mats = rotation_matrices().unwrap_or_else(|_| unreachable!("the matrices build"));
+        let mut rng = Stream::new(905, Domain::Molecule, 0);
+        let species = canon(&random_tree(&mut rng, 2, &tbl, &ids));
+        let emb = embed(&species, &uni);
+        let base = signature(&emb, &g);
+
+        let (mut moved, mut worst_form, mut worst_distance) = (0u32, 0.0f64, 0.0f64);
+        for r in Rotation::all() {
+            let turned = signature(&emb.rotated(&mats[r.index()]), &g);
+            // The representative may move...
+            let (a, b) = (turned.canonicalise(&g), base.canonicalise(&g));
+            let mut form = 0.0f64;
+            for i in 0..D {
+                let d = (a.extents()[i] - b.extents()[i]).get().abs();
+                if d > form {
+                    form = d;
+                }
+            }
+            if form > 1e-9 {
+                moved += 1;
+            }
+            if form > worst_form {
+                worst_form = form;
+            }
+            // ...but the distance must not.
+            let d = base.group_distance(&turned, &g);
+            if d > worst_distance {
+                worst_distance = d;
+            }
+        }
+        assert!(
+            moved > 10 && worst_form > 0.1,
+            "the dimer discontinuity has gone away ({moved} of 60 poses moved, worst \
+             {worst_form}); if `canonicalise` was made continuous this test should be \
+             deleted rather than relaxed — measured 24 of 60, worst 0.352"
+        );
+        assert!(
+            worst_distance < 1e-9,
+            "group_distance did NOT absorb the representative choice ({worst_distance}) — \
+             the discontinuity has escaped into every distance-taking consumer, which is \
+             the whole reason §8.2's storage form is considered safe"
+        );
+    }
+
+    /// **The character tie-break is reached, and a random corpus cannot show
+    /// it.** Enumerating every dimer over the first 30 chain-capable elements,
+    /// an extents-only ordering gives a canonical form that is *not* a function
+    /// of the orbit on 40 of 900 — while the shipped `lex_cmp`, which continues
+    /// into the character channel, is orbit-invariant on all of them.
+    ///
+    /// This exists because the doc on `canonicalise` previously asserted the
+    /// opposite from a corpus containing ~50 dimers, and that assertion argued
+    /// for deleting the comparison. The discriminator is not "the shipped form
+    /// is well-defined" — it always is — but "the extents-only form is not".
+    #[test]
+    fn the_character_tie_break_is_reached() {
+        let (tbl, uni) = fixture(6);
+        let g = geo();
+        let ids = chain_capable(&tbl);
+        let take = 30.min(ids.len());
+
+        // The extents-only order the shipped one extends, built here so the
+        // difference between them is the thing under test.
+        let extents_only = |a: &Signature<D>, b: &Signature<D>| {
+            for (mine, theirs) in a.extents().iter().zip(b.extents().iter()) {
+                match mine.canonical_cmp(theirs) {
+                    Ordering::Equal => {}
+                    ord => return ord,
+                }
+            }
+            Ordering::Equal
+        };
+        let canon_by =
+            |x: &Signature<D>, cmp: &dyn Fn(&Signature<D>, &Signature<D>) -> Ordering| {
+                let mut best: Option<Signature<D>> = None;
+                for rot in Rotation::all() {
+                    let cand = x.permuted(g.rotation_perms(rot));
+                    if best
+                        .as_ref()
+                        .is_none_or(|held| cmp(&cand, held) == Ordering::Less)
+                    {
+                        best = Some(cand);
+                    }
+                }
+                best.unwrap_or_else(|| unreachable!("Rotation::all() yields 60 elements"))
+            };
+
+        let (mut split, mut examined) = (0u32, 0u32);
+        for a in 0..take {
+            for b in 0..take {
+                let mut mol = Mol12::new();
+                if mol.add_atom(ids[a]).is_none() || mol.add_atom(ids[b]).is_none() {
+                    continue;
+                }
+                if mol.add_bond(0, 1, BondOrder::SINGLE, &tbl).is_err() {
+                    continue;
+                }
+                let base = sig(&mol, &uni, &g);
+                examined += 1;
+                // **Every pose, not one.** Orbit-invariance is a statement
+                // about the whole orbit, and probing a single rotation finds 2
+                // of 900 where the full check finds 40 — which is how a version
+                // of this test that looked at `Rotation::new(7)` alone came to
+                // report a bar of 20 as unreachable.
+                let from_base = canon_by(&base, &extents_only);
+                let shipped = canon_by(&base, &|x, y| x.lex_cmp(y));
+                let mut any = false;
+                for rot in Rotation::all() {
+                    let moved = base.permuted(g.rotation_perms(rot));
+                    if canon_by(&moved, &extents_only) != from_base {
+                        any = true;
+                    }
+                    // The shipped order must always be orbit-invariant.
+                    assert_eq!(
+                        canon_by(&moved, &|x, y| x.lex_cmp(y)),
+                        shipped,
+                        "the shipped canonicalise is not a function of the orbit for \
+                         elements {a}/{b} under rotation {rot}"
+                    );
+                }
+                if any {
+                    split += 1;
+                }
+            }
+        }
+        assert!(
+            examined > 800,
+            "only {examined} dimers built, of a possible 900"
+        );
+        assert!(
+            split > 20,
+            "the extents-only ordering split the orbit on only {split} of {examined} \
+             dimers; if this is 0 the corpus has stopped reaching the case and \
+             `canonicalise`'s character tie-break is again undefended (measured: 40)"
+        );
     }
 
     /// **The wiring proof, and it needs no corpus** (routed requirement 1).
@@ -957,25 +1207,59 @@ mod tests {
     // Routed requirement 2 — §22.8, and it has had no test anywhere in V0
     // ---------------------------------------------------------------------
 
-    /// **A chiral shape and its mirror image are different species (§22.8).**
+    /// **A chiral shape and its mirror image are different species — with
+    /// respect to the 60-element quotient (§22.8).**
     ///
-    /// This is the spec's actual handedness claim and it has had no test
-    /// anywhere in V0. It cannot be made at Task 8 — a Borbax graph has exactly
-    /// one embedding, so the enantiomer is not constructible from a graph — so
-    /// it is a statement about *signatures*, and it lands here because
+    /// This is the spec's handedness claim and it has had no test anywhere in
+    /// V0. It cannot be made at Task 8 — a Borbax graph has exactly one
+    /// embedding, so the enantiomer is not constructible from a graph — so it is
+    /// a statement about *signatures*, and it lands here because
     /// [`Signature::canonicalise`] minimises over the 60 **proper** rotations,
     /// which do not contain `-I`.
     ///
-    /// Three assertions, because the outcome alone would pass for the wrong
-    /// reason. A `canonicalise` that returned `self` unchanged would separate
-    /// *every* pair, chiral or not:
+    /// **The scope of "chiral" here is narrower than §22.8's prose and the gap
+    /// is measured.** §22.8 makes a continuous claim — a left-handed helix
+    /// "genuinely cannot be rotated onto a right-handed one, *no matter how it
+    /// is turned*". What this test establishes is chirality with respect to the
+    /// icosahedral quotient: that no member of the **60** carries the mirror
+    /// onto the original. Those differ, and the discrete version
+    /// **over-separates**. Measured on seed 6 over 1 500 molecules: 513
+    /// embeddings are planar, and **368 of them — 71.7% — are classified
+    /// chiral**, at margins of 0.36 to 0.66, eight orders above this test's
+    /// tolerance. Planarity implies achirality by proof, not by measurement:
+    /// reflection in the occupied plane fixes every atom centre, hence every
+    /// atom sphere, hence the support function and the character channel. The
+    /// 60-element search sees it only when that reflection happens to coincide
+    /// with an improper icosahedral element on the sampled directions, which is
+    /// generically false. The rate falls with size — 155/155 at n = 3, 1/119 at
+    /// n = 10 — and this corpus is n = 8..12 trees with **0 of 40** planar, so
+    /// the assertions below are sound; it is the word "chiral" that needs the
+    /// qualifier.
     ///
-    /// 1. the fixture is chiral **by definition** — no proper rotation carries
-    ///    the mirror onto the original — established without `canonicalise`;
-    /// 2. the canonical forms differ, so the quotient preserves handedness;
-    /// 3. extending the search to all 120 elements **collapses them**, which is
-    ///    the mechanism rather than the symptom. That is the plan's probe made
-    ///    permanent instead of run once.
+    /// **Consequence, routed rather than fixed.** Two mirror-image planar
+    /// conformations would intern as two species when they are one shape. That
+    /// is unreachable in V0 — a graph has one embedding, and over 300 molecules
+    /// there are **0 pairs** where one molecule's mirror signature equals
+    /// another's — and becomes live at Task 12, where folding first holds two
+    /// conformations of one chain at once. Making the quotient continuous is a
+    /// design change §8.2 does not currently ask for.
+    ///
+    /// In Kendall's terms this is the shape space `Σ = S/SO(m)`; the rejected
+    /// `D_sorted` is the reflection shape space `RΣ = S/O(m)`, which identifies
+    /// an object with its mirror. That is the standard distinction and is why
+    /// the rejection is not a matter of taste.
+    ///
+    /// Two assertions, not three. A third — that widening the search to 120
+    /// elements collapses the pair — **was a tautology and has been deleted**:
+    /// with `full(x) = min_lex(canon(x), canon(mirror(x)))` and `anti` an
+    /// involution, `full(mirror(x)) = full(x)` for *any* `canon` whatsoever,
+    /// including one that returns `self`. It tested only that `anti` is an
+    /// involution, which `geodesic.rs` already tests, and its failure message
+    /// described a state that cannot occur. Verified by mutation: widening
+    /// `canonicalise` to 120 elements fails assertion (2) on 40 of 40 fixtures
+    /// and passes the deleted assertion on all 40. That the search is 60 and not
+    /// 120 is a theorem about the group, not something a test can discover, and
+    /// `geodesic.rs::minus_identity_is_not_in_the_group` is where it belongs.
     #[test]
     fn a_chiral_signature_and_its_mirror_are_different_species() {
         let (tbl, uni) = fixture(6);
@@ -989,8 +1273,11 @@ mod tests {
             let s = sig(&random_tree(&mut rng, n, &tbl, &ids), &uni, &g);
             let mirrored = s.permuted(g.anti());
 
-            // (1) Chiral by definition: no proper rotation carries the mirror
-            // onto the original. Computed from `permuted` alone.
+            // (1) Chiral with respect to the 60: no proper rotation carries the
+            // mirror onto the original. Computed from `permuted` alone, with no
+            // `canonicalise` in the loop, so it cannot inherit that function's
+            // verdict. Conservative in the safe direction — a near-achiral
+            // fixture is skipped, not asserted on.
             let achiral = Rotation::all()
                 .any(|r| plain_distance(&s, &mirrored.permuted(g.rotation_perms(r))) < 1e-9);
             if achiral {
@@ -998,38 +1285,19 @@ mod tests {
             }
             chiral_fixtures += 1;
 
-            // (2) The canonical form keeps them apart.
+            // (2) The canonical form keeps them apart. This is what carries the
+            // test: it fails on 40 of 40 if `canonicalise` searches all 120.
             assert_ne!(
                 s.canonicalise(&g),
                 mirrored.canonicalise(&g),
                 "trial {trial}: a chiral signature and its mirror interned as one species"
             );
-
-            // (3) The mechanism: the 120-element search is exactly what would
-            // destroy §22.8. Minimising over the improper coset as well brings
-            // the two to the same representative.
-            let full = |x: &Signature<D>| {
-                let direct = x.canonicalise(&g);
-                let flipped = x.permuted(g.anti()).canonicalise(&g);
-                if flipped.lex_cmp(&direct) == core::cmp::Ordering::Less {
-                    flipped
-                } else {
-                    direct
-                }
-            };
-            assert_eq!(
-                full(&s),
-                full(&mirrored),
-                "trial {trial}: the 120-element search did not collapse the enantiomers, \
-                 so assertion (2) is not evidence that the search is 60"
-            );
         }
-        // Measured: 40 of 40 fixtures are chiral, so this is a corpus
-        // self-check rather than a threshold to tune.
+        // Measured: 40 of 40, and 0 of 40 planar.
         assert!(
             chiral_fixtures > 35,
-            "only {chiral_fixtures} of 40 fixtures were chiral; §22.8 is being asserted \
-             on a corpus that mostly cannot express it"
+            "only {chiral_fixtures} of 40 fixtures were chiral under the 60-element \
+             search; §22.8 is being asserted on a corpus that mostly cannot express it"
         );
     }
 
@@ -1039,36 +1307,82 @@ mod tests {
 
     /// **§8.2's founding property, measured on the signature itself.**
     ///
-    /// `layout.rs` measures this on a proxy — atom *centres*, no radii and no
-    /// affinity channel — which its own doc calls deliberately less informative
-    /// so that it understates locality rather than flattering it. This is the
-    /// real descriptor, and routed requirement 4 makes it Task 9's to own.
+    /// Concordance is the fraction of trials where a one-atom mutant is nearer
+    /// its parent than an unrelated molecule is: 1.0 perfect, **0.5 none**.
+    /// Measured **0.8896** over 806 trials against a structural 0.5, which is
+    /// `z = 22.1` against `Binomial(806, 0.5)`. §8.2's property is not in doubt.
     ///
-    /// Scored on [`Signature::group_distance`]. The stranger carries the
-    /// mutant's **exact element multiset**, so a composition-only statistic is
-    /// 0.5 structurally and the margin below is graph locality and nothing else.
+    /// **The baseline is confounded and the margin is smaller than it looks.**
+    /// `rewired` builds the stranger as a random Hamiltonian **path**, while
+    /// parents come from `random_molecule`, a random **tree** plus extras. Mean
+    /// graph diameter: mutant **5.34**, stranger **6.85**, with the stranger
+    /// longer in 561 trials and shorter in 126. So the statistic partly rewards
+    /// a descriptor for noticing elongation. Two independent controls: on the
+    /// diameter-matched subset concordance is **0.7479** (n = 119), and with the
+    /// stranger drawn from the parent's own generator it is **0.7747** (n = 821).
+    /// The property survives both comfortably — the `> 0.20` margin holds — but
+    /// roughly 0.11 to 0.14 of the headline is the stranger generator. The
+    /// regression bar below therefore has far less slack than 0.8896 against
+    /// 0.85 suggests. Inherited from `layout.rs`, which uses the same helper.
     ///
-    /// **The group minimisation is not what makes this number good, and the
-    /// measurement says so plainly.** On this corpus the plain distance scores
-    /// **0.9194** against `group_distance`'s **0.8896** — the minimisation
-    /// *loses*. That is not a defect and it is not new: the routed requirement
-    /// records `D_group` against `D_raw` at the sizes `Mol12` admits as 2 wins,
-    /// 2 losses and 1 exact tie across five seeds, which is why the withdrawn
-    /// discriminator for requirement 1 — "the same test with a fixed rotation
-    /// must score measurably worse" — would have rejected a correct
-    /// implementation. The reading is that the landmark start already lands
-    /// parent and mutant in near-identical frames, so minimising over 60 poses
-    /// cannot help and occasionally hands the *stranger* a flattering pose.
+    /// **The composition confound is removed by construction**: the stranger
+    /// carries the mutant's exact element multiset, so the composition null is
+    /// 0.5 **bitwise** in 806 of 806 trials. That makes `concordance - null`
+    /// algebraically `concordance > 0.70`, so the subtraction is decorative and
+    /// the null's real job is the self-check on the line above it — one
+    /// mis-scored trial moves it by ~6e-4 and fires the assertion.
     ///
-    /// So `group_distance` is justified by three things that are not this one:
-    /// §8.2's stored lex-min form is bit-identically absorbed only under it,
-    /// §8.3's `affinity` maximises over the group so the orbit *is* the
-    /// consumer's equivalence class, and a gate finer than the consumer's
-    /// equivalence class ranks implementations backwards — which `layout.rs`
-    /// measured and recorded. Requirement 1's discriminator is therefore the
+    /// # The plain distance beats the group-minimised one, and by how much
+    ///
+    /// **0.9194 against 0.8896 on this corpus, and plain wins on 8 of 8 universe
+    /// seeds** (sign test, two-sided `p = 0.0078`). Paired on the shipped 806
+    /// trials by **`McNemar`**'s test: plain-wins-group-loses `b = 34`,
+    /// group-wins-plain-loses `c = 10`, `z = +3.618`, exact two-sided
+    /// `p = 0.000388`. The unpaired two-proportion `z` gives 2.034, `p = 0.042` —
+    /// so the routed requirement's warning that an unpaired test understates is
+    /// confirmed on this very comparison.
+    ///
+    /// Two corrections to how this was previously written up. The plan's
+    /// "2 wins, 2 losses, 1 exact tie" is **G2's atom-centre proxy**, not this
+    /// descriptor, and quoting it here made a systematic effect look like a
+    /// wash. And the paired-test citation should be **`McNemar` (1947),
+    /// Psychometrika 12(2):153-157** — `DeLong` et al. (1988) is a U-statistic
+    /// covariance estimator for *AUCs on shared individuals*, which is the right
+    /// family and the wrong tool for a per-trial binary outcome under two
+    /// descriptors.
+    ///
+    /// **The mechanism, measured.** The minimisation removes 3.28% of the mean
+    /// parent-to-mutant distance and **8.89%** of the parent-to-stranger
+    /// distance; on the 34 trials where it loses, the mutant shrinks 0.71% and
+    /// the stranger **27.76%** — a 39x asymmetry. A quotient metric collapses
+    /// more of a large distance than a small one, so it is systematically
+    /// generous to the more distant candidate. (It is a *min* over 60, not a
+    /// max; an earlier version of this note said max.)
+    ///
+    /// **This is not an argument for switching to the plain distance.**
+    /// `group_distance` is justified by three things that are not locality:
+    /// §8.2's stored lex-min form is absorbed bit-identically only under it
+    /// (measured 1.13e-14), §8.3's `affinity` maximises over the group so the
+    /// orbit *is* the consumer's equivalence class, and a gate finer than the
+    /// consumer's equivalence class ranks implementations backwards — which
+    /// `layout.rs` measured and recorded. Requirement 1's discriminator is the
     /// invariance property in
     /// `the_group_distance_is_rotation_invariant_and_a_plain_one_is_not`, not
     /// this concordance. **Do not add a bar here asserting group beats plain.**
+    ///
+    /// # On `layout.rs`'s proxy, whose numbers may not be quoted beside these
+    ///
+    /// `layout.rs` scores 0.8787 with an atom-centre proxy and documents it as
+    /// "deliberately *less* informative ... so it understates locality rather
+    /// than flattering it". **Measured paired on identical trials, that is
+    /// false**: proxy **0.8908** against this signature's **0.8896** (`McNemar`
+    /// `z = -0.19`), and 0.8871 against 0.8797 on a second stream. The proxy is
+    /// level or marginally ahead. The 0.0109 gap between the two shipped figures
+    /// is corpus difference (different stream, 1 327 trials against 806); the
+    /// unpaired comparison gives `p = 0.45`. So radii and the character channel
+    /// buy nothing measurable *on this statistic* — which is consistent with the
+    /// character channel being 2.08% of the distance, and is a reason to want a
+    /// channel-isolating statistic rather than a reason to drop either.
     #[test]
     fn a_one_atom_edit_moves_the_signature_less_than_an_unrelated_molecule_does() {
         let (tbl, uni) = fixture(17);
@@ -1175,6 +1489,89 @@ mod tests {
             concordance > 0.85,
             "signature locality regressed: concordance {concordance:.4} \
              ({nearer}/{trials}), against 0.8896 measured for the shipped signature"
+        );
+    }
+
+    /// **A bit-level digest of the shipped signature, and the reason it is bits
+    /// and not a tolerance.**
+    ///
+    /// Three arithmetic shapes in this module are pinned in prose with nothing
+    /// enforcing them: `reaches`' `((p0*d0 + p1*d1) + p2*d2) + radius`,
+    /// `targets`' `h * (r_i + r_j)`, and `group_distance`'s direction-order
+    /// accumulation. Every one of them is *algebraically* invariant under the
+    /// tidy-up a reader would reach for, so the suite stays green while every
+    /// number in the system moves in its last bits.
+    ///
+    /// **Measured, which is why a tolerance assertion would be worthless here.**
+    /// Reassociating `reaches` to `radius + p0*d0 + p1*d1 + p2*d2` moves
+    /// **10 747 of 42 000** samples in `to_bits()`, affecting 915 of 1 000
+    /// species — and **0 of 42 000** by more than 1e-12. Indexing
+    /// `group_distance` forward instead of through the inverse permutation moves
+    /// **433 of 1 000** pairs in bits and **0** by more than 1e-12. A test with
+    /// any tolerance at all passes both wrong versions 100% of the time.
+    ///
+    /// So this exists before any optimisation is attempted, not after. Two are
+    /// known available and deliberately not taken here — reindexing
+    /// `group_distance` through the inverse permutation (2.3x release, 4.4x dev)
+    /// and giving `reaches` a caller-owned buffer (2.15x) — both bit-identical
+    /// by construction and measured so. This digest is what would make taking
+    /// them safe; there is no consumer yet that makes them worth taking.
+    ///
+    /// It hashes through `canonical_bits`, not `to_bits`, because a runtime
+    /// NaN's sign and `-0.0` are architecture-dependent and §13.6's matrix would
+    /// report that as a simulation divergence (§13.4).
+    ///
+    /// **If this fails and you did not mean to change the physics**, the cause
+    /// is almost certainly an accumulation order, not a formula.
+    #[test]
+    fn the_signature_digest_is_pinned() {
+        let g = geo();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut values = 0u64;
+        for seed in 0..8u64 {
+            let (tbl, uni) = fixture(seed);
+            let ids = chain_capable(&tbl);
+            if ids.is_empty() {
+                continue;
+            }
+            let mut rng = Stream::new(4242 + seed, Domain::Molecule, 0);
+            for trial in 0..25u32 {
+                let atoms = 1 + u8::try_from(trial % 12).unwrap();
+                let mol = if trial % 2 == 0 {
+                    random_molecule(&mut rng, atoms, &tbl, &ids)
+                } else {
+                    symmetric_molecule(atoms, &tbl, ids[0])
+                };
+                // The canonical form, because that is what §8.2 stores and what
+                // Task 20's state hash will read.
+                let shape = sig(&mol, &uni, &g).canonicalise(&g);
+                for i in 0..D {
+                    for bits in [
+                        borbax_units::canonical_bits(shape.extents()[i].get()),
+                        borbax_units::canonical_bits(shape.characters()[i]),
+                    ] {
+                        hash ^= bits;
+                        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                        values += 1;
+                    }
+                }
+            }
+        }
+        // Counts the f64 values hashed, which is what the inner loop
+        // increments: 8 seeds x 25 molecules x 42 directions x 2 channels.
+        assert_eq!(
+            values,
+            8 * 25 * 42 * 2,
+            "the corpus did not run to completion"
+        );
+        assert_eq!(
+            hash, 0xb303_62ed_8102_4ae2,
+            "the shape signature moved. If you meant to change the physics, \
+             regenerate this constant and say so in the commit message; if you did \
+             not, suspect an accumulation order — `reaches`, `targets` and \
+             `group_distance` each carry a pinned association that is \
+             algebraically invariant under the obvious tidy-up and moves 11-22% of \
+             values in their last bits."
         );
     }
 

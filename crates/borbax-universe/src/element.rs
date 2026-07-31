@@ -1138,7 +1138,7 @@ mod tests {
         // charge term `-(a_A + a_B)^2` is maximised at zero when the two
         // affinities are *opposite*, so a strictly positive range degenerates it
         // from a complementarity test into a monotone penalty on total surface
-        // affinity, and §5's membrane mechanism — one flank positive, the
+        // affinity, and §10.1's membrane mechanism — one flank positive, the
         // opposite negative — is unreachable. How `a` is summed from element
         // affinities is Task 7's code and is not written yet, so the fix may
         // belong there; what must not happen is the range being inherited by
