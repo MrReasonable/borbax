@@ -16,6 +16,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# See the note on the cache step. `Swatinem/rust-cache` sets this itself; it is
+# stated here so it survives a job that does not use the cache, and so the value
+# is where a reader looks for it.
+env:
+  CARGO_INCREMENTAL: 0
+
 jobs:
   # Platform-independent checks, on one runner, as their own status check.
   #
@@ -32,6 +38,37 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Show toolchain
         run: rustup show active-toolchain
+
+      # Third-party build artefacts only. **The workspace's own crates are
+      # never restored from cache**, which is what makes this safe under §13.4
+      # rather than merely convenient — verified against the action's own
+      # documentation, not assumed: "the workspace crates themselves are not
+      # cached". Every line of result-affecting code is compiled from source on
+      # every run, so a cache hit cannot put a stale `borbax-*` artefact into
+      # the profile that mints goldens.
+      #
+      # What the key covers, and why each part matters here:
+      #
+      # - **the rustc release / host / hash.** The host triple is what keeps the
+      #   three matrix legs apart (`aarch64-apple-darwin` /
+      #   `x86_64-unknown-linux-gnu` / `x86_64-pc-windows-msvc`), so macOS
+      #   cannot restore Linux artefacts. It also means bumping `.prototools`
+      #   invalidates the cache — correct, since §18.1 treats a compiler bump
+      #   as a physics change.
+      # - **a hash of every `Cargo.lock` / `Cargo.toml`.** `--locked` already
+      #   pins the graph; this stops a lockfile change silently reusing a
+      #   `libm` compiled from a different version, which is the one diagnosis
+      #   the golden matrix must never give wrongly.
+      # - **`CARGO_*` / `RUST*` environment variables**, so a `RUSTFLAGS`
+      #   change does not reuse artefacts built under the old flags.
+      #
+      # `CARGO_INCREMENTAL=0` is set by the action itself. It is repeated at
+      # workflow level below so the value is visible where someone looks for
+      # it, and so it holds on any future job that does not use the cache:
+      # incremental artefacts are keyed to absolute paths and a stale
+      # `incremental/` directory is exactly the sort of thing that makes one
+      # leg of a determinism matrix differ for a non-physics reason.
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Format
         run: cargo fmt --all --check
@@ -102,6 +139,37 @@ jobs:
       # this project is Rust-only by construction (spec §14.0).
       - name: Show toolchain
         run: rustup show active-toolchain
+
+      # Third-party build artefacts only. **The workspace's own crates are
+      # never restored from cache**, which is what makes this safe under §13.4
+      # rather than merely convenient — verified against the action's own
+      # documentation, not assumed: "the workspace crates themselves are not
+      # cached". Every line of result-affecting code is compiled from source on
+      # every run, so a cache hit cannot put a stale `borbax-*` artefact into
+      # the profile that mints goldens.
+      #
+      # What the key covers, and why each part matters here:
+      #
+      # - **the rustc release / host / hash.** The host triple is what keeps the
+      #   three matrix legs apart (`aarch64-apple-darwin` /
+      #   `x86_64-unknown-linux-gnu` / `x86_64-pc-windows-msvc`), so macOS
+      #   cannot restore Linux artefacts. It also means bumping `.prototools`
+      #   invalidates the cache — correct, since §18.1 treats a compiler bump
+      #   as a physics change.
+      # - **a hash of every `Cargo.lock` / `Cargo.toml`.** `--locked` already
+      #   pins the graph; this stops a lockfile change silently reusing a
+      #   `libm` compiled from a different version, which is the one diagnosis
+      #   the golden matrix must never give wrongly.
+      # - **`CARGO_*` / `RUST*` environment variables**, so a `RUSTFLAGS`
+      #   change does not reuse artefacts built under the old flags.
+      #
+      # `CARGO_INCREMENTAL=0` is set by the action itself. It is repeated at
+      # workflow level below so the value is visible where someone looks for
+      # it, and so it holds on any future job that does not use the cache:
+      # incremental artefacts are keyed to absolute paths and a stale
+      # `incremental/` directory is exactly the sort of thing that makes one
+      # leg of a determinism matrix differ for a non-physics reason.
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       # `--locked` on every invocation, from the commit that added the first
       # runtime dependency. Without it a stale Cargo.lock lets each of the
