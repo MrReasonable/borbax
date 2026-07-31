@@ -119,12 +119,31 @@ use core::cmp::Ordering;
 /// `extent - extent = 0`, so `den == 0` and the channel is identically zero in
 /// every direction. (2) "0.75 admits the extremal atom's immediate neighbours"
 /// overstates by about two: it admits the extremal atom plus ~0.57 of one
-/// neighbour, against a 10th-percentile interatomic distance of 1.656. (3)
-/// "Above the molecular diameter ... the channel becomes a composition average
-/// with no geometry in it" — the weight is `reach - extent + SHELL`, linear in
-/// `reach` with slope 1 for *every* `SHELL`, so it never becomes uniform; at
-/// `SHELL = 50` the character channel still scores 0.7343 on the locality
-/// statistic, which a composition average could not.
+/// neighbour, against a 10th-percentile interatomic distance of 1.656.
+///
+/// **(3) was not false, and withdrawing it was the error.** The original claim
+/// — "above the molecular diameter every atom contributes and the channel
+/// becomes a composition average with no geometry in it" — is substantially
+/// true. It was withdrawn here on the grounds that the weight
+/// `reach - extent + SHELL` is linear in `reach` with slope 1 for every
+/// `SHELL`, so it never becomes uniform. **That reasons about the
+/// *unnormalised* weight.** The channel is `Σwᵢcᵢ / Σwᵢ`, and the *normalised*
+/// weights `(SHELL + dᵢ) / (n·SHELL + Σdⱼ)` — with `dᵢ = reachᵢ - extent ≤ 0` —
+/// converge to `1/n` at rate `O(1/SHELL)`. Measured, mean across-direction
+/// spread of the character channel over 40 molecules: `0.75` -> **2.37e-1**,
+/// `3` -> 1.55e-1, `10` -> 3.39e-2, `50` -> **4.47e-3**, `1e4` -> 2.08e-5,
+/// `1e9` -> **2.08e-10**. By `SHELL = 50` it has lost 98.1% of its geometric
+/// range, which is the degenerate limit the original sentence described.
+///
+/// The empirical rebuttal offered for the withdrawal — "at `SHELL = 50` it
+/// still scores 0.7343 on the locality statistic, which a composition average
+/// could not" — is not false but cannot carry the conclusion: the stranger is
+/// composition-matched, so a pure composition average scores exactly 0.5 and a
+/// fraction of a percent of residual geometry clears it. 0.7343 also sits near
+/// the *floor* of the measured band [0.727, 0.792]. **A statistic that a
+/// near-degenerate descriptor can still pass is not evidence that it is not
+/// degenerate**, and this paragraph exists to steer Task 20's sweep, which is
+/// exactly the reader who would be misled.
 ///
 /// **It is chosen, not derived**, and named as such for the reason `bonds.rs`
 /// records about the strain exponent. Two things Task 20 needs before sweeping
@@ -1038,17 +1057,41 @@ mod tests {
                 worst_distance = d;
             }
         }
-        assert!(
-            moved > 10 && worst_form > 0.1,
-            "the dimer discontinuity has gone away ({moved} of 60 poses moved, worst \
-             {worst_form}); if `canonicalise` was made continuous this test should be \
-             deleted rather than relaxed — measured 24 of 60, worst 0.352"
-        );
+        // **The invariant, and it is the half that must never be deleted.**
+        // Whether the representative moves is a fact about a defect; that the
+        // distance does not move is the entire justification for §8.2's storage
+        // form. An earlier version of this test asserted both together, and its
+        // failure message told the reader to delete the test — which would have
+        // thrown this away to be rid of the other.
         assert!(
             worst_distance < 1e-9,
             "group_distance did NOT absorb the representative choice ({worst_distance}) — \
              the discontinuity has escaped into every distance-taking consumer, which is \
-             the whole reason §8.2's storage form is considered safe"
+             the whole reason §8.2's storage form is considered safe. This assertion is \
+             load-bearing and must survive any change to the instability below."
+        );
+
+        // **The defect record, which may be relaxed or deleted freely.** It
+        // exists so a reader meets the instability here rather than in a golden
+        // matrix at Task 20, and so a *partial* improvement is visible rather
+        // than silent.
+        //
+        // It measures the EXTENT channel only, which is what `worst_form`
+        // reads — a character-only movement would report 0 of 60. Stated
+        // because the message would otherwise claim more than it measures.
+        //
+        // It also cannot distinguish "the representative choice is degenerate
+        // at n = 2" from "`canonicalise` does nothing": gutting the search to
+        // the identity makes this pass *more* strongly. What defends that is
+        // `the_canonical_form_is_rotation_invariant` and the digest, both of
+        // which fail under that mutation.
+        assert!(
+            moved > 10 && worst_form > 0.1,
+            "the dimer extent instability has changed ({moved} of 60 poses moved, worst \
+             {worst_form}; measured 24 of 60, worst 0.352). This is a defect record, not \
+             a contract: if `canonicalise` was made continuous at n = 2, delete THIS \
+             assertion and keep the absorption assertion above. If it merely moved, \
+             re-measure and update the numbers."
         );
     }
 
@@ -1528,6 +1571,8 @@ mod tests {
         let g = geo();
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         let mut values = 0u64;
+        let mut distances = 0u64;
+        let mut previous: Option<Signature<D>> = None;
         for seed in 0..8u64 {
             let (tbl, uni) = fixture(seed);
             let ids = chain_capable(&tbl);
@@ -1544,7 +1589,27 @@ mod tests {
                 };
                 // The canonical form, because that is what §8.2 stores and what
                 // Task 20's state hash will read.
-                let shape = sig(&mol, &uni, &g).canonicalise(&g);
+                let raw = sig(&mol, &uni, &g);
+                let shape = raw.canonicalise(&g);
+                // **`group_distance` is hashed too, and it was not until a
+                // cross-check measured the gap.** This test's own doc named
+                // three pinned shapes and covered two: reassociating
+                // `acc += dr*dr + da*da` left the entire workspace green,
+                // 366/366, while moving 4 656 of 5 000 pair distances. The
+                // plan advertises a 2.3x reindex of that exact loop and says
+                // "the digest above is what makes them safe to take" — which
+                // was false about the third shape.
+                //
+                // Chained against the previous molecule so every entry
+                // contributes a pair, and the pair spans universes, which the
+                // per-molecule hashing above cannot.
+                if let Some(other) = previous.as_ref() {
+                    let d = raw.group_distance(other, &g);
+                    hash ^= borbax_units::canonical_bits(d);
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    distances += 1;
+                }
+                previous = Some(raw);
                 for i in 0..D {
                     for bits in [
                         borbax_units::canonical_bits(shape.extents()[i].get()),
@@ -1564,8 +1629,16 @@ mod tests {
             8 * 25 * 42 * 2,
             "the corpus did not run to completion"
         );
+        // One distance per molecule after the first. Asserted separately
+        // because a digest that silently stopped hashing distances would
+        // otherwise be invisible — which is the failure this leg exists for.
         assert_eq!(
-            hash, 0xb303_62ed_8102_4ae2,
+            distances,
+            8 * 25 - 1,
+            "the group_distance leg of the digest did not run"
+        );
+        assert_eq!(
+            hash, 0x08b4_7660_88a4_09f5,
             "the shape signature moved. If you meant to change the physics, \
              regenerate this constant and say so in the commit message; if you did \
              not, suspect an accumulation order — `reaches`, `targets` and \

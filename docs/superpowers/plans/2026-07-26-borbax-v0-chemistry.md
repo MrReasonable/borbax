@@ -2149,7 +2149,10 @@ fn solvent_signature<const D: usize>(u: &Universe, g: &Geodesic<D>) -> Signature
     let mut m = Mol12::new();
     m.add_atom(u.consts.solvent);
     // Superseded, as in `intern` above: `embed` takes the canonical form and
-    // `signature` takes neither the molecule nor the universe.
+    // `signature` takes neither the molecule nor the universe. The
+    // destructuring is wrong for the reason this file's own Task 11 note gives
+    // — `canonicalise` returns `Result<(CanonMol, SearchStats), Capped>` — and
+    // is annotated rather than silently fixed so the two notes agree.
     let (canon, _) = canonicalise(&m);
     signature(&embed(&canon, u), g).canonicalise(g)
 }

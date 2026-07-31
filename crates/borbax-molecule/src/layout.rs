@@ -1332,6 +1332,18 @@ mod tests {
     /// not exist yet; this is deliberately *less* informative than it will be
     /// (atom centres rather than surfaces, and no affinity channel), so it
     /// understates locality rather than flattering it.
+    ///
+    /// **That last clause is measured false and is kept only as the record of
+    /// a plausible argument that did not hold.** Paired on identical trials
+    /// against Task 9's real signature — radii, character channel and all —
+    /// this proxy scores **0.8908** against the signature's **0.8896**
+    /// (`McNemar` z = -0.19), and 0.8871 against 0.8797 on a second stream. It is
+    /// level or marginally ahead, not behind. The 0.0109 gap between the two
+    /// figures the two files ship is corpus difference (different stream, 1327
+    /// trials against 806), and unpaired it gives p = 0.45. So "less
+    /// information implies less locality" was an a-priori argument, and the
+    /// extra channels buy nothing measurable *on this statistic* — consistent
+    /// with the character channel being 2.08% of the group distance.
     /// **Returns `[f64; D]`, not `Vec<f64>`.** `Geodesic` is length-typed
     /// throughout — `dirs() -> &[Vec3; D]`, `rotation_perms(r) -> &[u8; D]` — and
     /// erasing that here let `group_distance` be called with signatures from two

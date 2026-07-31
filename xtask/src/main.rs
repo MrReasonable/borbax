@@ -621,9 +621,11 @@ fn alloc_stream_names(items: &[syn::Item]) -> Vec<String> {
 
 /// Local aliases for `target`: `type X = Target;` and `use ... Target as X;`.
 ///
-/// Generalised from the `Stream`-only version so the signature guard shares one
-/// implementation rather than growing a second copy with its own bugs — the
-/// enumeration failure this file records three times, one level up.
+/// **Generalised for a second consumer that no longer exists.** The signature
+/// guard it was split out for was deleted in the same task for enumerating AST
+/// shapes, so there is one caller again. Kept parameterised rather than folded
+/// back: the next textual guard will want it, and the fold would be a diff with
+/// no behaviour change.
 fn alias_names(items: &[syn::Item], target: &str) -> Vec<String> {
     fn walk_use(tree: &syn::UseTree, target: &str, out: &mut Vec<String>) {
         match tree {
