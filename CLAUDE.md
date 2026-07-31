@@ -432,6 +432,31 @@ hash. And **most conflicts are not about this order at all** — they are two
 correct observations pulling opposite ways, where the resolution is a
 measurement or a line of the spec, not a ruling.
 
+### Probe the guard, and then probe the guard's bookkeeping
+
+Every guard gets the mutation it exists to stop, run before the commit — the
+question is never "does the suite pass" but "what would this catch that nothing
+else does, and have I watched it catch that". That rule is well established
+here and has repeatedly paid.
+
+**It stops one level too early.** A guard has assertions *and* it has
+instrumentation — counters, corpus filters, `examined > N` self-checks — and
+the instrumentation is not covered by probing the assertion. Ask separately:
+**does this counter count what its message says it counts?**
+
+Measured on Task 8. `no_two_atoms_share_a_point` asserted `pairs > 2000` with
+the message "pairs examined", and incremented `pairs` in the *outer* loop, so
+it counted atoms: 4,818 against a true 19,258. The bar was four times weaker
+than intended and reported a quantity it did not measure. Every assertion in
+that test had been probed by mutation; its bookkeeping had not been read.
+
+This is not testable, and that is the point — a test verifying its own
+self-check is infinite regress. It is a reading job, and it belongs in the same
+pass as the mutation probe. The same applies to a corpus filter that silently
+selects nothing (`assert!(disconnected_seen > 0, ...)` is the shape that
+catches it) and to any `assert!(x > N)` whose `N` was chosen before `x` was
+measured.
+
 ## Dependencies
 
 The best code is code someone else maintains. Reach for the settled crate:

@@ -39,6 +39,34 @@ you, and buries the findings only they can produce.
 The one exception is a build broken in a way you do not understand — then a
 reviewer is diagnosing, not reviewing, and should be told which it is.
 
+### Step 0a — The claim-audit
+
+The gate proves the code compiles and passes. It says nothing about whether the
+prose is *true of* the code, and that is a defect class no test reaches.
+
+For every symbol the diff deletes or renames, and every figure it changes, grep
+both plan files, the spec and the source:
+
+```bash
+git diff "origin/${base}...HEAD" | grep '^-' | grep -oE '\bfn [a-z_]+|\b[a-z_]+_[a-z_]+\b' | sort -u
+# then, for each deleted/renamed name and each changed number:
+grep -rn "<name>" crates/ docs/ xtask/
+```
+
+**Read what each hit is *doing*, not that it exists.** This is the whole rule
+and it is the part that fails. A deleted test's name will appear in the note
+that records its deletion — legitimate — and in an *instruction* three hundred
+lines away telling a future reader what to do when it fails. Both are hits.
+Only one is a defect, and the eye slides over the third hit after the first two
+turn out to be withdrawals.
+
+Measured on Task 8: the sweep for a deleted test returned three hits, two were
+withdrawal notes, and the third was live guidance naming a guard that no longer
+existed. It survived six specialist rounds and was found by CodeRabbit.
+
+Classify every hit as **withdrawal**, **live claim**, or **instruction**. Only
+the first is safe.
+
 ## Step 0b — If the work has already been reviewed, review the *fixes*
 
 A second review that re-reads the original code finds the same things and
@@ -94,6 +122,32 @@ what the diff touches:
 
 When in doubt dispatch all six. They are cheap next to a determinism bug found
 three months later.
+
+**And always dispatch one lane with no brief at all.**
+
+Give it the diff, `CLAUDE.md`, and one instruction: *read every changed line and
+report anything wrong; there is no theory about where to look.* Do not tell it
+which fixes to check, which findings were routed, or what the interesting part
+is. Its value is precisely that it does not know.
+
+Every other brief in this skill aims attention, and aimed attention has a shape
+— it misses whatever sits outside the frame. Two effects compound. A lane told
+to check the physics is not reading test scaffolding or plan prose, because
+those are nobody's assigned domain. And a lane that has just proved something
+hard is a poor proofreader: CLAUDE.md's own note is that a domain expert
+reading for `E0425` is a bad compiler and a distracted architect simultaneously.
+
+Measured on Task 8, across six rounds and twenty dispatches: the specialists
+found all three defects that needed domain reasoning — an embedding with no
+locality, a solver that cycles forever at n=2, atoms collapsing onto one point —
+and **missed a counter that incremented in the wrong loop and a plan instruction
+naming a deleted test**. Both were found by a machine reviewer with no brief.
+The classes are complementary; the scoped briefs were the reason one of them
+went uncovered.
+
+The `coderabbit` CLI is the cheapest way to buy this and should be run every
+round regardless of what the app's check reports — but it is a supplement, not
+the lane. It found neither of the three physics defects.
 
 **Send all `Agent` calls in a single message.**
 
