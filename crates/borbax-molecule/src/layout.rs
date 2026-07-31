@@ -869,31 +869,65 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                 // property is about `separation_direction`, so that is where it is
                 // checked.
                 //
-                // Keyed on the canonical indices, and **the reason that is sound is
-                // not the one an earlier version of this comment gave.** It said the
-                // atoms differ only by an automorphism, so the branches give
-                // congruent shapes. Two problems: congruent is not enough — a
-                // congruent-but-rotated shape is a *different* support function at
-                // Task 9 — and the premise is measurably false. Brute-forcing the
-                // full automorphism group over all n! permutations for n <= 9 found
-                // **2 of 382** coincident pairs *not* in one orbit, equidistant from
-                // all three landmarks by arithmetic coincidence rather than symmetry
-                // (141 more at n = 10..12 were too expensive to test, so 2/382 is a
-                // lower bound).
+                // Keyed on the canonical indices. **The arbitrariness is forced,
+                // it costs at most ~0.01 concordance, and the better-scoring
+                // alternative must be refused. All three are measured.**
                 //
-                // The real reason needs no automorphisms and is exact: `CanonMol`'s
-                // `mol()` is bit-identical for every relabelling of one molecule, so
-                // `embed` receives a bit-identical input and there are no "two
-                // branches" to reconcile — targets, landmarks, indices and this
-                // direction are all one value. Measured: 0 mismatches over 480
-                // relabellings of 60 species that start coincident, compared through
-                // `to_bits()` rather than `==`.
+                // *Forced.* Any rule reading only the configuration and the targets
+                // is relabelling-equivariant, so `F(σi, σj, σX, σT) = F(i,j,X,T)`.
+                // At a coincidence caused by the transposition `σ = (i j)` that
+                // gives `F(j,i,..) = F(i,j,..)`, while antisymmetry demands
+                // `F(j,i,..) = −F(i,j,..)`. Hence `F = 0`, contradicting unit
+                // length. Measured with the obvious residual-gradient rule:
+                // **exactly 0.0 on 190 of 190** transposition-symmetric pairs, and
+                // on 443 of 740 coincident pairs overall — so a configuration-derived
+                // rule would need an index fallback in 59.9% of the cases it is
+                // called for, and the *switch* would be a fresh discontinuity.
+                // Keying on the index is not a convention chosen over a better one;
+                // it is the only kind that exists.
                 //
-                // What that leaves open is a *locality* question, not a determinism
-                // one: for those ~0.5% of pairs the axis is a genuine arbitrary
-                // physical choice, which is the index-keying hazard `initial_layout`
-                // was rewritten to remove, reappearing at small scale inside this
-                // branch. Routed to Task 9 rather than priced here.
+                // *Bounded.* Four maximally-different conventions — `(j−i)%3`,
+                // constant axis 0, constant axis 1, `(i+j)%3` — span **0.0043**
+                // group-locality over 11,855 triples and **0.0095** on the 3,581
+                // that hit the branch. Same order as the +0.0045 the pivot
+                // tie-break moves, which this file already calls immaterial. The
+                // axis's physical meaning does drift under an edit (the index
+                // changes in 23.1% of one-atom edits, the pivot tag in 62.7%); it
+                // does not show up downstream.
+                //
+                // *Refused, and this is the part that matters.* **Do not replace
+                // this with an argmin over the three cyclic shifts by final
+                // stress.** It looks strictly better: the shipped axis is the
+                // argmin in only 36.4% of coincident species, mean stress excess
+                // 7.13%, worst 6.10x, and locality improves 0.7946 → 0.7998 at
+                // McNemar z = 3.97. It is still wrong. In 1106 of 2658 coincident
+                // species the top two stresses agree to within 1e-12 relative
+                // while the shapes do not — 765 of those (69.2%) differ by a median
+                // 9.94% and up to 22.9%. An argmin decides that by rounding, and
+                // this file documents six algebraically-identical rewrites that
+                // move 22–41% of entries by ~1e-16 with the suite green; each would
+                // become a ~10% shape change in 29% of coincident species. That is
+                // the eigenvector-degeneracy problem §8.2 chose SMACOF to avoid,
+                // and Kendall's argument in this module's header is its general
+                // form: a representative-choosing map is discontinuous exactly
+                // where the choice is degenerate.
+                //
+                // The property that separates them: perturbing one target entry by
+                // 1 ulp must not move the group-minimised shape by more than
+                // O(ulp). This branch passes by construction — it reads no float —
+                // and every stress-selecting rule fails it.
+                //
+                // **It is not currently written as a test, and that is a choice
+                // rather than an oversight.** `targets` is private and built from
+                // the drawn universe radii, so perturbing one entry by an ulp needs
+                // a seam through `embed` that exists only for the test. Adding one
+                // to guard against a rule that is refused three paragraphs above,
+                // and that nobody has proposed, is the wrong trade. If a selection
+                // rule is ever seriously considered, that seam is the first thing
+                // to build — and the measurement that decides it is the fraction of
+                // coincident species whose top two candidate stresses lie within
+                // 1e-12 relative while their shapes do not (currently 41.6%, of
+                // which 69.2% are non-congruent).
                 //
                 // A NaN `raw` takes the deterministic branch, since `NaN > 1e-9` is
                 // false. **That is the *less detectable* failure, not the safe one**,
@@ -1705,8 +1739,11 @@ mod tests {
     /// the random corpus produces is an adjacent-index *pair* (4591 of 4591), so
     /// axes 0 and 2 are never selected — but that corpus is `path + a few edges`,
     /// which structurally cannot build a **dumbbell**: two bonded hubs each
-    /// carrying k identical leaves. That does, in **10 of 10** universe seeds at
-    /// k = 3, and 5 of 10 at k = 4. A dumbbell is an ordinary molecular shape.
+    /// carrying k identical leaves. That does — orbits of three or more start at
+    /// k = 4 (k = 4 gives a 3-orbit plus a 2-orbit; k = 5 gives a 4-orbit plus a
+    /// 3-orbit), with minimum in-orbit distance 2.86–4.73 Span across five
+    /// universe seeds. An earlier version of this said k = 3, which yields only a
+    /// pair. A dumbbell is an ordinary molecular shape.
     ///
     /// Those orbits separate cleanly — 0.90 to 1.91 Span, no descent violation, in
     /// 25 of 25 (seed, k) cells — so this was a documentation defect rather than a
@@ -1732,11 +1769,22 @@ mod tests {
     ///
     /// **And a non-zero push does not by itself mean they separate** — `x' =
     /// (V+J)⁻¹b` mixes every row, so `b_p ≠ b_q` needs a bridge. It is this:
-    /// `(V+J)` commutes with the transposition `T` swapping `p` and `q`, so
-    /// `(V+J)⁻¹` preserves `T`'s eigenspaces; `T`'s −1 eigenspace is the
-    /// one-dimensional `span{e_p − e_q}`; hence `x'_p − x'_q = λ(b_p − b_q)` with
-    /// `λ ≠ 0`. Stated because without it this test proves nothing about
-    /// separation even with the right formula.
+    /// `(V+J)` commutes with the transposition `T` swapping `p` and `q` **iff
+    /// their target rows are equal** — `V` is built from `w = 1/T²`, so this needs
+    /// `T[p][a] == T[q][a]` for every `a ∉ {p,q}`, which is strictly stronger than
+    /// "same orbit". Measured by building `V_w+J` and comparing `P M Pᵀ` to `M`
+    /// bitwise: it holds in **190 of 740** coincident pairs (25.7%), not in all of
+    /// them. An earlier version of this sentence asserted it unconditionally.
+    ///
+    /// **The conclusion survives because the argument is valid exactly where it is
+    /// needed.** Where the rows are equal the ordinary `B(X)` terms are bitwise
+    /// equal and only `sep` differentiates — and there the bridge holds
+    /// (`(V+J)⁻¹` preserves `T`'s eigenspaces; `T`'s −1 eigenspace is the
+    /// one-dimensional `span{e_p − e_q}`; so `x'_p − x'_q = λ(b_p − b_q)`,
+    /// `λ ≠ 0`). Where the rows differ, the atoms are already physically distinct
+    /// and separation does not depend on `sep` at all. Measured: **0 of 740 pairs
+    /// stuck** under each of three different axis rules, worst final `d/target`
+    /// 0.7657 in the symmetric class and 0.2481 in the other.
     ///
     /// Enumerated over all 4083 subsets of `0..12` with at least two members
     /// (`2^12 − 1 − 12`; an earlier version said 4017, and `> 4000` was too loose
