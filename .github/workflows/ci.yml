@@ -78,22 +78,32 @@ jobs:
       # `incremental/` directory is exactly the sort of thing that makes one
       # leg of a determinism matrix differ for a non-physics reason.
       #
-      # **What this is worth, measured, because the honest answer is "less than
-      # it looks and not on the critical path".** Warm against cold on the same
-      # commit: `quality` 42s -> 18s, ubuntu 194s -> 126s, macOS 154s -> 95s.
-      # **Windows is unchanged** — 287s cold, 310s on a confirmed cache hit,
-      # against a baseline that ranges 281-407s, so there is no signal there at
-      # all. Since the matrix runs in parallel, wall-clock to a red X is
-      # `quality + windows`, and only the first of those moved.
+      # **What this is worth, measured over six runs.** Cache-hit against
+      # uncached, per job: `quality` 34s -> 23s, macOS 151s -> 78s, ubuntu
+      # 191s -> 134s, **Windows 350s -> 277s (21%)**.
       #
-      # The reason is structural rather than fixable here: the workspace has
-      # **seven** third-party packages (`libm`, `thiserror`, `thiserror-impl`,
-      # `syn`, `proc-macro2`, `quote`, `unicode-ident`), so there is very little
-      # to cache — the 30 MB Windows archive restores in 5s — while the five
-      # `borbax-*` crates that dominate the build are the ones this deliberately
-      # never caches. Anyone hoping to cut the Windows leg should look at the
-      # test suite instead: it is `embed`-bound, and `layout.rs` records a
-      # measured 2.08x on `embed` that is bit-identical and currently declined.
+      # The Windows number is stated as a working estimate rather than a
+      # constant, and an earlier version of this comment got it wrong in the
+      # other direction — it said "Windows is unchanged", on the strength of one
+      # run whose cache had **missed entirely** (376s) and one hit at 310s. With
+      # three hits (310 / 263 / 258) against three uncached (407 / 363 / 281),
+      # two of the three cached runs fall below *every* uncached run, but the
+      # ranges still overlap and an exact permutation test gives p = 0.10, which
+      # is the floor for n = 3 against n = 3. Real, not yet significant.
+      #
+      # What bounds the upside is structural: the workspace has **seven**
+      # third-party packages (`libm`, `thiserror`, `thiserror-impl`, `syn`,
+      # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is 30 MB
+      # and restores in 5s, while the five `borbax-*` crates that dominate the
+      # build are the ones this deliberately never caches. Anyone wanting a
+      # larger cut should look at the test suite: it is `embed`-bound, and
+      # `layout.rs` records a measured, bit-identical **2.08x on `embed`**
+      # currently declined for want of a consumer.
+      #
+      # The Windows key also moved once in six runs, logging `No cache found`
+      # under an environment-hash component that changed while macOS and Linux
+      # held. Recorded rather than averaged away: an occasional cold Windows leg
+      # is expected.
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Format
@@ -205,22 +215,32 @@ jobs:
       # `incremental/` directory is exactly the sort of thing that makes one
       # leg of a determinism matrix differ for a non-physics reason.
       #
-      # **What this is worth, measured, because the honest answer is "less than
-      # it looks and not on the critical path".** Warm against cold on the same
-      # commit: `quality` 42s -> 18s, ubuntu 194s -> 126s, macOS 154s -> 95s.
-      # **Windows is unchanged** — 287s cold, 310s on a confirmed cache hit,
-      # against a baseline that ranges 281-407s, so there is no signal there at
-      # all. Since the matrix runs in parallel, wall-clock to a red X is
-      # `quality + windows`, and only the first of those moved.
+      # **What this is worth, measured over six runs.** Cache-hit against
+      # uncached, per job: `quality` 34s -> 23s, macOS 151s -> 78s, ubuntu
+      # 191s -> 134s, **Windows 350s -> 277s (21%)**.
       #
-      # The reason is structural rather than fixable here: the workspace has
-      # **seven** third-party packages (`libm`, `thiserror`, `thiserror-impl`,
-      # `syn`, `proc-macro2`, `quote`, `unicode-ident`), so there is very little
-      # to cache — the 30 MB Windows archive restores in 5s — while the five
-      # `borbax-*` crates that dominate the build are the ones this deliberately
-      # never caches. Anyone hoping to cut the Windows leg should look at the
-      # test suite instead: it is `embed`-bound, and `layout.rs` records a
-      # measured 2.08x on `embed` that is bit-identical and currently declined.
+      # The Windows number is stated as a working estimate rather than a
+      # constant, and an earlier version of this comment got it wrong in the
+      # other direction — it said "Windows is unchanged", on the strength of one
+      # run whose cache had **missed entirely** (376s) and one hit at 310s. With
+      # three hits (310 / 263 / 258) against three uncached (407 / 363 / 281),
+      # two of the three cached runs fall below *every* uncached run, but the
+      # ranges still overlap and an exact permutation test gives p = 0.10, which
+      # is the floor for n = 3 against n = 3. Real, not yet significant.
+      #
+      # What bounds the upside is structural: the workspace has **seven**
+      # third-party packages (`libm`, `thiserror`, `thiserror-impl`, `syn`,
+      # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is 30 MB
+      # and restores in 5s, while the five `borbax-*` crates that dominate the
+      # build are the ones this deliberately never caches. Anyone wanting a
+      # larger cut should look at the test suite: it is `embed`-bound, and
+      # `layout.rs` records a measured, bit-identical **2.08x on `embed`**
+      # currently declined for want of a consumer.
+      #
+      # The Windows key also moved once in six runs, logging `No cache found`
+      # under an environment-hash component that changed while macOS and Linux
+      # held. Recorded rather than averaged away: an occasional cold Windows leg
+      # is expected.
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       # `--locked` on every invocation, from the commit that added the first
