@@ -387,6 +387,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_toolchain_pins_agree(root, &mut failures)?;
     check_no_platform_transcendentals(root, &mut failures)?;
     check_no_stream_deriving_method(root, &mut failures)?;
+    check_no_ungrouped_signature_comparison(root, &mut failures)?;
     check_no_closure_predicate_branch(root, &mut failures)?;
     check_packing_matches_probe(root, &mut failures)?;
 
@@ -616,13 +617,22 @@ fn scan_for_derived_streams(rel: &str, text: &str) -> Result<Vec<String>, String
 /// residual is worth naming rather than solving. It is named in
 /// [`check_no_stream_deriving_method`]'s doc.
 fn alloc_stream_names(items: &[syn::Item]) -> Vec<String> {
-    fn walk_use(tree: &syn::UseTree, out: &mut Vec<String>) {
+    alias_names(items, "Stream")
+}
+
+/// Local aliases for `target`: `type X = Target;` and `use ... Target as X;`.
+///
+/// Generalised from the `Stream`-only version so the signature guard shares one
+/// implementation rather than growing a second copy with its own bugs — the
+/// enumeration failure this file records three times, one level up.
+fn alias_names(items: &[syn::Item], target: &str) -> Vec<String> {
+    fn walk_use(tree: &syn::UseTree, target: &str, out: &mut Vec<String>) {
         match tree {
-            syn::UseTree::Rename(r) if r.ident == "Stream" => out.push(r.rename.to_string()),
-            syn::UseTree::Path(p) => walk_use(&p.tree, out),
+            syn::UseTree::Rename(r) if r.ident == target => out.push(r.rename.to_string()),
+            syn::UseTree::Path(p) => walk_use(&p.tree, target, out),
             syn::UseTree::Group(g) => {
                 for t in &g.items {
-                    walk_use(t, out);
+                    walk_use(t, target, out);
                 }
             }
             _ => {}
@@ -631,13 +641,13 @@ fn alloc_stream_names(items: &[syn::Item]) -> Vec<String> {
     let mut out = Vec::new();
     for item in items {
         match item {
-            syn::Item::Type(t) if idents_of(&t.ty).iter().any(|i| i == "Stream") => {
+            syn::Item::Type(t) if idents_of(&t.ty).iter().any(|i| i == target) => {
                 out.push(t.ident.to_string());
             }
-            syn::Item::Use(u) => walk_use(&u.tree, &mut out),
+            syn::Item::Use(u) => walk_use(&u.tree, target, &mut out),
             syn::Item::Mod(m) => {
                 if let Some((_, inner)) = &m.content {
-                    out.extend(alloc_stream_names(inner));
+                    out.extend(alias_names(inner, target));
                 }
             }
             _ => {}
@@ -912,6 +922,260 @@ fn check_sig(
         "§13.1: `fn {name}` at {rel}:{line} takes a Stream and returns one — that is how a \
          second sub-level silently returns a duplicate of an unrelated sibling. Sub-streams \
          are constructed (`Stream::sub`), not derived."
+    ));
+}
+
+/// §8.2 — no signature comparison may skip the group minimisation.
+///
+/// **This is the only enforcement of Task 9's routed requirement 1**, and the
+/// property is an API-surface *negative*, which no behavioural test can state.
+/// A `Signature::distance` added alongside `Signature::group_distance`
+/// satisfies every test in `signature.rs` while destroying the thing they
+/// protect: §8.2 stores a signature as the lexicographically smallest of its 60
+/// rotations, which is measured as the **worst of five descriptors**
+/// (0.7510–0.7745 size-matched, against `D_group`'s 0.9230–0.9415) and is safe
+/// *only* because every consumer compares group-minimised. §15.2's novelty
+/// histogram takes distances and is read against a neutral shadow, where a
+/// descriptor with poor locality inflates apparent novelty as a pure
+/// representation artefact.
+///
+/// **What it decides.** A group-minimised comparison cannot be written without
+/// a `Geodesic` — that is the only source of `rotation_perms`. A plain
+/// Euclidean one needs no such argument. So: every externally reachable `fn` in
+/// `signature.rs` mentioning `Signature` twice or more across its inputs must
+/// also take a `Geodesic`. That is a statement about *shape*, not about names,
+/// so it is not defeated by calling the method `compare`, `delta` or `metric`.
+///
+/// **What is outside it, named rather than implied**, because three guards in
+/// this project shipped enforcing less than their doc claimed:
+///
+/// - a function that takes a `Geodesic` and ignores it. `syn` reads
+///   signatures, not bodies.
+/// - a consumer in another crate folding over `Signature::extents` and
+///   subtracting. Those accessors are public because §8.3's kernel needs the
+///   components, so privacy cannot close this without breaking Task 10.
+/// - a `derive`. `#[derive(PartialOrd)]` generates a comparison that never
+///   appears in the AST as a `fn`. Equality is deliberately fine — §8.2's
+///   identity form needs it — but an ordering derive would slip past.
+/// - a comparison against something that is not a `Signature`: a bare
+///   `[Span; D]`, or a `Vec<f64>` of extents.
+/// - a trait *declaration* here is over-approximated the other way: its
+///   receiver is counted as a signature, because `impl Cmp for Signature` is
+///   one line away. A public trait in this file about some other type would
+///   therefore be reported.
+/// - **`#[cfg(test)] mod`s, which are skipped outright.** The discriminator for
+///   requirement 1 is "the group distance is invariant under a group element
+///   and a plain one is not", and it cannot be written without a plain
+///   distance to contrast against. A guard that fires on the test proving the
+///   property gets deleted, which is worse than the exemption.
+///
+/// Private helpers are not reachable spellings and are exempt for the same
+/// reason — `lex_cmp` is the lexicographic order §8.2 asks for, takes two
+/// signatures and no geodesic, and is correct.
+fn check_no_ungrouped_signature_comparison(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let path = root.join("crates/borbax-molecule/src/signature.rs");
+    if !path.is_file() {
+        // A silent `Ok` here is a disabled guarantee that survives a rename or
+        // a file move. If the check cannot run, that is itself the failure.
+        failures.push(format!(
+            "§8.2: {} is missing — the group-minimised-comparison check cannot run",
+            path.display()
+        ));
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let rel = path
+        .strip_prefix(root)
+        .unwrap_or(&path)
+        .display()
+        .to_string();
+    for f in scan_for_ungrouped_comparisons(&rel, &text)? {
+        failures.push(f);
+    }
+    Ok(())
+}
+
+/// The predicate behind [`check_no_ungrouped_signature_comparison`], split out
+/// so it takes `(&str, &str)` and can be exercised against a string.
+///
+/// That shape is the point, and it is copied deliberately: the two hand-rolled
+/// versions of the `Stream` guard could only be run against the real crate,
+/// which by construction produces no failures and therefore tests nothing, and
+/// each shipped enforcing far less than its own doc claimed.
+fn scan_for_ungrouped_comparisons(rel: &str, text: &str) -> Result<Vec<String>, String> {
+    let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
+    let mut sig_names = alias_names(&file.items, "Signature");
+    sig_names.push("Signature".to_owned());
+    let mut geo_names = alias_names(&file.items, "Geodesic");
+    geo_names.push("Geodesic".to_owned());
+    let mut out = Vec::new();
+    collect_ungrouped_comparisons(rel, &file.items, &sig_names, &geo_names, &mut out);
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// Is this item gated behind `#[cfg(test)]`?
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        a.path().is_ident("cfg")
+            && a.meta
+                .require_list()
+                .is_ok_and(|l| l.tokens.to_string().replace(' ', "") == "test")
+    })
+}
+
+fn collect_ungrouped_comparisons(
+    rel: &str,
+    items: &[syn::Item],
+    sig_names: &[String],
+    geo_names: &[String],
+    out: &mut Vec<String>,
+) {
+    for item in items {
+        match item {
+            syn::Item::Mod(m) => {
+                if is_cfg_test(&m.attrs) {
+                    continue;
+                }
+                if let Some((_, inner)) = &m.content {
+                    collect_ungrouped_comparisons(rel, inner, sig_names, geo_names, out);
+                }
+            }
+            syn::Item::Fn(f) if !matches!(f.vis, syn::Visibility::Inherited) => {
+                check_comparison_sig(rel, &f.sig, sig_names, geo_names, false, out);
+            }
+            syn::Item::Impl(i) => {
+                let on = idents_of(&i.self_ty)
+                    .iter()
+                    .any(|t| sig_names.iter().any(|n| n == t));
+                for it in &i.items {
+                    match it {
+                        // A method in a **trait** impl carries no visibility of
+                        // its own and is as public as the trait, so it is
+                        // checked unconditionally. `impl PartialOrd for
+                        // Signature` is exactly the shape that would slip past
+                        // a visibility filter.
+                        syn::ImplItem::Fn(f)
+                            if i.trait_.is_some()
+                                || !matches!(f.vis, syn::Visibility::Inherited) =>
+                        {
+                            check_comparison_sig(rel, &f.sig, sig_names, geo_names, on, out);
+                        }
+                        syn::ImplItem::Macro(m) => out.push(unreadable_signature(rel, &m.mac.path)),
+                        syn::ImplItem::Verbatim(_) => {
+                            out.push(unreadable_signature_at(rel, "verbatim impl item"));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // A trait method is spelled `fn`, never `pub fn`. An extension
+            // trait is the idiomatic way to add a method in Rust, so it is the
+            // most likely reinstatement rather than the least.
+            syn::Item::Trait(t) if !matches!(t.vis, syn::Visibility::Inherited) => {
+                for it in &t.items {
+                    match it {
+                        // **The receiver counts here**, because a trait can be
+                        // implemented *for* `Signature` — so
+                        // `pub trait Cmp { fn d(&self, o: &Signature<D>) -> f64; }`
+                        // is a two-signature comparison the moment anyone
+                        // writes `impl Cmp for Signature`. That is the same
+                        // over-approximation `SelfTy::Unknown` takes in the
+                        // `Stream` guard, for the same reason: an extension
+                        // trait is the idiomatic way to add a method, so it is
+                        // the likely reinstatement rather than an exotic one.
+                        // The cost is a public trait in this file that takes a
+                        // `&Signature` and is *about* something else, which
+                        // would be a strange thing to put here.
+                        syn::TraitItem::Fn(f) => {
+                            check_comparison_sig(rel, &f.sig, sig_names, geo_names, true, out);
+                        }
+                        syn::TraitItem::Macro(m) => {
+                            out.push(unreadable_signature(rel, &m.mac.path));
+                        }
+                        syn::TraitItem::Verbatim(_) => {
+                            out.push(unreadable_signature_at(rel, "verbatim trait item"));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // "There is code here I cannot read" must not be silence.
+            syn::Item::Macro(m) => out.push(unreadable_signature(rel, &m.mac.path)),
+            syn::Item::Verbatim(_) => out.push(unreadable_signature_at(rel, "verbatim item")),
+            _ => {}
+        }
+    }
+}
+
+fn unreadable_signature(rel: &str, path: &syn::Path) -> String {
+    let name = path
+        .segments
+        .last()
+        .map_or_else(|| "?".to_owned(), |s| s.ident.to_string());
+    unreadable_signature_at(rel, &format!("`{name}!` expansion"))
+}
+
+fn unreadable_signature_at(rel: &str, what: &str) -> String {
+    format!(
+        "§8.2: {what} in {rel} cannot be checked for ungrouped signature comparison — this \
+         guard reads the AST and does not expand macros, so silence here would mean \"did not \
+         look\" rather than \"looked and it was clean\". Write the impl out."
+    )
+}
+
+/// Flag `sig` if two signatures go in and no geodesic does.
+fn check_comparison_sig(
+    rel: &str,
+    sig: &syn::Signature,
+    sig_names: &[String],
+    geo_names: &[String],
+    self_is_sig: bool,
+    out: &mut Vec<String>,
+) {
+    let mut signatures = 0usize;
+    let mut has_geodesic = false;
+    for arg in &sig.inputs {
+        match arg {
+            // Any receiver spelling, but only where the receiver *is* a
+            // signature.
+            syn::FnArg::Receiver(_) => {
+                if self_is_sig {
+                    signatures += 1;
+                }
+            }
+            syn::FnArg::Typed(t) => {
+                let idents = idents_of(&t.ty);
+                // Counted per *mention*, not per argument, so
+                // `fn d(pair: (&Signature<D>, &Signature<D>))` is caught as
+                // well as the two-argument spelling.
+                signatures += idents
+                    .iter()
+                    .filter(|i| sig_names.iter().any(|n| n == *i))
+                    .count();
+                if self_is_sig && bare_self(&t.ty) {
+                    signatures += 1;
+                }
+                if idents.iter().any(|i| geo_names.iter().any(|n| n == i)) {
+                    has_geodesic = true;
+                }
+            }
+        }
+    }
+    if signatures < 2 || has_geodesic {
+        return;
+    }
+    let line = syn::spanned::Spanned::span(sig).start().line;
+    let name = &sig.ident;
+    out.push(format!(
+        "§8.2: `fn {name}` at {rel}:{line} compares two signatures and takes no Geodesic, so it \
+         cannot be minimising over the 60 rotations. §8.2 stores the lexicographically smallest \
+         rotation, which is the worst of five measured descriptors and is safe only while every \
+         comparison is group-minimised — see `Signature::group_distance`."
     ));
 }
 
@@ -1998,6 +2262,7 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::scan_for_derived_streams;
+    use super::scan_for_ungrouped_comparisons;
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
     use super::{identifier_segments, scan_format_tokens};
 
@@ -2262,6 +2527,151 @@ mod tests {
     )]
     fn hits(src: &str) -> Vec<String> {
         scan_for_derived_streams("probe.rs", src).expect("probe must parse")
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "CLAUDE.md: tests may unwrap freely — a probe that does not parse is a broken \
+                  test, and panicking says so at the point of the mistake"
+    )]
+    fn sig_hits(src: &str) -> Vec<String> {
+        scan_for_ungrouped_comparisons("signature.rs", src).expect("probe must parse")
+    }
+
+    /// Every shape that reintroduces an ungrouped signature comparison.
+    ///
+    /// The guard exists because the property is an API-surface *negative* that
+    /// no behavioural test can state: a `Signature::distance` added beside
+    /// `group_distance` passes every test in `signature.rs` while destroying
+    /// what they protect. So the corpus below is the only evidence the check
+    /// does anything, and it is built from *shapes* rather than names —
+    /// renaming the method to `metric` must not help.
+    #[test]
+    fn every_ungrouped_signature_comparison_is_caught() {
+        const FORBIDDEN: &[(&str, &str)] = &[
+            (
+                "the obvious method",
+                "impl Signature { pub fn distance(&self, o: &Self) -> f64 { todo!() } }",
+            ),
+            (
+                "renamed — the check reads shape, not names",
+                "impl Signature { pub fn metric(&self, o: &Self) -> f64 { todo!() } }",
+            ),
+            (
+                "spelled out rather than via Self",
+                "impl Signature { pub fn d(&self, o: &Signature<D>) -> f64 { todo!() } }",
+            ),
+            (
+                "a free function",
+                "pub fn compare(a: &Signature<D>, b: &Signature<D>) -> f64 { todo!() }",
+            ),
+            (
+                "an extension trait — spelled `fn`, never `pub fn`",
+                "pub trait Cmp { fn d(&self, o: &Signature<D>) -> f64; }",
+            ),
+            (
+                "a trait impl, which carries no visibility of its own",
+                "impl PartialOrd for Signature { fn partial_cmp(&self, o: &Self) -> \
+                 Option<Ordering> { todo!() } }",
+            ),
+            (
+                "both operands inside one tuple argument",
+                "pub fn d(pair: (&Signature<D>, &Signature<D>)) -> f64 { todo!() }",
+            ),
+            (
+                "against a slice of them",
+                "impl Signature { pub fn nearest(&self, o: &[Signature<D>]) -> usize { todo!() } }",
+            ),
+            (
+                "defeated by a local alias, one line",
+                "type Shape = Signature<42>;\n\
+                 pub fn d(a: &Shape, b: &Shape) -> f64 { todo!() }",
+            ),
+            (
+                "declared inside a module",
+                "pub mod inner { pub fn d(a: &Signature<D>, b: &Signature<D>) -> f64 { todo!() } }",
+            ),
+        ];
+        for (label, src) in FORBIDDEN {
+            assert!(!sig_hits(src).is_empty(), "not caught ({label}): {src}");
+        }
+    }
+
+    /// The other half, and it is the half that decides whether the guard
+    /// survives: a check that fires on correct code gets deleted.
+    #[test]
+    fn a_group_minimised_comparison_is_not_flagged() {
+        const PERMITTED: &[(&str, &str)] = &[
+            (
+                "the shipped comparison",
+                "impl Signature { pub fn group_distance(&self, o: &Self, g: &Geodesic<D>) -> f64 \
+                 { todo!() } }",
+            ),
+            (
+                "a free function taking the geodesic",
+                "pub fn compare(a: &Signature<D>, b: &Signature<D>, g: &Geodesic<D>) -> f64 \
+                 { todo!() }",
+            ),
+            (
+                "one signature only",
+                "impl Signature { pub fn permuted(&self, p: &[u8; D]) -> Self { todo!() } }",
+            ),
+            (
+                "the geodesic reached through an alias",
+                "use crate::geodesic::Geodesic as Sphere;\n\
+                 pub fn d(a: &Signature<D>, b: &Signature<D>, s: &Sphere<D>) -> f64 { todo!() }",
+            ),
+            (
+                "a private helper is not a reachable spelling — this is `lex_cmp`",
+                "impl Signature { fn lex_cmp(&self, o: &Self) -> Ordering { todo!() } }",
+            ),
+            (
+                "a private free function",
+                "fn plain(a: &Signature<D>, b: &Signature<D>) -> f64 { todo!() }",
+            ),
+            (
+                "the requirement-1 discriminator, which needs a plain distance to contrast \
+                 against and lives behind cfg(test)",
+                "#[cfg(test)]\nmod tests {\n    \
+                 pub fn plain(a: &Signature<D>, b: &Signature<D>) -> f64 { todo!() }\n}",
+            ),
+        ];
+        for (label, src) in PERMITTED {
+            assert!(
+                sig_hits(src).is_empty(),
+                "fired on correct code ({label}): {src} -> {:?}",
+                sig_hits(src)
+            );
+        }
+    }
+
+    /// Silence must mean "looked and it was clean", never "did not look".
+    #[test]
+    fn an_unreadable_item_is_reported_rather_than_skipped() {
+        assert!(!sig_hits("make_signature_api!(Signature);").is_empty());
+        assert!(
+            !sig_hits("impl Signature { impl_compare!(); }").is_empty(),
+            "a macro inside an impl block is where the comparison would actually be generated"
+        );
+    }
+
+    /// The real file must pass, or the corpus above is testing a fiction.
+    #[expect(
+        clippy::expect_used,
+        reason = "CLAUDE.md: tests may unwrap freely — a missing source file is a broken test"
+    )]
+    #[test]
+    fn the_shipped_signature_module_passes_its_own_guard() {
+        let text = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("crates/borbax-molecule/src/signature.rs"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        assert!(!text.is_empty(), "signature.rs not found or empty");
+        assert_eq!(
+            scan_for_ungrouped_comparisons("signature.rs", &text).expect("must parse"),
+            Vec::<String>::new()
+        );
     }
 
     /// Every shape that reintroduces a derived stream must be caught.
