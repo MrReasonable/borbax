@@ -166,6 +166,21 @@ impl Embedding {
 /// refuses a disconnected molecule, or the separation is chosen with a physical
 /// reason rather than inherited from a NaN guard.
 ///
+/// **And the reachability argument is a schedule, not a property.** Nothing in
+/// V0 interns a disconnected species — but only because `ReactionKind::Cleave`
+/// names no products in either plan file, which the chemistry plan itself flags
+/// as a defect to close for §9.1 microscopic reversibility. Nothing *enforces*
+/// it: `Mol12::clear_bond` is public, `canonicalise` accepts a disconnected
+/// molecule, and `embed` takes a `CanonMol` with no connectivity check. The
+/// guard expires the moment Cleave is finished.
+///
+/// One claim here was attacked and survived: that unreachable pairs get the
+/// largest target, so fragments are pushed apart. Radii vary up to ~3.6x, so a
+/// cross-fragment pair of small atoms could in principle sit below a bonded pair
+/// of large ones — refuted over 600 disconnected fixtures across 10 universe
+/// seeds, cross target largest in 600/600. It holds for realistic universes as a
+/// coincidence of the drawn radius range rather than as a structural guarantee.
+///
 /// **Disconnected pairs come back as one hop beyond the graph's diameter, not as
 /// an infinity**, which is the Task 2 review's routed hazard. `experiments`'
 /// version returns `f64::INFINITY` and is safe there only because every fixture
@@ -1462,6 +1477,21 @@ mod tests {
             "excess is not heading to zero: {excess:?}"
         );
     }
+
+    // **A gap this test does not close, stated rather than left implicit.** The
+    // star is bounded at n = 6 by its hub's valence, and the truncation error that
+    // would justify questioning 240 lives at n = 11-12. Measured against a 200,000
+    // iteration reference on the current code: the *systematic* size-correlated
+    // bias the review found before the landmark start is discharged — mean R_max
+    // error at n = 12 is now -0.10% against the -2.03% measured on the old start,
+    // an 11-20x reduction. What remains is a per-molecule *tail*: worst case
+    // 1.1-5.5% at n >= 11, and it is budget-insensitive, 16x the budget buying
+    // 2.7x on the worst case while p95 falls cleanly 0.90% -> 0.006%. That is a
+    // slow mode in a small fraction of configurations, not truncation, so raising
+    // `ITERATIONS` would not fix it and would cost a golden regeneration for
+    // nothing. Routed to Task 9 with its discriminator: if signature locality
+    // shows outliers, check whether they are the same molecules before blaming
+    // the signature.
 
     /// **No two atoms may occupy one point.** Atoms are solid bodies; a collapsed
     /// pair makes an n-atom molecule present n−1 extremal points to the support

@@ -2658,6 +2658,17 @@ provenance fallback would break it.
 
 ---
 
+**ROUTED FROM TASK 8.** `embed` places unreachable atom pairs at `diameter + 1`
+hops, which is finite (the Task 2 hazard) but is a *chosen* separation with no
+physical justification — and with two isolated atoms `diameter = 0`, so the fill
+is `1`, the same value a bond gets. Nothing in V0 interns a disconnected species
+today, but **that is a schedule and not a property**: `ReactionKind::Cleave`
+names no products yet, `Mol12::clear_bond` is public, `canonicalise` accepts a
+disconnected molecule, and `embed` takes a `CanonMol` with no connectivity check.
+*Discriminator:* once Cleave names products, `embed(&canon(&mol))` where
+`!mol.is_connected()` must be unreachable — assert it, or make `embed` refuse.
+
+
 ### Task 16: Catalysis from cavity geometry
 
 **Files:** Create `crates/borbax-reaction/src/catalysis.rs`; test same file.
