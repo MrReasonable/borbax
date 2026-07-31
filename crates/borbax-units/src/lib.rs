@@ -324,7 +324,7 @@ macro_rules! unit {
             /// one implementation of the decision rather than one per unit.
             #[must_use]
             #[inline]
-            pub fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+            pub fn canonical_cmp(&self, other: &Self) -> core::cmp::Ordering {
                 crate::canonical_cmp(self.0, other.0)
             }
 

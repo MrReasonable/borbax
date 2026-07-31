@@ -2068,8 +2068,16 @@ impl<const D: usize> Interner<D> {
             return id;
         }
         let id = SpeciesId(self.records.len() as u32);
-        let e = embed(m, u);
-        let sig = signature(m, &e, g, u).canonicalise(g);
+        // **Superseded by Task 9 and Task 8's shipped API.** `embed` takes a
+        // `&CanonMol`, not a `&Mol12` — that is what `canonicalise` above
+        // returns — and `signature` takes neither a `Mol12` nor a `Universe`,
+        // because `Embedding` now carries the per-atom radius and character
+        // (Task 9's routed requirement 3, which exists precisely so this
+        // two-argument pairing has no spelling). The shape is:
+        //     let e = embed(&canon, u);
+        //     let sig = signature(&e, g).canonicalise(g);
+        let e = embed(&canon, u);
+        let sig = signature(&e, g).canonicalise(g);
 
         let mut bond_count = 0u32;
         let mut cleave = 0.0f64;
@@ -2140,7 +2148,10 @@ impl<const D: usize> Interner<D> {
 fn solvent_signature<const D: usize>(u: &Universe, g: &Geodesic<D>) -> Signature<D> {
     let mut m = Mol12::new();
     m.add_atom(u.consts.solvent);
-    signature(&m, &embed(&m, u), g, u).canonicalise(g)
+    // Superseded, as in `intern` above: `embed` takes the canonical form and
+    // `signature` takes neither the molecule nor the universe.
+    let (canon, _) = canonicalise(&m);
+    signature(&embed(&canon, u), g).canonicalise(g)
 }
 
 /// Dense triangular memo over the most abundant species (spec §8.6).
