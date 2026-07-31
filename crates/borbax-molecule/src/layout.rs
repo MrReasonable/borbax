@@ -2088,12 +2088,15 @@ mod tests {
                     if sep < closest {
                         closest = sep;
                     }
+                    pairs += 1;
                 }
-                pairs += 1;
             }
         }
         assert!(molecules > 400, "only {molecules} usable molecules");
-        assert!(pairs > 2000, "only {pairs} pairs examined");
+        // 19,258 on this corpus. The bar was `> 2000` while the counter sat in the
+        // outer loop and recorded *atoms* — 4,818 — so it reported a quantity it
+        // did not measure and was ~4x weaker than intended. Found by CodeRabbit.
+        assert!(pairs > 15_000, "only {pairs} pairs examined");
         // A separation that merely clears 1e-9 would be a technical pass; the real
         // claim is that separations are on the scale of the molecule.
         assert!(
