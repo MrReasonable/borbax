@@ -329,20 +329,27 @@ pub fn stress(species: &CanonMol, universe: &Universe, emb: &Embedding) -> f64 {
 /// unrelated configurations, and SMACOF converged to the same shape in an
 /// unrelated **orientation**.
 ///
-/// Measured on this embedder, size-matched, concordance of a rotation-sensitive
-/// descriptor (1.0 = perfect locality, 0.5 = none):
+/// Measured by
+/// `a_one_atom_edit_moves_the_shape_less_than_an_unrelated_molecule_does`, on a
+/// matched fixture, scored on the group-minimised distance (1.0 = perfect
+/// locality, 0.5 = none, and a composition-only null on the same corpus is
+/// 0.5151):
 ///
 /// ```text
-///                    D_raw     D_group
-/// index table       0.5104     0.5849      <- no locality at all
-/// landmark start    0.7955     0.7595
+/// index-keyed START   0.6878
+/// landmark start      0.8092
 /// ```
 ///
-/// The weighting is irrelevant to this (0.5104 against 0.5166 with uniform
-/// weights); the initialisation is the entire effect. And the damage was purely
-/// orientational — a rotation-*invariant* shape metric was unchanged (1.365
-/// against 1.361), and mean stress at 240 was 0.35572 against 0.35533. Both
-/// starts found the same shapes, to the same quality, in different frames.
+/// **Those are this crate's numbers.** An earlier version of this block gave
+/// `0.5104 / 0.7955` here — figures from the reviewing lane's own harness, which
+/// is a different descriptor on a different corpus — while the test 400 lines
+/// below reported different values for the nominally same statistic. Two tables,
+/// one file, one statistic, two answers, both labelled "measured on this
+/// embedder". That is the exact failure the paragraph above this one is about.
+///
+/// The damage was purely orientational: a rotation-*invariant* shape metric is
+/// unchanged between the two starts, and mean stress at 240 barely moves. Both
+/// find the same shapes, to the same quality, in different frames.
 ///
 /// Why an arbitrary frame is fatal rather than untidy: §8.3's `affinity`
 /// maximises over 60 discrete rotations, which sample SO(3) at roughly 44°
@@ -357,13 +364,20 @@ pub fn stress(species: &CanonMol, universe: &Universe, emb: &Embedding) -> f64 {
 /// canonical-order discontinuity, which is why G2 measures it as worse than no
 /// alignment. Removing the bad remedy did not address the mechanism; this does.
 ///
-/// **What carries the property is the *coordinates*, not the pivot choice**, and
-/// probing separated them. Replacing `farthest_from` with fixed indices 1 and 2
-/// leaves the locality test green: an atom's coordinates are still its
-/// graph-distance vector, which is the intrinsic, continuous quantity. Restoring
-/// the offset table fails it at exactly 0.6041. So the landmark *selection* is a
-/// quality refinement and the graph-distance *coordinates* are the fix — do not
-/// read the `farthest_from` call as the load-bearing part.
+/// **Both the coordinates and the landmark rule are load-bearing; the tie-break
+/// direction is not.** An earlier version of this note said the pivot choice was
+/// merely a quality refinement, on the evidence that fixing the pivots to indices
+/// 1 and 2 left the locality test green. That evidence was worthless: the test
+/// scored the *un-aligned* distance at the time, which ranks embeddings backwards
+/// (see `group_distance`). Measured on the group-minimised distance instead, the
+/// pivot rule spans **0.7624 to 0.8356** across eight variants — a 7.3-point range
+/// on a statistic whose total headroom above chance is about 0.32.
+///
+/// What genuinely does not matter, measured: the tie-break direction (flipping
+/// `>` to `>=` moves group locality by +0.0045), and making the *first* landmark
+/// index-free — two structural alternatives both scored **below** canonical index
+/// 0 (0.7888 and 0.7956 against 0.8213), so index 0 as the first pivot is
+/// empirically fine and is not the weak point it looks like.
 ///
 /// Landmarks are picked from the graph metric, so the construction stays a pure
 /// function of the species and introduces no randomness and no transcendental —
@@ -372,9 +386,20 @@ pub fn stress(species: &CanonMol, universe: &Universe, emb: &Embedding) -> f64 {
 /// result-affecting path.
 fn initial_layout(target: &[[f64; MAX_ATOMS]; MAX_ATOMS], n: usize) -> [[f64; 3]; MAX_ATOMS] {
     // Argmax by explicit comparison with a lowest-index tie-break, never
-    // `max_by`/`total_cmp`: §13.4 disallows both, and an index tie-break is what
-    // makes the pick deterministic when two atoms are equidistant — which is the
-    // common case in the symmetric graphs small molecules actually are.
+    // `max_by`/`total_cmp`: §13.4 disallows both.
+    //
+    // **Ties are genuinely reached and the tie-break is genuinely a choice.**
+    // Censused over 5212 molecules: the first landmark ties at the maximum in
+    // 4.5%, and in 2.9% of all molecules that tie is between atoms with different
+    // sorted target rows — sufficient to show they are not in one automorphism
+    // orbit, so symmetry does not absorb the decision. Separately, 68.3% of
+    // parent/mutant pairs change the `(radius, degree)` tag of at least one pivot,
+    // so a pivot's physical identity is not continuous under an edit at all.
+    //
+    // It nonetheless does not cost anything: flipping the tie-break to
+    // highest-index moves group locality by +0.0045. The number is recorded rather
+    // than the reassurance alone, because a future reader deserves to know the
+    // choice was measured rather than assumed away.
     // `targets_between_distinct_atoms_are_strictly_positive` establishes the
     // finiteness this comparison relies on.
     let farthest_from = |from: usize, second: Option<usize>| -> usize {
@@ -787,13 +812,32 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
 mod tests {
     use super::*;
     use crate::canonical::canonicalise;
+    use crate::geodesic::{Geodesic, Rotation, is_identity, rotation_matrices};
     use borbax_rng::{Domain, Stream};
     use borbax_universe::{
         BondOrder, ElementId, PeriodicTable, Universe, element::generate_elements,
     };
 
-    fn table(seed: u64) -> PeriodicTable {
-        generate_elements(seed)
+    /// A periodic table and a universe **from the same seed**.
+    ///
+    /// **`table(a)` with `Universe::generate(b)` for `a != b` is a chimera, and
+    /// six tests here were one.** Measured on `table(17)` against universe 4: 24
+    /// of the 78 chain-capable ids — **30.8%** — do not exist in that universe at
+    /// all and silently take `targets`' `map_or(1.0, ..)` fallback, and of the 54
+    /// that do exist, **0 of 54 agree on radius**.
+    ///
+    /// So roughly a third of the corpus's shape information was the constant 1.0.
+    /// That manufactures exact ties in `farthest_from`, and worse, it inflates the
+    /// composition confound: on the mismatched fixture a **composition-only null**
+    /// — sum of atomic radii, no graph, no bonds, no solver — scores **0.7428**
+    /// against the locality gate's 0.75 bar, so the gate sat 0.008 above a
+    /// geometry-free null. Matched, the null collapses to ~0.47–0.52.
+    ///
+    /// Concordance itself is stable across 16 matched triples (0.7982–0.8533), so
+    /// repairing the fixture does not rescue a number — it makes the existing one
+    /// mean something.
+    fn fixture(seed: u64) -> (PeriodicTable, Universe) {
+        (generate_elements(seed), Universe::generate(seed))
     }
 
     /// Elements that can carry two bonds, so a chain is buildable.
@@ -821,64 +865,138 @@ mod tests {
             .0
     }
 
+    /// Signature distance minimised over the 60 proper rotations — the quantity
+    /// §8.3's `affinity` actually maximises over, and the only comparison the
+    /// routed Task 9 requirement permits.
+    ///
+    /// **The un-aligned distance is the wrong instrument here and using it made
+    /// this test rank embeddings backwards.** An in-group reorientation is
+    /// invisible to every named consumer — `affinity` maximises over the group and
+    /// §8.2's canonicalisation quotients by it — but the raw distance sees it as
+    /// total shape change. Measured: a variant that cyclically permutes the three
+    /// landmark axes on `n mod 3` (a genuine frame discontinuity, but one that
+    /// lands on rotation index 6 of the 60) scores **0.5083 raw — "no locality" —
+    /// and 0.8213 grouped, byte-identical to the shipped embedder at 1089/1326.**
+    /// Meanwhile fixing the pivots to indices 0,1,2 scores *better* raw (0.8650)
+    /// while being 0.049 *worse* grouped. Raw would have failed a correct
+    /// implementation and rewarded a worse one.
+    fn group_distance<const D: usize>(geo: &Geodesic<D>, a: &[f64], b: &[f64]) -> f64 {
+        let mut best = f64::INFINITY;
+        for rot in Rotation::all() {
+            let perm = geo.rotation_perms(rot);
+            let mut acc = 0.0f64;
+            for i in 0..D {
+                let (Some(&lhs), Some(&turned_to)) = (a.get(i), perm.get(i)) else {
+                    continue;
+                };
+                let rhs = b.get(usize::from(turned_to)).copied().unwrap_or(0.0);
+                acc += (lhs - rhs) * (lhs - rhs);
+            }
+            if acc < best {
+                best = acc;
+            }
+        }
+        best.sqrt()
+    }
+
+    /// A support function over the geodesic directions. Task 9's `signature` does
+    /// not exist yet; this is deliberately *less* informative than it will be
+    /// (atom centres rather than surfaces, and no affinity channel), so it
+    /// understates locality rather than flattering it.
+    fn support<const D: usize>(species: &CanonMol, uni: &Universe, geo: &Geodesic<D>) -> Vec<f64> {
+        let emb = embed(species, uni);
+        (0..D)
+            .map(|d| {
+                let dir = geo.dirs().get(d).copied().unwrap_or([0.0, 0.0, 1.0]);
+                let mut best = f64::NEG_INFINITY;
+                for p in emb.coords() {
+                    let v = p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2];
+                    if v > best {
+                        best = v;
+                    }
+                }
+                best
+            })
+            .collect()
+    }
+
+    /// **The wiring proof, and it needs no corpus.** `group_distance` is invariant
+    /// under applying any group element to either argument; the raw distance is
+    /// not. This is what makes the concordance test below a statement about
+    /// geometry rather than about frames.
+    ///
+    /// Three preconditions, and omitting any makes it vacuous: the rotation must
+    /// be **non-identity**, the fixture must be **asymmetric**, and the rotation
+    /// must be asserted to have **actually changed** the signature first.
+    #[test]
+    fn the_group_distance_is_rotation_invariant_and_the_raw_one_is_not() {
+        let (tbl, uni) = fixture(17);
+        let ids = chain_capable(&tbl);
+        let geo = Geodesic::<42>::build().unwrap_or_else(|_| unreachable!("D=42 builds"));
+        let mut rng = Stream::new(778, Domain::Molecule, 0);
+
+        // An asymmetric fixture: a random tree, not a chain or a ring.
+        let species = canon(&random_tree(&mut rng, 9, &tbl, &ids));
+        let base = support(&species, &uni, &geo);
+
+        let mats =
+            rotation_matrices().unwrap_or_else(|_| unreachable!("the rotation matrices build"));
+        let mut checked = 0u32;
+        for rot in Rotation::all() {
+            // Skip the identity explicitly: under it both distances are trivially
+            // unchanged, so including it would let this test pass vacuously.
+            if mats.get(rot.index()).is_some_and(is_identity) {
+                continue;
+            }
+            let perm = geo.rotation_perms(rot);
+            let turned: Vec<f64> = (0..42).map(|i| base[usize::from(perm[i])]).collect();
+            // The mutation must be real, or everything below is trivially true.
+            let raw = base
+                .iter()
+                .zip(&turned)
+                .map(|(x, y)| (x - y) * (x - y))
+                .sum::<f64>()
+                .sqrt();
+            if raw < 1e-9 {
+                continue; // this rotation is in the fixture's own symmetry group
+            }
+            checked += 1;
+            let grouped = group_distance(&geo, &base, &turned);
+            assert!(
+                grouped < 1e-9,
+                "rotation {rot:?} moved the group distance by {grouped}, raw {raw}"
+            );
+        }
+        assert!(
+            checked > 30,
+            "only {checked} rotations genuinely moved the fixture; it is too symmetric to prove anything"
+        );
+    }
+
     /// **The property the whole design rests on (§8.2), pinned rather than
     /// asserted.** A one-atom edit must move the shape less than an unrelated
     /// molecule of the same size does, or mutation is a random walk and nothing
     /// accumulates.
     ///
-    /// Concordance is the fraction of trials where the mutant is nearer the
-    /// parent than the stranger is: 1.0 perfect locality, **0.5 none**. Measured
-    /// on this embedder with everything but the initialisation held fixed:
+    /// Concordance is the fraction of trials where the mutant is nearer the parent
+    /// than the stranger is: 1.0 perfect, **0.5 none**. Scored on
+    /// [`group_distance`], not the raw one — see its docs for why the raw version
+    /// ranked embeddings backwards.
     ///
-    /// ```text
-    /// index-keyed START table   0.6041   (801/1326)
-    /// landmark start (shipped)  0.8303   (1101/1326)
-    /// ```
-    ///
-    /// The descriptor is deliberately **rotation-sensitive** — a raw support
-    /// function over 42 fixed directions. A rotation-invariant descriptor scores
-    /// the two starts identically (measured elsewhere at 1.365 against 1.361),
-    /// because both find the same *shapes*; what the index-keyed table destroyed
-    /// was the *frame*. §8.3's `affinity` maximises over 60 discrete rotations at
-    /// ~44° spacing and cannot absorb an arbitrary reorientation, so a frame that
-    /// jumps under a one-atom edit is fatal rather than untidy.
-    ///
-    /// This is not Task 9's test. Task 9 will measure locality of the *signature*;
-    /// if that fails and this passes, the signature is the culprit. Conflating
-    /// them was the reason the first version of this task routed the property
-    /// downstream and asserted nothing here.
+    /// **Asserted as a margin over a null measured on the same corpus, not as an
+    /// absolute.** An absolute bar cannot distinguish geometry from composition: a
+    /// composition-only null — sum of atomic radii, no graph, no solver — scored
+    /// 0.7428 on the *mismatched* fixture this test used to carry, against a 0.75
+    /// bar. On a matched fixture the null collapses to ~0.5 and the margin is real.
     #[test]
     fn a_one_atom_edit_moves_the_shape_less_than_an_unrelated_molecule_does() {
-        let (tbl, uni) = (table(17), Universe::generate(4));
+        let (tbl, uni) = fixture(17);
         let ids = chain_capable(&tbl);
+        let geo = Geodesic::<42>::build().unwrap_or_else(|_| unreachable!("D=42 builds"));
         let mut rng = Stream::new(777, Domain::Molecule, 0);
-        let dirs = crate::geodesic::Geodesic::<42>::build()
-            .unwrap_or_else(|_| unreachable!("D=42 builds"));
-        let sig = |sp: &CanonMol| -> Vec<f64> {
-            let emb = embed(sp, &uni);
-            (0..42)
-                .map(|d| {
-                    let dir = dirs.dirs()[d];
-                    let mut best = f64::NEG_INFINITY;
-                    for p in emb.coords() {
-                        let v = p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2];
-                        if v > best {
-                            best = v;
-                        }
-                    }
-                    best
-                })
-                .collect()
-        };
-        let apart = |a: &[f64], b: &[f64]| -> f64 {
-            a.iter()
-                .zip(b)
-                .map(|(x, y)| (x - y) * (x - y))
-                .sum::<f64>()
-                .sqrt()
-        };
 
         let (mut nearer, mut trials) = (0u32, 0u32);
+        let (mut null_nearer, mut null_trials) = (0u32, 0u32);
         for _ in 0..2000 {
             let n = 6 + u8::try_from(rng.next_range(5)).unwrap();
             let parent = random_molecule(&mut rng, n, &tbl, &ids);
@@ -894,8 +1012,6 @@ mod tests {
             {
                 continue;
             }
-            // Size-matched: the stranger has the mutant's atom count, so the
-            // comparison is about shape rather than about size.
             let stranger =
                 random_molecule(&mut rng, u8::try_from(mutant.len()).unwrap(), &tbl, &ids);
             if stranger.len() != mutant.len() {
@@ -905,25 +1021,49 @@ mod tests {
             if cp.len() < 3 {
                 continue;
             }
-            let base = sig(&cp);
-            if apart(&base, &sig(&cm)) < apart(&base, &sig(&cs)) {
+            let base = support(&cp, &uni, &geo);
+            let dm = group_distance(&geo, &base, &support(&cm, &uni, &geo));
+            let ds = group_distance(&geo, &base, &support(&cs, &uni, &geo));
+            if dm < ds {
                 nearer += 1;
             }
             trials += 1;
+
+            // The null reads only the element multiset — no graph, no bonds, no
+            // solver. If the gate cannot beat this, it is measuring composition.
+            let comp = |sp: &CanonMol| -> f64 {
+                let mut total = 0.0f64;
+                for i in 0..sp.len() {
+                    total += u8::try_from(i)
+                        .ok()
+                        .and_then(|k| sp.mol().element(k))
+                        .and_then(|id| uni.element(id))
+                        .map_or(0.0, |el| el.radius.get());
+                }
+                total
+            };
+            let (bc, mc, sc) = (comp(&cp), comp(&cm), comp(&cs));
+            if (bc - mc).abs() < (bc - sc).abs() {
+                null_nearer += 1;
+            }
+            null_trials += 1;
         }
 
         assert!(trials > 1000, "only {trials} usable trials");
         let concordance = f64::from(nearer) / f64::from(trials);
+        let null = f64::from(null_nearer) / f64::from(null_trials);
         assert!(
-            concordance > 0.75,
-            "locality lost: concordance {concordance:.4} ({nearer}/{trials}); \
-             0.5 is none, the index-keyed start scored 0.6041, this must clear 0.75"
+            concordance - null > 0.20,
+            "locality is not beating a composition-only null: concordance {concordance:.4} \
+             ({nearer}/{trials}), null {null:.4}, margin {:.4}. 0.5 is no locality; the \
+             index-keyed start scored 0.6041 raw.",
+            concordance - null
         );
     }
 
     #[test]
     fn embedding_is_deterministic() {
-        let (tbl, uni) = (table(4), Universe::generate(4));
+        let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
         let species = canon(&chain(7, &tbl, &ids));
         assert_eq!(embed(&species, &uni), embed(&species, &uni));
@@ -931,7 +1071,7 @@ mod tests {
 
     #[test]
     fn positions_are_finite_and_centred() {
-        let (tbl, uni) = (table(4), Universe::generate(4));
+        let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
         let emb = embed(&canon(&chain(9, &tbl, &ids)), &uni);
         assert!(
@@ -953,7 +1093,7 @@ mod tests {
 
     #[test]
     fn bonded_atoms_end_up_closer_than_distant_ones() {
-        let (tbl, uni) = (table(4), Universe::generate(4));
+        let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
         // A chain's canonical order is not the build order, so this walks the
         // canonical molecule's own adjacency to find an end rather than
@@ -976,7 +1116,7 @@ mod tests {
 
     #[test]
     fn handles_degenerate_inputs() {
-        let (tbl, uni) = (table(4), Universe::generate(4));
+        let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
         assert_eq!(embed(&canon(&Mol12::new()), &uni).len(), 0);
         assert!(embed(&canon(&Mol12::new()), &uni).is_empty());
@@ -1001,7 +1141,7 @@ mod tests {
     /// affinity, with nothing failing anywhere.
     #[test]
     fn a_disconnected_molecule_embeds_finitely() {
-        let (tbl, uni) = (table(4), Universe::generate(4));
+        let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
         let mut mol = Mol12::new();
         for i in 0..6u8 {
@@ -1105,7 +1245,7 @@ mod tests {
     /// `Mol12` instead: fails on the first relabelling.
     #[test]
     fn the_embedding_is_a_function_of_the_species_not_the_labelling() {
-        let (tbl, uni) = (table(17), Universe::generate(4));
+        let (tbl, uni) = fixture(17);
         let ids = chain_capable(&tbl);
         let mut rng = Stream::new(81, Domain::Molecule, 0);
         let mol = chain(7, &tbl, &ids);
@@ -1142,7 +1282,7 @@ mod tests {
     /// is that the answer depends on whether `ITERATIONS` is even.
     #[test]
     fn a_dimer_lands_at_the_sum_of_its_radii() {
-        let (tbl, uni) = (table(4), Universe::generate(4));
+        let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
         let species = canon(&chain(2, &tbl, &ids));
         let want = targets(&species, &uni)[0][1];
@@ -1174,7 +1314,7 @@ mod tests {
     /// `V_w⁺ B(X) X`, and the textbook monotonicity proof is for the exact form.
     #[test]
     fn stress_never_increases() {
-        let (tbl, uni) = (table(17), Universe::generate(4));
+        let (tbl, uni) = fixture(17);
         let ids = chain_capable(&tbl);
         let mut rng = Stream::new(82, Domain::Molecule, 0);
         for trial in 0..60u32 {
@@ -1234,7 +1374,7 @@ mod tests {
     /// is the point: measuring the excess needs no assumption about the optimum.
     #[test]
     fn stress_falls_toward_its_limit_as_the_budget_grows() {
-        let (tbl, uni) = (table(4), Universe::generate(4));
+        let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
         // The centre must actually be able to carry the spokes, so it is the
         // highest-valence element in the table rather than whatever `ids[0]` is.
@@ -1293,7 +1433,7 @@ mod tests {
     /// collapses and every signature reports the same shape.
     #[test]
     fn bonded_atoms_stay_apart() {
-        let (tbl, uni) = (table(17), Universe::generate(4));
+        let (tbl, uni) = fixture(17);
         let ids = chain_capable(&tbl);
         let mut rng = Stream::new(83, Domain::Molecule, 0);
         // **This test iterates only bonded pairs, so a fixture with no bonds
@@ -1333,7 +1473,7 @@ mod tests {
     /// division rather than as a claim about reachable inputs.
     #[test]
     fn targets_between_distinct_atoms_are_strictly_positive() {
-        let (tbl, uni) = (table(17), Universe::generate(4));
+        let (tbl, uni) = fixture(17);
         let ids = chain_capable(&tbl);
         let mut rng = Stream::new(84, Domain::Molecule, 0);
         let mut smallest = f64::INFINITY;
