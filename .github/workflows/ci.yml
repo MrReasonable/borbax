@@ -49,12 +49,21 @@ jobs:
       #
       # What the key covers, and why each part matters here:
       #
-      # - **the rustc release / host / hash.** The host triple is what keeps the
-      #   three matrix legs apart (`aarch64-apple-darwin` /
-      #   `x86_64-unknown-linux-gnu` / `x86_64-pc-windows-msvc`), so macOS
-      #   cannot restore Linux artefacts. It also means bumping `.prototools`
-      #   invalidates the cache — correct, since §18.1 treats a compiler bump
-      #   as a physics change.
+      # - **the rustc release / host / hash**, plus a hash of
+      #   `rust-toolchain.toml`. The host triple is what keeps the three matrix
+      #   legs apart (`aarch64-apple-darwin` / `x86_64-unknown-linux-gnu` /
+      #   `x86_64-pc-windows-msvc`), so macOS cannot restore Linux artefacts.
+      #   **A change to the selected `rustc` identity invalidates the cache**,
+      #   which is what §18.1 wants, since it treats a compiler bump as a
+      #   physics change.
+      #
+      #   An earlier version of this comment said "bumping `.prototools`
+      #   invalidates the cache". That names the wrong file: `.prototools` is
+      #   the *installer* and CI does not run proto at all — `rust-toolchain.toml`
+      #   is the selection mechanism, as the note on the toolchain step above
+      #   says at length. The two cannot drift, because `xtask`'s
+      #   `check_toolchain_pins_agree` fails the build when they do, so the
+      #   practical effect is the same; the stated mechanism was not.
       # - **a hash of every `Cargo.lock` / `Cargo.toml`.** `--locked` already
       #   pins the graph; this stops a lockfile change silently reusing a
       #   `libm` compiled from a different version, which is the one diagnosis
@@ -167,12 +176,21 @@ jobs:
       #
       # What the key covers, and why each part matters here:
       #
-      # - **the rustc release / host / hash.** The host triple is what keeps the
-      #   three matrix legs apart (`aarch64-apple-darwin` /
-      #   `x86_64-unknown-linux-gnu` / `x86_64-pc-windows-msvc`), so macOS
-      #   cannot restore Linux artefacts. It also means bumping `.prototools`
-      #   invalidates the cache — correct, since §18.1 treats a compiler bump
-      #   as a physics change.
+      # - **the rustc release / host / hash**, plus a hash of
+      #   `rust-toolchain.toml`. The host triple is what keeps the three matrix
+      #   legs apart (`aarch64-apple-darwin` / `x86_64-unknown-linux-gnu` /
+      #   `x86_64-pc-windows-msvc`), so macOS cannot restore Linux artefacts.
+      #   **A change to the selected `rustc` identity invalidates the cache**,
+      #   which is what §18.1 wants, since it treats a compiler bump as a
+      #   physics change.
+      #
+      #   An earlier version of this comment said "bumping `.prototools`
+      #   invalidates the cache". That names the wrong file: `.prototools` is
+      #   the *installer* and CI does not run proto at all — `rust-toolchain.toml`
+      #   is the selection mechanism, as the note on the toolchain step above
+      #   says at length. The two cannot drift, because `xtask`'s
+      #   `check_toolchain_pins_agree` fails the build when they do, so the
+      #   practical effect is the same; the stated mechanism was not.
       # - **a hash of every `Cargo.lock` / `Cargo.toml`.** `--locked` already
       #   pins the graph; this stops a lockfile change silently reusing a
       #   `libm` compiled from a different version, which is the one diagnosis
