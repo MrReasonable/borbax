@@ -633,6 +633,62 @@ mod tests {
             stress(&canon(&mol), &uni, &emb).is_finite(),
             "stress is not finite on a disconnected molecule"
         );
+
+        // **Finiteness alone does not pin the `diameter + 1` fill**, and that is
+        // the whole point of the fill. Probed: replacing it with `0` leaves every
+        // assertion above green, because a zero target is simply skipped by both
+        // the weight loop and the Guttman step — the two fragments stop
+        // constraining each other and drift to wherever the start put them.
+        // Finite, deterministic, and physically wrong.
+        //
+        // What the fill buys is that unreachable pairs get the *largest* target
+        // in the matrix, so fragments are pushed apart. That is observable: no
+        // bonded pair may end up further apart than the closest cross-fragment
+        // pair.
+        let species = canon(&mol);
+        let reach = |from: usize| -> u16 {
+            let mut seen = 1u16 << u32::try_from(from).unwrap();
+            let mut frontier = seen;
+            while frontier != 0 {
+                let mut next = 0u16;
+                for node in 0..species.len() {
+                    if frontier & (1u16 << u32::try_from(node).unwrap()) != 0 {
+                        next |= species.mol().neighbours(u8::try_from(node).unwrap());
+                    }
+                }
+                next &= !seen;
+                seen |= next;
+                frontier = next;
+            }
+            seen
+        };
+        let (mut longest_bond, mut closest_cross) = (0.0f64, f64::INFINITY);
+        let mut cross_pairs = 0u32;
+        for i in 0..species.len() {
+            let component = reach(i);
+            for j in (i + 1)..species.len() {
+                let sep = emb.distance(i, j).unwrap().get();
+                if component & (1u16 << u32::try_from(j).unwrap()) == 0 {
+                    cross_pairs += 1;
+                    if sep < closest_cross {
+                        closest_cross = sep;
+                    }
+                } else if species
+                    .mol()
+                    .bond_order(u8::try_from(i).unwrap(), u8::try_from(j).unwrap())
+                    .is_some()
+                    && sep > longest_bond
+                {
+                    longest_bond = sep;
+                }
+            }
+        }
+        assert!(cross_pairs > 0, "the fixture has no cross-fragment pairs");
+        assert!(
+            closest_cross > longest_bond,
+            "fragments are not pushed apart: closest cross-fragment pair {closest_cross} \
+             is nearer than the longest bond {longest_bond}"
+        );
     }
 
     /// The property [`CanonMol`] was introduced for, asserted at the strength the
@@ -763,6 +819,90 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **The precondition the whole weighting rests on**, and nothing in the
+    /// types states it: `w_ij = 1/d_ij²` is an infinity at a zero target, and
+    /// `stress` divides by `d_ij²` outright.
+    ///
+    /// It holds because `hop_distances` returns at least 1 for `i != j` — a
+    /// BFS depth, or `diameter + 1` for an unreachable pair — and radii are
+    /// drawn strictly positive. Both halves are load-bearing and neither is
+    /// local to this file, which is why this is asserted rather than commented.
+    ///
+    /// This also settles the asymmetry a reviewer flagged between `stress` and
+    /// `raw_stress`: `stress`'s `tgt <= 0.0` guard exists for the division, and
+    /// `raw_stress` deliberately has none, because if a target ever *were* zero
+    /// the unweighted mismatch `δ − 0` is a real mismatch that should be
+    /// counted, not skipped. Adding the guard there would silently discard it.
+    #[test]
+    fn targets_between_distinct_atoms_are_strictly_positive() {
+        let (tbl, uni) = (table(17), Universe::generate(4));
+        let ids = chain_capable(&tbl);
+        let mut rng = Stream::new(84, Domain::Molecule, 0);
+        let mut smallest = f64::INFINITY;
+        let mut disconnected_seen = 0u32;
+        for trial in 0..200u32 {
+            let n = 2 + u8::try_from(trial % 11).unwrap();
+            // Every third fixture is deliberately fragmented. Without this the
+            // corpus is all-connected — `random_molecule` builds a spanning tree
+            // first — so the `diameter + 1` fill is never reached and this test
+            // says nothing about the case it exists for. Measured: it did not.
+            let mol = if trial % 3 == 0 {
+                disconnected_molecule(&mut rng, n, &tbl, &ids)
+            } else {
+                random_molecule(&mut rng, n, &tbl, &ids)
+            };
+            if !mol.is_connected() {
+                disconnected_seen += 1;
+            }
+            let species = canon(&mol);
+            let target = targets(&species, &uni);
+            for (i, row) in target.iter().enumerate().take(species.len()) {
+                for (j, &tgt) in row.iter().enumerate().take(species.len()) {
+                    if i == j {
+                        continue;
+                    }
+                    assert!(tgt > 0.0, "target[{i}][{j}] = {tgt} on a {n}-atom molecule");
+                    assert!(tgt.is_finite(), "target[{i}][{j}] is not finite");
+                    if tgt < smallest {
+                        smallest = tgt;
+                    }
+                }
+            }
+        }
+        assert!(smallest.is_finite(), "no pairs were examined");
+        assert!(
+            disconnected_seen > 0,
+            "the corpus contained no disconnected molecule, so the fill was never reached"
+        );
+    }
+
+    /// Two independently grown fragments in one molecule, so the unreachable
+    /// branch of `hop_distances` is actually exercised.
+    fn disconnected_molecule(
+        rng: &mut Stream,
+        n: u8,
+        tbl: &PeriodicTable,
+        ids: &[ElementId],
+    ) -> Mol12 {
+        let mut mol = Mol12::new();
+        let split = 1 + n / 2;
+        let mut prev: Option<u8> = None;
+        for i in 0..n {
+            let pick = usize::try_from(rng.next_range(u64::try_from(ids.len()).unwrap())).unwrap();
+            let Some(atom) = mol.add_atom(ids[pick]) else {
+                break;
+            };
+            // The break between the two fragments: no bond crosses it.
+            if i != split
+                && let Some(p) = prev
+            {
+                let _ = mol.add_bond(p, atom, BondOrder::SINGLE, tbl);
+            }
+            prev = Some(atom);
+        }
+        mol
     }
 
     /// A random molecule: a spanning tree plus a few extra edges, so rings and
