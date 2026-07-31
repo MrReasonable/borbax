@@ -16,6 +16,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# See the note on the cache step. `Swatinem/rust-cache` sets this itself; it is
+# stated here so it survives a job that does not use the cache, and so the value
+# is where a reader looks for it.
+env:
+  CARGO_INCREMENTAL: 0
+
 jobs:
   # Platform-independent checks, on one runner, as their own status check.
   #
@@ -32,6 +38,73 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Show toolchain
         run: rustup show active-toolchain
+
+      # Third-party build artefacts only. **The workspace's own crates are
+      # never restored from cache**, which is what makes this safe under §13.4
+      # rather than merely convenient — verified against the action's own
+      # documentation, not assumed: "the workspace crates themselves are not
+      # cached". Every line of result-affecting code is compiled from source on
+      # every run, so a cache hit cannot put a stale `borbax-*` artefact into
+      # the profile that mints goldens.
+      #
+      # What the key covers, and why each part matters here:
+      #
+      # - **the rustc release / host / hash**, plus a hash of
+      #   `rust-toolchain.toml`. The host triple is what keeps the three matrix
+      #   legs apart (`aarch64-apple-darwin` / `x86_64-unknown-linux-gnu` /
+      #   `x86_64-pc-windows-msvc`), so macOS cannot restore Linux artefacts.
+      #   **A change to the selected `rustc` identity invalidates the cache**,
+      #   which is what §18.1 wants, since it treats a compiler bump as a
+      #   physics change.
+      #
+      #   An earlier version of this comment said "bumping `.prototools`
+      #   invalidates the cache". That names the wrong file: `.prototools` is
+      #   the *installer* and CI does not run proto at all — `rust-toolchain.toml`
+      #   is the selection mechanism, as the note on the toolchain step above
+      #   says at length. The two cannot drift, because `xtask`'s
+      #   `check_toolchain_pins_agree` fails the build when they do, so the
+      #   practical effect is the same; the stated mechanism was not.
+      # - **a hash of every `Cargo.lock` / `Cargo.toml`.** `--locked` already
+      #   pins the graph; this stops a lockfile change silently reusing a
+      #   `libm` compiled from a different version, which is the one diagnosis
+      #   the golden matrix must never give wrongly.
+      # - **`CARGO_*` / `RUST*` environment variables**, so a `RUSTFLAGS`
+      #   change does not reuse artefacts built under the old flags.
+      #
+      # `CARGO_INCREMENTAL=0` is set by the action itself. It is repeated at
+      # workflow level below so the value is visible where someone looks for
+      # it, and so it holds on any future job that does not use the cache:
+      # incremental artefacts are keyed to absolute paths and a stale
+      # `incremental/` directory is exactly the sort of thing that makes one
+      # leg of a determinism matrix differ for a non-physics reason.
+      #
+      # **What this is worth, measured over six runs.** Cache-hit against
+      # uncached, per job: `quality` 34s -> 23s, macOS 151s -> 78s, ubuntu
+      # 191s -> 134s, **Windows 350s -> 277s (21%)**.
+      #
+      # The Windows number is stated as a working estimate rather than a
+      # constant, and an earlier version of this comment got it wrong in the
+      # other direction — it said "Windows is unchanged", on the strength of one
+      # run whose cache had **missed entirely** (376s) and one hit at 310s. With
+      # three hits (310 / 263 / 258) against three uncached (407 / 363 / 281),
+      # two of the three cached runs fall below *every* uncached run, but the
+      # ranges still overlap and an exact permutation test gives p = 0.10, which
+      # is the floor for n = 3 against n = 3. Real, not yet significant.
+      #
+      # What bounds the upside is structural: the workspace has **seven**
+      # third-party packages (`libm`, `thiserror`, `thiserror-impl`, `syn`,
+      # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is 30 MB
+      # and restores in 5s, while the five `borbax-*` crates that dominate the
+      # build are the ones this deliberately never caches. Anyone wanting a
+      # larger cut should look at the test suite: it is `embed`-bound, and
+      # `layout.rs` records a measured, bit-identical **2.08x on `embed`**
+      # currently declined for want of a consumer.
+      #
+      # The Windows key also moved once in six runs, logging `No cache found`
+      # under an environment-hash component that changed while macOS and Linux
+      # held. Recorded rather than averaged away: an occasional cold Windows leg
+      # is expected.
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Format
         run: cargo fmt --all --check
@@ -102,6 +175,73 @@ jobs:
       # this project is Rust-only by construction (spec §14.0).
       - name: Show toolchain
         run: rustup show active-toolchain
+
+      # Third-party build artefacts only. **The workspace's own crates are
+      # never restored from cache**, which is what makes this safe under §13.4
+      # rather than merely convenient — verified against the action's own
+      # documentation, not assumed: "the workspace crates themselves are not
+      # cached". Every line of result-affecting code is compiled from source on
+      # every run, so a cache hit cannot put a stale `borbax-*` artefact into
+      # the profile that mints goldens.
+      #
+      # What the key covers, and why each part matters here:
+      #
+      # - **the rustc release / host / hash**, plus a hash of
+      #   `rust-toolchain.toml`. The host triple is what keeps the three matrix
+      #   legs apart (`aarch64-apple-darwin` / `x86_64-unknown-linux-gnu` /
+      #   `x86_64-pc-windows-msvc`), so macOS cannot restore Linux artefacts.
+      #   **A change to the selected `rustc` identity invalidates the cache**,
+      #   which is what §18.1 wants, since it treats a compiler bump as a
+      #   physics change.
+      #
+      #   An earlier version of this comment said "bumping `.prototools`
+      #   invalidates the cache". That names the wrong file: `.prototools` is
+      #   the *installer* and CI does not run proto at all — `rust-toolchain.toml`
+      #   is the selection mechanism, as the note on the toolchain step above
+      #   says at length. The two cannot drift, because `xtask`'s
+      #   `check_toolchain_pins_agree` fails the build when they do, so the
+      #   practical effect is the same; the stated mechanism was not.
+      # - **a hash of every `Cargo.lock` / `Cargo.toml`.** `--locked` already
+      #   pins the graph; this stops a lockfile change silently reusing a
+      #   `libm` compiled from a different version, which is the one diagnosis
+      #   the golden matrix must never give wrongly.
+      # - **`CARGO_*` / `RUST*` environment variables**, so a `RUSTFLAGS`
+      #   change does not reuse artefacts built under the old flags.
+      #
+      # `CARGO_INCREMENTAL=0` is set by the action itself. It is repeated at
+      # workflow level below so the value is visible where someone looks for
+      # it, and so it holds on any future job that does not use the cache:
+      # incremental artefacts are keyed to absolute paths and a stale
+      # `incremental/` directory is exactly the sort of thing that makes one
+      # leg of a determinism matrix differ for a non-physics reason.
+      #
+      # **What this is worth, measured over six runs.** Cache-hit against
+      # uncached, per job: `quality` 34s -> 23s, macOS 151s -> 78s, ubuntu
+      # 191s -> 134s, **Windows 350s -> 277s (21%)**.
+      #
+      # The Windows number is stated as a working estimate rather than a
+      # constant, and an earlier version of this comment got it wrong in the
+      # other direction — it said "Windows is unchanged", on the strength of one
+      # run whose cache had **missed entirely** (376s) and one hit at 310s. With
+      # three hits (310 / 263 / 258) against three uncached (407 / 363 / 281),
+      # two of the three cached runs fall below *every* uncached run, but the
+      # ranges still overlap and an exact permutation test gives p = 0.10, which
+      # is the floor for n = 3 against n = 3. Real, not yet significant.
+      #
+      # What bounds the upside is structural: the workspace has **seven**
+      # third-party packages (`libm`, `thiserror`, `thiserror-impl`, `syn`,
+      # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is 30 MB
+      # and restores in 5s, while the five `borbax-*` crates that dominate the
+      # build are the ones this deliberately never caches. Anyone wanting a
+      # larger cut should look at the test suite: it is `embed`-bound, and
+      # `layout.rs` records a measured, bit-identical **2.08x on `embed`**
+      # currently declined for want of a consumer.
+      #
+      # The Windows key also moved once in six runs, logging `No cache found`
+      # under an environment-hash component that changed while macOS and Linux
+      # held. Recorded rather than averaged away: an occasional cold Windows leg
+      # is expected.
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       # `--locked` on every invocation, from the commit that added the first
       # runtime dependency. Without it a stale Cargo.lock lets each of the
