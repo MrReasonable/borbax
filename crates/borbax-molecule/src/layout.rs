@@ -615,11 +615,20 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
     // §2.3 eq. (12), which they call **localized optimization**. It is neither the
     // diagonal approximation `D⁻¹B(X)X` (those differ by O(1)) nor exact under
     // uniform weights (the first draft of this comment claimed both). Measured, it
-    // is one **Jacobi sweep** of `V X' = B(X)X` — and equivalently the
-    // **over-relaxed** Guttman transform `X + α(Γ(X) − X)` with `α = n/(n−1)`,
-    // reproduced to 7.3e-15. That α is the whole story: 2.00 at n = 2, 1.50 at
-    // n = 3, 1.09 at n = 12. The iteration is most over-relaxed exactly where the
-    // molecules are smallest.
+    // is one **Jacobi sweep** of `V X' = B(X)X`.
+    //
+    // **A third description was tried here and is also false, so it is recorded
+    // rather than quietly dropped**: that it is equivalently the over-relaxed
+    // Guttman transform `X + α(Γ(X) − X)` with `α = n/(n−1)`. That equivalence
+    // needs `D⁻¹ = αV⁺` on the centred subspace, which forces every off-diagonal
+    // weight to be equal — so it is exact at n = 2 (one pair, uniform trivially)
+    // and on a uniform-weight clique, and **32% wrong at n = 12** on the `1/d²`
+    // weighting this code actually uses. The reassuring "reproduced to 7.3e-15"
+    // was measured on the family the code does not use.
+    //
+    // Three rewrites, three errors, the last in the sentence doing the persuading
+    // — which is why the conclusion below rests on the n = 2 measurement and the
+    // bipartite argument, neither of which needs α.
     //
     // GKN do prove it monotone — "guaranteed to strictly decrease the stress...
     // oscillations and non-convergence are impossible" — but **for the sequential
@@ -722,35 +731,60 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
                 };
                 let diff = [pi[0] - pj[0], pi[1] - pj[1], pi[2] - pj[2]];
                 let raw = (diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]).sqrt();
-                // **Not a NaN defence for `embed`, and an earlier version of this
-                // comment implied it was.** The negation does skip a NaN where
-                // `raw <= eps` would admit it — but the route a non-finite value
-                // actually takes is upstream: `initial_layout` reads target cells,
-                // so one poisoned cell makes the whole start non-finite, this guard
-                // then fires on every pair, `den` stays zero, and `embed` returns
-                // the poisoned start verbatim. It does not trap the NaN; it turns
-                // the solver into a no-op that launders it. Measured by poisoning.
-                //
-                // No finiteness check is added, deliberately: over 300 universe
-                // seeds and 26,906 elements `Element::radius` is finite and lies in
-                // [0.3, 2.04], so targets are provably finite and the condition is
-                // unreachable. `targets_between_distinct_atoms_are_strictly_positive`
-                // pins that, and adding a guard for an unreachable condition is the
-                // wrong trade.
-                #[expect(
-                    clippy::neg_cmp_op_on_partial_ord,
-                    reason = "the negation skips a coincident-or-NaN pair where `raw <= eps` \
-                              would admit a NaN. `f64::max` is banned for §13.1 in \
-                              clippy.toml's disallowed-methods block, which is the \
-                              authority for this spelling"
-                )]
-                if !(raw > 1e-9) {
-                    continue;
-                }
                 let wij = w.get(i).and_then(|r| r.get(j)).copied().unwrap_or(0.0);
-                let scale = wij * dij / raw;
+
+                // The unit vector from `j` to `i`. **At a coincident pair it is
+                // chosen deterministically rather than skipping the term, and that
+                // is a correctness fix rather than a nicety.**
+                //
+                // Skipping was the standard convention and it is wrong *here*
+                // because of how `initial_layout` works: two atoms that are
+                // graph-automorphic and carry the same element have identical
+                // target rows, so they start at exactly the same point — by
+                // construction, not by accident. Dropping their mutual `B(X)` term
+                // leaves the residual system exactly equivariant under transposing
+                // them, so the solve returns equal rows and **they can never
+                // separate**. An exact fixed point, in exact arithmetic.
+                //
+                // Measured before the fix, on an all-one-element corpus where the
+                // automorphism groups are largest: **160 of 4000 molecules** placed
+                // at least one pair at a single point, the worst violating a target
+                // of **6.75 Span**. It surfaced as nothing: the iteration is still
+                // monotone, it just converges to a saddle. `bonded_atoms_stay_apart`
+                // was structurally blind — it walks bonded pairs only, and in a
+                // tree two automorphic atoms are never adjacent.
+                //
+                // `initial_layout` cannot be repaired instead: no continuous
+                // function of the graph can distinguish automorphic atoms, which is
+                // precisely why it is the right initialiser.
+                //
+                // **The majorization survives**, so this does not trade correctness
+                // for separation. At `δ_ij(Z) = 0` the bound `δ_ij(X) ≥ (x_i−x_j)·u`
+                // holds for *any* unit `u` by Cauchy–Schwarz, so descent is
+                // preserved for any choice — the choice only has to be deterministic
+                // and antisymmetric (`u_ij = −u_ji`), or `B(X)` stops being
+                // symmetric and the transform stops being the Guttman transform.
+                //
+                // Keyed on the canonical indices, which is sound here specifically:
+                // the atoms it separates differ only by an automorphism, so the two
+                // branches give congruent shapes and species identity is untouched.
+                //
+                // A NaN `raw` takes the deterministic branch, since `NaN > 1e-9` is
+                // false. That is a change from skipping, and it is the safe
+                // direction: targets are provably finite, so `raw` can only be NaN
+                // if the start already was.
+                let unit = if raw > 1e-9 {
+                    [diff[0] / raw, diff[1] / raw, diff[2] / raw]
+                } else {
+                    let mut sep = [0.0f64; 3];
+                    if let Some(slot) = sep.get_mut(j.abs_diff(i) % 3) {
+                        *slot = if i < j { 1.0 } else { -1.0 };
+                    }
+                    sep
+                };
+                let scale = wij * dij;
                 for (k, row) in rhs.iter_mut().enumerate() {
-                    if let (Some(acc), Some(&dk)) = (row.get_mut(i), diff.get(k)) {
+                    if let (Some(acc), Some(&dk)) = (row.get_mut(i), unit.get(k)) {
                         *acc += scale * dk;
                     }
                 }
@@ -1429,35 +1463,79 @@ mod tests {
         );
     }
 
-    /// Bonded atoms must not land on top of each other, or the support function
-    /// collapses and every signature reports the same shape.
+    /// **No two atoms may occupy one point.** Atoms are solid bodies; a collapsed
+    /// pair makes an n-atom molecule present n−1 extremal points to the support
+    /// function, so it reads as less bumpy than it is and two species differing
+    /// only by a symmetric pair become near-indistinguishable to `affinity`. It
+    /// also attacks §22.8 directly: a collapsed pair can give a chiral molecule an
+    /// artificial mirror symmetry, losing homochirality candidates to an artefact.
+    ///
+    /// **This replaces `bonded_atoms_stay_apart`, which was structurally blind.**
+    /// That test walked *bonded* pairs only, over `random_tree` fixtures — and in
+    /// a tree two automorphic atoms are never adjacent, since their distances to
+    /// any root differ by one. Measured on the defect it missed: 24 of 26 collapsed
+    /// pairs were non-bonded, and 0 occurred in trees at all.
+    ///
+    /// The corpus is deliberately **one element throughout**, which maximises the
+    /// automorphism group and is where the collapse lives. Measured before the fix
+    /// in `embed`: 160 of 4000 molecules collapsed a pair, worst violating a target
+    /// of 6.75 Span. After: 0 of 4000.
     #[test]
-    fn bonded_atoms_stay_apart() {
-        let (tbl, uni) = fixture(17);
+    fn no_two_atoms_share_a_point() {
+        let (tbl, uni) = fixture(4);
         let ids = chain_capable(&tbl);
-        let mut rng = Stream::new(83, Domain::Molecule, 0);
-        // **This test iterates only bonded pairs, so a fixture with no bonds
-        // passes it vacuously.** Counting what was examined is what stops a
-        // generator regression from silently emptying it.
-        let mut examined = 0u32;
-        for _ in 0..20 {
-            let species = canon(&random_tree(&mut rng, 10, &tbl, &ids));
-            let emb = embed(&species, &uni);
-            for a in 0..species.len() {
-                for b in (a + 1)..species.len() {
-                    let bonded = species
-                        .mol()
-                        .bond_order(u8::try_from(a).unwrap(), u8::try_from(b).unwrap())
-                        .is_some();
-                    if bonded {
-                        examined += 1;
-                        let dist_to = emb.distance(a, b).unwrap().get();
-                        assert!(dist_to > 0.3, "bonded atoms {a},{b} only {dist_to} apart");
-                    }
+        let mut rng = Stream::new(4242, Domain::Molecule, 0);
+        let (mut pairs, mut molecules) = (0u32, 0u32);
+        let mut closest = f64::INFINITY;
+        for _ in 0..600 {
+            let n = 4 + u8::try_from(rng.next_range(9)).unwrap();
+            let mut mol = Mol12::new();
+            for _ in 0..n {
+                if mol.add_atom(ids[0]).is_none() {
+                    break;
                 }
             }
+            let size = u8::try_from(mol.len()).unwrap();
+            for i in 1..size {
+                let _ = mol.add_bond(i - 1, i, BondOrder::SINGLE, &tbl);
+            }
+            // Extra edges, so rings appear — automorphic atoms in a ring are what
+            // a tree corpus can never produce.
+            for _ in 0..rng.next_range(4) {
+                let a = u8::try_from(rng.next_range(u64::from(size))).unwrap();
+                let b = u8::try_from(rng.next_range(u64::from(size))).unwrap();
+                let _ = mol.add_bond(a, b, BondOrder::SINGLE, &tbl);
+            }
+            let species = canon(&mol);
+            if species.len() < 3 {
+                continue;
+            }
+            molecules += 1;
+            let emb = embed(&species, &uni);
+            for i in 0..species.len() {
+                for j in (i + 1)..species.len() {
+                    let sep = emb.distance(i, j).unwrap_or(Span::ZERO).get();
+                    assert!(
+                        sep > 1e-9,
+                        "atoms {i},{j} of a {}-atom molecule share a point (target {})",
+                        species.len(),
+                        targets(&species, &uni)[i][j]
+                    );
+                    if sep < closest {
+                        closest = sep;
+                    }
+                }
+                pairs += 1;
+            }
         }
-        assert!(examined > 100, "only {examined} bonded pairs examined");
+        assert!(molecules > 400, "only {molecules} usable molecules");
+        assert!(pairs > 2000, "only {pairs} pairs examined");
+        // A separation that merely clears 1e-9 would be a technical pass; the real
+        // claim is that separations are on the scale of the molecule.
+        assert!(
+            closest > 0.05,
+            "closest approach {closest} is not a real separation"
+        );
     }
 
     /// **The precondition the whole weighting rests on**, and nothing in the
