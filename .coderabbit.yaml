@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# CodeRabbit review configuration.
+#
+# Everything not set here is a documented default. Two settings are, and the
+# second exists only to make the first work.
+
+reviews:
+  # **Make approval mean something.** Without this CodeRabbit only ever posts
+  # `COMMENTED` — verified across PRs #15, #17, #18 and #19, every review on
+  # this repository. With it, CodeRabbit requests changes while findings are
+  # open and approves once they are resolved and no pre-merge check is failing.
+  #
+  # All four pre-merge checks (docstrings, title, description, issue
+  # assessment) default to `warning` rather than `error`, so none of them can
+  # hold an approval back today.
+  request_changes_workflow: true
+
+  auto_review:
+    # **Zero disables the pause, and disabling it is what stops the approval
+    # workflow deadlocking.** The default is 5: automatic reviews stop after
+    # five reviewed commits since the last pause. Task 10's PR reached ten,
+    # which is ordinary here — this project pushes a commit per review round
+    # and the rounds keep finding things.
+    #
+    # With `request_changes_workflow` on, a paused reviewer is worse than a
+    # quiet one: CodeRabbit would request changes, go to sleep on commit six,
+    # and never come back to approve. The PR would sit blocked by a reviewer
+    # that had stopped reading.
+    #
+    # This is also the leading suspect for the "Review rate limited" status
+    # that appeared on three of five pushes to PR #19 while two others
+    # completed normally. Not proven — the wording says rate limit, not pause —
+    # so if the message survives this change, the cause is upstream and the
+    # local `coderabbit` CLI remains the fallback that does not depend on it.
+    auto_pause_after_reviewed_commits: 0
