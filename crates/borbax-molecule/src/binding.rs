@@ -101,6 +101,23 @@ impl BindConsts {
             w_charge: c.w_charge,
         }
     }
+
+    /// The same constants with the charge channel switched off.
+    ///
+    /// **Test-only, and it exists to break a cancellation rather than to model
+    /// anything.** The shape and charge channels have opposite-signed size
+    /// dependence, so the combined score's size correlation is smaller than
+    /// either channel's. Asserting on the combination alone would credit the
+    /// fix for a coincidence — and would fire spuriously the day §7.1's
+    /// affinity draw is repaired and the cancellation disappears.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn with_charge_weight_zero(self) -> Self {
+        Self {
+            w_shape: self.w_shape,
+            w_charge: 0.0,
+        }
+    }
 }
 
 /// A shape's rotation-invariant summary, for the pre-filter (§8.3, §8.6).
@@ -110,8 +127,14 @@ impl BindConsts {
 /// partner. That is §8.6's rule, and the natural spelling of `may_bind` —
 /// summing the extents inside the per-pair call — violates it by recomputing a
 /// per-species constant once per partner.
+/// **Carries `D`, and that is load-bearing rather than tidy.** Without it
+/// `Signature<12>::summary()` and `Signature<42>::summary()` produce the same
+/// type, so `ceiling::<42>(&s12.summary(), ..)` compiles and answers — and
+/// answers wrongly: measured, the search beats the supposed upper bound on
+/// **93.4%** of pairs, worst overshoot 2.47x. §22.2 sweeps D across
+/// {12, 42, 162}, which is exactly where a copied turbofish comes from.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SigSummary {
+pub struct SigSummary<const D: usize> {
     mean_extent: Span,
     /// Euclidean norm of the mean-centred extents: how much relief the surface
     /// has, independent of how big the molecule is.
@@ -150,6 +173,27 @@ impl Fit {
 
     /// The winning orientation of the partner body.
     ///
+    /// # Apply the TRANSPOSE, `R_rᵀ`, not `R_r`
+    ///
+    /// This is the single most repeatable mistake in this codebase and it has
+    /// already been made once: Task 7 shipped a `contact_perms` docstring
+    /// naming the wrong pose while the formula beside it was right, and
+    /// `geodesic.rs` records that a renderer applying `R_r` "draws a plausible,
+    /// silent, wrong docking picture". That warning lived on the *table*; this
+    /// is the value a renderer is actually handed, so it belongs here too.
+    ///
+    /// Measured rather than asserted — physically rotating B's embedding and
+    /// rescoring against A: the transpose reproduces [`Fit::score`] on **8 of
+    /// 8** real pairs, the forward rotation on **2 of 8**, and those two are the
+    /// order-2 elements where `R = Rᵀ`. A worked case: kernel −81.906652,
+    /// `Rᵀ`-posed −81.906652, `R`-posed −104.143087.
+    ///
+    /// The reason is that a support function transforms contravariantly —
+    /// `h_{MB}(v) = h_B(Mᵀv)` — so reading B's signature through a permutation
+    /// built from `R_r` corresponds to rotating B's *body* by `R_rᵀ`.
+    /// `the_returned_pose_is_the_transpose` ties this to real geometry rather
+    /// than to another table, which is what Task 7 lacked.
+    ///
     /// **Meaningful only against the exact signatures that were scored.**
     /// Canonicalising an input composes a rotation into the answer, so a
     /// renderer handed this index must be handed the same [`Signature`] values
@@ -167,9 +211,9 @@ impl Fit {
 /// `sum * inv_n` rather than `sum / n`, matching
 /// [`Embedding::radius_of_gyration`], whose doc deferred this exact choice
 /// "until it acquires a consumer". This is that consumer. The two spellings
-/// differ in the last bits on ~31% of real pairs and move the winning rotation
-/// on ~0.9%, so it is a decision rather than a preference; it is pinned here
-/// and by `the_binding_digest_is_pinned`.
+/// differ in the last bits on 33.3% of real pairs and move the winning rotation
+/// on 0.4%, so it is a decision rather than a preference; it is pinned here and
+/// by `the_binding_digest_is_pinned`.
 ///
 /// [`Embedding::radius_of_gyration`]: crate::layout::Embedding::radius_of_gyration
 #[must_use]
@@ -207,8 +251,12 @@ impl<const D: usize> Signature<D> {
     ///
     /// Computed once per species at intern time, never per pair.
     #[must_use]
-    pub fn summary(&self) -> SigSummary {
+    pub fn summary(&self) -> SigSummary<D> {
         let (me, mc) = (mean_extent(self), mean_character(self));
+        // **Direction-index order, and it is a pin like every other in this
+        // module.** Reversing this loop moves `extent_spread` on 54.7% of
+        // species with the whole suite green — it feeds `ceiling`, which is a
+        // rejection decision once Task 12 wires a threshold to it.
         let (mut se, mut sc) = (0.0f64, 0.0f64);
         for (e, c) in self.extents().iter().zip(self.characters()) {
             let de = (*e - me).get();
@@ -234,6 +282,20 @@ impl<const D: usize> Signature<D> {
 /// > `ceiling(A, B) < threshold` proves `max_R score(R) < threshold`, and a
 /// > rejection provably excludes no pair the full search would have accepted.
 ///
+/// **That holds exactly in real arithmetic and up to accumulated rounding in
+/// floating point, and the difference is reachable.** On an exact complement
+/// the two spreads are equal, so `‖x‖ − ‖y‖` should be zero; it rounds to
+/// ~1e-15, giving a ceiling of ~−1e-30 while the score rounds to exactly
+/// `−0.0`. Measured on this module's own complement fixture: seed 17 gives
+/// `score = −0.0` against `ceiling = −1.377e-30`, so the score is *above* the
+/// ceiling by 1.4e-30.
+///
+/// The consequence for a caller is nil — a rejection threshold sits at the
+/// scale of real scores, tens to thousands, so a discrepancy 30 orders down
+/// cannot flip one. The consequence for a *test* is not nil: a relative
+/// tolerance collapses to nothing near zero, which is why
+/// `the_prefilter_is_a_genuine_bound` carries an absolute floor as well.
+///
 /// The derivation, per channel. With `x`, `y` the mean-centred channels and
 /// `δ` the mean offset, `Σ(x_i + y_j + δ)² = ‖x‖² + ‖y‖² + D·δ² + 2Σx_i y_j`,
 /// and Cauchy–Schwarz bounds the cross term by `‖x‖‖y‖`, giving
@@ -252,7 +314,7 @@ impl<const D: usize> Signature<D> {
 /// Takes [`SigSummary`], not [`Signature`], so §8.6's per-species rule is
 /// enforced by the type rather than remembered.
 #[must_use]
-pub fn ceiling<const D: usize>(a: &SigSummary, b: &SigSummary, k: BindConsts) -> f64 {
+pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindConsts) -> f64 {
     #[expect(
         clippy::cast_precision_loss,
         clippy::as_conversions,
@@ -267,8 +329,11 @@ pub fn ceiling<const D: usize>(a: &SigSummary, b: &SigSummary, k: BindConsts) ->
     // currently dominates it.
     //
     // If a drawn separation is ever reintroduced, this is where `D·δ²` comes
-    // back, and omitting it would make the bound unsound rather than merely
-    // loose.
+    // back. **Omitting a term from the bound is always safe — it can only make
+    // the ceiling larger, hence looser.** An earlier version of this comment
+    // said the opposite, which is the dangerous direction to be wrong in:
+    // *adding* a term is what needs proof, because it lowers the ceiling and
+    // can push it below a score the search will actually find.
     let dr = a.extent_spread - b.extent_spread;
     let da = a.character_spread - b.character_spread;
     let eps = a.mean_character + b.mean_character;
@@ -311,17 +376,25 @@ pub fn ceiling<const D: usize>(a: &SigSummary, b: &SigSummary, k: BindConsts) ->
 /// currently multiplies a squared length while `w_charge` multiplies a pure
 /// number. It is held back deliberately: the RAF-specificity literature argues
 /// against a fully scale-free binding rule — a monomer and a long polymer
-/// should not compete on equal terms — and it is a separable decision that
-/// cannot change which pose wins (`L*` is constant over both `i` and `R`).
-/// Routed to Task 20 with the dimensional mismatch named.
+/// should not compete on equal terms.
+///
+/// **It is NOT pose-neutral, and an earlier version of this paragraph said it
+/// was.** The reasoning was that `L*` is constant over both `i` and `R`, which
+/// is true and does not give the conclusion: the score is a weighted sum of
+/// *two* channels, so rescaling one of them changes their ratio and moves the
+/// argmax. Measured — dividing only the shape channel by `L*²` moves the
+/// winning pose on **36–65%** of pairs. It is a physics change requiring
+/// golden regeneration, not a cosmetic one. Routed to Task 20 with the
+/// dimensional mismatch named and that correction attached, because "cannot
+/// change which pose wins" is exactly the sentence that would let someone land
+/// it as a no-op.
 ///
 /// # Why the two accumulators are not one
 ///
 /// Shape and charge are summed separately and combined once per rotation.
 /// Interleaving them into a single accumulator is algebraically identical and
-/// **moves the winning rotation in ~14% of real pairs**, because the summation
-/// order changes in the last bits and ~12% of pairs have an exact tie for the
-/// argmax. It is also *slower*: the two accumulators pair into one packed
+/// moves the **score** on 73.8% of pairs and the **winning rotation** on 1.9%.
+/// It is also *slower*: the two accumulators pair into one packed
 /// SIMD add, lane 0 shape, lane 1 charge, each lane still summing in exact
 /// direction order — so the determinism-preserving form is the fast one and
 /// there is no trade here. `the_binding_digest_is_pinned` catches a change.
@@ -338,6 +411,23 @@ pub fn ceiling<const D: usize>(a: &SigSummary, b: &SigSummary, k: BindConsts) ->
 /// Accumulated in direction-index order and never through `.sum()` over an
 /// unordered iterator, so the summation order is fixed on every platform
 /// (§13.1).
+///
+/// # `fit(A, B)` and `fit(B, A)` are not bitwise equal, and Task 12 owns it
+///
+/// The two argument orders sum the same terms in different orders, so the
+/// scores differ in the last bits on **61.2%** of hetero-pairs, by up to
+/// **8 ulp**. The *pose* is unaffected — measured, `contact_perms(pose_BA)` is
+/// the exact inverse permutation of `contact_perms(pose_AB)` in 6 624 of 6 624
+/// pairs — because the derived separation raised the inter-pose spread to
+/// 220–260% of the score, far above any rounding.
+///
+/// It is documented rather than fixed here because the fix belongs to whoever
+/// owns the memo. **The ordering key must be an interned species id, never a
+/// float comparison over the signatures**: `borbax_units::canonical_cmp`
+/// reports two NaNs `Equal` while `==` reports them unequal, so a float-keyed
+/// order cannot break a tie between two *distinct* species stably, and a memo
+/// keyed on it would return one pair's affinity for another's. Task 12 mints
+/// the ids and is the first caller that can hit this.
 #[must_use]
 pub fn fit<const D: usize>(
     a: &Signature<D>,
@@ -369,12 +459,19 @@ pub fn fit<const D: usize>(
             charge += dc * dc;
         }
         let score = -(k.w_shape * shape + k.w_charge * charge);
-        // **Strictly greater, so the first of an exact tie wins.** ~12% of real
-        // pairs tie at the bitwise maximum, and 42% of those ties are float
-        // coincidences rather than molecular symmetry — so this comparison,
-        // together with `Rotation::all()`'s pinned order, decides the rendered
-        // pose in one pair in eight. `>=` would silently pick the *last*.
-        // Load-bearing; pinned by `the_binding_digest_is_pinned`.
+        // **Strictly greater, so the first of an exact tie wins**, together
+        // with `Rotation::all()`'s pinned order. `>=` would silently pick the
+        // last, moving the pose on 1.8% of pairs while moving **zero** scores —
+        // caught by `the_binding_digest_is_pinned` alone, which is why that
+        // digest hashes the pose separately.
+        //
+        // **Ties are exclusively self-pairs**, and that is the fact worth
+        // carrying rather than a global rate: measured over 12 seeds, 38 of 192
+        // A-against-A pairs tie (**19.8%**) and **0 of 1440** hetero-pairs do.
+        // They are structural — a molecule's own automorphisms — not float
+        // coincidences: compensated summation leaves 204 of 205 standing.
+        // Self-binding is §10.1's membrane self-assembly case, so this
+        // tie-break is load-bearing exactly where it looked least interesting.
         if score > best {
             best = score;
             pose = rot;
@@ -652,9 +749,15 @@ mod tests {
                 } else {
                     ba.abs()
                 };
+                // **8 ulp, not a round number.** The previous bound was
+                // `1e-12 * scale` — about 4 500 ulp — which had 560x slack and
+                // would not have fired if the asymmetry grew by two orders of
+                // magnitude. `f64::EPSILON * 16.0` is ~8 ulp of the larger
+                // operand, which is the measured maximum over 6 624 pairs.
                 assert!(
-                    (ab - ba).abs() <= 1e-12 * scale,
-                    "pair ({i},{j}): {ab} vs {ba}"
+                    (ab - ba).abs() <= f64::EPSILON * 16.0 * scale,
+                    "pair ({i},{j}) differ by more than the 8 ulp the summation \
+                     order accounts for: {ab} vs {ba}"
                 );
                 checked += 1;
             }
@@ -671,11 +774,17 @@ mod tests {
     /// green while every number moves in its last bits.
     ///
     /// **The pose is hashed separately from the score, and that is the whole
-    /// reason this test earns its keep.** Roughly 12% of real pairs tie at the
-    /// bitwise maximum, so a reassociation that leaves the score identical to
-    /// the last bit still moves the *winning rotation* — measured at ~14% of
-    /// pairs — and §14.5's renderer consumes that index. A score-only digest is
-    /// blind to it, and so is every tolerance test at any epsilon.
+    /// reason this test earns its keep.** Flipping the tie-break from `>` to
+    /// `>=` moves **zero** scores and 1.8% of poses — so a score-only digest is
+    /// green under it, and so is every tolerance test at any epsilon. §14.5's
+    /// renderer consumes that index and §10.1 constrains membrane sheets with
+    /// it, so an unpinned pose is an unpinned physics input.
+    ///
+    /// The mutations this catches, each measured alone against the shipped
+    /// kernel with the rest of the suite green: `sum / n` for `sum * inv_n`
+    /// (score 14.2%, pose 0.4%), one accumulator instead of two (73.8% / 1.9%),
+    /// the tie-break (0% / 1.8%), the direction loop reversed (66.8% / 2.2%),
+    /// and `summary()`'s spread loop reversed (54.7% of species).
     ///
     /// Hashes through `canonical_bits`, not `to_bits`: a runtime NaN's sign and
     /// `-0.0` are architecture-dependent and §13.6's matrix would report that as
@@ -721,18 +830,127 @@ mod tests {
         );
     }
 
+    /// **The returned pose is `R_rᵀ`, tied to real geometry rather than to
+    /// another table.**
+    ///
+    /// Task 7 shipped a docstring naming the wrong pose because every test it
+    /// had compared tables against tables — the right invariant, saying nothing
+    /// about what the composition *means*. This rotates B's embedding by the
+    /// candidate matrix, recomputes its signature from scratch, and rescores.
+    /// The transpose must reproduce [`Fit::score`]; the forward rotation must
+    /// not, except on the order-2 elements where they coincide.
+    #[test]
+    fn the_returned_pose_is_the_transpose() {
+        use crate::geodesic::rotation_matrices;
+        let g = geo();
+        let (tbl, uni) = fixture(6);
+        let k = BindConsts::of(&uni.consts);
+        let ids = chain_capable(&tbl);
+        let mut rng = Stream::new(777, Domain::Molecule, 0);
+        let mats = rotation_matrices().unwrap_or_else(|_| unreachable!("the matrices build"));
+
+        let (mut transpose_ok, mut forward_ok, mut checked) = (0u32, 0u32, 0u32);
+        for _ in 0..8 {
+            let ea = embed(&canon(&random_tree(&mut rng, 8, &tbl, &ids)), &uni);
+            let eb = embed(&canon(&random_tree(&mut rng, 7, &tbl, &ids)), &uni);
+            let (sa, sb) = (signature(&ea, &g), signature(&eb, &g));
+            let f = fit(&sa, &sb, &g, k);
+            let m = &mats[f.pose().index()];
+            let transposed = [
+                [m[0][0], m[1][0], m[2][0]],
+                [m[0][1], m[1][1], m[2][1]],
+                [m[0][2], m[1][2], m[2][2]],
+            ];
+            // Score A against B *physically* rotated, reading antipodally —
+            // which is what a renderer does when it places the two bodies.
+            let score_posed = |rot: &[[f64; 3]; 3]| {
+                let st = signature(&eb.rotated(rot), &g);
+                let sep = (mean_extent(&sa) + mean_extent(&st)).get();
+                let (mut sh, mut ch) = (0.0f64, 0.0f64);
+                for i in 0..D {
+                    let j = usize::from(g.anti()[i]);
+                    let ds = (sa.extents()[i] + st.extents()[j]).get() - sep;
+                    let dc = sa.characters()[i] + st.characters()[j];
+                    sh += ds * ds;
+                    ch += dc * dc;
+                }
+                -(k.w_shape * sh + k.w_charge * ch)
+            };
+            let tol = 1e-9 * f.score().abs();
+            if (score_posed(&transposed) - f.score()).abs() < tol {
+                transpose_ok += 1;
+            }
+            if (score_posed(m) - f.score()).abs() < tol {
+                forward_ok += 1;
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 8, "the corpus did not run to completion");
+        assert_eq!(
+            transpose_ok, checked,
+            "the transpose did not reproduce the kernel's score on every pair — \
+             §14.5's renderer would draw a wrong docking pose"
+        );
+        // **The contrast is the point.** If the forward rotation also matched
+        // everywhere, the test would prove nothing about which convention is
+        // right. It matches only on the order-2 elements where `R = Rᵀ`;
+        // measured 2 of 8.
+        assert!(
+            forward_ok < checked,
+            "the forward rotation reproduced the score on all {checked} pairs, so this \
+             fixture cannot distinguish the two conventions — pick molecules whose \
+             winning poses are not all order-2"
+        );
+    }
+
     /// **The fix, asserted rather than described: binding is no longer a size
     /// comparison.**
     ///
     /// Scored size-matched — both molecules the same atom count — so the
     /// measurement cannot be explained by "big things pair with big things".
     /// Under the drawn `ideal_gap` this correlation was `|r| >= 0.987` in every
-    /// size class across three seeds; the derived separation brings it to
-    /// roughly 0.43–0.47.
+    /// size class across three seeds. The derived separation brings the worst
+    /// per-seed value to **0.583 / 0.510 / 0.390** — not the "0.43–0.47" an
+    /// earlier version of this doc quoted, which was measured on a corpus the
+    /// fix commit then changed.
     ///
-    /// A bar of 0.8 leaves wide margin on both sides: it is far above anything
-    /// the fix produces and far below the 0.987 the defect produced, so it
-    /// cannot be met by a partial repair and cannot fire on noise.
+    /// # The whole-score assertion passes partly by cancellation, so it is not
+    /// the only one
+    ///
+    /// Measured per channel, size-matched: the shape term correlates with size
+    /// at **−0.52 / −0.67 / −0.62** and the charge term at **+0.67 / +0.66 /
+    /// +0.73**. They have opposite signs and largely cancel, which is why the
+    /// combined score reads 0.39–0.58. The charge term's size dependence exists
+    /// only because §7.1's `affinity` never straddles zero — an open item routed
+    /// to the affinity draw — so **fixing that would remove the cancellation and
+    /// this bar would fire on a kernel that got better**, with a message
+    /// blaming the wrong channel.
+    ///
+    /// So the shape channel is asserted **on its own**, with the charge weight
+    /// zeroed. That is a property of the kernel; the combined figure is a
+    /// property of a coincidence, and it is kept only as a regression tripwire.
+    ///
+    /// # The shape channel is improved, not cured, and the number says so
+    ///
+    /// Shape-only, size-matched: **0.53 / 0.57 / 0.84** for seeds 6 / 17 / 42,
+    /// against `>= 0.987` for the drawn constant. Seed 42 is barely improved
+    /// and the bar here is 0.90, which is a low bar honestly placed rather than
+    /// a comfortable one.
+    ///
+    /// The reason is structural and worth stating so nobody reads the fix as
+    /// complete: removing `D·δ²` deletes the term that carried **all** the
+    /// combined-size dependence, but the residual `Σ(u_A[i] + u_B[j])²` is an
+    /// **unnormalised squared length**, so it still grows with how much relief
+    /// a surface has — and bigger molecules have more. That residual is exactly
+    /// what dividing by `L*²` would remove, which is the decision deferred to
+    /// Task 20 above. The two are the same question seen twice: this fix takes
+    /// the half that is forced by algebra and leaves the half that is a
+    /// judgement about whether binding should be scale-free.
+    ///
+    /// The 0.8 bar catches a full reintroduction (0.987) and a multiplicative
+    /// separation at `γ <= 0.80`; measured, it **misses** `γ` in roughly
+    /// `[0.82, 1.18]`. So it is a tripwire, not a proof, and the per-channel
+    /// assertion below is what carries the claim.
     #[test]
     fn the_score_is_not_a_size_comparison() {
         let g = geo();
@@ -741,12 +959,12 @@ mod tests {
             let k = BindConsts::of(&uni.consts);
             let ids = chain_capable(&tbl);
             let mut rng = Stream::new(6500 + seed, Domain::Molecule, 0);
-            let mut worst = 0.0f64;
+            let (mut worst, mut worst_shape) = (0.0f64, 0.0f64);
             for n in [5u8, 8, 11] {
                 let mols: Vec<_> = (0..10)
                     .map(|_| sig(&random_tree(&mut rng, n, &tbl, &ids), &uni, &g))
                     .collect();
-                let (mut sizes, mut scores) = (Vec::new(), Vec::new());
+                let (mut sizes, mut scores, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
                 for i in 0..mols.len() {
                     for j in (i + 1)..mols.len() {
                         let mut size = Span::ZERO;
@@ -755,18 +973,46 @@ mod tests {
                         }
                         sizes.push(size.get());
                         scores.push(fit(&mols[i], &mols[j], &g, k).score());
+                        pairs.push((i, j));
                     }
                 }
                 let r = correlation(&sizes, &scores).abs();
+                assert!(
+                    r.is_finite(),
+                    "seed {seed} n={n}: the correlation is not finite — a degenerate size \
+                     class would otherwise leave `worst` at 0.0 and pass vacuously"
+                );
                 if r > worst {
                     worst = r;
+                }
+                // The shape channel alone, which is what the fix actually
+                // changed. `w_charge = 0` removes the cancellation described
+                // above.
+                let shape_only = BindConsts::of(&uni.consts).with_charge_weight_zero();
+                let bare: Vec<f64> = pairs
+                    .iter()
+                    .map(|&(i, j)| fit(&mols[i], &mols[j], &g, shape_only).score())
+                    .collect();
+                let rs = correlation(&sizes, &bare).abs();
+                if rs > worst_shape {
+                    worst_shape = rs;
                 }
             }
             assert!(
                 worst < 0.8,
                 "seed {seed}: |corr(size, score)| is {worst} size-matched — binding is \
                  still ranking by size rather than by shape. The drawn-gap kernel \
-                 measured >= 0.987 here and the derived separation measures ~0.45."
+                 measured >= 0.987 here and the derived separation measures 0.39-0.58."
+            );
+            // **The claim that actually rests on the fix.** Measured 0.52-0.67
+            // with the charge channel off; the defect gave >= 0.987.
+            assert!(
+                worst_shape < 0.90,
+                "seed {seed}: the SHAPE channel alone correlates with size at \
+                 {worst_shape}, above the measured 0.53 / 0.57 / 0.84. This is the \
+                 assertion the fix owns — unlike the combined score it cannot be \
+                 rescued by the charge channel's opposite-signed size dependence \
+                 cancelling it out."
             );
         }
     }
@@ -780,7 +1026,7 @@ mod tests {
     #[test]
     fn the_prefilter_is_a_genuine_bound() {
         let g = geo();
-        let (mut checked, mut slack_seen) = (0u32, 0u32);
+        let (mut checked, mut worst_gap) = (0u32, 0.0f64);
         for seed in [6u64, 17, 42] {
             let (tbl, uni) = fixture(seed);
             let k = BindConsts::of(&uni.consts);
@@ -793,25 +1039,42 @@ mod tests {
                 for j in i..mols.len() {
                     let bound = ceiling::<D>(&mols[i].summary(), &mols[j].summary(), k);
                     let best = fit(&mols[i], &mols[j], &g, k).score();
+                    // Absolute floor as well as relative: on an exact
+                    // complement the relative term collapses to ~1e-39 while
+                    // the float discrepancy is ~1e-30. See `ceiling`'s doc.
                     assert!(
-                        best <= bound + 1e-9 * bound.abs(),
+                        best <= bound + 1e-9 * bound.abs() + 1e-20,
                         "seed {seed} pair ({i},{j}): the search found {best}, above the \
                          ceiling {bound} — the filter would reject a binding pair"
                     );
-                    if bound - best > 1e-6 {
-                        slack_seen += 1;
+                    // **Tightness, not slack.** An earlier version counted
+                    // pairs where the ceiling was *loose* and asserted that
+                    // count was large — which a useless bound satisfies
+                    // maximally. Measured: replacing `ceiling`'s body with
+                    // `0.0` — the loosest sound bound, rejecting nothing ever —
+                    // passed every test in this crate.
+                    // The comparison form, not `f64::max` — §13.1. Both
+                    // operands are finite and positive here.
+                    let scale = if best.abs() > 1.0 { best.abs() } else { 1.0 };
+                    let gap = (bound - best) / scale;
+                    if gap > worst_gap {
+                        worst_gap = gap;
                     }
                     checked += 1;
                 }
             }
         }
         assert_eq!(checked, 3 * 105, "the corpus did not run to completion");
-        // A bound equal to the score everywhere would be suspicious: it would
-        // mean the ceiling is the search, and the filter buys nothing.
+        // **The bound must be tight enough to be worth having.** `ceiling` is
+        // justified in its own doc by turning Task 20's D=162 sweep from hours
+        // into minutes, and a bound that never rejects delivers none of that.
+        // Measured worst relative gap on this corpus: 0.93. A ceiling of `0.0`
+        // gives 1.0 for every pair and fails here.
         assert!(
-            slack_seen > 200,
-            "only {slack_seen} of {checked} pairs had any slack between the ceiling \
-             and the true maximum"
+            worst_gap < 0.98,
+            "the worst ceiling-to-score gap is {worst_gap}, so the bound is close to \
+             vacuous — `ceiling` returning a constant 0.0 would score 1.0 here and is \
+             sound but useless. The filter has to reject things to be worth its branch."
         );
     }
 
