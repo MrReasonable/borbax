@@ -1457,24 +1457,40 @@ fn compare_signature_surface(found: &[SigItem], failures: &mut Vec<String>) {
 /// the first entry's category for both, and a duplicated list line would never
 /// be noticed.
 fn check_surface_bookkeeping(found: &[SigItem], failures: &mut Vec<String>) {
-    // **Both directions are counted, not merely searched.** `find`/`any` answer
-    // "at least one", so two items sharing a `(file, name)` key — two `impl
-    // Signature` blocks in one file each declaring `fn cmp`, say — would take
-    // the first entry's category for both, and a duplicated list line would
-    // never be noticed.
-    for (i, (file, name, _)) in SIGNATURE_SURFACE.iter().enumerate() {
-        let pinned = SIGNATURE_SURFACE
+    bookkeeping_against(found, SIGNATURE_SURFACE, failures);
+}
+
+/// [`check_surface_bookkeeping`] against an arbitrary pinned list.
+///
+/// **Both directions are counted, not merely searched.** `find`/`any` answer
+/// "at least one", so two items sharing a `(file, name)` key — two `impl
+/// Signature` blocks in one file each declaring `fn cmp`, say — would take the
+/// first entry's category for both, and a duplicated list line would never be
+/// noticed.
+///
+/// Parameterised only so a test can drive the **duplicate-pin** branch, whose
+/// `take(i).all(..)` guard exists to report a repeated key exactly once. No
+/// real-tree plant can reach it: you cannot plant a duplicate list entry
+/// without editing the shipped list, so without this split an inverted
+/// condition there would stay green.
+fn bookkeeping_against(
+    found: &[SigItem],
+    pinned: &[(&str, &str, SigFacing)],
+    failures: &mut Vec<String>,
+) {
+    for (i, (file, name, _)) in pinned.iter().enumerate() {
+        let copies = pinned
             .iter()
             .filter(|(f, n, _)| f == file && n == name)
             .count();
-        if pinned > 1
-            && SIGNATURE_SURFACE
+        if copies > 1
+            && pinned
                 .iter()
                 .take(i)
                 .all(|(f, n, _)| f != file || n != name)
         {
             failures.push(format!(
-                "§8.2: SIGNATURE_SURFACE pins `{name}` in {file} {pinned} times. Duplicate keys \
+                "§8.2: SIGNATURE_SURFACE pins `{name}` in {file} {copies} times. Duplicate keys \
                  mean one category silently governs items the other entry was written for."
             ));
         }
@@ -1548,9 +1564,16 @@ fn scan_parsed_surface(
     // `unit!` expansions got reported. Doc comments survive parsing as
     // `#[doc = ".."]` string literals, so an ident walk excludes them by
     // construction rather than by stripping.
-    if !sig_names.iter().any(|n| mentions_ident(file, n))
-        && !RAW_ACCESSORS.iter().any(|n| mentions_ident(file, n))
-    {
+    // One walk, not one per name. `mentions_ident` rendered the whole file to a
+    // `TokenStream` on every call, so each file was re-tokenised once per
+    // signature alias plus once per raw accessor — and `sig_names` grows with
+    // every alias in the workspace.
+    let wanted: Vec<&str> = sig_names
+        .iter()
+        .map(String::as_str)
+        .chain(RAW_ACCESSORS.iter().copied())
+        .collect();
+    if !mentions_any_ident(file, &wanted) {
         return (Vec::new(), Vec::new());
     }
     // Aliases first, for the reason `scan_for_derived_streams` gives: matching
@@ -1867,10 +1890,31 @@ impl SigScan<'_> {
                     self.value(&c.ident.to_string(), &c.ty, &c.vis, in_test, out);
                 }
                 syn::Item::Macro(m) => unreadable.push(sig_unanalysable(self.rel, &m.mac.path)),
-                syn::Item::Verbatim(_) => {
-                    unreadable.push(sig_unanalysable_at(self.rel, 0, "verbatim item"));
-                }
-                _ => {}
+                syn::Item::Verbatim(ts) => unreadable.push(sig_unanalysable_at(
+                    self.rel,
+                    syn::spanned::Spanned::span(ts).start().line,
+                    "verbatim item",
+                )),
+                // **Provably cannot hold a comparison**, so ignored by name
+                // rather than by falling through. `Type` is an alias, which
+                // `alias_names` resolves; `Use` and `ExternCrate` bring names
+                // into scope without declaring a body; `TraitAlias` declares no
+                // items.
+                syn::Item::Type(_)
+                | syn::Item::Use(_)
+                | syn::Item::ExternCrate(_)
+                | syn::Item::TraitAlias(_) => {}
+                // **Everything else is reported.** `syn::Item` is
+                // `#[non_exhaustive]`, so a bare `_ => {}` is a silent pass for
+                // every variant nobody thought of — `Item::ForeignMod` today,
+                // and whatever a `syn` upgrade adds tomorrow. That is precisely
+                // the "a shape it did not know was a silent pass" failure this
+                // guard replaced.
+                other => unreadable.push(sig_unanalysable_at(
+                    self.rel,
+                    syn::spanned::Spanned::span(other).start().line,
+                    "an item variant this walker does not name",
+                )),
             }
         }
     }
@@ -1924,10 +1968,19 @@ impl SigScan<'_> {
                 syn::ImplItem::Macro(m) => {
                     unreadable.push(sig_unanalysable(self.rel, &m.mac.path));
                 }
-                syn::ImplItem::Verbatim(_) => {
-                    unreadable.push(sig_unanalysable_at(self.rel, 0, "verbatim impl item"));
-                }
-                _ => {}
+                syn::ImplItem::Verbatim(ts) => unreadable.push(sig_unanalysable_at(
+                    self.rel,
+                    syn::spanned::Spanned::span(ts).start().line,
+                    "verbatim impl item",
+                )),
+                // An associated type is an alias; nothing else in an `impl` is
+                // ignorable by construction, so the rest is reported.
+                syn::ImplItem::Type(_) => {}
+                other => unreadable.push(sig_unanalysable_at(
+                    self.rel,
+                    syn::spanned::Spanned::span(other).start().line,
+                    "an impl-item variant this walker does not name",
+                )),
             }
         }
     }
@@ -1982,10 +2035,17 @@ impl SigScan<'_> {
                 syn::TraitItem::Macro(m) => {
                     unreadable.push(sig_unanalysable(self.rel, &m.mac.path));
                 }
-                syn::TraitItem::Verbatim(_) => {
-                    unreadable.push(sig_unanalysable_at(self.rel, 0, "verbatim trait item"));
-                }
-                _ => {}
+                syn::TraitItem::Verbatim(ts) => unreadable.push(sig_unanalysable_at(
+                    self.rel,
+                    syn::spanned::Spanned::span(ts).start().line,
+                    "verbatim trait item",
+                )),
+                syn::TraitItem::Type(_) => {}
+                other => unreadable.push(sig_unanalysable_at(
+                    self.rel,
+                    syn::spanned::Spanned::span(other).start().line,
+                    "a trait-item variant this walker does not name",
+                )),
             }
         }
     }
@@ -2158,20 +2218,26 @@ impl SigScan<'_> {
     }
 }
 
-/// Does `name` appear anywhere in the file as an identifier?
+/// Does any of `names` appear anywhere in the file as an identifier?
 ///
 /// Deliberately not `text.contains(name)`: a doc comment parses to a `#[doc =
 /// ".."]` string literal, which carries no `Ident`, so prose about a type never
 /// makes its file look like a consumer of one.
-fn mentions_ident(file: &syn::File, name: &str) -> bool {
-    fn walk(stream: proc_macro2::TokenStream, name: &str) -> bool {
+///
+/// Takes a slice rather than one name because the caller has several and the
+/// file was otherwise re-tokenised once per name.
+fn mentions_any_ident(file: &syn::File, names: &[&str]) -> bool {
+    fn walk(stream: proc_macro2::TokenStream, names: &[&str]) -> bool {
         stream.into_iter().any(|tt| match tt {
-            proc_macro2::TokenTree::Ident(i) => i == name,
-            proc_macro2::TokenTree::Group(g) => walk(g.stream(), name),
+            proc_macro2::TokenTree::Ident(i) => {
+                let s = i.to_string();
+                names.contains(&s.as_str())
+            }
+            proc_macro2::TokenTree::Group(g) => walk(g.stream(), names),
             _ => false,
         })
     }
-    walk(quote::ToTokens::to_token_stream(file), name)
+    walk(quote::ToTokens::to_token_stream(file), names)
 }
 
 /// Is any of these bounds parameterised by one of `names`?
@@ -3355,8 +3421,8 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 mod tests {
     use super::scan_for_derived_streams;
     use super::{
-        SIGNATURE_SURFACE, SigItem, alias_names, check_surface_bookkeeping,
-        compare_signature_surface, scan_signature_surface,
+        SIGNATURE_SURFACE, SigFacing, SigItem, alias_names, bookkeeping_against,
+        check_surface_bookkeeping, compare_signature_surface, scan_signature_surface,
     };
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
     use super::{identifier_segments, scan_format_tokens};
@@ -3836,6 +3902,22 @@ mod tests {
             failures.iter().any(|f| f.contains("share the key")),
             "two items sharing a pinned key went unreported — one category would silently \
              govern both: {failures:?}"
+        );
+        // The duplicate-PIN direction, which no real-tree plant can reach: you
+        // cannot plant a repeated list entry without editing the shipped list.
+        // The branch carries a `take(i).all(..)` guard so a repeated key is
+        // reported exactly once, and nothing exercised it.
+        let mut failures = Vec::new();
+        let doubled = &[
+            ("a.rs", "d", SigFacing::Single),
+            ("a.rs", "d", SigFacing::Minimised),
+        ];
+        bookkeeping_against(&[item_with("a.rs", "d", |_| {})], doubled, &mut failures);
+        let dupes = failures.iter().filter(|f| f.contains("2 times")).count();
+        assert_eq!(
+            dupes, 1,
+            "a repeated pinned key was reported {dupes} times, not once — the `take(i)` guard \
+             is the thing that makes it exactly one: {failures:?}"
         );
         // And the other direction: everything pinned but absent.
         let mut failures = Vec::new();

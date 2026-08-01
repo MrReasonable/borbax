@@ -20,6 +20,20 @@
 //! absent from the universe, silently taking a fallback radius, and inflated a
 //! composition-only null to within 0.008 of the gate it was supposed to clear.
 //! Taking one seed makes the chimera unspellable.
+//!
+//! **Spec sections, since a review asked which one governs.** No single §
+//! does — this is test scaffolding, not modelled behaviour, and citing one to
+//! satisfy a convention would be worse than saying so. What the fixtures *are*
+//! bound by:
+//!
+//! - `fixture` and `chain_capable` produce elements and a table, so §7.1's
+//!   element properties (valence in particular — `chain_capable` filters to
+//!   `valence >= 2`) and §7.2's universe generation define what a valid draw
+//!   is. The one-seed rule above is a §13.4 determinism consequence.
+//! - The molecule builders serve §8.2's signature and §8.3's binding tests, and
+//!   `MAX_ATOMS` is §8.1's graph bound.
+//! - The rule this module actually enforces is CLAUDE.md's, not the PRD's: a
+//!   measured figure quoted against "the corpus" must name one corpus.
 
 #![expect(
     clippy::redundant_pub_crate,

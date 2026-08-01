@@ -804,14 +804,22 @@ mod tests {
                 } else {
                     ba.abs()
                 };
-                // **8 ulp, not a round number.** The previous bound was
-                // `1e-12 * scale` — about 4 500 ulp — which had 560x slack and
-                // would not have fired if the asymmetry grew by two orders of
-                // magnitude. `f64::EPSILON * 16.0` is ~8 ulp of the larger
-                // operand, which is the measured maximum over 6 624 pairs.
+                // **Tight, and the arithmetic behind the number was wrong.**
+                // The previous bound was `1e-12 * scale` — about 4 500 ulp —
+                // which had 560x slack and would not have fired if the
+                // asymmetry grew by two orders of magnitude.
+                //
+                // This comment said `f64::EPSILON * 16.0` is "~8 ulp of the
+                // larger operand". It is not: `f64::EPSILON` is `2^-52`, which
+                // is one ulp only for operands in `[1, 2)`. For `scale` in
+                // `[2^k, 2^(k+1))` one ulp is `2^(k-52)`, so this bar admits
+                // **16 to 32 ulp** of `scale`. The measured maximum is 8 ulp
+                // over 6 624 pairs, so the bar has 2-4x slack rather than the
+                // 2x the old wording implied — still 1000x tighter than what it
+                // replaced, and the figure is now the one the expression means.
                 assert!(
                     (ab - ba).abs() <= f64::EPSILON * 16.0 * scale,
-                    "pair ({i},{j}) differ by more than the 8 ulp the summation \
+                    "pair ({i},{j}) differ by more than the 16-32 ulp the summation \
                      order accounts for: {ab} vs {ba}"
                 );
                 checked += 1;
@@ -933,7 +941,14 @@ mod tests {
                 }
                 -(k.w_shape * sh + k.w_charge * ch)
             };
-            let tol = 1e-9 * f.score().abs();
+            // **Absolute floor as well as relative.** A purely relative
+            // tolerance is exactly zero at a zero score, so both comparisons
+            // below would be false and the test would fail on a *correct*
+            // kernel. Scores do reach `-0.0` — `ceiling`'s doc records it on
+            // complement shapes — and the sibling assertion in
+            // `the_prefilter_is_a_genuine_bound` already carries a floor for
+            // this reason.
+            let tol = 1e-9 * f.score().abs() + 1e-20;
             if (score_posed(&transposed) - f.score()).abs() < tol {
                 transpose_ok += 1;
             }
@@ -1105,7 +1120,11 @@ mod tests {
                 .collect();
             for i in 0..mols.len() {
                 for j in i..mols.len() {
-                    let bound = ceiling::<D>(&mols[i].summary(), &mols[j].summary(), k);
+                    // No turbofish: `SigSummary<D>` carries the resolution,
+                    // so `D` is inferred from both arguments and a mismatch is
+                    // a type error. Spelling it again re-creates the affordance
+                    // the type change removed.
+                    let bound = ceiling(&mols[i].summary(), &mols[j].summary(), k);
                     let best = fit(&mols[i], &mols[j], &g, k).score();
                     // Absolute floor as well as relative: on an exact
                     // complement the relative term collapses to ~1e-39 while
