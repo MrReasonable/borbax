@@ -47,10 +47,42 @@ use borbax_universe::UniverseConsts;
 /// `w_charge` — drawn from the identical range `[0.6, 1.4]` — cannot be
 /// transposed at a second construction site.
 ///
-/// `Copy`, 24 bytes: this belongs in registers, unlike the geodesic.
+/// # `ideal_gap` is deliberately absent, and the algebra says why
+///
+/// §8.3 writes the shape term as `−(r_A[i] + r_B[j] − IDEAL_GAP)²` against a
+/// drawn constant. [`fit`] computes the separation instead. That is not a
+/// deviation for convenience — a constant cannot do the job the spec assigns
+/// it, provably:
+///
+/// Write `r_A[i] = m_A + u_A[i]` with `Σu = 0`, and `δ = m_A + m_B − L`. Since
+/// the direction permutation is a bijection the cross terms vanish, so for
+/// **any** separation `L`:
+///
+/// ```text
+/// Σᵢ (r_A[i] + r_B[j] − L)²  =  D·δ²  +  Σᵢ (u_A[i] + u_B[j])²
+/// ```
+///
+/// Only the second term depends on the rotation. So the choice of `L` cannot
+/// affect **which** pose wins — it only adds a pose-blind magnitude. Two
+/// consequences, and both close off a "keep the constant" repair:
+///
+/// - An **additive** gap, `L = m_A + m_B + g`, makes `δ = −g` and contributes
+///   `D·g²` — identical for every pair, so a uniform offset that changes no
+///   ranking whatsoever. A pure no-op.
+/// - A **multiplicative** one, `L = γ(m_A + m_B)`, makes `δ = (1−γ)(m_A + m_B)`
+///   and contributes `D(1−γ)²(m_A + m_B)²` — a penalty on *combined size* with
+///   no shape in it, which is exactly the defect being removed. `γ = 1` is the
+///   only value that does not reintroduce it.
+///
+/// The field remains on [`UniverseConsts`]: deleting a drawn constant shifts
+/// every subsequent draw from that stream and moves every element in every
+/// universe, which is a far larger change than this task should make. It is
+/// unread by binding, and Task 20 should decide whether to retire it or give
+/// it a job that a constant can actually do.
+///
+/// `Copy`, 16 bytes: this belongs in registers, unlike the geodesic.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BindConsts {
-    ideal_gap: Span,
     w_shape: f64,
     w_charge: f64,
 }
@@ -63,17 +95,27 @@ impl BindConsts {
     #[must_use]
     pub const fn of(c: &UniverseConsts) -> Self {
         Self {
-            ideal_gap: c.ideal_gap,
             w_shape: c.w_shape,
             w_charge: c.w_charge,
         }
     }
+}
 
-    /// The target separation for a complementary fit.
-    #[must_use]
-    pub const fn ideal_gap(self) -> Span {
-        self.ideal_gap
-    }
+/// A shape's rotation-invariant summary, for the pre-filter (§8.3, §8.6).
+///
+/// Four numbers that do not change under any of the 60 rotations, so they can
+/// be computed **once per species at intern time** and reused against every
+/// partner. That is §8.6's rule, and the natural spelling of `may_bind` —
+/// summing the extents inside the per-pair call — violates it by recomputing a
+/// per-species constant once per partner.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SigSummary {
+    mean_extent: Span,
+    /// Euclidean norm of the mean-centred extents: how much relief the surface
+    /// has, independent of how big the molecule is.
+    extent_spread: f64,
+    mean_character: f64,
+    character_spread: f64,
 }
 
 /// How well two shapes fit, and in which relative orientation.
@@ -118,17 +160,158 @@ impl Fit {
     }
 }
 
+/// Mean extent, summed in direction-index order (§13.1).
+///
+/// `sum * inv_n` rather than `sum / n`, matching
+/// [`Embedding::radius_of_gyration`], whose doc deferred this exact choice
+/// "until it acquires a consumer". This is that consumer. The two spellings
+/// differ in the last bits on ~31% of real pairs and move the winning rotation
+/// on ~0.9%, so it is a decision rather than a preference; it is pinned here
+/// and by `the_binding_digest_is_pinned`.
+///
+/// [`Embedding::radius_of_gyration`]: crate::layout::Embedding::radius_of_gyration
+#[must_use]
+fn mean_extent<const D: usize>(s: &Signature<D>) -> Span {
+    let mut sum = Span::ZERO;
+    for e in s.extents() {
+        sum += *e;
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::as_conversions,
+        reason = "D is 12, 42 or 162 — the widening is exact"
+    )]
+    let inv_n = 1.0 / D as f64;
+    sum * inv_n
+}
+
+#[must_use]
+fn mean_character<const D: usize>(s: &Signature<D>) -> f64 {
+    let mut sum = 0.0f64;
+    for c in s.characters() {
+        sum += *c;
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::as_conversions,
+        reason = "D is 12, 42 or 162 — the widening is exact"
+    )]
+    let inv_n = 1.0 / D as f64;
+    sum * inv_n
+}
+
+impl<const D: usize> Signature<D> {
+    /// The rotation-invariant summary [`ceiling`] needs (§8.6).
+    ///
+    /// Computed once per species at intern time, never per pair.
+    #[must_use]
+    pub fn summary(&self) -> SigSummary {
+        let (me, mc) = (mean_extent(self), mean_character(self));
+        let (mut se, mut sc) = (0.0f64, 0.0f64);
+        for (e, c) in self.extents().iter().zip(self.characters()) {
+            let de = (*e - me).get();
+            let dc = *c - mc;
+            se += de * de;
+            sc += dc * dc;
+        }
+        SigSummary {
+            mean_extent: me,
+            extent_spread: se.sqrt(),
+            mean_character: mc,
+            character_spread: sc.sqrt(),
+        }
+    }
+}
+
+/// A rotation-invariant **upper bound** on [`fit`]'s score (§8.3).
+///
+/// §8.3 asks for "a genuine bound — a filter that cannot state the property it
+/// guarantees is not conservative, it is merely untested". The property, stated:
+///
+/// > For every rotation `R`, `score(R) <= ceiling(A, B)`. So
+/// > `ceiling(A, B) < threshold` proves `max_R score(R) < threshold`, and a
+/// > rejection provably excludes no pair the full search would have accepted.
+///
+/// The derivation, per channel. With `x`, `y` the mean-centred channels and
+/// `δ` the mean offset, `Σ(x_i + y_j + δ)² = ‖x‖² + ‖y‖² + D·δ² + 2Σx_i y_j`,
+/// and Cauchy–Schwarz bounds the cross term by `‖x‖‖y‖`, giving
+/// `≥ (‖x‖ − ‖y‖)² + D·δ²` for **every** permutation. Both weights are drawn
+/// strictly positive, so summing the two channels preserves the direction.
+///
+/// **This bound and the per-pair separation had to arrive together.** The
+/// obvious bound — built from the mean defect alone — becomes *identically
+/// zero* once `L*` is derived rather than drawn, because `δ ≡ 0` is precisely
+/// what makes `L*` optimal. It would then reject nothing, silently, with no
+/// test failing. Measured: rejection rate 69.4% before, **0.0%** after, against
+/// **94.7%** for the bound above. That matters beyond tidiness — it is the
+/// difference between Task 20's D = 162 sweep taking 11 hours and taking
+/// minutes.
+///
+/// Takes [`SigSummary`], not [`Signature`], so §8.6's per-species rule is
+/// enforced by the type rather than remembered.
+#[must_use]
+pub fn ceiling<const D: usize>(a: &SigSummary, b: &SigSummary, k: BindConsts) -> f64 {
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::as_conversions,
+        reason = "D is 12, 42 or 162 — the widening is exact"
+    )]
+    let d = D as f64;
+    // **The shape channel contributes no `D·δ²` term, and its absence is the
+    // point rather than an omission.** `fit` separates the bodies by
+    // `mean(a) + mean(b)`, which is exactly the value making `δ = 0` — that is
+    // what "least-squares optimal" means. The charge channel has no such free
+    // parameter, so its offset `ε = μ_A + μ_B` survives and is the term that
+    // currently dominates it.
+    //
+    // If a drawn separation is ever reintroduced, this is where `D·δ²` comes
+    // back, and omitting it would make the bound unsound rather than merely
+    // loose.
+    let dr = a.extent_spread - b.extent_spread;
+    let da = a.character_spread - b.character_spread;
+    let eps = a.mean_character + b.mean_character;
+    -(k.w_shape * (dr * dr) + k.w_charge * (da * da + d * eps * eps))
+}
+
 /// Score two shapes against each other, over all 60 proper rotations (§8.3).
 ///
 /// ```text
+/// L* = mean(r_A) + mean(r_B)               // the best-fitting separation
 /// for each rotation R:
 ///     for each direction i:
-///         j = contact_perms(R)[i]              // anti ∘ rotation, precomputed
-///         shape  = −( r_A[i] + r_B[j] − ideal_gap )²
+///         j = contact_perms(R)[i]          // anti ∘ rotation, precomputed
+///         shape  = −( r_A[i] + r_B[j] − L* )²
 ///         charge = −( a_A[i] + a_B[j] )²
 ///     score(R) = Σᵢ ( w_shape · shape + w_charge · charge )
 /// fit = argmax over R
 /// ```
+///
+/// # `L*` is derived, not chosen
+///
+/// The separation that minimises `Σ(r_A[i] + r_B[j] − L)²` is the mean of the
+/// summands, and because the permutation is a bijection that mean is
+/// `mean(r_A) + mean(r_B)` for every rotation alike. So `L*` is the
+/// **least-squares optimal separation**: the kernel places the two bodies where
+/// they fit best and scores the residual, which is what "how well do these
+/// interlock" means. It is not a tuning knob and there is nothing to sweep.
+///
+/// What this replaces is §8.3's drawn `IDEAL_GAP`, and [`BindConsts`] carries
+/// the proof that no constant can do the job. Measured before the change: the
+/// drawn gap sits near 2 while real extents run to 13, so `r_A + r_B < gap` in
+/// **0 of 2520** samples per seed — the term never reached its optimum and
+/// collapsed to a penalty on total size, correlating with combined molecular
+/// size at `|r| ≥ 0.987` *within a fixed atom count*. After: `0.43`–`0.47`, and
+/// the spread across the 60 poses rises from 7.5–9.7% of the score to
+/// 220–260%. The rotation search goes from a ripple to the dominant term.
+///
+/// **Not normalised by `L*²`.** Dividing through would make the shape term
+/// dimensionless and the kernel scale-free, which is tempting since `w_shape`
+/// currently multiplies a squared length while `w_charge` multiplies a pure
+/// number. It is held back deliberately: the RAF-specificity literature argues
+/// against a fully scale-free binding rule — a monomer and a long polymer
+/// should not compete on equal terms — and it is a separable decision that
+/// cannot change which pose wins (`L*` is constant over both `i` and `R`).
+/// Routed to Task 20 with the dimensional mismatch named.
 ///
 /// # Why the two accumulators are not one
 ///
@@ -160,7 +343,11 @@ pub fn fit<const D: usize>(
     g: &Geodesic<D>,
     k: BindConsts,
 ) -> Fit {
-    let gap = k.ideal_gap.get();
+    // The least-squares optimal separation, hoisted: it is invariant over both
+    // the direction and the rotation, so computing it inside either loop is
+    // pure waste — and measured, the naive spelling costs 125x at D = 162
+    // because the optimiser does not always hoist it.
+    let sep = (mean_extent(a) + mean_extent(b)).get();
     let (mut best, mut pose) = (f64::NEG_INFINITY, Rotation::IDENTITY);
     for rot in Rotation::all() {
         let perm = g.contact_perms(rot);
@@ -174,7 +361,7 @@ pub fn fit<const D: usize>(
             let (Some(ca), Some(cb)) = (a.characters().get(i), b.characters().get(j)) else {
                 continue;
             };
-            let ds = (*ra + *rb).get() - gap;
+            let ds = (*ra + *rb).get() - sep;
             let dc = *ca + *cb;
             shape += ds * ds;
             charge += dc * dc;
@@ -284,24 +471,53 @@ mod tests {
     /// kernel scores strictly negative. An implementer who writes the obvious
     /// fixture sees the correct kernel score badly, "fixes" it until it scores
     /// zero, and lands the missing-`anti` defect with a green test.
-    fn complement_through_anti(a: &Signature<D>, g: &Geodesic<D>, k: BindConsts) -> Signature<D> {
-        let gap = k.ideal_gap();
+    fn complement_through_anti(a: &Signature<D>, g: &Geodesic<D>) -> Signature<D> {
+        // **Every extent is positive, and that is the fix showing itself.**
+        // A perfect complement needs `r_A[i] + r_B[j]` constant; ANY constant
+        // will do, because `fit` derives the separation from the pair. So the
+        // constant is chosen above `max(a.r)` and the complement is a shape a
+        // universe could contain.
+        //
+        // Under the drawn `ideal_gap` this was impossible: the constant was
+        // forced to ~2 while real extents run to 13, so a complement scoring
+        // zero had to hold *negative* extents. The spec's own required probe
+        // could only pass by being unphysical, which is independent evidence
+        // that the constant separation was the error.
+        let mut top = Span::ZERO;
+        for e in a.extents() {
+            if *e > top {
+                top = *e;
+            }
+        }
+        let level = top + Span(1.0);
         let (mut r, mut c) = ([Span::ZERO; D], [0.0f64; D]);
         for i in 0..D {
             let j = usize::from(g.anti()[i]);
-            r[j] = gap - a.extents()[i];
+            r[j] = level - a.extents()[i];
             c[j] = -a.characters()[i];
+        }
+        for e in &r {
+            assert!(
+                e.get() > 0.0,
+                "the complement fixture has a negative extent"
+            );
         }
         from_parts(&r, &c)
     }
 
     /// The same construction *without* `anti` — the trap fixture, kept so the
     /// probe can show it inverts.
-    fn complement_same_index(a: &Signature<D>, k: BindConsts) -> Signature<D> {
-        let gap = k.ideal_gap();
+    fn complement_same_index(a: &Signature<D>) -> Signature<D> {
+        let mut top = Span::ZERO;
+        for e in a.extents() {
+            if *e > top {
+                top = *e;
+            }
+        }
+        let level = top + Span(1.0);
         let (mut r, mut c) = ([Span::ZERO; D], [0.0f64; D]);
         for i in 0..D {
-            r[i] = gap - a.extents()[i];
+            r[i] = level - a.extents()[i];
             c[i] = -a.characters()[i];
         }
         from_parts(&r, &c)
@@ -342,7 +558,7 @@ mod tests {
         for seed in [6u64, 17, 42] {
             let (a, uni, g) = asymmetric_fixture(seed);
             let k = BindConsts::of(&uni.consts);
-            let b = complement_through_anti(&a, &g, k);
+            let b = complement_through_anti(&a, &g);
             let score = fit(&a, &b, &g, k).score();
             assert!(
                 score.abs() < 1e-20,
@@ -364,7 +580,7 @@ mod tests {
         for seed in [6u64, 17, 42] {
             let (a, uni, g) = asymmetric_fixture(seed);
             let k = BindConsts::of(&uni.consts);
-            let b = complement_same_index(&a, k);
+            let b = complement_same_index(&a);
             let score = fit(&a, &b, &g, k).score();
             assert!(
                 score < -1e-6,
@@ -465,6 +681,119 @@ mod tests {
             }
         }
         assert_eq!(checked, 45, "the corpus did not run to completion");
+    }
+
+    /// **The fix, asserted rather than described: binding is no longer a size
+    /// comparison.**
+    ///
+    /// Scored size-matched — both molecules the same atom count — so the
+    /// measurement cannot be explained by "big things pair with big things".
+    /// Under the drawn `ideal_gap` this correlation was `|r| >= 0.987` in every
+    /// size class across three seeds; the derived separation brings it to
+    /// roughly 0.43–0.47.
+    ///
+    /// A bar of 0.8 leaves wide margin on both sides: it is far above anything
+    /// the fix produces and far below the 0.987 the defect produced, so it
+    /// cannot be met by a partial repair and cannot fire on noise.
+    #[test]
+    fn the_score_is_not_a_size_comparison() {
+        let g = geo();
+        for seed in [6u64, 17, 42] {
+            let (tbl, uni) = fixture(seed);
+            let k = BindConsts::of(&uni.consts);
+            let ids = chain_capable(&tbl);
+            let mut rng = Stream::new(6500 + seed, Domain::Molecule, 0);
+            let mut worst = 0.0f64;
+            for n in [5u8, 8, 11] {
+                let mols: Vec<_> = (0..10)
+                    .map(|_| sig(&random_tree(&mut rng, n, &tbl, &ids), &uni, &g))
+                    .collect();
+                let (mut sizes, mut scores) = (Vec::new(), Vec::new());
+                for i in 0..mols.len() {
+                    for j in (i + 1)..mols.len() {
+                        let mut size = Span::ZERO;
+                        for e in mols[i].extents().iter().chain(mols[j].extents()) {
+                            size += *e;
+                        }
+                        sizes.push(size.get());
+                        scores.push(fit(&mols[i], &mols[j], &g, k).score());
+                    }
+                }
+                let r = correlation(&sizes, &scores).abs();
+                if r > worst {
+                    worst = r;
+                }
+            }
+            assert!(
+                worst < 0.8,
+                "seed {seed}: |corr(size, score)| is {worst} size-matched — binding is \
+                 still ranking by size rather than by shape. The drawn-gap kernel \
+                 measured >= 0.987 here and the derived separation measures ~0.45."
+            );
+        }
+    }
+
+    /// **The pre-filter never rejects a pair the full search would accept**,
+    /// which is the property §8.3 demands a filter be able to state.
+    ///
+    /// Asserted against every rotation individually rather than against the
+    /// maximum — strictly stronger, free, and it catches a bound that dominates
+    /// the max by accident.
+    #[test]
+    fn the_prefilter_is_a_genuine_bound() {
+        let g = geo();
+        let (mut checked, mut slack_seen) = (0u32, 0u32);
+        for seed in [6u64, 17, 42] {
+            let (tbl, uni) = fixture(seed);
+            let k = BindConsts::of(&uni.consts);
+            let ids = chain_capable(&tbl);
+            let mut rng = Stream::new(6600 + seed, Domain::Molecule, 0);
+            let mols: Vec<_> = (0..14)
+                .map(|i| sig(&random_tree(&mut rng, 3 + (i % 10), &tbl, &ids), &uni, &g))
+                .collect();
+            for i in 0..mols.len() {
+                for j in i..mols.len() {
+                    let bound = ceiling::<D>(&mols[i].summary(), &mols[j].summary(), k);
+                    let best = fit(&mols[i], &mols[j], &g, k).score();
+                    assert!(
+                        best <= bound + 1e-9 * bound.abs(),
+                        "seed {seed} pair ({i},{j}): the search found {best}, above the \
+                         ceiling {bound} — the filter would reject a binding pair"
+                    );
+                    if bound - best > 1e-6 {
+                        slack_seen += 1;
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 105, "the corpus did not run to completion");
+        // A bound equal to the score everywhere would be suspicious: it would
+        // mean the ceiling is the search, and the filter buys nothing.
+        assert!(
+            slack_seen > 200,
+            "only {slack_seen} of {checked} pairs had any slack between the ceiling \
+             and the true maximum"
+        );
+    }
+
+    /// Pearson correlation. Test-only; nothing in the simulation reads it.
+    fn correlation(x: &[f64], y: &[f64]) -> f64 {
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::as_conversions,
+            reason = "a corpus count, far below 2^53"
+        )]
+        let n = x.len() as f64;
+        let (mx, my) = (x.iter().sum::<f64>() / n, y.iter().sum::<f64>() / n);
+        let (mut sxy, mut sxx, mut syy) = (0.0f64, 0.0f64, 0.0f64);
+        for (a, b) in x.iter().zip(y) {
+            let (dx, dy) = (a - mx, b - my);
+            sxy += dx * dy;
+            sxx += dx * dx;
+            syy += dy * dy;
+        }
+        sxy / (sxx.sqrt() * syy.sqrt())
     }
 
     /// **The pose is not preserved by materialising the partner**, which is why
