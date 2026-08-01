@@ -24,16 +24,31 @@
 //! **The required probe is a substitution, not a test** — there is no test to
 //! run, which is why it is stated here in full. It is phrased as an edit
 //! because the tables were renamed under an earlier wording that named a
-//! deleted symbol. Substitute in [`fit`] — and **match the whole line**:
+//! deleted symbol. Substitute in [`fit`], selecting the line with this — the
+//! **anchor is load-bearing**, not decoration:
 //!
 //! ```text
-//! let perm = g.contact_perms(rot);   ->   let perm = g.rotation_perms(rot);
+//! rg -n '^\s+let perm = g\.contact_perms\(rot\);'
 //! ```
 //!
-//! **`g.contact_perms(rot)` alone appears twice in this file**, once in the
-//! kernel and once in `the_returned_pose_is_the_transpose`, so a find-replace
-//! on the bare call changes a test as well as the code under test and the
-//! result cannot be read. The `let perm =` form is unique to the kernel. That
+//! then change that one line's `contact_perms` to `rotation_perms`.
+//!
+//! **Two narrower strings were tried and both matched twice.** The bare
+//! `g.contact_perms(rot)` also appears in
+//! `the_probe_fixture_is_chirally_discriminating`, so replacing it edits a test
+//! alongside the code under test and the result cannot be read. Narrowing to
+//! `let perm = g.contact_perms(rot);` then matched **this paragraph**, because
+//! quoting a search string inside the file it searches is enough to break it.
+//! `^\s+` excludes the `//!` line and leaves exactly one hit.
+//!
+//! Both mistakes were caught by the probe script's own "abort unless exactly
+//! one call site" guard rather than by anyone reading, and this project has
+//! already recorded a probe that silently failed to apply and reported
+//! all-pass. An earlier version of this paragraph also named
+//! `the_returned_pose_is_the_transpose` as the second site; it does not call
+//! `contact_perms` at all, it reads `g.anti()`. Naming the wrong site is worse
+//! than naming none — the reader checks it, finds nothing, and concludes the
+//! warning is stale while the real site stays unnamed. The `let perm =` form is unique to the kernel. That
 //! is not hypothetical: this project has already recorded a probe that silently
 //! failed to apply and reported all-pass because its search string appeared
 //! twice.
@@ -419,9 +434,16 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// drawn gap sits near 2 while real extents run to 13, so `r_A + r_B < gap` in
 /// **0 of 2520** samples per seed — the term never reached its optimum and
 /// collapsed to a penalty on total size, correlating with combined molecular
-/// size at `|r| ≥ 0.987` *within a fixed atom count*. After: `0.43`–`0.47`, and
-/// the spread across the 60 poses rises from 7.5–9.7% of the score to
-/// 220–260%. The rotation search goes from a ripple to the dominant term.
+/// size at `|r| ≥ 0.987` *within a fixed atom count*. After: **0.583 / 0.510 /
+/// 0.390** for seeds 6 / 17 / 42, and the spread across the 60 poses rises from
+/// 7.5–9.7% of the score to 220–260%. The rotation search goes from a ripple to
+/// the dominant term.
+///
+/// This said `0.43`–`0.47` until a reviewer noticed
+/// `the_score_is_not_a_size_comparison` already **retracts that exact figure**
+/// — it was measured on a corpus the fix commit then changed. Two numbers for
+/// one measurement, disagreeing inside one file, in a module that quotes them
+/// as measured maxima to justify later tightening.
 ///
 /// **Not normalised by `L*²`.** Dividing through would make the shape term
 /// dimensionless and the kernel scale-free, which is tempting since `w_shape`
@@ -596,17 +618,6 @@ mod tests {
         Signature::from_parts_for_test(*r, *a)
     }
 
-    /// **The exact complement, built through `anti`.**
-    ///
-    /// `b.r[anti[i]] = gap − a.r[i]` and `b.a[anti[i]] = −a.a[i]`, so at the
-    /// identity rotation every `ds` and `dc` is exactly zero.
-    ///
-    /// **A complement built at the same index inverts and rewards the defect.**
-    /// With `b.r[i] = gap − a.r[i]` the anti-less kernel gives `ds = 0` in every
-    /// direction and scores exactly 0 — the global maximum — while the *correct*
-    /// kernel scores strictly negative. An implementer who writes the obvious
-    /// fixture sees the correct kernel score badly, "fixes" it until it scores
-    /// zero, and lands the missing-`anti` defect with a green test.
     /// The constant both complement fixtures are built at, **shared so they
     /// cannot drift apart.**
     ///
@@ -631,6 +642,17 @@ mod tests {
         top + Span(1.0)
     }
 
+    /// **The exact complement, built through `anti`.**
+    ///
+    /// `b.r[anti[i]] = gap − a.r[i]` and `b.a[anti[i]] = −a.a[i]`, so at the
+    /// identity rotation every `ds` and `dc` is exactly zero.
+    ///
+    /// **A complement built at the same index inverts and rewards the defect.**
+    /// With `b.r[i] = gap − a.r[i]` the anti-less kernel gives `ds = 0` in every
+    /// direction and scores exactly 0 — the global maximum — while the *correct*
+    /// kernel scores strictly negative. An implementer who writes the obvious
+    /// fixture sees the correct kernel score badly, "fixes" it until it scores
+    /// zero, and lands the missing-`anti` defect with a green test.
     fn complement_through_anti(a: &Signature<D>, g: &Geodesic<D>) -> Signature<D> {
         // **Every extent is positive, and that is the fix showing itself.**
         // A perfect complement needs `r_A[i] + r_B[j]` constant; ANY constant
