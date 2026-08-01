@@ -5,7 +5,7 @@
 //! that way ([`Signature::characters`]). Everything downstream — binding,
 //! catalysis, membranes, permeability — is a comparison between two of these.
 //!
-//! # Every comparison is group-minimised, and nothing enforces it
+//! # Every comparison is group-minimised, and `xtask` enforces it
 //!
 //! [`Signature::group_distance`] is the **only** distance this module offers.
 //! That is a convention, not a guarantee, and the distinction is this section's
@@ -51,50 +51,66 @@
 //!
 //! ## There is a guard, and what it does *not* decide is the part to read
 //!
-//! `xtask`'s `check_signature_surface_is_pinned` (§8.2) pins every item in the
-//! workspace that can see a `Signature` — an `impl` method on one, a free
-//! function taking one, a trait method, a struct or enum **field** holding one,
-//! and the **derive list** of any type that is or holds one — to a checked-in
-//! list, each entry carrying a category. Adding a signature-facing item
-//! anywhere fails the build until a human classifies it.
+//! `xtask`'s `check_signature_surface_is_pinned` (§8.2) pins every item that can
+//! see a signature to a checked-in list, each entry carrying a category. Adding
+//! a signature-facing item anywhere fails the build until a human classifies it.
+//!
+//! It looks in **two dimensions**, because one is not enough. By *declaration*:
+//! a parameter, return type, generic bound, struct or enum field,
+//! `const`/`static` type, or `derive`/`cfg_attr` list that names a signature or
+//! a workspace alias of one. And by *body*: any shipped item that reads
+//! [`Signature::extents`] or [`Signature::characters`], whatever its declaration
+//! says.
+//!
+//! **The second dimension is what makes the residual small enough to state.**
+//! Outside this file the fields are private, so every ungrouped comparison must
+//! read an accessor. Three shapes were measured passing green with only the
+//! first: `impl Ord for SpeciesKey` where the key merely *holds* a signature —
+//! the intern-table shape the paragraph below invites — a closure inside an
+//! unlisted function, and an item declared inside a block expression.
 //!
 //! **It is the second attempt, and the difference is why the first was
-//! deleted.** That one read `signature.rs`'s public surface and required any
-//! `pub fn` mentioning `Signature` twice to also take a [`Geodesic`]. Review
-//! found **four independent escapes** — an out-of-line `mod`, an `impl` in any
-//! other file of the crate, an `impl` nested in a function body, and `Self`
-//! counted per-argument where a named `Signature` was counted per-mention — and
-//! **two classes of false positive**, one of which was a `Geodesic` *receiver*,
-//! i.e. `g.affinity(&a, &b)`, which is how §8.3's kernel reads most naturally.
+//! deleted.** That one read this file's public surface and required any `pub fn`
+//! mentioning `Signature` twice to also take a [`Geodesic`]. Review found **four
+//! independent escapes** — an out-of-line `mod`, an `impl` in any other file of
+//! the crate, an `impl` nested in a function body, and `Self` counted
+//! per-argument where a named `Signature` was counted per-mention — and **two
+//! classes of false positive**, one of which was a `Geodesic` *receiver*, i.e.
+//! `g.affinity(&a, &b)`.
 //!
-//! It was deleted because its verdict was pass/fail computed from the AST
-//! shapes it knew, so **a shape it did not know was a silent pass**. The rule
-//! this project applies to a repaired guard is: state the class of thing it
-//! decides and name what is outside it. The replacement's class is *"does this
-//! item appear in the pinned list"*, which is total — no shape analysis decides
-//! it. Shape analysis is used only to **refute** a category, never to grant a
-//! pass, and a construct the AST cannot read is reported rather than passed
-//! over.
+//! It was deleted because its verdict was pass/fail computed from the AST shapes
+//! it knew, so **a shape it did not know was a silent pass**. The replacement's
+//! verdict is *"does this item appear in the pinned list"*, which is total — no
+//! shape analysis decides it. Shape analysis decides only which *category* an
+//! item may claim, and there it can only refuse.
 //!
-//! Each of the four escapes is closed by construction rather than by a rule:
-//! the scan walks every `.rs` file under `crates/`, recurses through function
-//! bodies, and counts *values a function can see* with `Self` resolved from the
-//! enclosing `impl`. All four were re-planted as real edits in real files and
-//! all four now fail the build. Both false positives are gone too — a
-//! `Geodesic` receiver counts, and `impl PartialOrd for Signature` is **listed
-//! rather than forbidden**, since §8.2's own consumers need an ordering for a
-//! `BTreeMap` intern table. The old guard forbade what the spec requires, so
-//! the cheapest way past it was to move the `impl` to a file it could not see;
-//! a guard that fires on correct code gets deleted, and that pressure was
-//! structural.
+//! All four escapes were re-planted as real edits in real files and all four
+//! fail the build. Both false positives are gone: a `Geodesic` receiver counts,
+//! and `impl PartialOrd for Signature` is **listed rather than forbidden** — the
+//! `Storage` category, for an identity or ordering comparison on the stored
+//! form, bounded to return an ordering or a `bool` so a distance cannot hide
+//! there. That matters because §8.2's own consumers need an ordering for a
+//! `BTreeMap` intern table: the old guard forbade what the spec requires, so the
+//! cheapest way past it was to move the `impl` to a file it could not see, and a
+//! guard that fires on correct code gets deleted.
 //!
-//! **What sits outside it, stated plainly rather than dressed up: the bodies of
-//! the listed items.** A `Minimised` entry that takes a [`Geodesic`] and then
-//! forgets to use it is not caught, and an `Accessor`'s returned array can be
-//! subtracted by any arithmetic anywhere. A green build is evidence that no
-//! *new* comparison site appeared unreviewed. It is **not** evidence that every
-//! listed body minimises — that is still held by review, and by the tests below
-//! that measure the group-minimised distance against the plain one.
+//! **What sits outside it, stated plainly rather than dressed up:**
+//!
+//! - **The bodies of the listed items.** A `Minimised` entry that takes a
+//!   [`Geodesic`] and then forgets to use it is not caught.
+//! - **Test bodies.** The body dimension is shipped-code-only, because every
+//!   test writing `a.extents()[i]` in an assertion reads an accessor and
+//!   listing all fifteen is the noise that gets a guard switched off. A test
+//!   whose *declaration* names a signature is still counted — that is how this
+//!   file's own `plain_distance` is listed.
+//! - **`Minimised`'s own check**, which passes when some argument names a
+//!   `Geodesic`. `PhantomData<Geodesic<D>>` satisfies it while carrying no
+//!   rotation group. It is a smoke alarm, not a proof.
+//!
+//! A green build is evidence that no *new* comparison site appeared unreviewed.
+//! It is **not** evidence that every listed body minimises — that is still held
+//! by review, and by the tests below that measure the group-minimised distance
+//! against the plain one.
 //!
 //! ## Why there is no `sorted_extents`
 //!

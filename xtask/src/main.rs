@@ -947,6 +947,20 @@ enum SigFacing {
     /// the 60 rotations the caller supplies. Bounded: must be private, so it
     /// cannot become a consumer-facing distance without changing category.
     Primitive,
+    /// A comparison on the **stored** form for identity or ordering, not for
+    /// shape distance — species interning, a `BTreeMap` key, `PartialEq`.
+    ///
+    /// **This category is why the guard is not the one that got deleted.**
+    /// §8.2's own module doc argues `impl PartialOrd for Signature` must be
+    /// *listed rather than forbidden*, because a determinism-safe intern table
+    /// is a `BTreeMap` and that needs `Ord`. Without `Storage` every other
+    /// category refutes it — measured, all five — so the guard forbade what the
+    /// spec requires, which is precisely the structural pressure that made
+    /// evading the predecessor worthwhile.
+    ///
+    /// Bounded: the return type must be an ordering or a `bool`. A shape
+    /// *distance* returns a float, so it cannot be filed here.
+    Storage,
     /// Sees two with no `Geodesic` because it exists to be **measured against**
     /// the minimised form. `plain_distance` is the only one: the property
     /// "group-minimised distance is invariant under a group element and the
@@ -972,7 +986,7 @@ const SIGNATURE_SURFACE: &[(&str, &str, SigFacing)] = &[
     (
         "crates/borbax-molecule/src/signature.rs",
         "Signature: derive(Clone, Debug, PartialEq)",
-        SigFacing::Single,
+        SigFacing::Storage,
     ),
     (
         "crates/borbax-molecule/src/signature.rs",
@@ -1088,6 +1102,22 @@ const SIGNATURE_SURFACE: &[(&str, &str, SigFacing)] = &[
     ),
 ];
 
+/// The methods that hand out a signature's stored arrays.
+///
+/// **This is the second dimension, and it is what makes the residual small
+/// enough to state.** Outside `signature.rs` the fields are private, so *every*
+/// ungrouped comparison must read one of these — which means an item that calls
+/// one is a comparison site regardless of what its own declaration names. That
+/// closes the shapes a declaration-only scan cannot see: a method on a type
+/// that merely *holds* a signature (`impl Ord for SpeciesKey`), a closure
+/// inside an unlisted function, and a function that constructs both operands
+/// internally. All three were measured passing green before this existed.
+///
+/// Matched by method name, so a different type's `extents()` also lists. That
+/// is a false positive, which is the safe direction: it forces a listing, it
+/// never grants a pass.
+const RAW_ACCESSORS: &[&str] = &["extents", "characters"];
+
 /// Type constructors that can hold arbitrarily many values, so one mention of
 /// `Signature` inside them still means "can see two".
 const PLURAL_TYPES: &[&str] = &[
@@ -1117,35 +1147,69 @@ const PLURAL_TYPES: &[&str] = &[
 /// silent pass. The repair rule this project applies is that you must be able to
 /// name the class a guard decides and what sits outside it.
 ///
-/// **The class this decides:** every item in the workspace that can see a
-/// `Signature` — an `impl` method on one, a free function taking one, a trait
-/// method, a struct or enum *field* holding one, and the derive list of any type
-/// that is or holds one. Every such item must appear in [`SIGNATURE_SURFACE`]
-/// with a category, and every entry there must still exist.
+/// **The class this decides**, in two dimensions, because one is not enough:
 ///
-/// That decision is **total**: an item either appears in the pinned list or it
-/// does not, and no shape analysis is needed to decide which. Shape analysis is
-/// used only to *refute* a category — never to grant a pass. An unreadable
-/// construct is reported, exactly as [`check_no_stream_deriving_method`] reports
-/// one, because silence must mean "looked and it was clean".
+/// 1. **Declaration.** Any item whose own declaration *names* a signature type
+///    — or a workspace-wide alias of one — in a parameter, a return type, a
+///    generic bound, a struct or enum field, a `const`/`static` type, or a
+///    `derive`/`cfg_attr` list.
+/// 2. **Body.** Any *shipped* item whose body reads a signature's stored arrays
+///    through [`RAW_ACCESSORS`], whatever its declaration says.
+///
+/// Every such item must appear in [`SIGNATURE_SURFACE`] with a category, and
+/// every entry there must still exist.
+///
+/// **The second dimension is what makes the residual small enough to state.**
+/// Outside `signature.rs` the fields are private, so every ungrouped comparison
+/// must read an accessor — which catches the shapes a declaration-only scan
+/// cannot see, and all three were measured passing green with only dimension 1:
+/// `impl Ord for SpeciesKey` where `SpeciesKey` merely *holds* a signature (the
+/// intern-table shape §8.2's own doc invites), a closure inside an unlisted
+/// function, and an item declared inside a block *expression*.
+///
+/// The pinned-list decision is **total**: an item either appears or it does not,
+/// and no shape analysis decides that. Shape analysis decides only *which
+/// category* an item may claim, and there it can only **refute** — every
+/// category check is a rejection. An unreadable construct is reported, exactly
+/// as [`check_no_stream_deriving_method`] reports one, because silence must mean
+/// "looked and it was clean".
+///
+/// **`Minimised` is the one place shape analysis grants rather than refutes, and
+/// it is a smoke alarm rather than a proof.** It passes when some argument type
+/// or the receiver names a `Geodesic` — which `PhantomData<Geodesic<D>>`,
+/// `Option<&Geodesic<D>>` and `[Geodesic<D>; 0]` all satisfy while carrying no
+/// rotation group. Tightening that would be shape enumeration again; naming it
+/// is the honest option.
 ///
 /// Each of Task 9's four escapes is closed by construction rather than by a
-/// rule: the scan walks **every** `.rs` file under `crates/` (out-of-line `mod`,
-/// `impl` in another file), recurses through [`block_items`] (`impl` in a
-/// function body), and counts *values a function can see* rather than mentions
-/// of a name, with `Self` resolved from the enclosing `impl` (the counting bug).
-/// Both false positives are gone too, because a `Geodesic` receiver counts and
-/// `impl PartialOrd for Signature` is *listed* rather than forbidden — §8.2's own
-/// consumers need an ordering for a `BTreeMap` intern table, and a guard that
+/// rule: the scan walks **every** `.rs` file under `crates/` and `experiments/`
+/// (out-of-line `mod`, `impl` in another file), recurses through
+/// [`block_items`] (`impl` in a function body), and counts *values a function
+/// can see* rather than mentions of a name, with `Self` resolved from the
+/// enclosing `impl` (the counting bug). Both false positives are gone: a
+/// `Geodesic` receiver counts, and `impl PartialOrd for Signature` is *listed*
+/// — as [`SigFacing::Storage`] — rather than forbidden, because §8.2's own
+/// consumers need an ordering for a `BTreeMap` intern table and a guard that
 /// fires on correct code gets deleted.
 ///
-/// **What sits outside it, named rather than implied: the bodies of the listed
-/// items.** A `Minimised` entry that takes a `Geodesic` and then forgets to use
-/// it is not caught here, and an `Accessor`'s returned array can be subtracted
-/// by any arithmetic anywhere. The guard makes the surface small, enumerated and
-/// unable to grow without a human editing this list; it does not read intent.
-/// A green build is evidence that no *new* comparison site appeared unreviewed —
-/// it is not evidence that every listed body minimises.
+/// **What sits outside it, named rather than implied:**
+///
+/// - **The bodies of the listed items.** A `Minimised` entry that takes a
+///   `Geodesic` and then forgets to use it is not caught, and an `Accessor`'s
+///   returned array can be subtracted by any arithmetic anywhere.
+/// - **Test bodies.** Dimension 2 is shipped-code-only: every test writing
+///   `a.extents()[i]` in an assertion reads an accessor, and listing all 15 of
+///   them is the noise that gets a guard switched off. A test whose
+///   *declaration* names a signature is still counted — that is how
+///   `plain_distance` is listed.
+/// - **Cross-file reachability through a type this guard cannot resolve.** A
+///   holder declared in one file and compared in another is caught by dimension
+///   2 only because the comparison must read an accessor. If `Signature` ever
+///   grows a third way out, it belongs in [`RAW_ACCESSORS`] the same day.
+/// - **Anything a macro expands to.** Reported, never passed.
+///
+/// A green build is evidence that no *new* comparison site appeared unreviewed.
+/// It is **not** evidence that every listed body minimises.
 fn check_signature_surface_is_pinned(
     root: &Path,
     failures: &mut Vec<String>,
@@ -1160,20 +1224,54 @@ fn check_signature_surface_is_pinned(
         ));
         return Ok(());
     }
-    let mut found: Vec<SigItem> = Vec::new();
-    for path in walk(&dir)? {
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for root_dir in [&dir, &root.join("experiments")] {
+        if !root_dir.is_dir() {
             continue;
         }
-        let text =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .display()
-            .to_string()
-            .replace('\\', "/");
-        let (items, unreadable) = scan_signature_surface(&rel, &text)?;
+        for path in walk(root_dir)? {
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text =
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .display()
+                .to_string()
+                .replace('\\', "/");
+            sources.push((rel, text));
+        }
+    }
+    sources.sort();
+
+    // **Aliases are collected workspace-wide before anything is scanned, and
+    // that is a two-pass design for a reason a one-pass version cannot fix.**
+    // `alias_names` is per-file, so a rename living in a *different* file left
+    // every consuming file dark. Measured against the real tree: adding
+    // `pub use signature::Signature as Shape;` to `lib.rs` — which already
+    // re-exports `Signature` two lines up — and a new `probe.rs` containing a
+    // `pub fn probe_alias(a: &Shape<12>, b: &Shape<12>) -> f64` that never
+    // writes the identifier `Signature` produced **zero failures**. That is a
+    // public, ungrouped, element-wise comparison in a brand-new file, and it is
+    // the same one-line alias move `scan_signature_surface`'s own comment says
+    // this guard defends against.
+    let mut sig_names = vec!["Signature".to_owned()];
+    let mut geo_names = vec!["Geodesic".to_owned()];
+    for (rel, text) in &sources {
+        let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
+        sig_names.extend(alias_names(&file.items, "Signature"));
+        geo_names.extend(alias_names(&file.items, "Geodesic"));
+    }
+    sig_names.sort();
+    sig_names.dedup();
+    geo_names.sort();
+    geo_names.dedup();
+
+    let mut found: Vec<SigItem> = Vec::new();
+    for (rel, text) in &sources {
+        let (items, unreadable) = scan_signature_surface(rel, text, &sig_names, &geo_names)?;
         found.extend(items);
         failures.extend(unreadable);
     }
@@ -1184,6 +1282,15 @@ fn check_signature_surface_is_pinned(
 
 /// One item that can see a signature.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the same argument `Where` makes, for the same reason: these are independent facts \
+              about one item, each bounding a different category, and the lint's remedy — a \
+              state enum — would claim they are mutually exclusive when `derive` + \
+              `returns_ordering` and `is_pub` + `in_test` both co-occur in the pinned list \
+              today. Naming them is what stops a category's bound being checked against the \
+              wrong flag."
+)]
 struct SigItem {
     file: String,
     name: String,
@@ -1198,7 +1305,33 @@ struct SigItem {
     /// Bounds `SigFacing::Contrast` — an ungrouped comparison kept for
     /// measurement may not exist in shipped code.
     in_test: bool,
+    /// Does its body read a signature's stored arrays? Recorded so the
+    /// failure message can say *why* an item is surface — a reviewer meeting
+    /// `Species::cmp2` in the list needs to know it was the body, not the
+    /// declaration.
+    reads_raw: bool,
+    /// Does it return an ordering or a `bool` rather than a number? Bounds
+    /// `SigFacing::Storage`: an identity comparison answers "same?" or "which
+    /// first?", a shape distance answers "how far?".
+    returns_ordering: bool,
+    /// A `#[derive(..)]` list rather than an item with a body. It has no
+    /// arguments to count and no visibility of its own, so the `Primitive` and
+    /// `Contrast` bounds are *unmeasurable* on it and must be refused rather
+    /// than passed.
+    derive: bool,
     line: usize,
+}
+
+/// Can this item be named from outside the module that declares it?
+///
+/// **`pub(crate)` counts, and the distinction is load-bearing.** `SigFacing::
+/// Primitive` exists for a step *inside* the minimisation, and its bound is that
+/// no consumer can reach it. `binding.rs` is in the same crate as
+/// `signature.rs`, so `pub(crate) fn lex_cmp` is reachable by every consumer
+/// that matters while `matches!(vis, Visibility::Public(_))` reads it as
+/// private. Only `Inherited` — a bare `fn` — holds the bound.
+const fn reachable(vis: &syn::Visibility) -> bool {
+    !matches!(vis, syn::Visibility::Inherited)
 }
 
 /// Match what was found against [`SIGNATURE_SURFACE`], both ways.
@@ -1212,52 +1345,143 @@ fn compare_signature_surface(found: &[SigItem], failures: &mut Vec<String>) {
             .iter()
             .find(|(f, n, _)| *f == item.file && *n == item.name)
         else {
+            // Which dimension made it surface. A reviewer meeting a new entry
+            // needs to know whether the declaration or the body put it there —
+            // they call for different scrutiny.
+            let why = if item.reads_raw {
+                "its body reads a signature's stored arrays"
+            } else {
+                "its declaration names a Signature"
+            };
             failures.push(format!(
-                "§8.2: `{}` at {}:{} can see a Signature and is not in SIGNATURE_SURFACE. Add it \
+                "§8.2: `{}` at {}:{} is surface — {why} — and is not in SIGNATURE_SURFACE. Add it \
                  with a category — Single (sees at most one), Minimised (sees two and takes a \
                  Geodesic), Accessor (hands out the stored arrays), Primitive (a private step \
-                 *inside* the minimisation), or Contrast (`#[cfg(test)]` only, the ungrouped \
-                 half of a comparison the minimised one is measured against). This list is \
-                 where a reviewer sees a new comparison site appear.",
+                 *inside* the minimisation), Storage (identity or ordering on the stored form, \
+                 for interning — must return an ordering or a bool), or Contrast \
+                 (`#[cfg(test)]` only, the ungrouped half of a comparison the minimised one is \
+                 measured against). This list is where a reviewer sees a new comparison site \
+                 appear.",
                 item.name, item.file, item.line
             ));
             continue;
         };
+        let at = format!("`{}` at {}:{}", item.name, item.file, item.line);
+        // **Every category asserts something, and a derive entry can satisfy
+        // none of them.** A derive list is not a function: it has no arguments
+        // to count and no visibility of its own, so `sees` is 0 and `is_pub` is
+        // `false` unconditionally. Pinning one as `Primitive` or `Contrast`
+        // would satisfy those bounds *vacuously*, which is the shape this whole
+        // guard exists to refuse.
+        if item.derive && matches!(facing, SigFacing::Primitive | SigFacing::Contrast) {
+            failures.push(format!(
+                "§8.2: {at} is a derive list pinned as {facing:?}, and that category's bound is \
+                 unmeasurable on a derive — it would pass vacuously. Derive lists are Single, \
+                 Minimised or Accessor."
+            ));
+            continue;
+        }
         match facing {
             // The property itself, checked directly.
             SigFacing::Minimised if !item.geodesic => failures.push(format!(
-                "§8.2: `{}` at {}:{} is pinned as Minimised but takes no Geodesic, so any \
-                 comparison in it is on the stored lex-min form. §8.2's storage form is safe \
-                 only because every consumer compares group-minimised.",
-                item.name, item.file, item.line
+                "§8.2: {at} is pinned as Minimised but takes no Geodesic, so any comparison in \
+                 it is on the stored lex-min form. §8.2's storage form is safe only because \
+                 every consumer compares group-minimised."
             )),
             // A category refuted by structure. Not "this is wrong" — "this
             // claim is not the one the code supports".
             SigFacing::Single | SigFacing::Accessor if item.sees >= 2 => failures.push(format!(
-                "§8.2: `{}` at {}:{} is pinned as {:?} but can see {} signatures, so a \
-                 comparison is expressible in it. Either it takes a Geodesic and is Minimised, \
-                 or it should not see two.",
-                item.name, item.file, item.line, facing, item.sees
+                "§8.2: {at} is pinned as {facing:?} but can see {} signatures, so a comparison \
+                 is expressible in it. Either it takes a Geodesic and is Minimised, or it \
+                 should not see two.",
+                item.sees
             )),
             // The two escape-hatch categories, each held shut by the one fact
             // that makes it not an escape hatch.
+            //
+            // **`pub(crate)` counts as public here, and must.** `Primitive`'s
+            // bound is that a step *inside* the minimisation cannot be reached
+            // by a consumer — and `binding.rs` is in the same crate as
+            // `signature.rs`, so `pub(crate) fn lex_cmp` is reachable by every
+            // consumer that matters. Only `Visibility::Inherited` — a bare
+            // private `fn` — actually holds the bound.
             SigFacing::Primitive if item.is_pub => failures.push(format!(
-                "§8.2: `{}` at {}:{} is pinned as Primitive — a step *inside* the minimisation — \
-                 but it is `pub`. A public ungrouped comparison is the thing §8.2 forbids, \
-                 whatever it is called.",
-                item.name, item.file, item.line
+                "§8.2: {at} is pinned as Primitive — a step *inside* the minimisation — but it \
+                 is reachable outside its module. A reachable ungrouped comparison is the thing \
+                 §8.2 forbids, whatever it is called, and `pub(crate)` reaches every consumer \
+                 in this crate."
             )),
+            // A distance returns a number. If this returns one, it is not an
+            // identity comparison whatever it is called.
+            SigFacing::Storage if !item.returns_ordering && !item.derive => {
+                failures.push(format!(
+                    "§8.2: {at} is pinned as Storage — an identity or ordering comparison on the \
+                     stored form — but it does not return an ordering or a bool. A shape \
+                     distance is not storage, whatever it is named."
+                ));
+            }
             SigFacing::Contrast if !item.in_test => failures.push(format!(
-                "§8.2: `{}` at {}:{} is pinned as Contrast — an ungrouped comparison kept so the \
+                "§8.2: {at} is pinned as Contrast — an ungrouped comparison kept so the \
                  minimised one can be measured against it — but it is not inside `#[cfg(test)]`. \
-                 That category exists for measurement, not for shipping.",
-                item.name, item.file, item.line
+                 That category exists for measurement, not for shipping."
             )),
+            // **The three "sees two" categories must actually see two.** Without
+            // this, `Minimised`/`Primitive`/`Contrast` drift into labels for
+            // items that cannot compare at all, and the list stops describing
+            // where comparisons live — which is the only thing it is for.
+            SigFacing::Minimised | SigFacing::Primitive | SigFacing::Contrast if item.sees < 2 => {
+                failures.push(format!(
+                    "§8.2: {at} is pinned as {facing:?}, which claims it can see two signatures, \
+                     but it sees {}. It is Single or Accessor.",
+                    item.sees
+                ));
+            }
             _ => {}
         }
     }
-    for (file, name, _) in SIGNATURE_SURFACE {
-        if !found.iter().any(|i| i.file == *file && i.name == *name) {
+    check_surface_bookkeeping(found, failures);
+}
+
+/// Both directions of the pinned list, **counted rather than searched**.
+///
+/// Split out of [`compare_signature_surface`] for length only. `find`/`any`
+/// answer "at least one", so two items sharing a `(file, name)` key would take
+/// the first entry's category for both, and a duplicated list line would never
+/// be noticed.
+fn check_surface_bookkeeping(found: &[SigItem], failures: &mut Vec<String>) {
+    // **Both directions are counted, not merely searched.** `find`/`any` answer
+    // "at least one", so two items sharing a `(file, name)` key — two `impl
+    // Signature` blocks in one file each declaring `fn cmp`, say — would take
+    // the first entry's category for both, and a duplicated list line would
+    // never be noticed.
+    for (i, (file, name, _)) in SIGNATURE_SURFACE.iter().enumerate() {
+        let pinned = SIGNATURE_SURFACE
+            .iter()
+            .filter(|(f, n, _)| f == file && n == name)
+            .count();
+        if pinned > 1
+            && SIGNATURE_SURFACE
+                .iter()
+                .take(i)
+                .all(|(f, n, _)| f != file || n != name)
+        {
+            failures.push(format!(
+                "§8.2: SIGNATURE_SURFACE pins `{name}` in {file} {pinned} times. Duplicate keys \
+                 mean one category silently governs items the other entry was written for."
+            ));
+        }
+        let hits = found
+            .iter()
+            .filter(|i| i.file == *file && i.name == *name)
+            .count();
+        if hits > 1 {
+            failures.push(format!(
+                "§8.2: {hits} items share the key `{name}` in {file}, so one pinned category \
+                 governs all of them. Give them distinguishable names, or the list is claiming \
+                 something it has not checked."
+            ));
+        }
+        if hits == 0 {
             failures.push(format!(
                 "§8.2: SIGNATURE_SURFACE pins `{name}` in {file}, which no longer exists. A \
                  guard that pins a deleted item is one entry closer to vacuous — delete the \
@@ -1273,14 +1497,21 @@ fn compare_signature_surface(found: &[SigItem], failures: &mut Vec<String>) {
 /// Same reasoning as [`scan_for_derived_streams`]: a check that can only be
 /// exercised against the real tree — which by construction produces no failures
 /// — tests nothing.
-fn scan_signature_surface(rel: &str, text: &str) -> Result<(Vec<SigItem>, Vec<String>), String> {
+fn scan_signature_surface(
+    rel: &str,
+    text: &str,
+    sig_names: &[String],
+    geo_names: &[String],
+) -> Result<(Vec<SigItem>, Vec<String>), String> {
     let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
     // **A file that never names `Signature` is not scanned for unreadable
     // constructs**, and that narrowing is what keeps this guard usable. Without
-    // it the check reports every `macro_rules!` in the workspace — five in
-    // `borbax-units/src/lib.rs` alone, from the `unit!` newtype macro — and a
-    // guard whose output is mostly noise gets switched off, which is the
-    // recorded way this project loses a guarantee.
+    // it the check reports every `macro_rules!` in the scanned tree — five in
+    // `borbax-units/src/lib.rs` alone: four `unit!` invocations plus the
+    // `macro_rules! unit` definition itself — and a guard whose output is mostly
+    // noise gets switched off, which is the recorded way this project loses a
+    // guarantee. ("Five expansions" was the first count and it was wrong by a
+    // category, not by a number.)
     //
     // The residual, named: a macro *defined* in a `Signature`-free file that
     // expands to a comparison. It would have to name the type through a path,
@@ -1294,20 +1525,18 @@ fn scan_signature_surface(rel: &str, text: &str) -> Result<(Vec<SigItem>, Vec<St
     // `unit!` expansions got reported. Doc comments survive parsing as
     // `#[doc = ".."]` string literals, so an ident walk excludes them by
     // construction rather than by stripping.
-    if !mentions_ident(&file, "Signature") {
+    if !sig_names.iter().any(|n| mentions_ident(&file, n))
+        && !RAW_ACCESSORS.iter().any(|n| mentions_ident(&file, n))
+    {
         return Ok((Vec::new(), Vec::new()));
     }
     // Aliases first, for the reason `scan_for_derived_streams` gives: matching
     // the bare identifier is enumeration of *type spellings*, defeated by one
     // line — `type Shape = Signature;` — that compiles clean under `-D warnings`.
-    let mut sig = alias_names(&file.items, "Signature");
-    sig.push("Signature".to_owned());
-    let mut geo = alias_names(&file.items, "Geodesic");
-    geo.push("Geodesic".to_owned());
     let scan = SigScan {
         rel,
-        sig: &sig,
-        geo: &geo,
+        sig: sig_names,
+        geo: geo_names,
     };
     let mut out = Vec::new();
     let mut unreadable = Vec::new();
@@ -1351,22 +1580,44 @@ struct Where<'a> {
 
 /// Is this item behind `#[cfg(test)]`?
 ///
-/// Matched on the attribute's tokens rather than parsed, because the shapes
-/// that matter — `#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[cfg(any(test, ..))]`
-/// — all contain `test` as a bare ident inside `cfg`, and the only cost of the
-/// loose reading is admitting a `Contrast` entry that a stricter parse would
-/// reject. That is the safe direction: `Contrast` is bounded *away* from
-/// shipped code, so over-reading `cfg(test)` can only widen a category the
-/// pinned list already forces a human to justify by name.
+/// Matched on the attribute's tokens rather than parsed, because the shapes that
+/// matter — `#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[cfg(any(test, ..))]` —
+/// all contain `test` as a bare ident inside `cfg`.
+///
+/// **An earlier version of this comment argued the loose reading was safe in
+/// every direction, and that was false in exactly one place.** It said
+/// over-reading `cfg(test)` "can only widen a category the pinned list already
+/// forces a human to justify by name". `#[cfg(not(test))]` is the counter-case:
+/// it means *shipped-only*, the loose reading called it test-only, and
+/// `Contrast` is the one category bounded away from shipped code. So
+/// `#[cfg(not(test))] fn plain_distance(a: &Signature<D>, b: &Signature<D>)`
+/// pinned as `Contrast` would ship in every release build with the guard green.
+/// `has_test` therefore refuses `not` rather than descending into it.
+///
+/// This is CLAUDE.md's "probe the guard's bookkeeping" one level down: the
+/// assertion had a mutation test, its stated justification did not.
 fn cfg_test(attrs: &[syn::Attribute]) -> bool {
     fn has_test(stream: proc_macro2::TokenStream) -> bool {
-        stream.into_iter().any(|tt| match tt {
-            proc_macro2::TokenTree::Ident(i) => i == "test",
-            // `all(test, ..)` and `any(test, ..)` nest one level deeper, and
-            // a `TokenTree::Group`'s `to_string` is `(test, ..)`, not `test`.
-            proc_macro2::TokenTree::Group(g) => has_test(g.stream()),
-            _ => false,
-        })
+        let mut it = stream.into_iter();
+        while let Some(tt) = it.next() {
+            match tt {
+                proc_macro2::TokenTree::Ident(i) if i == "test" => return true,
+                // **`not(..)` inverts the predicate, so its contents are the
+                // opposite of what this function is being asked.** Descending
+                // into it read `#[cfg(not(test))]` — shipped-only code — as
+                // test-only, which is the one direction `Contrast`'s bound
+                // cannot survive: it exists precisely to keep an ungrouped
+                // comparison out of shipped code.
+                proc_macro2::TokenTree::Ident(i) if i == "not" => {
+                    it.next();
+                }
+                // `all(test, ..)` and `any(test, ..)` nest one level deeper, and
+                // a `TokenTree::Group`'s `to_string` is `(test, ..)`, not `test`.
+                proc_macro2::TokenTree::Group(g) if has_test(g.stream()) => return true,
+                _ => {}
+            }
+        }
+        false
     }
     attrs.iter().any(|a| {
         a.path().is_ident("cfg")
@@ -1402,7 +1653,7 @@ impl SigScan<'_> {
     /// receiver. This is where Task 9's fourth escape lived: it counted mentions
     /// of a named `Signature` but resolved `Self` per-argument, so
     /// `fn d(&self, o: &Self)` inside `impl Signature` read as one.
-    fn item(&self, sig: &syn::Signature, at: Where<'_>) -> Option<SigItem> {
+    fn item(&self, sig: &syn::Signature, at: Where<'_>, reads_raw: bool) -> Option<SigItem> {
         let Where {
             scope,
             self_sig,
@@ -1420,6 +1671,31 @@ impl SigScan<'_> {
         let mut geo_names: Vec<String> = self.geo.to_vec();
         if self_geo {
             geo_names.push("Self".to_owned());
+        }
+        // **A generic bound is a type name one indirection out.**
+        // `fn d<T: AsRef<Signature<D>>>(a: T, b: T)` puts two signatures in
+        // front of the body with no `Signature` in any argument type — measured
+        // passing green as a `pub fn` in `binding.rs`. Any parameter bounded by
+        // a signature name *is* a signature for counting purposes.
+        //
+        // **Both spellings.** `fn d<T: AsRef<Signature<D>>>(..)` and
+        // `fn d<T>(..) where T: AsRef<Signature<D>>` are the same bound, and the
+        // first version of this loop read only `type_params()` — the corpus
+        // test caught the `where` half immediately, which is what a corpus is
+        // for.
+        for p in sig.generics.type_params() {
+            if bound_by(&p.bounds, &names) {
+                names.push(p.ident.to_string());
+            }
+        }
+        if let Some(w) = &sig.generics.where_clause {
+            for pred in &w.predicates {
+                if let syn::WherePredicate::Type(t) = pred
+                    && bound_by(&t.bounds, &names)
+                {
+                    names.extend(idents_of(&t.bounded_ty));
+                }
+            }
         }
         let mut sees = 0;
         let mut geodesic = false;
@@ -1442,7 +1718,33 @@ impl SigScan<'_> {
             syn::ReturnType::Type(_, ret) => sees_count(ret, &names) > 0,
             syn::ReturnType::Default => false,
         };
-        if sees == 0 && !returns {
+        let returns_ordering = match &sig.output {
+            syn::ReturnType::Type(_, ret) => {
+                let idents = idents_of(ret);
+                idents.iter().any(|i| i == "Ordering" || i == "bool")
+                    && !idents.iter().any(|i| i == "f64" || i == "f32")
+            }
+            syn::ReturnType::Default => false,
+        };
+        // **A body that reads the stored arrays is surface even when nothing in
+        // the declaration names a signature.** That is the whole point of the
+        // second dimension: `impl Ord for SpeciesKey { fn cmp(&self, o: &Self) }`
+        // where `SpeciesKey` holds a `Signature` names no signature anywhere in
+        // its own declaration, and measured green before this clause existed.
+        // **The body dimension applies to shipped code only, and the reason is
+        // the recorded one.** Every test that writes `a.extents()[i]` in an
+        // assertion reads a raw accessor — 15 of them — and a guard whose output
+        // is mostly noise gets switched off, which is how this project loses a
+        // guarantee. The hazard `RAW_ACCESSORS` exists for is a *shipped*
+        // ungrouped comparison.
+        //
+        // The residual this leaves, named: a test body that compares two
+        // signatures it obtained without naming the type in its own
+        // declaration. A test whose declaration *does* name it is still
+        // counted, which is how `plain_distance` is listed — and `Contrast` is
+        // the category for the one test that legitimately compares ungrouped.
+        let body_surface = reads_raw && !in_test;
+        if sees == 0 && !returns && !body_surface {
             return None;
         }
         Some(SigItem {
@@ -1452,6 +1754,9 @@ impl SigScan<'_> {
             geodesic,
             is_pub,
             in_test,
+            derive: false,
+            returns_ordering,
+            reads_raw,
             line: syn::spanned::Spanned::span(sig).start().line,
         })
     }
@@ -1480,9 +1785,10 @@ impl SigScan<'_> {
                             scope,
                             self_sig: false,
                             self_geo: false,
-                            is_pub: matches!(f.vis, syn::Visibility::Public(_)),
+                            is_pub: reachable(&f.vis),
                             in_test: test,
                         },
+                        reads_raw(&f.block),
                     ));
                     self.walk(&block_items(&f.block), scope, test, out, unreadable);
                 }
@@ -1495,21 +1801,47 @@ impl SigScan<'_> {
                 syn::Item::Struct(s) => {
                     self.fields(&s.ident.to_string(), &s.fields, &s.attrs, in_test, out);
                 }
+                // **`fold`, not `any`.** `any` short-circuits, so every variant
+                // after the first signature-bearing one went unvisited — measured
+                // with `enum Holder { First(Signature<D>), Second(Signature<D>) }`,
+                // where only `Holder::First.0` was reported. A walker that stops
+                // walking is the exact failure mode this guard replaced.
                 syn::Item::Enum(e) => {
-                    let holds = e.variants.iter().any(|v| {
-                        self.fields(
+                    let holds = e.variants.iter().fold(false, |acc, v| {
+                        let held = self.fields(
                             &format!("{}::{}", e.ident, v.ident),
                             &v.fields,
-                            &[],
+                            &v.attrs,
                             in_test,
                             out,
-                        )
+                        );
+                        acc | held
                     });
                     self.derives(&e.ident.to_string(), &e.attrs, holds, in_test, out);
                 }
+                // A union's fields are reached exactly as a struct's are, and
+                // omitting the arm would have been a silent pass.
+                syn::Item::Union(u) => {
+                    self.fields(
+                        &u.ident.to_string(),
+                        &syn::Fields::Named(u.fields.clone()),
+                        &u.attrs,
+                        in_test,
+                        out,
+                    );
+                }
+                // A `const` or `static` holding signatures is a comparison site
+                // with no function and no field: `static PAIR: [Signature<12>; 2]`
+                // puts both operands in scope of every body in the module.
+                syn::Item::Const(c) => {
+                    self.value(&c.ident.to_string(), &c.ty, &c.vis, in_test, out);
+                }
+                syn::Item::Static(c) => {
+                    self.value(&c.ident.to_string(), &c.ty, &c.vis, in_test, out);
+                }
                 syn::Item::Macro(m) => unreadable.push(sig_unanalysable(self.rel, &m.mac.path)),
                 syn::Item::Verbatim(_) => {
-                    unreadable.push(sig_unanalysable_at(self.rel, "verbatim item"));
+                    unreadable.push(sig_unanalysable_at(self.rel, 0, "verbatim item"));
                 }
                 _ => {}
             }
@@ -1545,10 +1877,10 @@ impl SigScan<'_> {
                             // A method of a trait impl has no visibility of its
                             // own and is as public as the trait — never
                             // `Primitive`.
-                            is_pub: i.trait_.is_some()
-                                || matches!(f.vis, syn::Visibility::Public(_)),
+                            is_pub: i.trait_.is_some() || reachable(&f.vis),
                             in_test: ftest,
                         },
+                        reads_raw(&f.block),
                     ));
                     self.walk(&block_items(&f.block), None, ftest, out, unreadable);
                 }
@@ -1556,7 +1888,7 @@ impl SigScan<'_> {
                     unreadable.push(sig_unanalysable(self.rel, &m.mac.path));
                 }
                 syn::ImplItem::Verbatim(_) => {
-                    unreadable.push(sig_unanalysable_at(self.rel, "verbatim impl item"));
+                    unreadable.push(sig_unanalysable_at(self.rel, 0, "verbatim impl item"));
                 }
                 _ => {}
             }
@@ -1593,6 +1925,7 @@ impl SigScan<'_> {
                             is_pub: true,
                             in_test: test,
                         },
+                        f.default.as_ref().is_some_and(reads_raw),
                     ));
                     // **A default body is a function body.** It can declare
                     // items, and those items can compare signatures.
@@ -1604,11 +1937,42 @@ impl SigScan<'_> {
                     unreadable.push(sig_unanalysable(self.rel, &m.mac.path));
                 }
                 syn::TraitItem::Verbatim(_) => {
-                    unreadable.push(sig_unanalysable_at(self.rel, "verbatim trait item"));
+                    unreadable.push(sig_unanalysable_at(self.rel, 0, "verbatim trait item"));
                 }
                 _ => {}
             }
         }
+    }
+
+    /// A `const` or `static` whose type holds signatures.
+    ///
+    /// It sees whatever its type holds and takes no `Geodesic`, so a
+    /// `static PAIR: [Signature<12>; 2]` is a two-signature site available to
+    /// every body in the module without appearing in any function signature.
+    fn value(
+        &self,
+        name: &str,
+        ty: &syn::Type,
+        vis: &syn::Visibility,
+        in_test: bool,
+        out: &mut Vec<SigItem>,
+    ) {
+        let sees = sees_count(ty, self.sig);
+        if sees == 0 {
+            return;
+        }
+        out.push(SigItem {
+            file: self.rel.to_owned(),
+            name: name.to_owned(),
+            sees,
+            geodesic: false,
+            is_pub: reachable(vis),
+            in_test,
+            derive: false,
+            returns_ordering: false,
+            reads_raw: false,
+            line: syn::spanned::Spanned::span(ty).start().line,
+        });
     }
 
     /// Record signature-typed fields, and the type's derive list if it is or
@@ -1637,8 +2001,11 @@ impl SigScan<'_> {
                 name: format!("{owner}.{field}"),
                 sees,
                 geodesic: false,
-                is_pub: matches!(f.vis, syn::Visibility::Public(_)),
+                is_pub: reachable(&f.vis),
                 in_test,
+                derive: false,
+                returns_ordering: false,
+                reads_raw: false,
                 line: syn::spanned::Spanned::span(f).start().line,
             });
         }
@@ -1662,16 +2029,69 @@ impl SigScan<'_> {
             return;
         }
         for attr in attrs {
-            if !attr.path().is_ident("derive") {
+            // **`#[cfg_attr(pred, derive(..))]` is a derive.** Keying on
+            // `is_ident("derive")` alone made it invisible: measured, adding
+            // `#[cfg_attr(not(test), derive(PartialOrd))]` to `Signature` left
+            // the pinned name at `derive(Clone, Debug, PartialEq)` and the guard
+            // green — a lexicographic ordering over the stored lex-min arrays
+            // present in every *shipped* build, added with no diff to the list.
+            //
+            // The predicate goes into the name too, so a conditional ordering
+            // reads as an unlisted item rather than a listed one.
+            let cfg_attr = attr.path().is_ident("cfg_attr");
+            if !attr.path().is_ident("derive") && !cfg_attr {
+                continue;
+            }
+            if cfg_attr {
+                let tokens = attr
+                    .meta
+                    .require_list()
+                    .map_or_else(|_| "<unparsed>".to_owned(), |l| l.tokens.to_string());
+                if tokens.contains("derive") {
+                    out.push(SigItem {
+                        file: self.rel.to_owned(),
+                        name: format!("{owner}: cfg_attr({tokens})"),
+                        sees: 0,
+                        geodesic: false,
+                        is_pub: false,
+                        in_test,
+                        derive: true,
+                        returns_ordering: true,
+                        reads_raw: false,
+                        line: syn::spanned::Spanned::span(attr).start().line,
+                    });
+                }
                 continue;
             }
             let mut traits: Vec<String> = Vec::new();
-            let _ = attr.parse_nested_meta(|meta| {
-                if let Some(id) = meta.path.get_ident() {
-                    traits.push(id.to_string());
-                }
+            // **Every segment, joined — not `get_ident()`.** `get_ident` returns
+            // `None` for any multi-segment path, so `#[derive(Clone, Debug,
+            // PartialEq, ::core::cmp::PartialOrd)]` produced the *identical*
+            // pinned name as the plain three-trait list: a silent pass giving
+            // `Signature` a lexicographic ordering over the stored lex-min
+            // arrays, written by the compiler, with the guard green. Measured.
+            // `rustc` accepts the qualified spelling without a warning, and
+            // `unused_qualifications` is not in `[workspace.lints.rust]`.
+            //
+            // Single-segment paths join to themselves, so the pinned entries
+            // are unaffected.
+            let parsed = attr.parse_nested_meta(|meta| {
+                traits.push(
+                    meta.path
+                        .segments
+                        .iter()
+                        .map(|seg| seg.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join("::"),
+                );
                 Ok(())
             });
+            if parsed.is_err() {
+                // Swallowing this truncates `traits` and silently *shrinks* the
+                // pinned name — the same shape as the defect above, arrived at
+                // from the other side.
+                traits.push("<unparsed>".to_owned());
+            }
             traits.sort();
             out.push(SigItem {
                 file: self.rel.to_owned(),
@@ -1683,6 +2103,9 @@ impl SigScan<'_> {
                 geodesic: false,
                 is_pub: false,
                 in_test,
+                derive: true,
+                returns_ordering: true,
+                reads_raw: false,
                 line: syn::spanned::Spanned::span(attr).start().line,
             });
         }
@@ -1705,6 +2128,52 @@ fn mentions_ident(file: &syn::File, name: &str) -> bool {
     walk(quote::ToTokens::to_token_stream(file), name)
 }
 
+/// Is any of these bounds parameterised by one of `names`?
+///
+/// A bound is a type name one indirection out: `T: AsRef<Signature<D>>` puts a
+/// signature in front of the body with no `Signature` in any argument type.
+fn bound_by(
+    bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::Token![+]>,
+    names: &[String],
+) -> bool {
+    bounds.iter().any(|b| match b {
+        syn::TypeParamBound::Trait(t) => t
+            .path
+            .segments
+            .iter()
+            .flat_map(|seg| match &seg.arguments {
+                syn::PathArguments::AngleBracketed(a) => a
+                    .args
+                    .iter()
+                    .filter_map(|arg| match arg {
+                        syn::GenericArgument::Type(ty) => Some(idents_of(ty)),
+                        _ => None,
+                    })
+                    .flatten()
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .any(|i| names.contains(&i)),
+        _ => false,
+    })
+}
+
+/// Does this body read a signature's stored arrays?
+///
+/// Matched on the method *name* anywhere in the block's tokens, including inside
+/// closures and nested items — deliberately loose, because every miss is a
+/// silent pass and every false positive is only a listing a human must make.
+fn reads_raw(block: &syn::Block) -> bool {
+    fn walk(stream: proc_macro2::TokenStream) -> bool {
+        stream.into_iter().any(|tt| match tt {
+            proc_macro2::TokenTree::Ident(i) => RAW_ACCESSORS.contains(&i.to_string().as_str()),
+            proc_macro2::TokenTree::Group(g) => walk(g.stream()),
+            _ => false,
+        })
+    }
+    walk(quote::ToTokens::to_token_stream(block))
+}
+
 /// Can this type hold arbitrarily many values?
 fn plural(ty: &syn::Type) -> bool {
     match ty {
@@ -1713,6 +2182,23 @@ fn plural(ty: &syn::Type) -> bool {
         syn::Type::Paren(p) => plural(&p.elem),
         syn::Type::Group(g) => plural(&g.elem),
         syn::Type::Ptr(p) => plural(&p.elem),
+        // **Recurse into generic arguments.** `Box<[Signature<D>]>` and
+        // `Rc<[Signature<D>]>` are neither `Type::Slice` at the top level nor
+        // in `PLURAL_TYPES`, so both read as singular — measured, `fn
+        // f(s: Box<[Signature<D>]>)` counted one. The name list alone is
+        // enumeration; descending is structural.
+        syn::Type::Path(p) => {
+            idents_of(ty)
+                .iter()
+                .any(|i| PLURAL_TYPES.contains(&i.as_str()))
+                || p.path.segments.iter().any(|seg| match &seg.arguments {
+                    syn::PathArguments::AngleBracketed(a) => a.args.iter().any(|arg| match arg {
+                        syn::GenericArgument::Type(t) => plural(t),
+                        _ => false,
+                    }),
+                    _ => false,
+                })
+        }
         _ => idents_of(ty)
             .iter()
             .any(|i| PLURAL_TYPES.contains(&i.as_str())),
@@ -1724,14 +2210,18 @@ fn sig_unanalysable(rel: &str, path: &syn::Path) -> String {
         .segments
         .last()
         .map_or_else(|| "?".to_owned(), |s| s.ident.to_string());
-    sig_unanalysable_at(rel, &format!("`{name}!` expansion"))
+    let line = syn::spanned::Spanned::span(path).start().line;
+    sig_unanalysable_at(rel, line, &format!("`{name}!` expansion"))
 }
 
-fn sig_unanalysable_at(rel: &str, what: &str) -> String {
+/// The line number is not decoration: without it two macros in one file produce
+/// **byte-identical** failure strings, and on a three-OS matrix you cannot tell
+/// "two sites" from "one message printed twice".
+fn sig_unanalysable_at(rel: &str, line: usize, what: &str) -> String {
     format!(
-        "§8.2: {what} in {rel} cannot be checked for signature comparisons — this guard reads \
-         the AST and does not expand macros, so silence here would mean \"did not look\" rather \
-         than \"looked and it was clean\". Write the impl out."
+        "§8.2: {what} at {rel}:{line} cannot be checked for signature comparisons — this guard \
+         reads the AST and does not expand macros, so silence here would mean \"did not look\" \
+         rather than \"looked and it was clean\". Write the impl out."
     )
 }
 
@@ -2818,7 +3308,7 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::scan_for_derived_streams;
-    use super::scan_signature_surface;
+    use super::{alias_names, scan_signature_surface};
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
     use super::{identifier_segments, scan_format_tokens};
 
@@ -2941,16 +3431,44 @@ mod tests {
         );
     }
 
-    #[expect(
-        clippy::expect_used,
-        reason = "CLAUDE.md: tests may unwrap freely — a probe that does not parse is a broken \
-                  test, and panicking says so at the point of the mistake"
-    )]
-    fn surface(src: &str) -> Vec<(String, usize, bool, bool, bool)> {
-        let (items, _) = scan_signature_surface("probe.rs", src).expect("probe must parse");
+    /// What the tests read off a scanned item.
+    ///
+    /// **Named fields, not a 5-tuple with three `bool`s.** `Where`'s own
+    /// `#[expect(clippy::struct_excessive_bools)]` in this file argues that four
+    /// positional `bool`s is the shape in which a slip compiles clean and
+    /// silently inverts a category — and the first version of this helper
+    /// returned exactly that, with the tests telling `is_pub` from `in_test` by
+    /// counting underscores in a destructuring pattern.
+    #[derive(Debug, PartialEq)]
+    struct Seen {
+        name: String,
+        sees: usize,
+        geodesic: bool,
+        is_pub: bool,
+        in_test: bool,
+    }
+
+    /// Mirrors the real pipeline: aliases are collected first, then the scan
+    /// runs with the resulting name lists. Passing a bare `["Signature"]` here
+    /// would make the alias rows of the corpus test something production does
+    /// not do.
+    fn surface(src: &str) -> Vec<Seen> {
+        let file = syn::parse_file(src).unwrap_or_else(|e| unreachable!("probe must parse: {e}"));
+        let mut sig = vec!["Signature".to_owned()];
+        sig.extend(alias_names(&file.items, "Signature"));
+        let mut geo = vec!["Geodesic".to_owned()];
+        geo.extend(alias_names(&file.items, "Geodesic"));
+        let (items, _) = scan_signature_surface("probe.rs", src, &sig, &geo)
+            .unwrap_or_else(|e| unreachable!("probe must parse: {e}"));
         items
             .into_iter()
-            .map(|i| (i.name, i.sees, i.geodesic, i.is_pub, i.in_test))
+            .map(|i| Seen {
+                name: i.name,
+                sees: i.sees,
+                geodesic: i.geodesic,
+                is_pub: i.is_pub,
+                in_test: i.in_test,
+            })
             .collect()
     }
 
@@ -2997,6 +3515,22 @@ mod tests {
                 "fn d(s: impl Iterator<Item = Signature<12>>) -> f64 { 0.0 }",
             ),
             (
+                "a generic bound, which names no signature in any argument type",
+                "fn d<T: AsRef<Signature<12>>>(a: T, b: T) -> f64 { 0.0 }",
+            ),
+            (
+                "a generic bound through a where-clause spelling",
+                "fn d<T>(a: T, b: T) -> f64 where T: AsRef<Signature<12>> { 0.0 }",
+            ),
+            (
+                "a boxed slice — plural one indirection down",
+                "fn d(s: Box<[Signature<12>]>) -> f64 { 0.0 }",
+            ),
+            (
+                "an Rc'd slice, likewise",
+                "fn d(s: Rc<[Signature<12>]>) -> f64 { 0.0 }",
+            ),
+            (
                 "an alias, which defeats matching the bare identifier",
                 "type Shape = Signature; fn d(a: &Shape, b: &Shape) -> f64 { 0.0 }",
             ),
@@ -3007,7 +3541,7 @@ mod tests {
         ] {
             let found = surface(src);
             assert!(
-                found.iter().any(|(_, sees, ..)| *sees >= 2),
+                found.iter().any(|f| f.sees >= 2),
                 "{label}: read as fewer than two signatures, so a comparison in it would pass \
                  as Single"
             );
@@ -3027,7 +3561,7 @@ mod tests {
         assert!(
             found
                 .iter()
-                .any(|(n, sees, geo, ..)| n == "Geodesic::affinity" && *sees >= 2 && *geo),
+                .any(|f| f.name == "Geodesic::affinity" && f.sees >= 2 && f.geodesic),
             "a Geodesic receiver was not read as supplying the rotation group: {found:?}"
         );
     }
@@ -3038,7 +3572,7 @@ mod tests {
     fn signature_typed_fields_are_surface() {
         let found = surface("struct Pair { a: Signature<12>, b: Signature<12> }");
         assert!(
-            found.iter().any(|(n, ..)| n == "Pair.a") && found.iter().any(|(n, ..)| n == "Pair.b"),
+            found.iter().any(|f| f.name == "Pair.a") && found.iter().any(|f| f.name == "Pair.b"),
             "fields holding signatures were not recorded: {found:?}"
         );
     }
@@ -3056,6 +3590,118 @@ mod tests {
             "adding PartialOrd left the pinned name unchanged, so it would land as an edit to a \
              listed entry rather than as an unlisted item"
         );
+        // `assert_ne!` alone passes for any implementation whose output merely
+        // *differs* — one that put a derive *count* in the name would satisfy
+        // it. The name must contain the trait.
+        assert!(
+            after.iter().any(|f| f.name.contains("PartialOrd"))
+                && !before.iter().any(|f| f.name.contains("PartialOrd")),
+            "the pinned name changed without naming the trait that changed it: {after:?}"
+        );
+    }
+
+    /// A derive can be written with a qualified path, and `Path::get_ident`
+    /// returns `None` for every multi-segment one — so the trait vanished from
+    /// the pinned name and the entry compared **equal** to the plain list.
+    /// Measured against the real tree: `#[derive(Debug, Clone, PartialEq,
+    /// ::core::cmp::PartialOrd)]` on `Signature` produced zero failures.
+    #[test]
+    fn a_qualified_derive_path_is_not_dropped() {
+        let plain = surface("#[derive(Clone, PartialEq)] struct Signature { r: u8 }");
+        for spelling in [
+            "core::cmp::PartialOrd",
+            "::core::cmp::PartialOrd",
+            "std::cmp::PartialOrd",
+        ] {
+            let qualified = surface(&format!(
+                "#[derive(Clone, PartialEq, {spelling})] struct Signature {{ r: u8 }}"
+            ));
+            assert_ne!(
+                plain, qualified,
+                "`{spelling}` left the pinned name unchanged, so an ordering over the stored \
+                 lex-min arrays lands with the guard green"
+            );
+        }
+    }
+
+    /// `not(..)` inverts the predicate, so `#[cfg(not(test))]` means
+    /// **shipped-only** — the one direction `Contrast`'s bound cannot survive.
+    #[test]
+    fn cfg_not_test_is_not_read_as_test_only() {
+        for src in [
+            "#[cfg(not(test))] fn d(a: &Signature<12>) {}",
+            "#[cfg(all(not(test), unix))] fn d(a: &Signature<12>) {}",
+            "#[cfg(not(test))] mod m { fn d(a: &Signature<12>) {} }",
+        ] {
+            let found = surface(src);
+            assert!(
+                !found.is_empty() && found.iter().all(|f| !f.in_test),
+                "`cfg(not(test))` read as test-only, so a Contrast entry would ship in every \
+                 release build: {src}"
+            );
+        }
+    }
+
+    /// The predecessor was deleted partly for firing on correct code, and the
+    /// canonical example is the one §8.2's own module doc asks for: an ordering
+    /// on `Signature` so a `BTreeMap` can intern species. Measured before
+    /// `Storage` existed, **all five** other categories refuted it.
+    #[test]
+    fn an_ordering_on_the_stored_form_is_classifiable() {
+        let found = surface(
+            "impl Signature<12> { fn partial_cmp(&self, o: &Self) -> Option<Ordering> { None } }",
+        );
+        assert!(
+            found.iter().any(|f| f.sees >= 2 && !f.geodesic),
+            "the ordering was not even seen: {found:?}"
+        );
+        // Storage's bound is the return type, so a distance cannot be filed
+        // under it however it is named.
+        let (items, _) = scan_signature_surface(
+            "probe.rs",
+            "impl Signature<12> { fn partial_cmp(&self, o: &Self) -> f64 { 0.0 } }",
+            &["Signature".to_owned()],
+            &["Geodesic".to_owned()],
+        )
+        .unwrap_or_else(|e| unreachable!("probe must parse: {e}"));
+        assert!(
+            items.iter().all(|i| !i.returns_ordering),
+            "a function returning f64 read as an ordering, so Storage's bound is inert"
+        );
+        let (items, _) = scan_signature_surface(
+            "probe.rs",
+            "impl Signature<12> { fn eq(&self, o: &Self) -> bool { true } }",
+            &["Signature".to_owned()],
+            &["Geodesic".to_owned()],
+        )
+        .unwrap_or_else(|e| unreachable!("probe must parse: {e}"));
+        assert!(
+            items.iter().all(|i| i.returns_ordering),
+            "a `-> bool` equality did not read as an ordering, so Storage would reject the \
+             `PartialEq` §8.2 says is fine"
+        );
+    }
+
+    /// A body that reads the stored arrays is surface even when nothing in its
+    /// declaration names a signature — the intern-key shape, measured green
+    /// before this dimension existed. Shipped code only: tests reading
+    /// `a.extents()[i]` in assertions are deliberately not listed.
+    #[test]
+    fn a_body_reading_the_stored_arrays_is_surface() {
+        let holder = "struct Key { sig: Signature<12> }
+             impl Key { pub fn cmp2(&self, o: &Self) -> f64 { self.sig.extents()[0].get() - o.sig.extents()[0].get() } }";
+        let found = surface(holder);
+        assert!(
+            found.iter().any(|f| f.name == "Key::cmp2"),
+            "a holder method comparing through fields went unrecorded: {found:?}"
+        );
+        let in_test = format!("#[cfg(test)] mod t {{ {holder} }}");
+        let found = surface(&in_test);
+        assert!(
+            !found.iter().any(|f| f.name == "Key::cmp2"),
+            "a test body was listed on the accessor dimension — that is the noise that gets a \
+             guard switched off: {found:?}"
+        );
     }
 
     /// The two bounded categories are bounded by facts the scan reads, not by
@@ -3064,37 +3710,145 @@ mod tests {
     /// ungrouped comparison and move on.
     #[test]
     fn the_escape_hatch_categories_carry_their_bounds() {
-        let found =
-            surface("mod m { pub fn d(a: &Signature<12>, b: &Signature<12>) -> f64 { 0.0 } }");
+        // **Both directions for both flags.** A positive-only corpus is
+        // satisfied maximally by the mutation that matters: `is_pub = true`
+        // everywhere makes `Primitive` unusable but never *wrong*, and
+        // `in_test = true` everywhere makes `Contrast`'s bound pass for shipped
+        // code — the exact hole this category was given a bound to close.
+        for (label, src, want_pub) in [
+            ("`pub fn`", "mod m { pub fn d(a: &Signature<12>) {} }", true),
+            (
+                "`pub(crate) fn` — reaches every consumer in the crate",
+                "mod m { pub(crate) fn d(a: &Signature<12>) {} }",
+                true,
+            ),
+            (
+                "`pub(super) fn`",
+                "mod m { pub(super) fn d(a: &Signature<12>) {} }",
+                true,
+            ),
+            (
+                "a bare private `fn`",
+                "mod m { fn d(a: &Signature<12>) {} }",
+                false,
+            ),
+        ] {
+            let found = surface(src);
+            assert!(
+                found.iter().all(|f| f.is_pub == want_pub),
+                "{label} read as is_pub={}, wanted {want_pub} — Primitive's bound is only as \
+                 good as this flag",
+                !want_pub
+            );
+        }
+        for (label, src, want_test) in [
+            (
+                "`#[cfg(test)] mod`",
+                "#[cfg(test)] mod t { fn d(a: &Signature<12>) {} }",
+                true,
+            ),
+            (
+                "`cfg(all(test, ..))`, which nests one level deeper",
+                "#[cfg(all(test, feature = \"x\"))] mod t { fn d(a: &Signature<12>) {} }",
+                true,
+            ),
+            (
+                "`#[cfg(test)]` on the fn itself",
+                "#[cfg(test)] fn d(a: &Signature<12>) {}",
+                true,
+            ),
+            (
+                "a plain module",
+                "mod m { fn d(a: &Signature<12>) {} }",
+                false,
+            ),
+            (
+                "`cfg(feature = ..)`, which is not `cfg(test)`",
+                "#[cfg(feature = \"x\")] fn d(a: &Signature<12>) {}",
+                false,
+            ),
+        ] {
+            let found = surface(src);
+            assert!(
+                found.iter().all(|f| f.in_test == want_test),
+                "{label} read as in_test={}, wanted {want_test} — Contrast's bound is only as \
+                 good as this flag",
+                !want_test
+            );
+        }
+    }
+
+    /// The counting must be exact in both directions. A corpus that only
+    /// asserts `>= 2` is satisfied maximally by `sees_count` returning 2 for
+    /// everything, which would fail every `Single` entry in the pinned list and
+    /// look like the guard working.
+    #[test]
+    fn one_signature_is_counted_as_one() {
+        for (label, src) in [
+            (
+                "one named parameter",
+                "fn d(a: &Signature<12>) -> f64 { 0.0 }",
+            ),
+            (
+                "a receiver alone",
+                "impl Signature<12> { fn m(&self) -> f64 { 0.0 } }",
+            ),
+            (
+                "one parameter plus a Geodesic",
+                "fn d(a: &Signature<12>, g: &Geodesic<12>) -> f64 { 0.0 }",
+            ),
+            (
+                "an array of something else",
+                "fn d(a: &Signature<12>, r: &[Span; 12]) -> f64 { 0.0 }",
+            ),
+        ] {
+            let found = surface(src);
+            assert!(
+                !found.is_empty() && found.iter().all(|f| f.sees <= 1),
+                "{label}: read as seeing two, so a Single entry would fail and the pinned list \
+                 would have to lie: {found:?}"
+            );
+        }
+    }
+
+    /// `any` short-circuits. The first version of the enum arm used it, so
+    /// every variant after the first signature-bearing one went unvisited —
+    /// measured on `enum Holder { First(Signature<D>), Second(Signature<D>) }`,
+    /// where only `Holder::First.0` was reported.
+    #[test]
+    fn every_enum_variant_is_visited_not_just_the_first() {
+        let found = surface("enum Holder { First(Signature<12>), Second(Signature<12>) }");
         assert!(
-            found.iter().any(|(_, _, _, is_pub, _)| *is_pub),
-            "a `pub fn` did not read as public, so Primitive's bound is inert"
+            found.iter().any(|f| f.name == "Holder::First.0")
+                && found.iter().any(|f| f.name == "Holder::Second.0"),
+            "a later variant's signature field went unrecorded — the walker stopped walking: \
+             {found:?}"
         );
-        let found = surface(
-            "#[cfg(test)] mod t { fn d(a: &Signature<12>, b: &Signature<12>) -> f64 { 0.0 } }",
-        );
+    }
+
+    /// A `const` or `static` puts both operands in scope of every body in the
+    /// module while appearing in no function signature and no struct field.
+    #[test]
+    fn a_static_holding_signatures_is_surface() {
+        let found = surface("static PAIR: [Signature<12>; 2] = [];");
         assert!(
-            found.iter().all(|(_, _, _, _, in_test)| *in_test),
-            "a fn inside `#[cfg(test)] mod` did not read as test-only, so Contrast's bound is inert"
-        );
-        let found = surface(
-            "#[cfg(all(test, feature = \"x\"))] mod t { fn d(a: &Signature<12>, b: &Signature<12>) -> f64 { 0.0 } }",
-        );
-        assert!(
-            found.iter().all(|(_, _, _, _, in_test)| *in_test),
-            "`cfg(all(test, ..))` nests one level deeper than `cfg(test)` and was missed"
+            found.iter().any(|f| f.name == "PAIR" && f.sees >= 2),
+            "a static array of signatures was not recorded as a two-signature site: {found:?}"
         );
     }
 
     /// Prose about a type must not make its file look like a consumer of one.
     /// `borbax-units/src/lib.rs` mentions `Signature.r` in a doc comment, and
-    /// reading that as a mention reported all five of its `unit!` expansions as
-    /// unreadable — noise that gets a guard switched off.
+    /// reading that as a mention reported five constructs there as unreadable —
+    /// four `unit!` invocations and the `macro_rules!` definition — noise that
+    /// gets a guard switched off.
     #[test]
     fn a_type_named_only_in_prose_does_not_make_a_file_a_consumer() {
         let (items, unreadable) = scan_signature_surface(
             "probe.rs",
             "//! `Signature.r` was on that list.\nmacro_rules! m { () => {} }\n",
+            &["Signature".to_owned()],
+            &["Geodesic".to_owned()],
         )
         .unwrap_or_else(|e| unreachable!("probe must parse: {e}"));
         assert!(
@@ -3110,6 +3864,8 @@ mod tests {
         let (_, unreadable) = scan_signature_surface(
             "probe.rs",
             "fn f(a: &Signature<12>) {}\nmacro_rules! m { () => {} }\n",
+            &["Signature".to_owned()],
+            &["Geodesic".to_owned()],
         )
         .unwrap_or_else(|e| unreachable!("probe must parse: {e}"));
         assert!(
