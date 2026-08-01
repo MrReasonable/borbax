@@ -356,6 +356,7 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// ```text
 /// L* = mean(r_A) + mean(r_B)               // the best-fitting separation
 /// for each rotation R:
+///     shape, charge = 0, 0                 // reset per rotation
 ///     for each direction i:
 ///         j = contact_perms(R)[i]          // anti ∘ rotation, precomputed
 ///         shape  += ( r_A[i] + r_B[j] − L* )²      // two accumulators,
@@ -369,6 +370,13 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// weighted combination — which is precisely the interleaving the section below
 /// measures and rejects. A reader implementing from the pseudocode would have
 /// written the form the prose forbids three paragraphs later.
+///
+/// The reset line is there for the same reason and was missing from the first
+/// repair: with `+=` and no per-rotation reset the accumulators carry across
+/// rotations, the score decreases monotonically, and `argmax` is always the
+/// identity. A doc fix that introduces a second defect while correcting the
+/// first is the pattern this project keeps recording, so it is named here
+/// rather than quietly amended.
 ///
 /// # `L*` is derived, not chosen
 ///
@@ -461,15 +469,33 @@ pub fn fit<const D: usize>(
     for rot in Rotation::all() {
         let perm = g.contact_perms(rot);
         let (mut shape, mut charge) = (0.0f64, 0.0f64);
-        for i in 0..D {
-            let Some(&j) = perm.get(i) else { continue };
+        // **Iterated on A's side, not indexed, for the reason
+        // `Signature::group_distance` is.** The previous spelling read
+        // `perm.get(i)` and `a.extents().get(i)` and `continue`d on `None` —
+        // and `continue` in a scoring loop does not fail, it silently returns a
+        // *partial* sum for that rotation. None of those `None`s is reachable
+        // (`perm` is `&[u8; D]` and `i < D`), which is exactly what makes the
+        // spelling dangerous: an unreachable branch whose behaviour, if it ever
+        // did run, is a wrong score rather than a stop.
+        for ((ra, ca), &j) in a
+            .extents()
+            .iter()
+            .zip(a.characters().iter())
+            .zip(perm.iter())
+        {
             let j = usize::from(j);
-            let (Some(ra), Some(rb)) = (a.extents().get(i), b.extents().get(j)) else {
-                continue;
-            };
-            let (Some(ca), Some(cb)) = (a.characters().get(i), b.characters().get(j)) else {
-                continue;
-            };
+            // B is reached through the permutation, so it cannot be iterated
+            // alongside. `unreachable!` names its own precondition — the
+            // spelling CLAUDE.md keeps deliberately available — where a
+            // `continue` would have hidden the violation in the arithmetic.
+            let rb = b
+                .extents()
+                .get(j)
+                .unwrap_or_else(|| unreachable!("contact_perms is a permutation of 0..{D}"));
+            let cb = b
+                .characters()
+                .get(j)
+                .unwrap_or_else(|| unreachable!("contact_perms is a permutation of 0..{D}"));
             let ds = (*ra + *rb).get() - sep;
             let dc = *ca + *cb;
             shape += ds * ds;
@@ -1021,8 +1047,12 @@ mod tests {
                  still ranking by size rather than by shape. The drawn-gap kernel \
                  measured >= 0.987 here and the derived separation measures 0.39-0.58."
             );
-            // **The claim that actually rests on the fix.** Measured 0.52-0.67
-            // with the charge channel off; the defect gave >= 0.987.
+            // **The claim that actually rests on the fix.** Measured
+            // 0.53 / 0.57 / 0.84 with the charge channel off, for seeds
+            // 6 / 17 / 42; the defect gave >= 0.987. This comment said
+            // "0.52-0.67", which are the *combined* kernel's per-seed shape
+            // components from the round before — a stale figure contradicting
+            // the assertion message four lines below it.
             assert!(
                 worst_shape < 0.90,
                 "seed {seed}: the SHAPE channel alone correlates with size at \

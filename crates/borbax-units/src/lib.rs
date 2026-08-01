@@ -133,16 +133,20 @@ const fn canonical_sign(x: f64) -> f64 {
 ///
 /// The method on each unit is the one to reach for when you have a unit. This
 /// exists because the state hash will be dominated by values that are *not*
-/// units: `BindConsts::ideal_gap` and `LATTICE_SPAN` are bare `f64` today, and
-/// the signature array is the single most-hashed quantity in the system.
+/// units: `LATTICE_SPAN` is a bare `f64` today, and the signature array is the
+/// single most-hashed quantity in the system.
 /// Without an exported form, a caller holding an `f64` writes `.to_bits()` and
 /// the canonicalisation is silently skipped for exactly the data that matters
 /// most.
 ///
 /// Typing those quantities as [`Span`] shrinks the surface but does not remove
-/// it. **`Signature.r` was on that list and no longer is** — Task 9 typed it,
-/// along with the signature's own `SHELL`; `ideal_gap` and `LATTICE_SPAN` are
-/// Tasks 10 and 12. What stays here regardless is the *character* channel,
+/// it. **Two of the named quantities have left the list.** `Signature.r` was on
+/// it and no longer is — Task 9 typed it, along with the signature's own
+/// `SHELL`. `BindConsts::ideal_gap` was on it and **never existed**:
+/// `UniverseConsts::ideal_gap` has been a [`Span`] since Task 5, and Task 10's
+/// `BindConsts` does not carry the field at all, because the separation is
+/// derived per pair rather than drawn. `LATTICE_SPAN` (Task 13) is the one
+/// still bare. What stays here regardless is the *character* channel,
 /// which is a ratio in `[-1, 1]` with no unit to carry a method, and is why
 /// [`canonical_cmp`] below exists.
 #[must_use]
