@@ -1621,7 +1621,13 @@ mod tests {
 
     /// The extent is a length and carries [`Span`], so the G1 mix-up
     /// `coords()` leaves open cannot be spelled through the signature: §8.3
-    /// compares `r` against `ideal_gap`, also a `Span`.
+    /// sums `r` into the separation two bodies are scored at, also a `Span`.
+    ///
+    /// **This said "compares `r` against `ideal_gap`" and that consumer is
+    /// gone** — Task 10 derives the separation per pair instead. The typing
+    /// argument is unchanged and if anything stronger, since the separation is
+    /// now built *from* these extents rather than compared against a constant
+    /// drawn elsewhere.
     #[test]
     fn the_extent_is_a_span_and_scales_with_the_molecule() {
         let (tbl, uni) = fixture(6);
