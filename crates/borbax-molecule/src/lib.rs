@@ -18,6 +18,9 @@ pub mod graph;
 pub mod layout;
 pub mod signature;
 
+#[cfg(test)]
+mod testkit;
+
 pub use binding::{BindConsts, Fit, SigSummary, affinity, ceiling, fit};
 pub use canonical::{CanonForm, CanonMol, Capped, SEARCH_LEAF_CAP, SearchStats, canonicalise};
 pub use geodesic::{

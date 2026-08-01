@@ -21,9 +21,11 @@
 //! Applying `anti` a second time on top of `contact_perms` cancels and lands
 //! the same defect.
 //!
-//! `the_kernel_reads_the_contact_table` is the required probe, and it is stated
-//! as a substitution because the tables were renamed under an earlier wording:
-//! replace `g.contact_perms(r)` with `g.rotation_perms(r)` and **both**
+//! **The required probe is a substitution, not a test** — there is no test to
+//! run, which is why it is stated here in full. It is phrased as an edit
+//! because the tables were renamed under an earlier wording that named a
+//! deleted symbol: replace `g.contact_perms(r)` with `g.rotation_perms(r)` in
+//! [`fit`] — the kernel's single call site — and **both**
 //! `a_physical_complement_scores_zero` and `the_mirror_complement_does_not_fit`
 //! must fail. If only one does, the pair is not discriminating.
 
@@ -331,7 +333,7 @@ pub fn ceiling<const D: usize>(a: &SigSummary, b: &SigSummary, k: BindConsts) ->
 /// **different** [`Fit::pose`] in ~75% of pairs, because `permuted` writes
 /// `out[perm[i]] = self[i]` and the kernel reads `b[perm[i]]`: inverse
 /// pairings. It is also 1.4–1.9× slower. A test asserting only the score would
-/// pass; `the_pose_survives_a_permuted_partner` asserts the pose.
+/// pass; `materialising_the_partner_moves_the_pose` asserts the pose.
 ///
 /// Accumulated in direction-index order and never through `.sum()` over an
 /// unordered iterator, so the summation order is fixed on every platform
@@ -394,62 +396,29 @@ pub fn affinity<const D: usize>(
 
 #[cfg(test)]
 #[expect(
-    clippy::unwrap_used,
     clippy::indexing_slicing,
-    reason = "CLAUDE.md permits both inside #[cfg(test)] with a stated reason; every index \
-              here is a loop bound over D or over an atom count already established"
+    reason = "CLAUDE.md permits this inside #[cfg(test)] with a stated reason; every index \
+              here is a loop bound over D or over an atom count already established. There \
+              is deliberately no `unwrap_used` here — the fixtures that needed it moved to \
+              `testkit`, and leaving the expectation behind would suppress a lint this \
+              module no longer earns."
 )]
 mod tests {
     use super::*;
-    use crate::canonical::{CanonMol, canonicalise};
     use crate::graph::Mol12;
     use crate::layout::embed;
     use crate::signature::signature;
+    use crate::testkit::{canon, chain_capable, fixture, random_tree};
     use borbax_rng::{Domain, Stream};
-    use borbax_universe::{
-        BondOrder, ElementId, PeriodicTable, Universe, element::generate_elements,
-    };
+    use borbax_universe::Universe;
 
     const D: usize = 42;
 
-    fn fixture(seed: u64) -> (PeriodicTable, Universe) {
-        (generate_elements(seed), Universe::generate(seed))
-    }
-    fn chain_capable(tbl: &PeriodicTable) -> Vec<ElementId> {
-        (0..120usize)
-            .filter_map(ElementId::from_index)
-            .filter(|id| tbl.get(*id).is_some_and(|el| el.valence >= 2))
-            .collect()
-    }
-    fn canon(mol: &Mol12) -> CanonMol {
-        canonicalise(mol)
-            .unwrap_or_else(|err| unreachable!("fixture capped: {err}"))
-            .0
-    }
     fn geo() -> Geodesic<D> {
         Geodesic::<D>::build().unwrap_or_else(|_| unreachable!("D=42 builds"))
     }
     fn sig(mol: &Mol12, uni: &Universe, g: &Geodesic<D>) -> Signature<D> {
         signature(&embed(&canon(mol), uni), g)
-    }
-    fn random_tree(rng: &mut Stream, n: u8, tbl: &PeriodicTable, ids: &[ElementId]) -> Mol12 {
-        let mut mol = Mol12::default();
-        assert!(mol.add_atom(ids[0]).is_some());
-        for i in 1..n {
-            let pick = usize::try_from(rng.next_range(u64::try_from(ids.len()).unwrap())).unwrap();
-            let Some(child) = mol.add_atom(ids[pick]) else {
-                break;
-            };
-            let parent = u8::try_from(rng.next_range(u64::from(i))).unwrap();
-            if mol.add_bond(parent, child, BondOrder::SINGLE, tbl).is_err() {
-                for other in 0..i {
-                    if mol.add_bond(other, child, BondOrder::SINGLE, tbl).is_ok() {
-                        break;
-                    }
-                }
-            }
-        }
-        mol
     }
 
     /// A signature built by hand, so a complement can be constructed exactly.
@@ -593,9 +562,18 @@ mod tests {
     /// **The fixture must be chirally discriminating, or the pair above proves
     /// nothing.** If no proper rotation separates the signature from its
     /// mirror, both tests read zero under both kernels and the probe is inert.
-    /// Measured: chains of 1–3 atoms are achiral at every seed, and ~23% of
-    /// plausible fixtures are achiral, so this is a live hazard rather than a
-    /// theoretical one.
+    /// Chains of 1–3 atoms are achiral at every seed and ~23% of plausible
+    /// fixtures are achiral, so this is a live hazard rather than a theoretical
+    /// one.
+    ///
+    /// **The bar is 1.0 and the measured margins are 13.48, 9.60 and 1.48.**
+    /// Seed 42 is the tight one — within 50% of the bar — and that is stated
+    /// rather than smoothed, because a bar chosen far below every observation
+    /// would pass a fixture that had drifted most of the way to achiral. The
+    /// distribution is bimodal: exactly 0 for an achiral fixture, and the
+    /// smallest non-zero margin measured anywhere is ~2.3e-4, so anything above
+    /// that separates the two modes; 1.0 additionally rejects a fixture that is
+    /// merely *nearly* achiral.
     #[test]
     fn the_probe_fixture_is_chirally_discriminating() {
         for seed in [6u64, 17, 42] {
@@ -614,9 +592,10 @@ mod tests {
                 }
             }
             assert!(
-                margin > 1e-3,
-                "seed {seed}: fixture chirality margin is {margin}, so the ANTI probe \
-                 cannot discriminate — measured bimodal, either 0 or >= 2.3e-4"
+                margin > 1.0,
+                "seed {seed}: fixture chirality margin is {margin}, below the bar of \
+                 1.0 — the ANTI probe cannot discriminate on a fixture this close to \
+                 achiral. Measured at 13.48 / 9.60 / 1.48 for seeds 6 / 17 / 42."
             );
         }
     }
@@ -681,6 +660,65 @@ mod tests {
             }
         }
         assert_eq!(checked, 45, "the corpus did not run to completion");
+    }
+
+    /// **A bit-level digest of the score AND the winning pose.**
+    ///
+    /// Three shapes in this module are pinned in prose and nothing else
+    /// enforces them: the two-accumulator split, the direction-index summation
+    /// order, and `mean_extent`'s `sum * inv_n`. Every one is *algebraically*
+    /// invariant under the tidy-up a reader would reach for, so the suite stays
+    /// green while every number moves in its last bits.
+    ///
+    /// **The pose is hashed separately from the score, and that is the whole
+    /// reason this test earns its keep.** Roughly 12% of real pairs tie at the
+    /// bitwise maximum, so a reassociation that leaves the score identical to
+    /// the last bit still moves the *winning rotation* — measured at ~14% of
+    /// pairs — and §14.5's renderer consumes that index. A score-only digest is
+    /// blind to it, and so is every tolerance test at any epsilon.
+    ///
+    /// Hashes through `canonical_bits`, not `to_bits`: a runtime NaN's sign and
+    /// `-0.0` are architecture-dependent and §13.6's matrix would report that as
+    /// a simulation divergence (§13.4).
+    #[test]
+    fn the_binding_digest_is_pinned() {
+        let g = geo();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let (mut scores, mut poses) = (0u64, 0u64);
+        for seed in [6u64, 17, 42] {
+            let (tbl, uni) = fixture(seed);
+            let k = BindConsts::of(&uni.consts);
+            let ids = chain_capable(&tbl);
+            let mut rng = Stream::new(6700 + seed, Domain::Molecule, 0);
+            let mols: Vec<_> = (0..9)
+                .map(|i| sig(&random_tree(&mut rng, 3 + (i % 9), &tbl, &ids), &uni, &g))
+                .collect();
+            for i in 0..mols.len() {
+                for j in i..mols.len() {
+                    let f = fit(&mols[i], &mols[j], &g, k);
+                    hash ^= borbax_units::canonical_bits(f.score());
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    scores += 1;
+                    // Separate mixing step, so a pose change cannot cancel
+                    // against a score change.
+                    hash ^= u64::try_from(f.pose().index()).unwrap_or(u64::MAX);
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    poses += 1;
+                }
+            }
+        }
+        // 3 seeds x 45 unordered pairs of 9 molecules, one of each per pair.
+        assert_eq!(scores, 3 * 45, "the corpus did not run to completion");
+        assert_eq!(poses, scores, "a pose was not hashed for every score");
+        assert_eq!(
+            hash, 0xab87_c6f7_2cf5_3428,
+            "binding moved. If you meant to change the physics, regenerate this \
+             constant and say so in the commit message. If you did not, suspect an \
+             accumulation order: the two accumulators, the direction-index sum, and \
+             mean_extent's `sum * inv_n` are each algebraically invariant under the \
+             obvious tidy-up and each move the last bits. If only the POSE moved, \
+             suspect the `>` tie-break — ~12% of pairs tie exactly."
+        );
     }
 
     /// **The fix, asserted rather than described: binding is no longer a size
@@ -796,8 +834,8 @@ mod tests {
         sxy / (sxx.sqrt() * syy.sqrt())
     }
 
-    /// **The pose is not preserved by materialising the partner**, which is why
-    /// the kernel gathers instead.
+    /// **Materialising the partner moves the pose**, which is why the kernel
+    /// gathers instead.
     ///
     /// `permuted` writes `out[perm[i]] = self[i]` while the kernel reads
     /// `b[perm[i]]` — inverse pairings. The contact coset is closed under
@@ -805,7 +843,7 @@ mod tests {
     /// dangerous: a test on the score alone passes while the rendered pose
     /// differs. Asserts the score agrees and records that the pose need not.
     #[test]
-    fn the_pose_survives_a_permuted_partner() {
+    fn materialising_the_partner_moves_the_pose() {
         let (a, uni, g) = asymmetric_fixture(6);
         let (tbl2, _) = fixture(6);
         let ids = chain_capable(&tbl2);
