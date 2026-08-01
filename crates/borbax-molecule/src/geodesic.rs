@@ -98,6 +98,13 @@ impl core::fmt::Display for Rotation {
 }
 
 impl Rotation {
+    /// The identity rotation, index 0.
+    ///
+    /// Named rather than spelled `Rotation::new(0)` at call sites: §8.3's
+    /// kernel seeds its argmax with it, and a seed that reads as "index zero"
+    /// invites someone to change it to a sentinel.
+    pub const IDENTITY: Self = Self(0);
+
     /// The rotation at `r`, or `None` when `r >= N_ROTATIONS`.
     #[must_use]
     pub const fn new(r: usize) -> Option<Self> {

@@ -191,6 +191,22 @@ impl<const D: usize> Signature<D> {
         }
     }
 
+    /// Build a signature from raw channels. **Test-only, and it must stay
+    /// that way.**
+    ///
+    /// `signature()` is the only way a `Signature` should come into existence
+    /// in shipped code: it is the one place the channels are guaranteed to
+    /// come from a real embedding of a real species. A public constructor
+    /// would let a caller mint a shape no molecule can produce and feed it to
+    /// §8.3's kernel, which is precisely what the binding tests need to do —
+    /// an exact complement is not a shape any universe contains — and
+    /// precisely what nothing else may do.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn from_parts_for_test(r: [Span; D], a: [f64; D]) -> Self {
+        Self { r, a }
+    }
+
     /// Surface extent per direction.
     ///
     /// [`Span`], not `f64`: §8.3 compares these against `ideal_gap`, which is
