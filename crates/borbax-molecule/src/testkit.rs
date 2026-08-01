@@ -37,7 +37,15 @@
               it needs its own opt-in — the deny reaches here exactly as it would inside one. \
               Every index is a loop bound over a count already established, and every unwrap \
               is on a fixture the caller controls: a broken fixture should panic at the point \
-              of the mistake rather than silently produce a different corpus."
+              of the mistake rather than silently produce a different corpus.\
+              \
+              `expect` rather than `allow`, deliberately and against one review's advice. The \
+              objection is that removing the last `.unwrap()` here breaks the build with \
+              `unfulfilled_lint_expectation` — which is true, verified, and the point: it is a \
+              LOUD failure telling you a blanket opt-in has outlived its need, and this \
+              project's doctrine is that loud beats silent everywhere else too. It is also the \
+              crate's convention, 17 `expect` sites to 4 `allow`, and the four are file-scope \
+              opt-ins over shipped code rather than test modules."
 )]
 
 use crate::canonical::{CanonMol, canonicalise};
@@ -84,6 +92,11 @@ pub(crate) fn random_tree(
     tbl: &PeriodicTable,
     ids: &[ElementId],
 ) -> Mol12 {
+    // `ids` is `chain_capable`'s output, which already filters to elements
+    // present in the table with `valence >= 2` — re-asserting that here would
+    // be checking the constructor's postcondition once per fixture. What is
+    // *not* guaranteed by construction is that it found any, and an empty list
+    // silently yields an empty corpus.
     assert!(
         !ids.is_empty(),
         "random_tree was handed an empty element list, so the corpus it builds is empty too"
@@ -137,6 +150,14 @@ pub(crate) fn random_molecule(
 /// maximises the automorphism group and is what reaches `embed`'s coincidence
 /// branch — automorphic same-element atoms are the ones with identical target
 /// rows. Deterministic given `n`, so it takes no `Stream`.
+///
+/// **Ring-bearing only for `n > 2`, and callers legitimately pass 1 and 2.**
+/// `signature.rs` sweeps `atoms = 1..12` through here. A review proposed
+/// asserting `n >= 3`; that would break those callers, and the honest fix is
+/// this sentence instead. Do not write a ring-dependent assertion over a corpus
+/// that includes the small sizes without filtering for them — which is the same
+/// mistake as a corpus filter that silently selects nothing, arrived at from
+/// the other side.
 #[must_use]
 pub(crate) fn symmetric_molecule(n: u8, tbl: &PeriodicTable, one: ElementId) -> Mol12 {
     assert!(
@@ -160,6 +181,11 @@ pub(crate) fn symmetric_molecule(n: u8, tbl: &PeriodicTable, one: ElementId) -> 
 
 /// A one-element molecule with **randomly** placed extra bonds, on top of the
 /// chain.
+///
+/// **The extra bonds can number zero** — `rng.next_range(3)` includes it — so a
+/// given draw may be a bare chain with no ring at all. Nothing currently claims
+/// otherwise; `layout.rs`'s corpus uses this for automorphism groups and states
+/// separately that it does not reach the coincidence branch.
 ///
 /// **Deliberately a different name from [`symmetric_molecule`], because it is a
 /// different function.** Both were called `symmetric_molecule` in different
