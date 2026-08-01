@@ -122,11 +122,21 @@ impl BindConsts {
 
 /// A shape's rotation-invariant summary, for the pre-filter (§8.3, §8.6).
 ///
-/// Four numbers that do not change under any of the 60 rotations, so they can
+/// Three numbers that do not change under any of the 60 rotations, so they can
 /// be computed **once per species at intern time** and reused against every
 /// partner. That is §8.6's rule, and the natural spelling of `may_bind` —
 /// summing the extents inside the per-pair call — violates it by recomputing a
 /// per-species constant once per partner.
+///
+/// **It was four, and the fourth was written and never read.** `mean_extent`
+/// sat here because the shape channel looked like it would need it; it does
+/// not, because [`fit`] separates the bodies at exactly the value that makes
+/// the shape channel's offset `δ` zero, so no `D·δ²` term ever reaches
+/// [`ceiling`]. A field nothing reads is worse than a missing one:
+/// `#[derive(PartialEq)]` keeps it alive against dead-code analysis, and the
+/// next reader assumes it is load-bearing. Task 12 can add it back with a
+/// consumer attached.
+///
 /// **Carries `D`, and that is load-bearing rather than tidy.** Without it
 /// `Signature<12>::summary()` and `Signature<42>::summary()` produce the same
 /// type, so `ceiling::<42>(&s12.summary(), ..)` compiles and answers — and
@@ -135,7 +145,6 @@ impl BindConsts {
 /// {12, 42, 162}, which is exactly where a copied turbofish comes from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SigSummary<const D: usize> {
-    mean_extent: Span,
     /// Euclidean norm of the mean-centred extents: how much relief the surface
     /// has, independent of how big the molecule is.
     extent_spread: f64,
@@ -157,7 +166,10 @@ pub struct SigSummary<const D: usize> {
 /// Borbax has the anisotropy — a signature is direction-resolved and the
 /// 60-rotation search *is* an orientation search — and throwing it away at the
 /// API boundary would make §10.1 unreachable without recomputing the kernel
-/// per collision, which §8.6 forbids. Keeping it costs one `u8` per pair.
+/// per collision, which §8.6 forbids. Keeping it costs one [`Rotation`] per
+/// pair — a `usize` newtype, so 8 bytes. (This said "one `u8`" until a reviewer
+/// read the definition: the *index* fits in a `u8`, the type it is stored in
+/// does not, and those are not the same claim.)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fit {
     score: f64,
@@ -265,7 +277,6 @@ impl<const D: usize> Signature<D> {
             sc += dc * dc;
         }
         SigSummary {
-            mean_extent: me,
             extent_spread: se.sqrt(),
             mean_character: mc,
             character_spread: sc.sqrt(),
@@ -347,11 +358,17 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// for each rotation R:
 ///     for each direction i:
 ///         j = contact_perms(R)[i]          // anti ∘ rotation, precomputed
-///         shape  = −( r_A[i] + r_B[j] − L* )²
-///         charge = −( a_A[i] + a_B[j] )²
-///     score(R) = Σᵢ ( w_shape · shape + w_charge · charge )
+///         shape  += ( r_A[i] + r_B[j] − L* )²      // two accumulators,
+///         charge += ( a_A[i] + a_B[j] )²           // never one
+///     score(R) = −( w_shape · shape + w_charge · charge )   // combined once
 /// fit = argmax over R
 /// ```
+///
+/// **The two accumulators are in the block because they are load-bearing.** It
+/// read `Σᵢ (w_shape · shape + w_charge · charge)` — one accumulator over the
+/// weighted combination — which is precisely the interleaving the section below
+/// measures and rejects. A reader implementing from the pseudocode would have
+/// written the form the prose forbids three paragraphs later.
 ///
 /// # `L*` is derived, not chosen
 ///

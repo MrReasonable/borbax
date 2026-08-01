@@ -49,36 +49,52 @@
 //! So §8.2 needs no amendment. The storage form is absorbed by the comparison
 //! rule.
 //!
-//! ## There is no guard, and that is deliberate rather than an oversight
+//! ## There is a guard, and what it does *not* decide is the part to read
 //!
-//! An `xtask` check shipped here briefly and was **deleted**. It read
-//! `signature.rs`'s public surface and required that any `pub fn` mentioning
-//! `Signature` twice also take a [`Geodesic`]. Review found **four independent
-//! escapes** — an out-of-line `mod`, an `impl` in any other file of the crate,
-//! an `impl` nested in a function body, and `Self` counted per-argument where a
-//! named `Signature` was counted per-mention — and **two classes of false
-//! positive**, one of which was a `Geodesic` *receiver*, i.e. `g.affinity(&a,
-//! &b)`, which is how §8.3's kernel reads most naturally.
+//! `xtask`'s `check_signature_surface_is_pinned` (§8.2) pins every item in the
+//! workspace that can see a `Signature` — an `impl` method on one, a free
+//! function taking one, a trait method, a struct or enum **field** holding one,
+//! and the **derive list** of any type that is or holds one — to a checked-in
+//! list, each entry carrying a category. Adding a signature-facing item
+//! anywhere fails the build until a human classifies it.
 //!
-//! The rule this project applies to a repaired guard is: state the class of
-//! thing it enumerates and name what is outside it; if that sentence cannot be
-//! written, the repair is another enumeration. It could not be written. The
-//! guard enumerated AST shapes.
+//! **It is the second attempt, and the difference is why the first was
+//! deleted.** That one read `signature.rs`'s public surface and required any
+//! `pub fn` mentioning `Signature` twice to also take a [`Geodesic`]. Review
+//! found **four independent escapes** — an out-of-line `mod`, an `impl` in any
+//! other file of the crate, an `impl` nested in a function body, and `Self`
+//! counted per-argument where a named `Signature` was counted per-mention — and
+//! **two classes of false positive**, one of which was a `Geodesic` *receiver*,
+//! i.e. `g.affinity(&a, &b)`, which is how §8.3's kernel reads most naturally.
 //!
-//! It was also **pointed the wrong way**. Its corpus caught `impl PartialOrd for
-//! Signature` — but §8.2's own consumers need an ordering, and a
-//! determinism-safe intern table is a `BTreeMap`, which needs `Ord`. So the
-//! guard forbade what the spec requires, and the cheapest way past it was to
-//! move the `impl` to another file, which it could not see. A guard that fires
-//! on correct code gets deleted, and the pressure to evade this one was
+//! It was deleted because its verdict was pass/fail computed from the AST
+//! shapes it knew, so **a shape it did not know was a silent pass**. The rule
+//! this project applies to a repaired guard is: state the class of thing it
+//! decides and name what is outside it. The replacement's class is *"does this
+//! item appear in the pinned list"*, which is total — no shape analysis decides
+//! it. Shape analysis is used only to **refute** a category, never to grant a
+//! pass, and a construct the AST cannot read is reported rather than passed
+//! over.
+//!
+//! Each of the four escapes is closed by construction rather than by a rule:
+//! the scan walks every `.rs` file under `crates/`, recurses through function
+//! bodies, and counts *values a function can see* with `Self` resolved from the
+//! enclosing `impl`. All four were re-planted as real edits in real files and
+//! all four now fail the build. Both false positives are gone too — a
+//! `Geodesic` receiver counts, and `impl PartialOrd for Signature` is **listed
+//! rather than forbidden**, since §8.2's own consumers need an ordering for a
+//! `BTreeMap` intern table. The old guard forbade what the spec requires, so
+//! the cheapest way past it was to move the `impl` to a file it could not see;
+//! a guard that fires on correct code gets deleted, and that pressure was
 //! structural.
 //!
-//! **What holds the property today is this paragraph and code review.** That is
-//! weaker than a check and is stated plainly rather than dressed up: a green
-//! build is *not* evidence that no ungrouped comparison exists. Task 10 owns the
-//! replacement, where the binding kernel makes the right shape visible — an
-//! API-surface snapshot (`public-api`-style) is crate-wide by construction and
-//! would close all four escapes, which an AST walker over one file cannot.
+//! **What sits outside it, stated plainly rather than dressed up: the bodies of
+//! the listed items.** A `Minimised` entry that takes a [`Geodesic`] and then
+//! forgets to use it is not caught, and an `Accessor`'s returned array can be
+//! subtracted by any arithmetic anywhere. A green build is evidence that no
+//! *new* comparison site appeared unreviewed. It is **not** evidence that every
+//! listed body minimises — that is still held by review, and by the tests below
+//! that measure the group-minimised distance against the plain one.
 //!
 //! ## Why there is no `sorted_extents`
 //!
@@ -209,8 +225,15 @@ impl<const D: usize> Signature<D> {
 
     /// Surface extent per direction.
     ///
-    /// [`Span`], not `f64`: §8.3 compares these against `ideal_gap`, which is
-    /// also a length, and an untyped extent is where G1's mix-up would enter.
+    /// [`Span`], not `f64`: §8.3 sums these into the separation two bodies are
+    /// scored at, which is also a length, and an untyped extent is where G1's
+    /// mix-up would enter.
+    ///
+    /// **It said `ideal_gap` until Task 10 measured that constant.** The kernel
+    /// no longer compares extents against it at all — the separation is derived
+    /// per pair as `mean(r_A) + mean(r_B)`, the least-squares optimum. Naming a
+    /// drawn constant the consumer stopped consuming is the doc rot this
+    /// project keeps finding one task after the fact.
     #[must_use]
     pub const fn extents(&self) -> &[Span; D] {
         &self.r
