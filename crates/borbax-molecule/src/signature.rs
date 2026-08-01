@@ -487,15 +487,16 @@ pub fn signature<const D: usize>(e: &Embedding, g: &Geodesic<D>) -> Signature<D>
 )]
 mod tests {
     use super::*;
-    use crate::canonical::{CanonMol, canonicalise};
+    use crate::canonical::CanonMol;
     use crate::geodesic::{Geodesic, Rotation, is_identity, rotation_matrices};
     use crate::graph::Mol12;
     use crate::layout::embed;
+    use crate::testkit::{
+        canon, chain_capable, fixture, random_molecule, random_tree, symmetric_molecule,
+    };
     use borbax_rng::{Domain, Stream};
     use borbax_units::Span;
-    use borbax_universe::{
-        BondOrder, ElementId, PeriodicTable, Universe, element::generate_elements,
-    };
+    use borbax_universe::{BondOrder, ElementId, PeriodicTable, Universe};
 
     /// §22.2's prior. The ladder is {12, 42, 162} and nothing between them keeps
     /// rotation an exact permutation.
@@ -504,27 +505,6 @@ mod tests {
     /// Point inversion, `p -> -p`. Improper (determinant -1), so it is not one
     /// of the 60 and no `permuted` can reproduce it.
     const INVERT: [[f64; 3]; 3] = [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]];
-
-    /// A periodic table and a universe **from the same seed**. `table(a)` with
-    /// `Universe::generate(b)` for `a != b` is a chimera — `layout.rs`'s
-    /// `fixture` records what that cost there, and the same helper exists here
-    /// so the mismatch is unspellable rather than merely avoided.
-    fn fixture(seed: u64) -> (PeriodicTable, Universe) {
-        (generate_elements(seed), Universe::generate(seed))
-    }
-
-    fn chain_capable(tbl: &PeriodicTable) -> Vec<ElementId> {
-        (0..120usize)
-            .filter_map(ElementId::from_index)
-            .filter(|id| tbl.get(*id).is_some_and(|el| el.valence >= 2))
-            .collect()
-    }
-
-    fn canon(mol: &Mol12) -> CanonMol {
-        canonicalise(mol)
-            .unwrap_or_else(|err| unreachable!("fixture capped: {err}"))
-            .0
-    }
 
     fn geo() -> Geodesic<D> {
         Geodesic::<D>::build().unwrap_or_else(|_| unreachable!("D=42 builds"))
@@ -542,58 +522,6 @@ mod tests {
         }
         for i in 0..n.saturating_sub(1) {
             assert!(mol.add_bond(i, i + 1, BondOrder::SINGLE, tbl).is_ok());
-        }
-        mol
-    }
-
-    fn random_tree(rng: &mut Stream, n: u8, tbl: &PeriodicTable, ids: &[ElementId]) -> Mol12 {
-        let mut mol = Mol12::new();
-        assert!(mol.add_atom(ids[0]).is_some());
-        for i in 1..n {
-            let pick = usize::try_from(rng.next_range(u64::try_from(ids.len()).unwrap())).unwrap();
-            let Some(child) = mol.add_atom(ids[pick]) else {
-                break;
-            };
-            let parent = u8::try_from(rng.next_range(u64::from(i))).unwrap();
-            if mol.add_bond(parent, child, BondOrder::SINGLE, tbl).is_err() {
-                for other in 0..i {
-                    if mol.add_bond(other, child, BondOrder::SINGLE, tbl).is_ok() {
-                        break;
-                    }
-                }
-            }
-        }
-        mol
-    }
-
-    /// A ring-bearing molecule built from **one element throughout**, which
-    /// maximises the automorphism group and is what reaches `embed`'s
-    /// coincidence branch — automorphic same-element atoms are the ones with
-    /// identical target rows. Deterministic given `n`, so it takes no `Stream`.
-    fn symmetric_molecule(n: u8, tbl: &PeriodicTable, one: ElementId) -> Mol12 {
-        let mut mol = Mol12::new();
-        for _ in 0..n {
-            if mol.add_atom(one).is_none() {
-                break;
-            }
-        }
-        let size = u8::try_from(mol.len()).unwrap_or(0);
-        for i in 1..size {
-            let _ = mol.add_bond(i - 1, i, BondOrder::SINGLE, tbl);
-        }
-        if size > 2 {
-            let _ = mol.add_bond(0, size - 1, BondOrder::SINGLE, tbl);
-        }
-        mol
-    }
-
-    fn random_molecule(rng: &mut Stream, n: u8, tbl: &PeriodicTable, ids: &[ElementId]) -> Mol12 {
-        let mut mol = random_tree(rng, n, tbl, ids);
-        let size = u8::try_from(mol.len()).unwrap();
-        for _ in 0..rng.next_range(4) {
-            let a = u8::try_from(rng.next_range(u64::from(size))).unwrap();
-            let b = u8::try_from(rng.next_range(u64::from(size))).unwrap();
-            let _ = mol.add_bond(a, b, BondOrder::SINGLE, tbl);
         }
         mol
     }

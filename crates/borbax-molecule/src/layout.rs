@@ -1228,42 +1228,12 @@ fn embed_with_budget(species: &CanonMol, universe: &Universe, iterations: usize)
 )]
 mod tests {
     use super::*;
-    use crate::canonical::canonicalise;
     use crate::geodesic::{Geodesic, Rotation, is_identity, rotation_matrices};
-    use borbax_rng::{Domain, Stream};
-    use borbax_universe::{
-        BondOrder, ElementId, PeriodicTable, Universe, element::generate_elements,
+    use crate::testkit::{
+        canon, chain_capable, fixture, random_molecule, random_tree, symmetric_tangle,
     };
-
-    /// A periodic table and a universe **from the same seed**.
-    ///
-    /// **`table(a)` with `Universe::generate(b)` for `a != b` is a chimera, and
-    /// six tests here were one.** Measured on `table(17)` against universe 4: 24
-    /// of the 78 chain-capable ids — **30.8%** — do not exist in that universe at
-    /// all and silently take `targets`' `map_or(1.0, ..)` fallback, and of the 54
-    /// that do exist, **0 of 54 agree on radius**.
-    ///
-    /// So roughly a third of the corpus's shape information was the constant 1.0.
-    /// That manufactures exact ties in `farthest_from`, and worse, it inflates the
-    /// composition confound: on the mismatched fixture a **composition-only null**
-    /// — sum of atomic radii, no graph, no bonds, no solver — scores **0.7428**
-    /// against the locality gate's 0.75 bar, so the gate sat 0.008 above a
-    /// geometry-free null. Matched, the null collapses to ~0.47–0.52.
-    ///
-    /// Concordance itself is stable across 16 matched triples (0.7982–0.8533), so
-    /// repairing the fixture does not rescue a number — it makes the existing one
-    /// mean something.
-    fn fixture(seed: u64) -> (PeriodicTable, Universe) {
-        (generate_elements(seed), Universe::generate(seed))
-    }
-
-    /// Elements that can carry two bonds, so a chain is buildable.
-    fn chain_capable(tbl: &PeriodicTable) -> Vec<ElementId> {
-        (0..120usize)
-            .filter_map(ElementId::from_index)
-            .filter(|id| tbl.get(*id).is_some_and(|el| el.valence >= 2))
-            .collect()
-    }
+    use borbax_rng::{Domain, Stream};
+    use borbax_universe::{BondOrder, ElementId, PeriodicTable, Universe};
 
     fn chain(n: u8, tbl: &PeriodicTable, ids: &[ElementId]) -> Mol12 {
         let mut mol = Mol12::new();
@@ -1281,12 +1251,6 @@ mod tests {
     /// universe's radii — the chimera `fixture` exists to prevent.
     fn targets_for(sp: &CanonMol, uni: &Universe) -> [[f64; MAX_ATOMS]; MAX_ATOMS] {
         targets(sp, &per_atom(sp, uni).0)
-    }
-
-    fn canon(mol: &Mol12) -> CanonMol {
-        canonicalise(mol)
-            .unwrap_or_else(|err| unreachable!("fixture capped: {err}"))
-            .0
     }
 
     /// Signature distance minimised over the 60 proper rotations — the quantity
@@ -1888,7 +1852,7 @@ mod tests {
             // claimed the corpus covered it; it does not.
             let n = 2 + u8::try_from(trial % 11).unwrap();
             let mol = if trial % 3 == 0 {
-                symmetric_molecule(&mut rng, n, &tbl, ids[0])
+                symmetric_tangle(&mut rng, n, &tbl, ids[0])
             } else {
                 random_molecule(&mut rng, n, &tbl, &ids)
             };
@@ -2066,7 +2030,7 @@ mod tests {
         let mut examined = 0u32;
         for _ in 0..1200 {
             let n = 4 + u8::try_from(rng.next_range(9)).unwrap();
-            let mol = symmetric_molecule(&mut rng, n, &tbl, ids[0]);
+            let mol = symmetric_tangle(&mut rng, n, &tbl, ids[0]);
             let species = canon(&mol);
             if species.len() < 3 {
                 continue;
@@ -2394,71 +2358,5 @@ mod tests {
             let _ = out.add_bond(a, b, BondOrder::SINGLE, tbl);
         }
         Some(out)
-    }
-
-    /// A ring-bearing molecule built from **one element throughout**, which
-    /// maximises the automorphism group and is what reaches `embed`'s coincidence
-    /// branch — automorphic *same-element* atoms are the ones with identical
-    /// target rows.
-    fn symmetric_molecule(rng: &mut Stream, n: u8, tbl: &PeriodicTable, one: ElementId) -> Mol12 {
-        let mut mol = Mol12::new();
-        for _ in 0..n {
-            if mol.add_atom(one).is_none() {
-                break;
-            }
-        }
-        let size = u8::try_from(mol.len()).unwrap_or(0);
-        for i in 1..size {
-            let _ = mol.add_bond(i - 1, i, BondOrder::SINGLE, tbl);
-        }
-        for _ in 0..rng.next_range(3) {
-            let a = u8::try_from(rng.next_range(u64::from(size))).unwrap_or(0);
-            let b = u8::try_from(rng.next_range(u64::from(size))).unwrap_or(0);
-            let _ = mol.add_bond(a, b, BondOrder::SINGLE, tbl);
-        }
-        mol
-    }
-
-    /// A random molecule: a spanning tree plus a few extra edges, so rings and
-    /// branches appear rather than trees only.
-    fn random_molecule(rng: &mut Stream, n: u8, tbl: &PeriodicTable, ids: &[ElementId]) -> Mol12 {
-        let mut mol = random_tree(rng, n, tbl, ids);
-        let size = u8::try_from(mol.len()).unwrap();
-        for _ in 0..rng.next_range(4) {
-            let a = u8::try_from(rng.next_range(u64::from(size))).unwrap();
-            let b = u8::try_from(rng.next_range(u64::from(size))).unwrap();
-            // A refused bond is not a mutation; the fixture is whatever survives.
-            let _ = mol.add_bond(a, b, BondOrder::SINGLE, tbl);
-        }
-        mol
-    }
-
-    /// A random tree, built by attaching each new atom to an existing one.
-    fn random_tree(rng: &mut Stream, n: u8, tbl: &PeriodicTable, ids: &[ElementId]) -> Mol12 {
-        let mut mol = Mol12::new();
-        assert!(mol.add_atom(ids[0]).is_some());
-        for i in 1..n {
-            let pick = usize::try_from(rng.next_range(u64::try_from(ids.len()).unwrap())).unwrap();
-            let Some(child) = mol.add_atom(ids[pick]) else {
-                break;
-            };
-            let parent = u8::try_from(rng.next_range(u64::from(i))).unwrap();
-            // A refused bond leaves the molecule alone, which would give a
-            // disconnected fixture — fine for `embed`, but this helper promises a
-            // tree, so it retries against *other parents* (all at SINGLE; there
-            // is no lower order to retry down to, which an earlier version of
-            // this comment claimed). If every parent refuses, the child is left
-            // isolated and this returns a non-tree — measured unreachable, 0 of
-            // 10,020 trees, and structurally so, since `chain_capable` elements
-            // carry valence >= 2 so a tree always retains spare capacity.
-            if mol.add_bond(parent, child, BondOrder::SINGLE, tbl).is_err() {
-                for other in 0..i {
-                    if mol.add_bond(other, child, BondOrder::SINGLE, tbl).is_ok() {
-                        break;
-                    }
-                }
-            }
-        }
-        mol
     }
 }

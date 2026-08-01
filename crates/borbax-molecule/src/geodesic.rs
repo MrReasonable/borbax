@@ -1233,6 +1233,16 @@ mod tests {
         let g = geo::<42>();
         let identity: Vec<u8> = (0..42u8).collect();
         assert!(Rotation::all().any(|r| g.rotation_perms(r).to_vec() == identity));
+        // **And it is at index 0, which `Rotation::IDENTITY` asserts by
+        // construction and nothing checked.** §8.3's kernel seeds its argmax
+        // with `IDENTITY`, and `Fit::pose` hands that index to §14.5's
+        // renderer — so if index 0 were some other rotation, a pair whose best
+        // score never beat the seed would be drawn in a pose nobody chose.
+        assert_eq!(
+            g.rotation_perms(Rotation::IDENTITY).to_vec(),
+            identity,
+            "Rotation::IDENTITY is not the identity permutation"
+        );
     }
 
     /// Every element must be a *proper* rotation, and this measures it
