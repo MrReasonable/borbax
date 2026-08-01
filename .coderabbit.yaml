@@ -2,8 +2,8 @@
 #
 # CodeRabbit review configuration.
 #
-# Everything not set here is a documented default. Two settings are, and the
-# second exists only to make the first work.
+# Two settings. They are **independent** — neither requires the other — and
+# everything not listed here is a documented default.
 
 reviews:
   # **Make approval mean something.** Without this CodeRabbit only ever posts
@@ -14,23 +14,35 @@ reviews:
   # All four pre-merge checks (docstrings, title, description, issue
   # assessment) default to `warning` rather than `error`, so none of them can
   # hold an approval back today.
+  #
+  # Confirmed live on the PR that introduced this file: the verdict moved from
+  # `COMMENTED` to `CHANGES_REQUESTED`, and `mergeStateStatus` moved to
+  # `BLOCKED`. So this genuinely gates the merge button even though branch
+  # protection sets `required_approving_review_count: 0`.
   request_changes_workflow: true
 
   auto_review:
-    # **Zero disables the pause, and disabling it is what stops the approval
-    # workflow deadlocking.** The default is 5: automatic reviews stop after
-    # five reviewed commits since the last pause. Task 10's PR reached ten,
-    # which is ordinary here — this project pushes a commit per review round
-    # and the rounds keep finding things.
+    # Pause **automatic incremental** reviews after this many reviewed commits.
+    # The default is 5; this project pushes a commit per review round and PRs
+    # reach ten, so the default pauses partway through a task.
     #
-    # With `request_changes_workflow` on, a paused reviewer is worse than a
-    # quiet one: CodeRabbit would request changes, go to sleep on commit six,
-    # and never come back to approve. The PR would sit blocked by a reviewer
-    # that had stopped reading.
+    # **Not zero, and the first version of this file had it wrong in the
+    # dangerous direction.** Zero disables the pause entirely, which reviews
+    # every eligible push and can exhaust the review allowance — a candidate
+    # cause of the `Review rate limited` statuses this repo has seen since PR
+    # #11. That comment claimed the *pause* was the leading suspect for those
+    # statuses and set zero to remove it. If allowance exhaustion is the real
+    # mechanism then zero makes the problem worse, so the hypothesis was not
+    # merely unproven, it pointed the wrong way.
     #
-    # This is also the leading suspect for the "Review rate limited" status
-    # that appeared on three of five pushes to PR #19 while two others
-    # completed normally. Not proven — the wording says rate limit, not pause —
-    # so if the message survives this change, the cause is upstream and the
-    # local `coderabbit` CLI remains the fallback that does not depend on it.
-    auto_pause_after_reviewed_commits: 0
+    # Two is enough to cover a fix round or two automatically. After that,
+    # `@coderabbitai review` runs an incremental review on demand and
+    # `@coderabbitai resume` restarts automatic ones — so a pause is a nudge,
+    # never a dead end. The first version of this file said a paused reviewer
+    # would "never come back to approve", which is false: it comes back when
+    # asked.
+    #
+    # The working pattern this gives: push freely, then ask for a verdict when
+    # the branch is ready for one. That spends the allowance on the reviews
+    # worth having rather than on every intermediate commit.
+    auto_pause_after_reviewed_commits: 2
