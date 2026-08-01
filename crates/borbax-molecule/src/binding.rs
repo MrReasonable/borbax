@@ -137,6 +137,18 @@ impl BindConsts {
 /// next reader assumes it is load-bearing. Task 12 can add it back with a
 /// consumer attached.
 ///
+/// **The obvious objection, answered rather than left open:** [`fit`] computes
+/// `mean_extent(a) + mean_extent(b)` per *pair*, and this type's own first
+/// paragraph calls recomputing a per-species constant per partner a §8.6
+/// violation. It is the same shape and not the same size. §8.6's rule is about
+/// the pipeline whose cost forced it — canonicalisation, embedding, signature
+/// construction, folding — each orders of magnitude above a `D`-element sum.
+/// Two such sums are ~2·D against the kernel's 60·D, so restoring the field
+/// would remove **3%** of `fit`'s work and reintroduce a field written once and
+/// read once. The change worth making is not this one: it is `fit` taking
+/// summaries alongside signatures, which is an API change Task 12 should make
+/// when it wires a threshold to [`ceiling`] and gains a reason to hold both.
+///
 /// **Carries `D`, and that is load-bearing rather than tidy.** Without it
 /// `Signature<12>::summary()` and `Signature<42>::summary()` produce the same
 /// type, so `ceiling::<42>(&s12.summary(), ..)` compiles and answers — and
@@ -869,7 +881,9 @@ mod tests {
              accumulation order: the two accumulators, the direction-index sum, and \
              mean_extent's `sum * inv_n` are each algebraically invariant under the \
              obvious tidy-up and each move the last bits. If only the POSE moved, \
-             suspect the `>` tie-break — ~12% of pairs tie exactly."
+             suspect the `>` tie-break: ties here are **exclusively self-pairs**, \
+             which are automorphisms rather than float coincidences, and this \
+             corpus has 9 of them per seed."
         );
     }
 
@@ -1067,9 +1081,16 @@ mod tests {
     /// **The pre-filter never rejects a pair the full search would accept**,
     /// which is the property §8.3 demands a filter be able to state.
     ///
-    /// Asserted against every rotation individually rather than against the
-    /// maximum — strictly stronger, free, and it catches a bound that dominates
-    /// the max by accident.
+    /// Asserted against [`fit`]'s score, which **is** the maximum over the 60
+    /// rotations. That is sufficient and not a shortcut: `max_R score(R) <=
+    /// ceiling` implies `score(R) <= ceiling` for every `R`, and the converse
+    /// holds too because the max is one of them. The two formulations are
+    /// equivalent, not ranked.
+    ///
+    /// An earlier version of this comment said the test asserted "against every
+    /// rotation individually rather than against the maximum — strictly
+    /// stronger". It was wrong twice: the code has always used the maximum, and
+    /// the per-rotation form is equivalent to it rather than stronger.
     #[test]
     fn the_prefilter_is_a_genuine_bound() {
         let g = geo();
