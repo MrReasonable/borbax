@@ -24,10 +24,25 @@
 //! **The required probe is a substitution, not a test** — there is no test to
 //! run, which is why it is stated here in full. It is phrased as an edit
 //! because the tables were renamed under an earlier wording that named a
-//! deleted symbol: replace `g.contact_perms(r)` with `g.rotation_perms(r)` in
-//! [`fit`] — the kernel's single call site — and **both**
-//! `a_physical_complement_scores_zero` and `the_mirror_complement_does_not_fit`
-//! must fail. If only one does, the pair is not discriminating.
+//! deleted symbol. Substitute in [`fit`] — and **match the whole line**:
+//!
+//! ```text
+//! let perm = g.contact_perms(rot);   ->   let perm = g.rotation_perms(rot);
+//! ```
+//!
+//! **`g.contact_perms(rot)` alone appears twice in this file**, once in the
+//! kernel and once in `the_returned_pose_is_the_transpose`, so a find-replace
+//! on the bare call changes a test as well as the code under test and the
+//! result cannot be read. The `let perm =` form is unique to the kernel. That
+//! is not hypothetical: this project has already recorded a probe that silently
+//! failed to apply and reported all-pass because its search string appeared
+//! twice.
+//!
+//! **Both** `a_physical_complement_scores_zero` and
+//! `the_mirror_complement_does_not_fit` must fail. If only one does, the pair
+//! is not discriminating. Verified after the `complement_level` extraction:
+//! both fail, plus `the_binding_digest_is_pinned` and
+//! `the_returned_pose_is_the_transpose`.
 
 #![expect(
     clippy::many_single_char_names,
@@ -592,6 +607,30 @@ mod tests {
     /// kernel scores strictly negative. An implementer who writes the obvious
     /// fixture sees the correct kernel score badly, "fixes" it until it scores
     /// zero, and lands the missing-`anti` defect with a green test.
+    /// The constant both complement fixtures are built at, **shared so they
+    /// cannot drift apart.**
+    ///
+    /// This is not deduplication for tidiness. The two fixtures are a *probe
+    /// pair*: `complement_through_anti` must score 0 and
+    /// `complement_same_index` must not, and the pair is what shows the `ANTI`
+    /// composition is right. They are only comparable if they are built at the
+    /// same level. With the computation written out twice, one could be edited
+    /// and the probe would then compare two different shapes — still passing,
+    /// having stopped discriminating. That is the same silent-inversion class
+    /// the fixtures exist to catch, one level up.
+    ///
+    /// **Any** constant above `max(a.r)` works, because [`fit`] derives the
+    /// separation from the pair rather than taking it from a constant (§8.3).
+    fn complement_level(a: &Signature<D>) -> Span {
+        let mut top = Span::ZERO;
+        for e in a.extents() {
+            if *e > top {
+                top = *e;
+            }
+        }
+        top + Span(1.0)
+    }
+
     fn complement_through_anti(a: &Signature<D>, g: &Geodesic<D>) -> Signature<D> {
         // **Every extent is positive, and that is the fix showing itself.**
         // A perfect complement needs `r_A[i] + r_B[j]` constant; ANY constant
@@ -604,13 +643,7 @@ mod tests {
         // zero had to hold *negative* extents. The spec's own required probe
         // could only pass by being unphysical, which is independent evidence
         // that the constant separation was the error.
-        let mut top = Span::ZERO;
-        for e in a.extents() {
-            if *e > top {
-                top = *e;
-            }
-        }
-        let level = top + Span(1.0);
+        let level = complement_level(a);
         let (mut r, mut c) = ([Span::ZERO; D], [0.0f64; D]);
         for i in 0..D {
             let j = usize::from(g.anti()[i]);
@@ -629,13 +662,7 @@ mod tests {
     /// The same construction *without* `anti` — the trap fixture, kept so the
     /// probe can show it inverts.
     fn complement_same_index(a: &Signature<D>) -> Signature<D> {
-        let mut top = Span::ZERO;
-        for e in a.extents() {
-            if *e > top {
-                top = *e;
-            }
-        }
-        let level = top + Span(1.0);
+        let level = complement_level(a);
         let (mut r, mut c) = ([Span::ZERO; D], [0.0f64; D]);
         for i in 0..D {
             r[i] = level - a.extents()[i];
