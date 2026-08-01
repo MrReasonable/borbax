@@ -1087,6 +1087,11 @@ const SIGNATURE_SURFACE: &[(&str, &str, SigFacing)] = &[
     ),
     (
         "crates/borbax-molecule/src/binding.rs",
+        "complement_level",
+        SigFacing::Single,
+    ),
+    (
+        "crates/borbax-molecule/src/binding.rs",
         "complement_through_anti",
         SigFacing::Single,
     ),
@@ -1356,10 +1361,14 @@ fn compare_signature_surface(found: &[SigItem], failures: &mut Vec<String>) {
             // Which dimension made it surface. A reviewer meeting a new entry
             // needs to know whether the declaration or the body put it there —
             // they call for different scrutiny.
-            let why = if item.reads_raw {
-                "its body reads a signature's stored arrays"
-            } else {
-                "its declaration names a Signature"
+            // Both dimensions can be true at once, and saying only the second
+            // sends a reviewer to the wrong place. Reported precisely.
+            let why = match (item.sees > 0 || item.derive, item.reads_raw) {
+                (true, true) => {
+                    "its declaration names a Signature and its body reads the stored arrays"
+                }
+                (false, true) => "its body reads a signature's stored arrays",
+                _ => "its declaration names a Signature",
             };
             failures.push(format!(
                 "§8.2: `{}` at {}:{} is surface — {why} — and is not in SIGNATURE_SURFACE. Add it \
