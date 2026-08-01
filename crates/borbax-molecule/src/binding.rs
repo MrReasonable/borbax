@@ -1066,6 +1066,18 @@ mod tests {
                     .map(|&(i, j)| fit(&mols[i], &mols[j], &g, shape_only).score())
                     .collect();
                 let rs = correlation(&sizes, &bare).abs();
+                // **The same guard its sibling twelve lines up already has.**
+                // A NaN makes `rs > worst_shape` false, leaves `worst_shape` at
+                // 0.0, and the assertion below — the one the doc calls "the
+                // claim that actually rests on the fix" — passes having
+                // measured nothing. `bare` is the *more* likely of the two to
+                // degenerate, not the less: zeroing `w_charge` removes a whole
+                // channel, so it has less variance than `scores`.
+                assert!(
+                    rs.is_finite(),
+                    "seed {seed} n={n}: the shape-only correlation is not finite — that would \
+                     leave `worst_shape` at 0.0 and pass the assertion below vacuously"
+                );
                 if rs > worst_shape {
                     worst_shape = rs;
                 }
@@ -1207,8 +1219,15 @@ mod tests {
             let posed = b.permuted(g.rotation_perms(rot));
             let f = fit(&a, &posed, &g, k);
             // The score set is closed under the group, so the max is unchanged.
+            //
+            // Absolute floor as well as relative, matching the two sibling
+            // assertions in this file. A purely relative tolerance is exactly
+            // zero at a zero score, which demands bit equality and fails on a
+            // *correct* kernel — and `ceiling`'s doc records that scores reach
+            // `-0.0` on complement shapes. Leaving the third one bare would
+            // make the convention look accidental.
             assert!(
-                (f.score() - direct.score()).abs() <= 1e-9 * direct.score().abs(),
+                (f.score() - direct.score()).abs() <= 1e-9 * direct.score().abs() + 1e-20,
                 "rotating the partner changed the score: {} vs {}",
                 f.score(),
                 direct.score()
