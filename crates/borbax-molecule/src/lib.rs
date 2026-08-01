@@ -11,12 +11,14 @@
 //! the species and are computed once, at intern time. No code reachable from a
 //! simulation step may call any of them.
 
+pub mod binding;
 pub mod canonical;
 pub mod geodesic;
 pub mod graph;
 pub mod layout;
 pub mod signature;
 
+pub use binding::{BindConsts, Fit, affinity, fit};
 pub use canonical::{CanonForm, CanonMol, Capped, SEARCH_LEAF_CAP, SearchStats, canonicalise};
 pub use geodesic::{
     GeoError, Geodesic, Mat3, N_ROTATIONS, Rotation, Vec3, apply_mat, is_identity,
