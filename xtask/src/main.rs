@@ -1257,10 +1257,18 @@ fn check_signature_surface_is_pinned(
     // public, ungrouped, element-wise comparison in a brand-new file, and it is
     // the same one-line alias move `scan_signature_surface`'s own comment says
     // this guard defends against.
-    let mut sig_names = vec!["Signature".to_owned()];
-    let mut geo_names = vec!["Geodesic".to_owned()];
+    //
+    // Parsed **once** each: the alias pass and the scan pass share one AST per
+    // file, so the two passes cannot disagree about what the file contains and
+    // the second is not paying to re-lex it.
+    let mut parsed: Vec<(&str, syn::File)> = Vec::new();
     for (rel, text) in &sources {
         let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
+        parsed.push((rel.as_str(), file));
+    }
+    let mut sig_names = vec!["Signature".to_owned()];
+    let mut geo_names = vec!["Geodesic".to_owned()];
+    for (_, file) in &parsed {
         sig_names.extend(alias_names(&file.items, "Signature"));
         geo_names.extend(alias_names(&file.items, "Geodesic"));
     }
@@ -1270,8 +1278,8 @@ fn check_signature_surface_is_pinned(
     geo_names.dedup();
 
     let mut found: Vec<SigItem> = Vec::new();
-    for (rel, text) in &sources {
-        let (items, unreadable) = scan_signature_surface(rel, text, &sig_names, &geo_names)?;
+    for (rel, file) in &parsed {
+        let (items, unreadable) = scan_parsed_surface(rel, file, &sig_names, &geo_names);
         found.extend(items);
         failures.extend(unreadable);
     }
@@ -1497,6 +1505,7 @@ fn check_surface_bookkeeping(found: &[SigItem], failures: &mut Vec<String>) {
 /// Same reasoning as [`scan_for_derived_streams`]: a check that can only be
 /// exercised against the real tree — which by construction produces no failures
 /// — tests nothing.
+#[cfg(test)]
 fn scan_signature_surface(
     rel: &str,
     text: &str,
@@ -1504,6 +1513,20 @@ fn scan_signature_surface(
     geo_names: &[String],
 ) -> Result<(Vec<SigItem>, Vec<String>), String> {
     let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
+    Ok(scan_parsed_surface(rel, &file, sig_names, geo_names))
+}
+
+/// The signature-surface scan, on an already-parsed file.
+///
+/// The real check parses each file once and hands the AST to both the alias
+/// pass and this. The `#[cfg(test)]` `scan_signature_surface` wrapper above
+/// takes source text instead, so the corpus tests can be written as strings.
+fn scan_parsed_surface(
+    rel: &str,
+    file: &syn::File,
+    sig_names: &[String],
+    geo_names: &[String],
+) -> (Vec<SigItem>, Vec<String>) {
     // **A file that never names `Signature` is not scanned for unreadable
     // constructs**, and that narrowing is what keeps this guard usable. Without
     // it the check reports every `macro_rules!` in the scanned tree — five in
@@ -1525,10 +1548,10 @@ fn scan_signature_surface(
     // `unit!` expansions got reported. Doc comments survive parsing as
     // `#[doc = ".."]` string literals, so an ident walk excludes them by
     // construction rather than by stripping.
-    if !sig_names.iter().any(|n| mentions_ident(&file, n))
-        && !RAW_ACCESSORS.iter().any(|n| mentions_ident(&file, n))
+    if !sig_names.iter().any(|n| mentions_ident(file, n))
+        && !RAW_ACCESSORS.iter().any(|n| mentions_ident(file, n))
     {
-        return Ok((Vec::new(), Vec::new()));
+        return (Vec::new(), Vec::new());
     }
     // Aliases first, for the reason `scan_for_derived_streams` gives: matching
     // the bare identifier is enumeration of *type spellings*, defeated by one
@@ -1541,7 +1564,7 @@ fn scan_signature_surface(
     let mut out = Vec::new();
     let mut unreadable = Vec::new();
     scan.walk(&file.items, None, false, &mut out, &mut unreadable);
-    Ok((out, unreadable))
+    (out, unreadable)
 }
 
 /// The name lists for one file, so the walker's recursion stays readable.
@@ -1807,7 +1830,11 @@ impl SigScan<'_> {
                 // where only `Holder::First.0` was reported. A walker that stops
                 // walking is the exact failure mode this guard replaced.
                 syn::Item::Enum(e) => {
-                    let holds = e.variants.iter().fold(false, |acc, v| {
+                    // Seeded with the type-level check: `enum Signature { .. }`
+                    // holds signatures by being one, and without this its
+                    // derive list never reached the pinned name.
+                    let named = self.sig.iter().any(|n| e.ident == n.as_str());
+                    let holds = e.variants.iter().fold(named, |acc, v| {
                         let held = self.fields(
                             &format!("{}::{}", e.ident, v.ident),
                             &v.fields,
@@ -1884,6 +1911,16 @@ impl SigScan<'_> {
                     ));
                     self.walk(&block_items(&f.block), None, ftest, out, unreadable);
                 }
+                // The same hole `Item::Const` had, one nesting level in:
+                // `impl Foo { const PAIR: [Signature<12>; 2] = ..; }` puts both
+                // operands in scope of every method on `Foo`.
+                syn::ImplItem::Const(c) => self.value(
+                    &format!("{name}::{}", c.ident),
+                    &c.ty,
+                    &c.vis,
+                    test | cfg_test(&c.attrs),
+                    out,
+                ),
                 syn::ImplItem::Macro(m) => {
                     unreadable.push(sig_unanalysable(self.rel, &m.mac.path));
                 }
@@ -1933,6 +1970,15 @@ impl SigScan<'_> {
                         self.walk(&block_items(block), None, test, out, unreadable);
                     }
                 }
+                // A trait constant is as reachable as the trait, hence the
+                // `Public` visibility — the same reasoning as its methods.
+                syn::TraitItem::Const(c) => self.value(
+                    &format!("{name}::{}", c.ident),
+                    &c.ty,
+                    &syn::Visibility::Public(syn::token::Pub::default()),
+                    test | cfg_test(&c.attrs),
+                    out,
+                ),
                 syn::TraitItem::Macro(m) => {
                     unreadable.push(sig_unanalysable(self.rel, &m.mac.path));
                 }
@@ -3308,7 +3354,10 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::scan_for_derived_streams;
-    use super::{alias_names, scan_signature_surface};
+    use super::{
+        SIGNATURE_SURFACE, SigItem, alias_names, check_surface_bookkeeping,
+        compare_signature_surface, scan_signature_surface,
+    };
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
     use super::{identifier_segments, scan_format_tokens};
 
@@ -3642,6 +3691,163 @@ mod tests {
         }
     }
 
+    /// Build a `SigItem` by named field, so a category test says which fact it
+    /// is exercising.
+    fn item_with(file: &str, name: &str, f: impl FnOnce(&mut SigItem)) -> SigItem {
+        let mut i = SigItem {
+            file: file.to_owned(),
+            name: name.to_owned(),
+            sees: 0,
+            geodesic: false,
+            is_pub: false,
+            in_test: false,
+            returns_ordering: false,
+            derive: false,
+            reads_raw: false,
+            line: 1,
+        };
+        f(&mut i);
+        i
+    }
+
+    /// **Every category's rejection, exercised directly.**
+    ///
+    /// The real-tree probes drive these through `SIGNATURE_SURFACE`, which
+    /// means they can only test the categories the shipped list happens to use.
+    /// A category whose check is never reached by the pinned list would be dead
+    /// and look fine — this is the direct test of each arm.
+    #[test]
+    fn every_category_rejection_fires() {
+        // Only the pinned-list lookup is exercised here, so the names are the
+        // real ones; the *facts* are what vary.
+        let cases: Vec<(&str, SigItem, &str)> = vec![
+            (
+                "Minimised with no Geodesic",
+                item_with("crates/borbax-molecule/src/binding.rs", "fit", |i| {
+                    i.sees = 2;
+                    i.geodesic = false;
+                }),
+                "takes no Geodesic",
+            ),
+            (
+                "Single that can see two",
+                item_with(
+                    "crates/borbax-molecule/src/binding.rs",
+                    "mean_extent",
+                    |i| {
+                        i.sees = 2;
+                    },
+                ),
+                "can see 2 signatures",
+            ),
+            (
+                "Primitive that is reachable",
+                item_with(
+                    "crates/borbax-molecule/src/signature.rs",
+                    "Signature::lex_cmp",
+                    |i| {
+                        i.sees = 2;
+                        i.is_pub = true;
+                    },
+                ),
+                "reachable outside its module",
+            ),
+            (
+                "Contrast outside cfg(test)",
+                item_with(
+                    "crates/borbax-molecule/src/signature.rs",
+                    "plain_distance",
+                    |i| {
+                        i.sees = 2;
+                        i.in_test = false;
+                    },
+                ),
+                "not inside `#[cfg(test)]`",
+            ),
+            (
+                "Storage returning a number",
+                item_with(
+                    "crates/borbax-molecule/src/signature.rs",
+                    "Signature: derive(Clone, Debug, PartialEq)",
+                    |i| {
+                        i.sees = 2;
+                        i.returns_ordering = false;
+                        i.derive = false;
+                    },
+                ),
+                "does not return an ordering",
+            ),
+            (
+                "Minimised that cannot see two",
+                item_with("crates/borbax-molecule/src/binding.rs", "affinity", |i| {
+                    i.sees = 1;
+                    i.geodesic = true;
+                }),
+                "claims it can see two signatures",
+            ),
+        ];
+        for (label, item, wanted) in cases {
+            let mut failures = Vec::new();
+            compare_signature_surface(&[item], &mut failures);
+            assert!(
+                failures.iter().any(|f| f.contains(wanted)),
+                "{label}: no failure mentioned {wanted:?} — that category's check is dead. \
+                 Got: {failures:?}"
+            );
+        }
+    }
+
+    /// A derive list has no arguments to count and no visibility of its own, so
+    /// the `Primitive` and `Contrast` bounds are *unmeasurable* on it and would
+    /// pass vacuously.
+    #[test]
+    fn a_derive_cannot_claim_a_bounded_category() {
+        let mut failures = Vec::new();
+        compare_signature_surface(
+            &[item_with(
+                "crates/borbax-molecule/src/signature.rs",
+                "Signature::lex_cmp",
+                |i| {
+                    i.derive = true;
+                },
+            )],
+            &mut failures,
+        );
+        assert!(
+            failures.iter().any(|f| f.contains("pass vacuously")),
+            "a derive pinned as a bounded category was not refused: {failures:?}"
+        );
+    }
+
+    /// Both bookkeeping directions, driven directly rather than through the
+    /// real tree — where a duplicate key cannot be planted without also
+    /// planting the duplicate item.
+    #[test]
+    fn the_bookkeeping_counts_rather_than_searches() {
+        let mut failures = Vec::new();
+        check_surface_bookkeeping(
+            &[
+                item_with("crates/borbax-molecule/src/binding.rs", "fit", |_| {}),
+                item_with("crates/borbax-molecule/src/binding.rs", "fit", |_| {}),
+            ],
+            &mut failures,
+        );
+        assert!(
+            failures.iter().any(|f| f.contains("share the key")),
+            "two items sharing a pinned key went unreported — one category would silently \
+             govern both: {failures:?}"
+        );
+        // And the other direction: everything pinned but absent.
+        let mut failures = Vec::new();
+        check_surface_bookkeeping(&[], &mut failures);
+        assert!(
+            failures.len() >= SIGNATURE_SURFACE.len(),
+            "an empty tree did not report every pinned entry as stale: {} of {}",
+            failures.len(),
+            SIGNATURE_SURFACE.len()
+        );
+    }
+
     /// The predecessor was deleted partly for firing on correct code, and the
     /// canonical example is the one §8.2's own module doc asks for: an ordering
     /// on `Signature` so a `BTreeMap` can intern species. Measured before
@@ -3823,6 +4029,38 @@ mod tests {
                 && found.iter().any(|f| f.name == "Holder::Second.0"),
             "a later variant's signature field went unrecorded — the walker stopped walking: \
              {found:?}"
+        );
+    }
+
+    /// An *associated* const is the same hole one nesting level in, and both
+    /// `impl` and `trait` had it falling to `_ => {}`.
+    #[test]
+    fn an_associated_const_is_surface() {
+        let found = surface("impl Holder { const PAIR: [Signature<12>; 2] = []; }");
+        assert!(
+            found
+                .iter()
+                .any(|f| f.name == "Holder::PAIR" && f.sees >= 2),
+            "an associated const holding signatures went unrecorded: {found:?}"
+        );
+        let found = surface("trait Keyed { const PAIR: [Signature<12>; 2]; }");
+        assert!(
+            found.iter().any(|f| f.name == "Keyed::PAIR" && f.sees >= 2),
+            "a trait const holding signatures went unrecorded: {found:?}"
+        );
+    }
+
+    /// A type that *is* a signature holds one by being one. Seeding `holds`
+    /// from variant fields alone meant `enum Signature { .. }`'s derive list
+    /// never reached the pinned name.
+    #[test]
+    fn a_signature_enums_own_derive_list_is_recorded() {
+        let found = surface("#[derive(Clone, PartialOrd)] enum Signature { A(u8) }");
+        assert!(
+            found
+                .iter()
+                .any(|f| f.name.contains("derive") && f.name.contains("PartialOrd")),
+            "an enum named Signature did not record its own derive list: {found:?}"
         );
     }
 

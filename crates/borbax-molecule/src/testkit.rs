@@ -41,7 +41,7 @@
 )]
 
 use crate::canonical::{CanonMol, canonicalise};
-use crate::graph::Mol12;
+use crate::graph::{MAX_ATOMS, Mol12};
 use borbax_rng::Stream;
 use borbax_universe::{BondOrder, ElementId, PeriodicTable, Universe, element::generate_elements};
 
@@ -84,12 +84,22 @@ pub(crate) fn random_tree(
     tbl: &PeriodicTable,
     ids: &[ElementId],
 ) -> Mol12 {
+    assert!(
+        !ids.is_empty(),
+        "random_tree was handed an empty element list, so the corpus it builds is empty too"
+    );
+    assert!(
+        n >= 1 && usize::from(n) <= MAX_ATOMS,
+        "random_tree({n}) is outside Mol12's capacity of {MAX_ATOMS} — it would silently \
+         return a smaller molecule and every size-dependent assertion downstream would be \
+         weaker than it reads"
+    );
     let mut mol = Mol12::new();
     assert!(mol.add_atom(ids[0]).is_some());
     for i in 1..n {
         let pick = usize::try_from(rng.next_range(u64::try_from(ids.len()).unwrap())).unwrap();
         let Some(child) = mol.add_atom(ids[pick]) else {
-            break;
+            unreachable!("capacity was checked above, so add_atom cannot fail at {i} of {n}")
         };
         let parent = u8::try_from(rng.next_range(u64::from(i))).unwrap();
         if mol.add_bond(parent, child, BondOrder::SINGLE, tbl).is_err() {
@@ -129,11 +139,14 @@ pub(crate) fn random_molecule(
 /// rows. Deterministic given `n`, so it takes no `Stream`.
 #[must_use]
 pub(crate) fn symmetric_molecule(n: u8, tbl: &PeriodicTable, one: ElementId) -> Mol12 {
+    assert!(
+        usize::from(n) <= MAX_ATOMS,
+        "symmetric_molecule({n}) is outside Mol12's capacity of {MAX_ATOMS} — it would silently build a \
+         smaller fixture than asked"
+    );
     let mut mol = Mol12::new();
     for _ in 0..n {
-        if mol.add_atom(one).is_none() {
-            break;
-        }
+        assert!(mol.add_atom(one).is_some(), "capacity was checked above");
     }
     let size = u8::try_from(mol.len()).unwrap_or(0);
     for i in 1..size {
@@ -162,11 +175,14 @@ pub(crate) fn symmetric_tangle(
     tbl: &PeriodicTable,
     one: ElementId,
 ) -> Mol12 {
+    assert!(
+        usize::from(n) <= MAX_ATOMS,
+        "symmetric_tangle({n}) is outside Mol12's capacity of {MAX_ATOMS} — it would silently build a \
+         smaller fixture than asked"
+    );
     let mut mol = Mol12::new();
     for _ in 0..n {
-        if mol.add_atom(one).is_none() {
-            break;
-        }
+        assert!(mol.add_atom(one).is_some(), "capacity was checked above");
     }
     let size = u8::try_from(mol.len()).unwrap_or(0);
     for i in 1..size {
