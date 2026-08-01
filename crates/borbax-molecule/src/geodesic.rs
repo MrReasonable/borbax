@@ -83,9 +83,11 @@ pub const N_ROTATIONS: usize = 60;
 /// — and `clippy::panic` does not catch a panic that arrives via indexing.
 ///
 /// It is not defensive programming against a caller who cannot exist. Task 10's
-/// `affinity_with_rotation` returns its winning rotation for §14.5's renderer to
-/// apply, and that round-trip — table to caller and back — is exactly where an
-/// unvalidated index arrives. This makes the round-trip total.
+/// [`crate::fit`] returns its winning rotation in [`crate::Fit::pose`] for
+/// §14.5's renderer to apply, and that round-trip — table to caller and back —
+/// is exactly where an unvalidated index arrives. This makes the round-trip
+/// total. (It shipped as `fit`, not the `affinity_with_rotation` this sentence
+/// predicted at Task 7.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rotation(usize);
 
