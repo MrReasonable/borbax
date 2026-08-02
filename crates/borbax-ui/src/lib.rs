@@ -9,20 +9,46 @@
 //!
 //! The discriminator, stated so a reviewer can check it rather than believe it:
 //! **every number on screen must be traceable to a call into a `borbax-*`
-//! crate.** Today that is exactly three — [`borbax_universe::Universe::generate`],
-//! `Universe::table().len()` and `u8::from(universe.physics)` — and a grep of
-//! this crate for arithmetic should find only layout.
+//! crate.** Today there are exactly four numbers on screen:
 //!
-//! # The seam, which is per-file and greppable
+//! | On screen | Comes from |
+//! |---|---|
+//! | the element count | `universe.table.len()` — `table` is a public **field**, not a method |
+//! | the physics version | `u8::from(universe.physics)` |
+//! | the seed, when typed | the user |
+//! | the seed, after "surprise me" | `borbax_rng::Stream::next_range` |
+//!
+//! and the universe behind the first two comes from
+//! [`borbax_universe::Universe::generate`], which has **exactly one call site**
+//! in this crate — checked by `cargo xtask`, not merely asserted here.
+//!
+//! An earlier version of this list said "exactly three", named
+//! `Universe::table()` (a method that does not exist), omitted the seed, and
+//! claimed a grep for arithmetic finds only layout. **The arithmetic is not
+//! zero**: `state.rs` has a `wrapping_mul`/`wrapping_add` pair (the clock
+//! reading, an entropy source where no value is wrong) and a `saturating_add`
+//! (the regeneration counter). Neither reaches the screen. The rule that
+//! actually holds is narrower and worth stating properly — **no arithmetic on a
+//! value that came out of a `borbax-*` call**, because that is the viewer
+//! recomputing physics. There is none.
+//!
+//! # The seam, which is per-file and checked
 //!
 //! Three files, and the rule is a property of each file's imports rather than a
 //! convention anyone has to remember:
 //!
-//! | File | May import | Holds |
+//! | File | May name in code | Holds |
 //! |---|---|---|
 //! | [`state`] | no UI type at all | every decision, and every test that can reach one |
 //! | [`panel`] | `egui` | the drawing, and no `format!` |
 //! | `main.rs` | `eframe` | the window, and nothing else |
+//!
+//! **"In code" is load-bearing and a plain `grep` will not tell you this.** The
+//! prose necessarily quotes what it forbids — this paragraph names `eframe`, and
+//! [`panel`]'s module doc says "there is no `format!` in this file" — so a raw
+//! `grep -rl eframe src/` reports three files and a `grep format! panel.rs`
+//! reports one, both correctly and both uselessly. `cargo xtask` strips
+//! whole-line comments before matching, which is the check that means anything.
 //!
 //! `egui` is a pure CPU layout library and cannot open a window, which is what
 //! lets `egui_kittest` drive [`panel::draw`] headlessly in CI. `eframe` is the
@@ -42,28 +68,37 @@
 //! or letting a display choice reach a `borbax-*` call.
 #![expect(
     clippy::multiple_crate_versions,
-    reason = "`eframe`'s dependency tree carries 31 duplicated transitive \
-              dependencies — `windows-sys` at four versions, the nine \
-              `windows_*` target shims and `windows-targets` at two each, \
-              `objc2` plus five `objc2-*` crates at two each, `hashbrown` and \
-              `redox_syscall` at three, `rustix`/`linux-raw-sys`/`calloop`/\
-              `smithay-client-toolkit` straddling a major bump, and `thiserror` \
-              1.0 alongside our own 2.0. This workspace chooses none of them \
-              and can unify none of them. Scoped to this crate rather than \
-              allowed at workspace level so the lint keeps working on the four \
-              physics crates, where a duplicated runtime dependency is the \
-              expensive case the dependency doctrine is about — allowing it \
-              workspace-wide would trade an enforced invariant across those for \
-              a suppression in the one crate that cannot affect results. \
+    reason = "`eframe`'s dependency tree emits 31 of these — `windows-sys` at \
+              four versions, the eight `windows_*` target shims and \
+              `windows-targets` at two each, `objc2` plus five `objc2-*` crates \
+              at two each, `hashbrown` and `redox_syscall` at three, \
+              `rustix`/`linux-raw-sys`/`calloop`/`smithay-client-toolkit` each \
+              straddling a major bump, `thiserror` 1.0 alongside our own 2.0, \
+              and `bitflags`/`block2`/`calloop-wayland-source`/`foldhash`/\
+              `jni-sys`/`rustc-hash`/`syn`/`thiserror-impl`. This workspace \
+              chooses none of them and can unify none of them. Scoped to this \
+              crate rather than allowed at workspace level so the lint keeps \
+              working on the four physics crates, where a duplicated runtime \
+              dependency is the expensive case the dependency doctrine is about \
+              — allowing it workspace-wide would trade an enforced invariant \
+              across those for a suppression in the one crate that cannot \
+              affect results. \
               \
               `#[expect]` rather than `#[allow]` so the suppression cannot rot: \
-              it fails the build the day the tree unifies. That is not \
-              hypothetical here — the count and the placement were BOTH first \
-              recorded wrongly (~34, and `required in both crate roots`), and \
-              it was an unfulfilled expectation on `main.rs` that caught it. \
-              Measured on this tree: the lint is evaluated once per *package*, \
-              so this single attribute covers the library and the binary, and a \
-              second one in `main.rs` fails the gate as unfulfilled. The count \
+              it fails the build the day the tree unifies. That has already paid \
+              twice here. The count was first recorded as ~34, and the \
+              placement as `required in both crate roots` — an unfulfilled \
+              expectation on `main.rs` refuted the second. The explanation then \
+              written for THAT was also wrong: `once per package`. It is not. \
+              This lint is a per-crate pass, and `lib` and `bin` are separate \
+              crates; the binary escapes because clippy resolves the local \
+              package by matching the crate name against `cargo metadata`'s \
+              package names, and this binary is called `borbax`, which matches \
+              no package. Verified by renaming `[[bin]] name` to `borbax-ui`, \
+              at which point the bin lints too and emits the same 31. So if the \
+              binary is ever renamed to match the package, or a second bin or \
+              example is added whose crate name does, this attribute stops \
+              covering it and 31 errors arrive under `-D warnings`. The count \
               is re-measured on any `eframe` bump, never copied forward"
 )]
 

@@ -13,15 +13,24 @@ use crate::state::{ViewerState, moment};
 
 /// Draw the whole viewer into `ui`.
 ///
-/// **The order of these four statements is load-bearing and is pinned by a
-/// test.** `egui` is immediate-mode: the seed box's response for *this* frame
-/// only exists after the box has been emitted, so the status line has to come
-/// last. Emit it first and it paints the previous frame's state — the window
-/// shows the old seed's element count for sixteen milliseconds. Nothing in
-/// `tests/acceptance.rs` can see that, because a state-level test commits and
-/// reads in one call; `the_element_count_appears_in_the_frame_the_seed_lands`
-/// in `tests/panel.rs` is the guard, and moving `ui.label` above
-/// `ui.text_edit_singleline` is the mutation it exists to catch.
+/// **The statement order here is load-bearing and is pinned by tests.** `egui`
+/// is immediate-mode: the seed box's response for *this* frame only exists after
+/// the box has been emitted, so the status line has to come last. Emit it first
+/// and it paints the previous frame's state — the window shows the old seed's
+/// element count for sixteen milliseconds. Nothing in `tests/acceptance.rs` can
+/// see that, because a state-level test commits and reads in one call; the
+/// frame tests in `tests/panel.rs` are the guard, and moving `ui.label` above
+/// `ui.text_edit_singleline` is the mutation they exist to catch. Measured with
+/// `--no-fail-fast`: that mutation fails **three** of the four frame tests and
+/// leaves all twenty state-level tests green.
+///
+/// **What the order fixes is the label, and one thing stays one frame behind.**
+/// "surprise me" writes into `seed_text` *after* the text box has been emitted,
+/// so for a single frame the box still shows the old text while the label
+/// already shows the new universe — the mirror image of the defect above, in the
+/// widget nobody is reading at that instant. It self-corrects on the next frame
+/// and is invisible at 60 Hz. Stated because an earlier version of this comment
+/// implied the ordering rule eliminated the whole class.
 pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
     ui.label("seed");
 

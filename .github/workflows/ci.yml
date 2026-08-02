@@ -91,14 +91,29 @@ jobs:
       # ranges still overlap and an exact permutation test gives p = 0.10, which
       # is the floor for n = 3 against n = 3. Real, not yet significant.
       #
-      # What bounds the upside is structural: the workspace has **seven**
+      # **The paragraph that used to sit here is void, and the reason is worth
+      # more than the number it quoted.** It read: "the workspace has **seven**
       # third-party packages (`libm`, `thiserror`, `thiserror-impl`, `syn`,
-      # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is 30 MB
-      # and restores in 5s, while the five `borbax-*` crates that dominate the
-      # build are the ones this deliberately never caches. Anyone wanting a
-      # larger cut should look at the test suite: it is `embed`-bound, and
-      # `layout.rs` records a measured, bit-identical **2.08x on `embed`**
-      # currently declined for want of a consumer.
+      # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is
+      # 30 MB and restores in 5s" — and concluded from that smallness that the
+      # cache had little upside to offer. Viewer Step 1 added `eframe`, which
+      # took the lockfile from **13 packages to 366**, i.e. ~353 third-party.
+      # The archive is expected to grow by more than an order of magnitude, and
+      # the timings above (`quality` 23/34s, macOS 78/151s, ubuntu 134/191s,
+      # Windows 277/350s) were ALL measured before it.
+      #
+      # So: every cache figure in this file is now a pre-`eframe` measurement,
+      # and the conclusion drawn from them inverts — with a large dependency
+      # tree the cache matters far more, not less, and a cache miss costs
+      # minutes rather than seconds. Re-measure before reasoning from any of
+      # them. They are left in place rather than deleted because a stale number
+      # labelled stale is evidence about the past; a deleted one is nothing.
+      #
+      # The `borbax-*` crates that dominate the build are still the ones this
+      # deliberately never caches, and there are now six of them, not five.
+      # Anyone wanting a larger cut should look at the test suite: it is
+      # `embed`-bound, and `layout.rs` records a measured, bit-identical
+      # **2.08x on `embed`** currently declined for want of a consumer.
       #
       # The Windows key also moved once in six runs, logging `No cache found`
       # under an environment-hash component that changed while macOS and Linux
@@ -228,14 +243,29 @@ jobs:
       # ranges still overlap and an exact permutation test gives p = 0.10, which
       # is the floor for n = 3 against n = 3. Real, not yet significant.
       #
-      # What bounds the upside is structural: the workspace has **seven**
+      # **The paragraph that used to sit here is void, and the reason is worth
+      # more than the number it quoted.** It read: "the workspace has **seven**
       # third-party packages (`libm`, `thiserror`, `thiserror-impl`, `syn`,
-      # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is 30 MB
-      # and restores in 5s, while the five `borbax-*` crates that dominate the
-      # build are the ones this deliberately never caches. Anyone wanting a
-      # larger cut should look at the test suite: it is `embed`-bound, and
-      # `layout.rs` records a measured, bit-identical **2.08x on `embed`**
-      # currently declined for want of a consumer.
+      # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is
+      # 30 MB and restores in 5s" — and concluded from that smallness that the
+      # cache had little upside to offer. Viewer Step 1 added `eframe`, which
+      # took the lockfile from **13 packages to 366**, i.e. ~353 third-party.
+      # The archive is expected to grow by more than an order of magnitude, and
+      # the timings above (`quality` 23/34s, macOS 78/151s, ubuntu 134/191s,
+      # Windows 277/350s) were ALL measured before it.
+      #
+      # So: every cache figure in this file is now a pre-`eframe` measurement,
+      # and the conclusion drawn from them inverts — with a large dependency
+      # tree the cache matters far more, not less, and a cache miss costs
+      # minutes rather than seconds. Re-measure before reasoning from any of
+      # them. They are left in place rather than deleted because a stale number
+      # labelled stale is evidence about the past; a deleted one is nothing.
+      #
+      # The `borbax-*` crates that dominate the build are still the ones this
+      # deliberately never caches, and there are now six of them, not five.
+      # Anyone wanting a larger cut should look at the test suite: it is
+      # `embed`-bound, and `layout.rs` records a measured, bit-identical
+      # **2.08x on `embed`** currently declined for want of a consumer.
       #
       # The Windows key also moved once in six runs, logging `No cache found`
       # under an environment-hash component that changed while macOS and Linux

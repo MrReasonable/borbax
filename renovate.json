@@ -51,6 +51,14 @@
       "prPriority": -1
     },
     {
+      "description": "TIER B-prime - borbax-ui is top-of-stack, nothing depends on it (enforced by cargo xtask, not merely asserted), and it computes no physics, so an eframe or egui bump cannot move a golden. It must NOT carry determinism-review. That label's whole value is that it only ever fires on something that can move a result - and egui ships roughly monthly, so leaving borbax-ui in TIER B would put a routine UI bump under it every few weeks and teach the reviewer to skim it. The libm PR is the one that must not be skimmed. Uses labels rather than addLabels so it replaces TIER B's set instead of accumulating; it must stay AFTER TIER B for that to take effect.",
+      "matchManagers": ["cargo"],
+      "matchFileNames": ["crates/borbax-ui/Cargo.toml"],
+      "labels": ["deps-ui"],
+      "automerge": false,
+      "prPriority": -1
+    },
+    {
       "description": "TIER C - the toolchain pin. Spec 18.1 names this explicitly: a rustc bump can change float codegen and silently invalidate every golden hash. Reviewed like a change to physics.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["rust-lang/rust"],

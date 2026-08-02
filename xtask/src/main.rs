@@ -312,7 +312,7 @@ const BANNED_PARALLEL_CALLS: &[&str] = &[
 
 /// Directories scanned for §13.1 violations, relative to the workspace root.
 ///
-/// `experiments` is here for the same reason it is in `CHEMISTRY_CRATES`: it
+/// `experiments` is here for the same reason it is in [`DATA_FREE_ROOTS`]: it
 /// implements a working version of Tasks 8-9 and is meant to be lifted into
 /// `borbax-molecule` more or less unchanged, so a direct `.cos()` written
 /// there arrives in the simulation later having never been checked.
@@ -414,6 +414,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_no_closure_predicate_branch(root, &mut failures)?;
     check_packing_matches_probe(root, &mut failures)?;
     check_every_member_inherits_the_lints(root, &mut failures)?;
+    check_the_viewer_boundaries_hold(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -2389,10 +2390,21 @@ fn check_no_data_files(root: &Path, failures: &mut Vec<String>) -> Result<(), St
             continue;
         }
         for entry in walk(&dir)? {
-            let Some(ext) = entry.extension().and_then(|e| e.to_str()) else {
+            // **Lowercased, because the extension list is exact and the
+            // filesystem is not.** `elements.json` fires; `elements.JSON` did
+            // not, and on macOS and Windows those are the *same file* to the OS
+            // — so the rename that defeats a G1 guard is invisible to the person
+            // making it, and `git mv` is not even required. The widened scan's
+            // verdict is total over paths; this is what makes it total over
+            // spellings too.
+            let Some(ext) = entry
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+            else {
                 continue;
             };
-            if DATA_EXTENSIONS.contains(&ext) {
+            if DATA_EXTENSIONS.contains(&ext.as_str()) {
                 failures.push(format!(
                     "G1: data file under {scan_root}: {}",
                     entry.display()
@@ -2429,11 +2441,32 @@ fn check_every_member_inherits_the_lints(
     root: &Path,
     failures: &mut Vec<String>,
 ) -> Result<(), String> {
+    /// The floor for the bookkeeping check at the end. Seven members exist —
+    /// five under `crates/`, plus `experiments` and `xtask` — and the bar sits
+    /// one below so that adding a crate does not move it and removing one does
+    /// not fire it spuriously.
+    const MINIMUM_MANIFESTS: usize = 6;
+
     let mut examined = 0_usize;
 
     for scan_root in DATA_FREE_ROOTS.iter().chain(std::iter::once(&"xtask")) {
         let dir = root.join(scan_root);
         if !dir.exists() {
+            // **Loud, not `continue`.** The first version of this silently
+            // skipped a missing root, and its own `examined` bar could not
+            // cover the gap: with `crates/` renamed, `experiments` and `xtask`
+            // still supply two manifests, so `examined == 2`, `2 < 2` is false,
+            // and five members went unchecked while this reported clean. Eight
+            // other guards fired on that mutation; this one said nothing.
+            //
+            // Its sibling `check_no_data_files` was changed in this same commit
+            // to fail loud here, with a comment explaining why silence is
+            // unaffordable for a §5 guard — and then this was written twenty
+            // lines below it with the opposite behaviour.
+            failures.push(format!(
+                "lints: scan root {scan_root:?} does not exist, so no manifest under it \
+                 was checked for `[lints] workspace = true`"
+            ));
             continue;
         }
         for manifest in walk(&dir)?
@@ -2454,13 +2487,44 @@ fn check_every_member_inherits_the_lints(
             };
             examined += 1;
 
-            // Deliberately textual and deliberately strict about the spelling.
+            // **Section-scoped, because the substring version was defeated by
+            // the manifests it was written to check.** The first attempt was
+            //
+            //     src.contains("[lints]") && src.contains("workspace = true")
+            //
+            // and the second conjunct is satisfied unconditionally by every
+            // manifest in this workspace — `edition.workspace = true` is on
+            // line 3 of all seven. So the predicate degenerated to
+            // `contains("[lints]")`, which a *comment* satisfies, and which an
+            // empty `[lints]` table satisfies. Cargo accepts an empty `[lints]`
+            // table and the crate then inherits nothing: three reviewers
+            // independently planted `[lints]` with the opt-in line deleted plus
+            // an `.unwrap()` in shipped library code, and got a clean gate and a
+            // clean `clippy -D warnings`.
+            //
+            // That is the precise defect this function exists to prevent,
+            // reachable with this function green — and the doc comment above
+            // said "deliberately strict about the spelling" while the code was
+            // not strict at all. It was probed against deleting the whole table,
+            // which it does catch; it was not probed against deleting one line
+            // of it.
+            //
             // `[lints] workspace = true` and `lints.workspace = true` are the
             // two forms cargo accepts; a `[lints.clippy]` override table is
             // *rejected by cargo itself* alongside `workspace = true`, so there
-            // is no third shape to admit here.
-            let has_table = src.contains("[lints]") && src.contains("workspace = true");
-            let has_dotted = src.contains("lints.workspace = true");
+            // is no third shape to admit. Trimmed whole-line equality also
+            // rejects both commented forms, since a comment line starts `#`.
+            let has_table = src
+                .lines()
+                .map(str::trim)
+                .skip_while(|line| *line != "[lints]")
+                .skip(1)
+                .take_while(|line| !line.starts_with('['))
+                .any(|line| line == "workspace = true");
+            let has_dotted = src
+                .lines()
+                .map(str::trim)
+                .any(|line| line == "lints.workspace = true");
             if !has_table && !has_dotted {
                 failures.push(format!(
                     "lints: {rel} does not opt in to `[workspace.lints]` — without \
@@ -2473,15 +2537,164 @@ fn check_every_member_inherits_the_lints(
     }
 
     // The bookkeeping check, which is the half that does not test itself: this
-    // counts **manifests read**, not crates or directories, and the number is
-    // asserted because a walk that silently matched nothing would report a
-    // clean gate over an unchecked workspace. Six members exist at the time of
-    // writing; the bar is deliberately below that and above zero, so adding a
-    // crate does not move it and deleting the filter does.
-    if examined < 2 {
+    // counts **manifests read**, not crates or directories.
+    //
+    // **The first version of this comment was wrong in both halves and the bar
+    // was decorative.** It said "six members exist"; `cargo metadata --no-deps`
+    // reports **seven** — five under `crates/`, plus `experiments` and `xtask`.
+    // And it justified the bar as "deleting the filter does [move it]", which
+    // runs backwards: deleting the `Cargo.toml` filter makes `examined` go *up*,
+    // reading every file in three trees. The bar could not fire on the mutation
+    // its own comment credited it with catching.
+    //
+    // The missing-root case that *would* have exercised it is now caught above,
+    // loudly and by name, which is the better place for it. What is left here is
+    // a floor against a walk that matches nothing at all, set one below the
+    // seven that exist so that adding a crate does not move it and removing one
+    // does not fire it spuriously. The constant is declared at the top of this
+    // function because `clippy::items_after_statements` denies it here.
+    if examined < MINIMUM_MANIFESTS {
         failures.push(format!(
-            "lints: only {examined} manifest(s) were read, so this check did not look — \
-             the workspace layout has moved"
+            "lints: only {examined} manifest(s) were read and at least \
+             {MINIMUM_MANIFESTS} were expected, so this check did not look at the \
+             whole workspace"
+        ));
+    }
+    Ok(())
+}
+
+/// Source with every whole-line comment removed.
+///
+/// The seam checks below are about **imports and calls**, not about prose, and
+/// the two are easy to confuse because the prose necessarily quotes the thing it
+/// forbids: `panel.rs`'s module doc says "there is no `format!` in this file",
+/// and `lib.rs`'s doc names `eframe` while explaining that only `main.rs` may.
+/// A raw `grep` therefore reports three files naming `eframe` and one `format!`
+/// in `panel.rs` — which is why an earlier version of CLAUDE.md's "check it by
+/// grep" instruction was false as literally written.
+fn code_only(src: &str) -> String {
+    src.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `borbax-ui` must stay a leaf, and its per-file seam must hold.
+///
+/// **Both are load-bearing claims that were stated in four documents and
+/// enforced in none**, which is the argument
+/// [`check_every_member_inherits_the_lints`] makes about its own subject one
+/// screen above: a comment is not a guard.
+///
+/// **Leaf-ness licenses everything else the crate is allowed to do.** `f32`,
+/// `HashMap`, a wall-clock read and unordered iteration are all permitted in
+/// there *because* it is a pure consumer that no result can flow out of. The day
+/// something depends on it, `eframe`'s ~350-package tree becomes reachable from
+/// a result path and every one of those relaxations turns into a §13.1 breach —
+/// with no diff line saying so.
+///
+/// **The seam is what makes the crate testable at all.** `egui` lays out on the
+/// CPU and cannot open a window, so `egui_kittest` can drive `panel::draw`
+/// headlessly; `eframe` is the shell that can, so it is confined to the one file
+/// no test reaches. And `status_line` lives in `state.rs` so that a test
+/// asserting on a string is asserting on what the window paints — a `format!`
+/// migrating into `panel.rs` leaves every such test green over a window they
+/// have stopped describing, which is silent by construction.
+fn check_the_viewer_boundaries_hold(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    const VIEWER: &str = "crates/borbax-ui";
+
+    let viewer_src = root.join(VIEWER).join("src");
+    if !viewer_src.exists() {
+        // Not a failure: the viewer is one crate among several and a tree
+        // without it is a legitimate state (it did not exist before Step 1).
+        // Unlike a *scan root*, its absence does not mean another check was
+        // blinded.
+        return Ok(());
+    }
+
+    // 1. Nothing depends on the viewer.
+    for scan_root in DATA_FREE_ROOTS {
+        let dir = root.join(scan_root);
+        if !dir.exists() {
+            continue;
+        }
+        for manifest in walk(&dir)?
+            .into_iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == "Cargo.toml"))
+            .filter(|p| !p.starts_with(root.join(VIEWER)))
+        {
+            let src = std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
+            if code_only(&src).contains("borbax-ui") {
+                failures.push(format!(
+                    "§13.1: {} depends on `borbax-ui`. Every relaxation that crate \
+                     documents for itself — f32, HashMap, a wall-clock read — is \
+                     licensed by nothing depending on it",
+                    manifest.strip_prefix(root).unwrap_or(&manifest).display()
+                ));
+            }
+        }
+    }
+
+    // 2. The per-file import seam, checked over code rather than prose.
+    for (file, banned) in [
+        ("state.rs", &["egui", "eframe"][..]),
+        ("panel.rs", &["eframe", "format!"][..]),
+    ] {
+        let path = viewer_src.join(file);
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            failures.push(format!(
+                "viewer seam: {VIEWER}/src/{file} could not be read, so its seam was \
+                 not checked"
+            ));
+            continue;
+        };
+        let code = code_only(&src);
+        for needle in banned {
+            if code.contains(needle) {
+                failures.push(format!(
+                    "viewer seam: {VIEWER}/src/{file} contains `{needle}` in code. \
+                     `state.rs` names no UI type, `panel.rs` names `egui` only and \
+                     builds no strings, and only `main.rs` names `eframe` — that split \
+                     is what lets `egui_kittest` drive the real drawing code with no \
+                     window, and what keeps every string assertion pointed at what the \
+                     window actually paints"
+                ));
+            }
+        }
+    }
+
+    // 3. Exactly one `Universe::generate` call site.
+    //
+    // **This is the half the `regenerations` counter cannot cover, and the
+    // counter's own doc says so.** A `Universe::generate` written directly into
+    // `panel::draw` never touches `reload`, so it never increments the counter:
+    // `an_unchanged_seed_box_does_not_rebuild_the_universe` stays green over a
+    // 141 us call running every frame, which is 0.85% of a frame budget — too
+    // small to see and invisible to every test. The plan deferred this grep to
+    // Step 7; the surface it guards exists now.
+    let mut call_sites = Vec::new();
+    for path in walk(&viewer_src)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let hits = code_only(&src).matches("Universe::generate").count();
+        if hits > 0 {
+            call_sites.push((path, hits));
+        }
+    }
+    let total: usize = call_sites.iter().map(|(_, n)| n).sum();
+    if total != 1 {
+        let where_ = call_sites
+            .iter()
+            .map(|(p, n)| format!("{}x{n}", p.strip_prefix(root).unwrap_or(p).display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        failures.push(format!(
+            "viewer seam: `Universe::generate` has {total} call site(s) in {VIEWER}/src \
+             ({where_}), expected exactly 1 (in state.rs, inside `reload`). A second one \
+             in the paint body would run ~141 us every frame and increment no counter, \
+             so no test would see it"
         ));
     }
     Ok(())

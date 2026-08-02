@@ -146,9 +146,12 @@ to look at. Task 19's SVG goldens are **not** replaced — they are how §13.6
 proves the geometry is identical across platforms, which a screenshot cannot
 do. The plan file says all of this; read it before re-sequencing anything back.
 
-**The viewer's seam is per-file and a reviewer should check it by grep, not by
-reading.** `crates/borbax-ui/src/state.rs` names no UI type, `panel.rs` names
-`egui` and contains no `format!`, and only `main.rs` names `eframe`. That is
+**The viewer's seam is per-file and `cargo xtask` checks it — but a plain grep
+will lie to you.** `crates/borbax-ui/src/state.rs` names no UI type, `panel.rs`
+names `egui` and contains no `format!`, and only `main.rs` names `eframe` —
+**in code**. The prose necessarily quotes what it forbids, so `grep -rl eframe`
+returns three files and `grep format! panel.rs` returns one, both correctly and
+both uselessly; the guard strips whole-line comments first. That is
 what lets `egui_kittest` drive the real drawing code headlessly in CI — `egui`
 lays out on the CPU and cannot open a window. It also means every string the
 window paints comes from `state.rs`, so a test asserting on one is asserting on

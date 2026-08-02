@@ -219,12 +219,21 @@ The correction matters beyond tidiness, for the reason CLAUDE.md already records
 about the `glam`/`nalgebra` episode: a false justification gets reused later to
 wave through a dependency that has not earned it.
 
-What it actually costs, measured on the resolved graph at Step 1: **418
-packages in the lockfile**, `default-features = false` bringing the Linux leg
-from 265 to 193 and macOS from 167 to 164; ~888 s of new cold-build CPU; a
-build-cache archive going from 30 MB to ~600 MB per platform; and 34 hard
-`clippy::multiple_crate_versions` errors on day one, held by a crate-level
-`#![expect]` in each of the two targets.
+What it actually costs, measured on the tree as shipped: **366 packages in
+`Cargo.lock`**, against 13 before. `default-features = false` is what makes that
+number not 428 — it drops `accesskit → atspi → zbus` and `sctk-adwaita →
+tiny-skia`, taking the resolved Linux graph from 261 to 189 and macOS from 167
+to 164. ~888 s of new cold-build CPU, and a build-cache archive going from 30 MB
+to several hundred per platform. Plus **31** `clippy::multiple_crate_versions`
+errors on day one, held by **one** crate-level `#![expect]`, in `lib.rs`.
+
+**Three of those five figures were wrong in the first version of this
+paragraph** — 418 packages (the pre-`default-features` resolve, quoted as the
+shipped cost in the same sentence that credited the trim), 34 errors, and
+"a `#![expect]` in each of the two targets". The last is the worst of the three:
+`lib.rs` records that exact wording as *refuted by measurement*, and it was left
+standing here. Re-measure rather than carry forward; that is the whole reason
+this paragraph exists.
 
 ---
 
@@ -234,22 +243,41 @@ build-cache archive going from 30 MB to ~600 MB per platform; and 34 hard
       takes a seed, calls `Universe::generate`, and shows the element count. Proves
       the whole chain works before any rendering exists.
 
-      *Shipped.* The line reads `87 elements · physics v1` — the version is read
+      *Shipped.* The window opens on seed 1 and the line reads
+      `80 elements · physics v1` — the version is read
       from the universe rather than typed, because §6 says a universe is
       `(seed, physics)` and a viewer that hardcodes the version becomes a liar
       the day `V2` ships. Seeds are decimal `u64`; hex is refused deliberately
       (`7f3a` looks like a seed because §6 spells addresses `U-7F3A21C9@1`, and
       accepting it would settle an open §6 question in the top crate of the
-      workspace). 18 tests, of which three drive the real panel headlessly
-      through the accessibility tree — the only way to catch an immediate-mode
-      panel painting the count one frame behind the seed that produced it.
+      workspace). A "surprise me" button draws a six-digit seed through
+      `borbax_rng` and **types it into the box**, so a universe a child likes is
+      one she can write down and come back to — §6 makes the seed the shareable
+      thing, and a surprise you cannot record takes that away.
 
-      Two `xtask` guards landed with it, both closing holes that predate the
-      viewer: G1's data-file check was a hand-kept list of four crate paths and
-      is now every crate under `crates/` (unknown ⇒ covered), and
+      24 tests, of which four drive the real panel headlessly through the
+      accessibility tree — the only way to catch an immediate-mode panel
+      painting the count one frame behind the seed that produced it.
+
+      Four `xtask` guards landed with it, two closing holes that predate the
+      viewer and two closing claims this crate makes about itself: G1's
+      data-file check was a hand-kept list of four crate paths and is now every
+      crate under `crates/`, case-insensitively (unknown ⇒ covered);
       `[lints] workspace = true` — the trap that has silently disabled
       `unsafe_code = "forbid"` in this repository once already — was enforced by
-      **nothing** and now has a check.
+      **nothing**; and `borbax-ui`'s leaf-ness and its per-file seam, both of
+      which had been asserted in four documents and checked in none.
+
+      **The review found two of those guards did not guard.** The lints check
+      read `contains("[lints]") && contains("workspace = true")` — and every
+      manifest satisfies the second clause via `edition.workspace = true`, so it
+      collapsed to "is the header present", which a comment satisfies and which
+      an empty `[lints]` table satisfies while the crate inherits nothing. Three
+      reviewers found it independently, each by planting the mutation the
+      original probe had not tried: the probe deleted the whole table, which it
+      caught; nobody had deleted one line of it. The G1 widening was
+      case-sensitive, so `elements.JSON` passed — and on macOS and Windows that
+      rename is invisible to the person making it.
 
 - [ ] **1b. A name instead of a number.** A child types "Emily" and gets a
       universe. `seed_from_phrase(&str) -> u64` in `borbax-universe`, **not** in
