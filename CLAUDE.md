@@ -126,8 +126,16 @@ every review body for `Nitpick comments (n)` / `Actionable comments posted: n`.
 
 Next action if starting fresh: the **viewer** — see
 `docs/superpowers/plans/2026-08-01-borbax-viewer.md`. Task 10 merged as PR #19
-on 2026-08-01, bringing V0 Tasks 1-10 in; the viewer is sequenced ahead of Task
-11 deliberately, so the chemistry lands somewhere visible.
+on 2026-08-01, bringing V0 Tasks 1-10 in.
+
+**The viewer is V1 work pulled forward, and that is a deliberate deviation from
+the spec's sequencing rather than an oversight.** §14.5 puts static headless SVG
+in V0 (Task 19) and the interactive viewer in V1. Ian's instruction on
+2026-08-01 was to bring the visuals forward, because a project whose point is
+showing his daughter how chemistry works had ten more tasks to run with nothing
+to look at. Task 19's SVG goldens are **not** replaced — they are how §13.6
+proves the geometry is identical across platforms, which a screenshot cannot
+do. The plan file says all of this; read it before re-sequencing anything back.
 
 **Task 8 has a preamble in the plan and it is load-bearing.** Task 6's review
 routed a finding there — `canonicalise` discards the ordering, so a naive
