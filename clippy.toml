@@ -127,3 +127,60 @@ disallowed-methods = [
   { path = "f32::total_cmp", reason = "spec §13.4 — orders on the sign bit, and a runtime NaN's sign differs by architecture; use Unit::canonical_cmp, or #[expect] with a note on why this input cannot be NaN or -0.0" },
   { path = "f32::max", reason = "spec §13.1 — non-deterministic for ±0.0; write `if a > b { a } else { b }`, which propagates NaN and returns the second argument on a tie" },
 ]
+
+# §13.1 — hashers whose output is not pinned across releases or across runs.
+#
+# THE CRITERION IS "does the same input give the same bits, on every machine,
+# every toolchain and every process, forever". That is a stricter question than
+# "is this hasher any good", and it is the only question that matters here:
+# a mapping from bytes to a seed is result-affecting, so a hasher that drifts
+# silently reassigns every universe anyone has already named.
+#
+# Both banned types fail it, for two *different* reasons, and naming only one
+# invites someone to wave the other through:
+#
+#   `DefaultHasher` is deterministic within a process and within a toolchain,
+#   and std documents outright that "the internal algorithm is not specified,
+#   and so it and its hashes should not be relied upon over releases". So it
+#   passes every test you can write on one machine on one day. It is the single
+#   most likely wrong first draft of `seed_from_phrase`, and a golden minted
+#   from it is green forever and moves on the next rustc bump — surfacing as a
+#   golden failure whose obvious diagnosis ("regenerate") is the wrong one.
+#
+#   `RandomState` is randomly seeded per process, so it does not even survive a
+#   restart. This is the one §13.1 names by name.
+#
+# `SipHasher` is listed although `deprecated` already denies it under
+# `-D warnings`: that deny is defeated by one `#[allow(deprecated)]`, which is
+# a plausible thing to write and says nothing about determinism.
+#
+# ONE PATH PER TYPE IS ENOUGH, and this was measured rather than assumed
+# because the opposite would be a silent hole. Clippy resolves each configured
+# path to a `DefId` and compares *those*, so the entry below catches
+# `std::hash::DefaultHasher` — the 1.76 re-export, a different path to the same
+# type — with no second entry. Verified by planting both spellings against a
+# single entry and watching both fire.
+#
+# `BuildHasherDefault` is deliberately NOT banned, and the reason is that
+# banning it would forbid the *correct* spelling: `BuildHasherDefault<FxHasher>`
+# over `rustc-hash` is how this workspace is supposed to build a deterministic
+# map, and `rustc-hash` is on the approved dependency list. The hazard is the
+# hasher, not the builder — and `BuildHasherDefault<DefaultHasher>` names
+# `DefaultHasher` in its generic argument, so it is caught by the entry below.
+# Measured: clippy reports it at the column of the inner type.
+#
+# `HashMap`/`HashSet` are not here either. §13.1 bans their *iteration* in a
+# result-affecting path, not their existence, and a lookup that is never
+# iterated is fine. A type ban cannot express that distinction and would fire
+# on every legitimate use.
+#
+# As with `disallowed-methods` above, `cargo xtask` keeps a second, textual
+# list. Same argument: it runs in the sub-second pre-commit hook where clippy
+# does not, and it reads files as text, so code behind an inactive `cfg` — which
+# clippy never builds and therefore never lints — is still seen. The two lists
+# are held in step by `the_two_type_ban_lists_cover_the_same_types`.
+disallowed-types = [
+  { path = "std::collections::hash_map::DefaultHasher", reason = "spec §13.1 — std does not specify the algorithm and does not keep it stable across releases; derive seeds with borbax_rng::Stream (Domain::Hash)" },
+  { path = "std::hash::RandomState", reason = "spec §13.1 — randomly seeded per process, so the same input gives different bits on the next run; derive seeds with borbax_rng::Stream (Domain::Hash)" },
+  { path = "std::hash::SipHasher", reason = "spec §13.1 — deprecated, and the deprecation deny is defeated by one #[allow(deprecated)]; use borbax_rng::Stream (Domain::Hash)" },
+]
