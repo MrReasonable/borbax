@@ -64,9 +64,15 @@ does, the picture and the simulation can disagree and the picture is the thing
 being trusted.
 
 The discriminator: **every number on screen must be traceable to a call into a
-`borbax-*` crate.** If a value cannot be, it does not belong on screen. A
-reviewer should be able to grep the viewer for arithmetic and find only
-projection, layout and colour.
+`borbax-*` crate.** If a value cannot be, it does not belong on screen.
+
+An earlier version added "a reviewer should be able to grep the viewer for
+arithmetic and find only projection, layout and colour", and Step 1 falsified it
+immediately — the crate has a `wrapping_mul`/`wrapping_add` pair (a clock
+reading) and a `saturating_add` (a counter), none of which reaches the screen.
+The rule that survives contact is narrower and is the one that matters: **no
+arithmetic on a value that came out of a `borbax-*` call.** That is the viewer
+recomputing physics; the rest is bookkeeping.
 
 Corollary worth stating because it reads like a violation and is not: the viewer
 *may* use `f32`, `HashMap`, wall-clock time and unordered iteration **inside its
@@ -169,7 +175,7 @@ one sitting that has never been through `/review-plan`, and it breaks that
 pairing. The **binary** is `borbax`, because the double-clickable artefact is
 what a child finds in a folder and `-ui` names a fact about the repository.
 
-```
+```text
 src/
   main.rs        eframe entry and the window — the ONLY file that names eframe
   state.rs       every decision, and no UI import at all
