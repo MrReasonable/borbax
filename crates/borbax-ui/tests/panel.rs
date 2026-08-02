@@ -1,0 +1,141 @@
+//! Frame-level tests, driven through the accessibility tree with no window and
+//! no GPU.
+//!
+//! **These exist for one defect the tests in `acceptance.rs` structurally
+//! cannot see.** A state-level test commits a seed and reads the line back in
+//! the same call, so it is green whatever order the panel emits its widgets in.
+//! An immediate-mode panel that paints the label *before* the seed box reads
+//! last frame's state — the window shows the previous seed's count for one
+//! frame, sixteen milliseconds, which nobody demonstrating the app will catch
+//! and no state-level assertion can reach.
+
+use borbax_ui::{panel::draw, state::ViewerState};
+use borbax_universe::Universe;
+use egui::accesskit::Role;
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+
+/// A harness driving the real [`draw`] over a real [`ViewerState`].
+fn harness<'a>() -> Harness<'a, ViewerState> {
+    Harness::new_ui_state(|ui, state| draw(state, ui), ViewerState::new())
+}
+
+#[test]
+fn the_element_count_appears_in_the_frame_the_seed_lands() {
+    let mut harness = harness();
+
+    {
+        let seed_box = harness.get_by_role(Role::TextInput);
+        // `type_text` alone queues an `egui::Event::Text` addressed to whatever
+        // has focus — which, without this line, is nothing. The text never
+        // lands and the test fails looking *exactly* like the defect it hunts,
+        // which is the worst way for a test to be wrong.
+        seed_box.focus();
+        seed_box.type_text("7");
+    }
+
+    // **Exactly one frame.** A `run()`-shaped call steps until the UI is
+    // quiescent, which hides this defect by definition — the second frame
+    // repairs the lag. A harness helper that loops is the vacuity trap in this
+    // test, and it is the reason `step()` is spelled out here rather than
+    // wrapped in something convenient.
+    harness.step();
+
+    let expected = format!(
+        "{} elements · physics v{}",
+        Universe::generate(7).table.len(),
+        u8::from(Universe::generate(7).physics)
+    );
+    assert!(
+        harness.query_by_label(&expected).is_some(),
+        "one frame after typing `7` the panel does not show {expected:?} — \
+         the label is being emitted before the seed box's response is read"
+    );
+}
+
+#[test]
+fn an_unchanged_seed_box_does_not_rebuild_the_universe() {
+    // `Universe::generate` is ~146 us. At 60 Hz an unconditional call in the
+    // paint body spends most of the frame budget regenerating a universe
+    // nobody asked for again, and by Step 2 there are 120 element cells behind
+    // it. This is §8.6's per-species rule one level up.
+    let mut harness = harness();
+
+    {
+        let seed_box = harness.get_by_role(Role::TextInput);
+        seed_box.focus();
+        seed_box.type_text("7");
+    }
+    harness.step();
+    assert_eq!(
+        harness.state().regenerations(),
+        1,
+        "committing one seed should generate exactly one universe"
+    );
+
+    for _ in 0..30 {
+        harness.step();
+    }
+    assert_eq!(
+        harness.state().regenerations(),
+        1,
+        "30 idle frames rebuilt the universe — `reload` is being called from \
+         the paint body rather than from the seed box's `changed()` response"
+    );
+}
+
+#[test]
+fn the_surprise_button_fills_the_seed_box_and_loads_that_universe() {
+    // The button's contract is visible-and-retypable (see
+    // `the_random_button_puts_a_seed_in_the_box_that_can_be_typed_back`). This
+    // is the half that can only be checked against the real widget tree: that
+    // the button exists, that clicking it is what triggers this, and that the
+    // count lands in the same frame rather than one behind.
+    let mut harness = harness();
+    assert!(
+        harness.state().seed_text().is_empty(),
+        "this test starts from an empty box so the button is what fills it"
+    );
+
+    harness.get_by_label("surprise me").click();
+    harness.step();
+
+    let text = harness.state().seed_text().to_owned();
+    assert!(
+        !text.is_empty(),
+        "clicking `surprise me` left the box empty"
+    );
+
+    let expected = format!("{} elements", {
+        let seed: u64 = text.parse().unwrap_or_else(|_| {
+            unreachable!("`randomise` writes a plain u64, and it wrote {text}")
+        });
+        Universe::generate(seed).table.len()
+    });
+    assert!(
+        harness.query_by_label_contains(&expected).is_some(),
+        "the frame the button was clicked in does not show {expected:?} for seed {text}"
+    );
+}
+
+#[test]
+fn a_refused_seed_shows_the_refusal_in_the_panel_itself() {
+    // The `acceptance.rs` version of this asserts on `status_line`. This one
+    // asserts the panel actually paints it, which is the half that would rot
+    // silently if the panel ever stopped calling `status_line`.
+    let mut harness = harness();
+
+    {
+        let seed_box = harness.get_by_role(Role::TextInput);
+        seed_box.focus();
+        seed_box.type_text("abc");
+    }
+    harness.step();
+
+    assert!(
+        harness
+            .query_by_label("seeds are whole numbers, 0 to 18446744073709551615")
+            .is_some(),
+        "the panel does not show the refusal for a non-numeric seed"
+    );
+}

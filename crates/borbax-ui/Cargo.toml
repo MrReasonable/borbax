@@ -1,0 +1,82 @@
+[package]
+name = "borbax-ui"
+edition.workspace = true
+# `[workspace.package] rust-version` is not applied to a member unless the
+# member asks for it. Omitting this line means the crate has no MSRV at all,
+# not that it inherits one — and the pin is part of the determinism contract
+# (spec §18.1).
+rust-version.workspace = true
+license.workspace = true
+version = "0.1.0"
+publish = false
+
+# The binary is `borbax`, not `borbax-ui`. Cargo defaults the binary name to
+# the package name, and the double-clickable artefact is the one a child finds
+# in a folder — `borbax-ui` names the crate's role in the workspace, which is a
+# fact about the repository rather than about the program.
+[[bin]]
+name = "borbax"
+path = "src/main.rs"
+
+# Same trap, one line down: `[workspace.lints]` is inert for a member that
+# omits this, so `unsafe_code = "forbid"` forbids nothing and
+# `unwrap_used = "deny"` denies nothing. `check_every_member_inherits_the_lints`
+# in xtask exists because this file is the first place anyone would be tempted
+# to drop the line — this is the crate that will want `f32` trigonometry at
+# Step 3 of the viewer plan.
+[lints]
+workspace = true
+
+[dependencies]
+borbax-universe = { workspace = true }
+# For the "surprise me" button, and for nothing else. The Global Constraint is
+# that all randomness comes from `borbax_rng::Stream` — never `rand::random`,
+# never `RandomState` — and it is honoured here even though a seed the user is
+# shown and can retype is an *input* rather than a result. `next_range` is also
+# modulo-bias-free, which `clock % 1_000_000` is not.
+borbax-rng = { workspace = true }
+# For `SeedError`'s `Display`. Already in the tree via `borbax-units`, so this
+# adds zero crates and zero build time.
+thiserror = { workspace = true }
+
+# `egui` alone, deliberately, and NOT `eframe`. `egui` is a pure CPU layout
+# library that cannot open a window; `eframe` is the shell that can. Keeping
+# the library half of this crate on `egui` is what lets `egui_kittest` drive
+# the real drawing code headlessly in CI — see `tests/panel.rs`. The seam is
+# per-file and greppable: `state.rs` imports no UI type at all, `panel.rs`
+# imports `egui`, and `main.rs` is the only file that names `eframe`.
+egui = "0.35"
+
+# **The only substantial dependency, and its cost is new — not shared.** The
+# viewer plan says `wgpu` "is already in the dependency tree for §13.5's GPU
+# screening". Measured against this tree rather than assumed: `wgpu`, `eframe`
+# and `egui` appear in **zero** manifests and **zero** `Cargo.lock` entries
+# before this commit, and §21 lists GPU screening as an explicit V1 non-goal.
+# The PRD's own §14.0 says the tree needs wgpu "either way", which is an
+# argument about the eventual tree; the plan flattened "eventually" into
+# "already". The native decision stands on its other three reasons — this
+# dependency is wholly the viewer's and is paid for here.
+#
+# Binary-only and non-result-affecting, so §18's bar is the low one: it cannot
+# reach a simulation output. It is `#[deny]`-clean under the workspace lints
+# with one crate-level expectation, recorded in `src/lib.rs`.
+#
+# `default-features = false` drops `accesskit` and `winit/default`. Measured on
+# the resolved dependency graph: 265 -> 193 packages on
+# `x86_64-unknown-linux-gnu` (the `accesskit -> atspi -> zbus` async stack, plus
+# `sctk-adwaita -> tiny-skia`), and 167 -> 164 on `aarch64-apple-darwin`. The
+# cost is no screen reader and no client-side window decorations under Wayland;
+# restore the defaults the day someone runs this on GNOME/Wayland and wants
+# either.
+[dependencies.eframe]
+version = "0.35"
+default-features = false
+features = ["default_fonts", "wayland", "wgpu", "x11"]
+
+# Dev-dependencies cannot affect simulation output, so the doctrine's bar is the
+# low one. `egui_kittest` drives the real `draw` function through the
+# accessibility tree with no window and no GPU, which is the only way to test
+# the one defect a state-level test structurally cannot see: an immediate-mode
+# panel painting the count one frame behind the seed that produced it.
+[dev-dependencies]
+egui_kittest = "0.35"
