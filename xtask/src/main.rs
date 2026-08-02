@@ -2519,7 +2519,11 @@ fn check_every_member_inherits_the_lints(
             let has_table = src
                 .lines()
                 .map(str::trim)
-                .skip_while(|line| *line != "[lints]")
+                // `split('#')` so `[lints]  # inherit workspace lints` is
+                // recognised. Fail-closed either way, but a valid manifest
+                // reported as non-compliant is a confusing failure, and a guard
+                // that cries wolf is a guard that gets deleted.
+                .skip_while(|line| line.split('#').next().map(str::trim) != Some("[lints]"))
                 .skip(1)
                 .take_while(|line| !line.starts_with('['))
                 .any(|line| line == "workspace = true");
@@ -2618,6 +2622,15 @@ fn check_the_viewer_stays_a_leaf(root: &Path, failures: &mut Vec<String>) -> Res
     for scan_root in DATA_FREE_ROOTS {
         let dir = root.join(scan_root);
         if !dir.exists() {
+            // Loud, for the reason its two siblings above are loud — and this
+            // one is the second-order lesson: those two were *changed to be*
+            // loud in this same commit, and then this function was split out
+            // twenty lines below them carrying the silent version. Fixing a
+            // pattern in the places you can see is not fixing the pattern.
+            failures.push(format!(
+                "§13.1: scan root {scan_root:?} does not exist, so no manifest under it \
+                 was checked for a dependency on `borbax-ui`"
+            ));
             continue;
         }
         for manifest in walk(&dir)?
@@ -2695,7 +2708,22 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
     {
         let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let hits = code_only(&src).matches("Universe::generate").count();
+        // **Shipped code only.** A `#[cfg(test)]` module that legitimately calls
+        // `Universe::generate` would otherwise fire this guard on correct code,
+        // and a guard that fires on correct code gets deleted — which is the
+        // structural pressure that made the last one worth evading.
+        //
+        // The rule is positional and the convention it leans on is real: every
+        // `#[cfg(test)] mod tests` in this workspace sits at the end of its
+        // file. Anything after the first such attribute is test code. Stated
+        // rather than parsed because the alternative is an AST walk for one
+        // needle, and being wrong here is fail-*open* only for a call written
+        // below a test module, which would be a strange place to hide one.
+        let code = code_only(&src);
+        let shipped = code
+            .find("#[cfg(test)]")
+            .map_or(code.as_str(), |at| &code[..at]);
+        let hits = shipped.matches("Universe::generate").count();
         if hits > 0 {
             call_sites.push((path, hits));
         }
@@ -2711,13 +2739,25 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
             "viewer seam: `Universe::generate` has {total} call site(s) in {VIEWER}/src \
              ({where_}), expected exactly 1 (in state.rs, inside `reload`). A second one \
              in the paint body would run ~141 us every frame and increment no counter, \
-             so no test would see it"
+             so no test would see it. Note this matches the literal spelling: a \
+             `use borbax_universe::Universe as U; U::generate(..)` alias passes, which is \
+             a hole a symbol-aware check would close"
         ));
     }
     Ok(())
 }
 
-/// Wall-clock is readable in exactly one file in the whole workspace.
+/// Wall-clock is readable in exactly one file under [`DATA_FREE_ROOTS`].
+///
+/// **Two limits, stated because the first version of this line said "the whole
+/// workspace" and meant neither.** `xtask` is not scanned — it is a build tool
+/// whose output cannot reach a simulation result, the same exclusion
+/// [`TRANSCENDENTAL_SCAN_ROOTS`] makes and for the same reason. And the match is
+/// textual over two spellings, so `use std::time::Instant as Clock; Clock::now()`,
+/// `SystemTime::UNIX_EPOCH.elapsed()` and a bare `.elapsed()` on a held `Instant`
+/// all pass. That is a real hole and the guard is still worth having: it catches
+/// the spelling anyone actually writes, and it converts a second wall-clock read
+/// from an invisible act into one that has to be disguised.
 ///
 /// **§13.1 bans wall-clock and, until this, nothing enforced it.** The ban
 /// sits in CLAUDE.md's hard invariants beside things that all have guards —
@@ -2748,6 +2788,10 @@ fn check_wall_clock_has_one_home(root: &Path, failures: &mut Vec<String>) -> Res
     for scan_root in DATA_FREE_ROOTS {
         let dir = root.join(scan_root);
         if !dir.exists() {
+            failures.push(format!(
+                "§13.1: scan root {scan_root:?} does not exist, so no source under it was \
+                 checked for a wall-clock read"
+            ));
             continue;
         }
         for path in walk(&dir)?

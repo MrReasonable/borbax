@@ -153,17 +153,24 @@ names `egui` and contains no `format!`, and only `main.rs` names `eframe` —
 returns three files and `grep format! panel.rs` returns one, both correctly and
 both uselessly; the guard strips whole-line comments first. That is
 what lets `egui_kittest` drive the real drawing code headlessly in CI — `egui`
-lays out on the CPU and cannot open a window. It also means every string the
-window paints comes from `state.rs`, so a test asserting on one is asserting on
+lays out on the CPU and cannot open a window. It also means the **computed
+status string** comes from `state.rs`, so a test asserting on it is asserting on
 what is shown; a `format!` migrating into `panel.rs` leaves those tests green
-over a window they have stopped describing.
+over a window they have stopped describing. (Fixed labels like `ui.label("seed")`
+are painted in `panel.rs` and are not that string — the rule is about strings
+built from state, which is what a test can be wrong about.)
 
-**Step 3 has a hazard worth settling before it starts.** An orbit camera needs
-`sin` and `cos`, `clippy.toml`'s §13.1 ban resolves for every workspace member,
-and `xtask`'s textual scan has **no path exemption by design** — so a clippy
-`#[expect]` silences only half of it. The viewer produces no results, so routing
-camera trig through `det_math` is cost with no benefit. Decide it, with the
-determinism auditor, before there is a half-built scene depending on the answer.
+**Step 3 has a hazard, and it is an OPEN decision — do not read a conclusion
+into it.** An orbit camera needs `sin` and `cos`; `clippy.toml`'s §13.1 ban
+resolves for every workspace member; and `xtask`'s textual scan has **no path
+exemption by design**, so a clippy `#[expect]` silences only half of it. The
+argument that will be offered is that the viewer produces no results and so
+routing camera trig through `det_math` buys nothing — **that argument is not
+pre-approved here.** §13.1 applies to every `.rs` file in the workspace, and an
+exception to a hard invariant is a policy change: it lands with the guard that
+implements it, in one reviewed task, with the determinism auditor. Until then
+the rule is the rule. An earlier version of this paragraph stated the exception
+as settled, which is not something a status note gets to do.
 
 **Task 5b is scaffolding, not a V0 task.** It respecifies `abundance` as a
 fusion/fission process and is fully written up, but it gates nothing, the shipped

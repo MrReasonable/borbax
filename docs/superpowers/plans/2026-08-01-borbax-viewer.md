@@ -63,8 +63,15 @@ must never reimplement a calculation "just for display", because the moment it
 does, the picture and the simulation can disagree and the picture is the thing
 being trusted.
 
-The discriminator: **every number on screen must be traceable to a call into a
-`borbax-*` crate.** If a value cannot be, it does not belong on screen.
+The discriminator: **every simulation-derived number on screen must be traceable
+to a call into a `borbax-*` crate.** If such a value cannot be, it does not
+belong on screen.
+
+"Simulation-derived" is the load-bearing qualifier and an earlier version omitted
+it, which made the rule false the moment Step 1 shipped: the seed in the box is a
+number on screen and it is **user input**. Three categories are exempt and they
+are exempt because they are not results — user input, the seed's own identity,
+and layout values.
 
 An earlier version added "a reviewer should be able to grep the viewer for
 arithmetic and find only projection, layout and colour", and Step 1 falsified it
@@ -327,12 +334,24 @@ this paragraph exists.
       arriving after its surface has shipped is this repository's recorded
       failure mode. The palette check belongs with Step 4.
 
-      Also here: **`Universe::generate` must have exactly one call site in the
-      crate.** Step 1 shipped a `regenerations` counter that catches `reload`
-      migrating into the paint body, and it is honest about what it cannot see —
-      a `Universe::generate` written directly into `panel::draw` never touches
-      `reload` and never touches the counter. That variant needs the grep, not
-      the counter.
+      **`Universe::generate`'s single call site landed in Step 1, not here.**
+      The `regenerations` counter catches `reload` migrating into the paint
+      body; it cannot see a `Universe::generate` written directly into
+      `panel::draw`, which never touches `reload`. Both were mutation-probed
+      before commit — a second call site, a direct call from the paint body, and
+      an unconditional `reload` each fail exactly the guard named for them.
+
+      **What the shipped check does NOT cover, so Step 7 can decide whether to
+      close it.** It matches the literal spelling over comment-stripped,
+      pre-`#[cfg(test)]` source. So `use borbax_universe::Universe as U;
+      U::generate(..)`, a helper function wrapping the call, and a macro
+      expansion all pass. Closing that means symbol-aware parsing — `xtask`
+      already carries `syn` and a crate-wide walker for §13.1, so the cost is
+      real but not new machinery. The judgement to make is whether a textual
+      check that catches the spelling anyone actually writes is worth more than
+      an AST check nobody maintains; the same question was asked and answered
+      the other way for G5's format scan, which a review defeated completely at
+      the string level.
 
 Each step ends with something on screen that is better than the step before. If a
 step cannot be demonstrated by looking at it, it is the wrong step.

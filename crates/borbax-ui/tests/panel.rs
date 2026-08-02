@@ -41,10 +41,16 @@ fn the_element_count_appears_in_the_frame_the_seed_lands() {
     // wrapped in something convenient.
     harness.step();
 
+    // Generated once and read twice, matching `expected_for` in
+    // `tests/acceptance.rs`. Two `generate(7)` calls would agree — it is a pure
+    // function — but they would agree by luck of purity rather than by
+    // construction, and the shape is the one that stops agreeing the day
+    // anything about generation becomes context-dependent.
+    let universe = Universe::generate(7);
     let expected = format!(
         "{} elements · physics v{}",
-        Universe::generate(7).table.len(),
-        u8::from(Universe::generate(7).physics)
+        universe.table.len(),
+        u8::from(universe.physics)
     );
     assert!(
         harness.query_by_label(&expected).is_some(),

@@ -1,25 +1,30 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
   "timezone": "Europe/London",
-  "schedule": ["before 6am on monday"],
+  "schedule": [
+    "before 6am on monday"
+  ],
   "prConcurrentLimit": 3,
-
   "description": [
     "Updates here are sorted by one question: can this move a golden hash?",
     "Anything that can is a physics change (CLAUDE.md, spec 18.1) and must arrive as a labelled PR that a human merges after regenerating goldens deliberately. Anything that cannot may automerge on green CI.",
     "lockFileMaintenance is deliberately disabled: it bumps transitive dependencies without touching any manifest, so it arrives looking like a no-op housekeeping PR while potentially swapping a crate inside the result-affecting graph. If it is ever wanted it must be a reviewed PR, never an automerge."
   ],
-
   "lockFileMaintenance": {
     "enabled": false
   },
-
   "customManagers": [
     {
       "customType": "regex",
-      "description": "The rustc pin, which lives in two files: .prototools installs the toolchain and rust-toolchain.toml selects it. Both must move together — xtask fails the build if they drift — so both are matched here rather than leaving one to be updated by hand.",
-      "managerFilePatterns": ["/^\\.prototools$/", "/^rust-toolchain\\.toml$/"],
+      "description": "The rustc pin, which lives in two files: .prototools installs the toolchain and rust-toolchain.toml selects it. Both must move together \u2014 xtask fails the build if they drift \u2014 so both are matched here rather than leaving one to be updated by hand.",
+      "managerFilePatterns": [
+        "/^\\.prototools$/",
+        "/^rust-toolchain\\.toml$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\s+rust\\s*=\\s*\"(?<currentValue>[^\"]+)\"",
         "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\s+\\[toolchain\\]\\s+channel\\s*=\\s*\"(?<currentValue>[^\"]+)\""
@@ -27,42 +32,77 @@
       "versioningTemplate": "semver"
     }
   ],
-
   "packageRules": [
     {
       "description": "TIER A - GitHub Actions cannot reach simulation output. Green CI is sufficient evidence. Digests are pinned by the helpers:pinGitHubActionDigests preset above, so these updates also keep the SHA pins current instead of letting them ossify.",
-      "matchManagers": ["github-actions"],
-      "addLabels": ["ci"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "addLabels": [
+        "ci"
+      ],
       "automerge": true
     },
     {
       "description": "TIER A - dev-dependencies cannot affect simulation output (CLAUDE.md: 'dev-dependencies are cheap'). A broken one fails the build, which is a loud failure rather than a silent one.",
-      "matchManagers": ["cargo"],
-      "matchDepTypes": ["dev-dependencies", "build-dependencies"],
-      "addLabels": ["deps-dev"],
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchDepTypes": [
+        "dev-dependencies",
+        "build-dependencies"
+      ],
+      "addLabels": [
+        "deps-dev"
+      ],
       "automerge": true
     },
     {
       "description": "TIER B - runtime dependencies sit in a result-affecting path. Upgrading one is a physics change requiring the determinism auditor and deliberate golden regeneration. Never automerge.",
-      "matchManagers": ["cargo"],
-      "matchDepTypes": ["dependencies", "workspace.dependencies"],
-      "addLabels": ["deps-runtime", "determinism-review"],
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchDepTypes": [
+        "dependencies",
+        "workspace.dependencies"
+      ],
+      "addLabels": [
+        "deps-runtime",
+        "determinism-review"
+      ],
       "automerge": false,
       "prPriority": -1
     },
     {
-      "description": "TIER B-prime - borbax-ui is top-of-stack, nothing depends on it (enforced by cargo xtask, not merely asserted), and it computes no physics, so an eframe or egui bump cannot move a golden. It must NOT carry determinism-review. That label's whole value is that it only ever fires on something that can move a result - and egui ships roughly monthly, so leaving borbax-ui in TIER B would put a routine UI bump under it every few weeks and teach the reviewer to skim it. The libm PR is the one that must not be skimmed. Uses labels rather than addLabels so it replaces TIER B's set instead of accumulating; it must stay AFTER TIER B for that to take effect.",
-      "matchManagers": ["cargo"],
-      "matchFileNames": ["crates/borbax-ui/Cargo.toml"],
-      "labels": ["deps-ui"],
+      "description": "TIER B-prime - eframe and egui in the viewer only. borbax-ui is top-of-stack, nothing depends on it (enforced by cargo xtask, not merely asserted), and it computes no physics, so an eframe or egui bump cannot move a golden. It must NOT carry determinism-review: that label's whole value is that it only ever fires on something that CAN move a result, and egui ships roughly monthly, so leaving these in TIER B would put a routine UI bump under it every few weeks and teach the reviewer to skim it. The libm PR is the one that must not be skimmed. matchDepNames is load-bearing and was missing from the first version: this manifest ALSO declares borbax-universe and borbax-rng, and `labels` REPLACES TIER B's set rather than adding to it - so a file-scoped rule would have stripped determinism-review from exactly the result-affecting dependencies it exists to flag. Must stay AFTER TIER B for the replacement to apply.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchFileNames": [
+        "crates/borbax-ui/Cargo.toml"
+      ],
+      "labels": [
+        "deps-ui"
+      ],
       "automerge": false,
-      "prPriority": -1
+      "prPriority": -1,
+      "matchDepNames": [
+        "eframe",
+        "egui"
+      ]
     },
     {
       "description": "TIER C - the toolchain pin. Spec 18.1 names this explicitly: a rustc bump can change float codegen and silently invalidate every golden hash. Reviewed like a change to physics.",
-      "matchManagers": ["custom.regex"],
-      "matchDepNames": ["rust-lang/rust"],
-      "addLabels": ["toolchain", "determinism-review"],
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDepNames": [
+        "rust-lang/rust"
+      ],
+      "addLabels": [
+        "toolchain",
+        "determinism-review"
+      ],
       "automerge": false,
       "prPriority": -2
     }
