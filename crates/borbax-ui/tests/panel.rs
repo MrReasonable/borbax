@@ -116,6 +116,25 @@ fn the_surprise_button_fills_the_seed_box_and_loads_that_universe() {
         harness.query_by_label_contains(&expected).is_some(),
         "the frame the button was clicked in does not show {expected:?} for seed {text}"
     );
+
+    // **The rendered box, not the state behind it.** The first version of this
+    // test asserted only on `harness.state().seed_text()`, which is true one
+    // instruction after `randomise` runs and says nothing about what the window
+    // painted. It missed a real inconsistency: with the button emitted *after*
+    // the text box, the box had already rendered the old text for that frame,
+    // so the screen showed the previous seed next to the new universe's count —
+    // the mirror of the defect `the_element_count_appears_in_the_frame_the_seed_lands`
+    // exists for, in the other widget. Asserting the accessibility value is what
+    // makes the two agree in the frame the user is looking at.
+    let rendered = harness
+        .get_by_role(Role::TextInput)
+        .value()
+        .unwrap_or_else(|| unreachable!("a TextInput node always carries a value"));
+    assert_eq!(
+        rendered, text,
+        "the seed box renders {rendered:?} while the state and the count say {text:?} — \
+         the box was emitted before the button that changed it"
+    );
 }
 
 #[test]

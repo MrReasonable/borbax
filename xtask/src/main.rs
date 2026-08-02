@@ -414,7 +414,9 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_no_closure_predicate_branch(root, &mut failures)?;
     check_packing_matches_probe(root, &mut failures)?;
     check_every_member_inherits_the_lints(root, &mut failures)?;
-    check_the_viewer_boundaries_hold(root, &mut failures)?;
+    check_the_viewer_stays_a_leaf(root, &mut failures)?;
+    check_the_viewer_seam_holds(root, &mut failures)?;
+    check_wall_clock_has_one_home(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -2600,7 +2602,7 @@ fn code_only(src: &str) -> String {
 /// asserting on a string is asserting on what the window paints — a `format!`
 /// migrating into `panel.rs` leaves every such test green over a window they
 /// have stopped describing, which is silent by construction.
-fn check_the_viewer_boundaries_hold(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+fn check_the_viewer_stays_a_leaf(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
     const VIEWER: &str = "crates/borbax-ui";
 
     let viewer_src = root.join(VIEWER).join("src");
@@ -2635,7 +2637,22 @@ fn check_the_viewer_boundaries_hold(root: &Path, failures: &mut Vec<String>) -> 
         }
     }
 
-    // 2. The per-file import seam, checked over code rather than prose.
+    Ok(())
+}
+
+/// The viewer's per-file import seam, and its single `Universe::generate` site.
+///
+/// Split out of [`check_the_viewer_stays_a_leaf`] because the combined function
+/// crossed `clippy::too_many_lines`, which is the right instinct here — these
+/// are three unrelated invariants that happen to share a subject.
+fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    const VIEWER: &str = "crates/borbax-ui";
+    let viewer_src = root.join(VIEWER).join("src");
+    if !viewer_src.exists() {
+        return Ok(());
+    }
+
+    // The per-file import seam, checked over code rather than prose.
     for (file, banned) in [
         ("state.rs", &["egui", "eframe"][..]),
         ("panel.rs", &["eframe", "format!"][..]),
@@ -2663,7 +2680,7 @@ fn check_the_viewer_boundaries_hold(root: &Path, failures: &mut Vec<String>) -> 
         }
     }
 
-    // 3. Exactly one `Universe::generate` call site.
+    // Exactly one `Universe::generate` call site.
     //
     // **This is the half the `regenerations` counter cannot cover, and the
     // counter's own doc says so.** A `Universe::generate` written directly into
@@ -2697,6 +2714,62 @@ fn check_the_viewer_boundaries_hold(root: &Path, failures: &mut Vec<String>) -> 
              so no test would see it"
         ));
     }
+    Ok(())
+}
+
+/// Wall-clock is readable in exactly one file in the whole workspace.
+///
+/// **§13.1 bans wall-clock and, until this, nothing enforced it.** The ban
+/// sits in CLAUDE.md's hard invariants beside things that all have guards —
+/// `clippy.toml`'s `disallowed-methods` list is 129 lines of `f64::`/`f32::`
+/// entries and mentions no time type at all, and `xtask`'s `BANNED_CALLS`
+/// mirrors it. So the invariant was held by nobody having written one, and
+/// viewer Step 1 is the first read in the workspace's history.
+///
+/// **Why not add `SystemTime::now` to `clippy.toml` instead**, which is the
+/// obvious move: a cross-check test requires everything in `clippy.toml` to
+/// appear in `BANNED_CALLS`, and the transcendental scan has **no path
+/// exemption by design** — its own comment calls an exemption that currently
+/// exempts nothing "a hole with a sign on it". So a `#[expect]` on `moment()`
+/// would silence clippy and not `xtask`, and there would be no honest way to
+/// let the one sanctioned call through. A single-site rule is the shape that
+/// fits: the read is permitted, in one named place, and moving or copying it
+/// fails the gate.
+///
+/// The viewer may read the clock because it produces no results — §13.1
+/// protects results and a seed the user is shown and can retype is an input.
+/// What must never happen is a *second* read appearing somewhere that does
+/// produce results, on the precedent of this one.
+fn check_wall_clock_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    const VIEWER: &str = "crates/borbax-ui";
+    const CLOCK_READS: &[&str] = &["SystemTime::now", "Instant::now"];
+    let clock_home = root.join(VIEWER).join("src").join("state.rs");
+
+    for scan_root in DATA_FREE_ROOTS {
+        let dir = root.join(scan_root);
+        if !dir.exists() {
+            continue;
+        }
+        for path in walk(&dir)?
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+            .filter(|p| *p != clock_home)
+        {
+            let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let code = code_only(&src);
+            for needle in CLOCK_READS {
+                if code.contains(needle) {
+                    failures.push(format!(
+                        "§13.1: `{needle}` in {} — wall-clock is readable in exactly one \
+                         file, `{VIEWER}/src/state.rs`, where it seeds a button and \
+                         reaches no result. A second read is how it gets into one",
+                        path.strip_prefix(root).unwrap_or(&path).display()
+                    ));
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
