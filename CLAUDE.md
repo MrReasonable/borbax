@@ -97,12 +97,37 @@ the fixes** and route each to a specialist *other* than the one who proposed
 it. That framing is what surfaced both of the above.
 
 Branch protection enforces the rest server-side: PR required, all CI checks
-green, linear history, no force-push, `enforce_admins` on. Bypassing is a
-deliberate, visible act:
+green, **one approving review**, all conversations resolved, linear history, no
+force-push, `enforce_admins` on. Bypassing is a deliberate, visible act:
 `gh api -X DELETE repos/MrReasonable/borbax/branches/main/protection/enforce_admins`.
 
-Next action if starting fresh: **Task 8** — 3D embedding by stress
-majorization. Task 6 merged as PR #13 on 2026-07-30; Task 7 followed it.
+**"Rebase and merge" is the only merge button**, from 2026-08-02 — squash and
+merge-commits are both disabled at the repository. So a PR's commits land on
+`main` individually and each one has to stand on its own. Task 10 landed thirteen
+that way, one per review round.
+
+**The approving review comes from CodeRabbit**, configured in `.coderabbit.yaml`
+with `request_changes_workflow: true`. That makes its verdict a real gate rather
+than a comment: it posts `CHANGES_REQUESTED` while findings are open, which sets
+`mergeStateStatus` to `BLOCKED`, and flips to `APPROVED` once they are resolved.
+Two consequences worth knowing before they surprise you:
+
+- **`dismiss_stale_reviews` is on, so every push kills the approval.** The last
+  commit before merge needs its own verdict.
+- **`auto_pause_after_reviewed_commits: 2` means CodeRabbit stops reviewing
+  partway through a long PR**, and a green check can therefore be stale. Check
+  *which commit* it last reviewed, not just the check colour, and ask with
+  `@coderabbitai review` when the branch is ready.
+
+**Zero open threads is not zero open comments.** CodeRabbit folds nitpicks into
+the review *body*, where they never become review threads — a thread query
+returns clean while a finding sits unaddressed. Sweep both: the thread list, and
+every review body for `Nitpick comments (n)` / `Actionable comments posted: n`.
+
+Next action if starting fresh: the **viewer** — see
+`docs/superpowers/plans/2026-08-01-borbax-viewer.md`. Task 10 merged as PR #19
+on 2026-08-01, bringing V0 Tasks 1-10 in; the viewer is sequenced ahead of Task
+11 deliberately, so the chemistry lands somewhere visible.
 
 **Task 8 has a preamble in the plan and it is load-bearing.** Task 6's review
 routed a finding there — `canonicalise` discards the ordering, so a naive
