@@ -97,7 +97,9 @@ jobs:
       # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is
       # 30 MB and restores in 5s" — and concluded from that smallness that the
       # cache had little upside to offer. Viewer Step 1 added `eframe`, which
-      # took the lockfile from **13 packages to 366**, i.e. ~353 third-party.
+      # took the lockfile from **13 entries to 366** — 7 workspace members and
+      # **359 external packages**, against 6 external before. ("~353 third-party"
+      # in the first version of this line was the *delta* quoted as a count.)
       # The archive is expected to grow by more than an order of magnitude, and
       # the timings above (`quality` 23/34s, macOS 78/151s, ubuntu 134/191s,
       # Windows 277/350s) were ALL measured before it.
@@ -249,7 +251,9 @@ jobs:
       # `proc-macro2`, `quote`, `unicode-ident`), so the Windows archive is
       # 30 MB and restores in 5s" — and concluded from that smallness that the
       # cache had little upside to offer. Viewer Step 1 added `eframe`, which
-      # took the lockfile from **13 packages to 366**, i.e. ~353 third-party.
+      # took the lockfile from **13 entries to 366** — 7 workspace members and
+      # **359 external packages**, against 6 external before. ("~353 third-party"
+      # in the first version of this line was the *delta* quoted as a count.)
       # The archive is expected to grow by more than an order of magnitude, and
       # the timings above (`quality` 23/34s, macOS 78/151s, ubuntu 134/191s,
       # Windows 277/350s) were ALL measured before it.
