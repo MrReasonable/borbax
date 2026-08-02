@@ -20,19 +20,29 @@ fn harness<'a>() -> Harness<'a, ViewerState> {
     Harness::new_ui_state(|ui, state| draw(state, ui), ViewerState::new())
 }
 
+/// Focus a box by the label the panel gives it, and type into it.
+///
+/// **Addressed by label rather than by position in the tree.** Step 1b added a
+/// second `TextInput`, which made the bare `get_by_role(Role::TextInput)` these
+/// tests used ambiguous. The cheap repair is `.nth(1)`, and it would tie this
+/// file — whose entire subject is that widget *order* is a decision that
+/// changes — to the very ordering it exists to let people change. The panel
+/// wires `Response::labelled_by` so each box can be named instead.
+///
+/// `focus()` before `type_text` is not optional: `type_text` queues an
+/// `egui::Event::Text` addressed to whatever has focus, so without it the text
+/// never lands and the test fails looking *exactly* like the defect it hunts.
+fn type_into(harness: &Harness<'_, ViewerState>, label: &str, text: &str) {
+    let field = harness.get_by_role_and_label(Role::TextInput, label);
+    field.focus();
+    field.type_text(text);
+}
+
 #[test]
 fn the_element_count_appears_in_the_frame_the_seed_lands() {
     let mut harness = harness();
 
-    {
-        let seed_box = harness.get_by_role(Role::TextInput);
-        // `type_text` alone queues an `egui::Event::Text` addressed to whatever
-        // has focus — which, without this line, is nothing. The text never
-        // lands and the test fails looking *exactly* like the defect it hunts,
-        // which is the worst way for a test to be wrong.
-        seed_box.focus();
-        seed_box.type_text("7");
-    }
+    type_into(&harness, "seed", "7");
 
     // **Exactly one frame.** A `run()`-shaped call steps until the UI is
     // quiescent, which hides this defect by definition — the second frame
@@ -67,11 +77,7 @@ fn an_unchanged_seed_box_does_not_rebuild_the_universe() {
     // it. This is §8.6's per-species rule one level up.
     let mut harness = harness();
 
-    {
-        let seed_box = harness.get_by_role(Role::TextInput);
-        seed_box.focus();
-        seed_box.type_text("7");
-    }
+    type_into(&harness, "seed", "7");
     harness.step();
     assert_eq!(
         harness.state().regenerations(),
@@ -133,7 +139,7 @@ fn the_surprise_button_fills_the_seed_box_and_loads_that_universe() {
     // exists for, in the other widget. Asserting the accessibility value is what
     // makes the two agree in the frame the user is looking at.
     let rendered = harness
-        .get_by_role(Role::TextInput)
+        .get_by_role_and_label(Role::TextInput, "seed")
         .value()
         .unwrap_or_else(|| unreachable!("a TextInput node always carries a value"));
     assert_eq!(
@@ -150,11 +156,11 @@ fn a_refused_seed_shows_the_refusal_in_the_panel_itself() {
     // silently if the panel ever stopped calling `status_line`.
     let mut harness = harness();
 
-    {
-        let seed_box = harness.get_by_role(Role::TextInput);
-        seed_box.focus();
-        seed_box.type_text("abc");
-    }
+    // Still the *seed* box, and still valid under two boxes: the seed box keeps
+    // its four refusals precisely because the name box exists to absorb
+    // anything that is not a number. With one control this test would have had
+    // to go, and `letters_in_the_seed_box_are_refused_not_hashed` with it.
+    type_into(&harness, "seed", "abc");
     harness.step();
 
     assert!(
@@ -162,5 +168,42 @@ fn a_refused_seed_shows_the_refusal_in_the_panel_itself() {
             .query_by_label("seeds are whole numbers, 0 to 18446744073709551615")
             .is_some(),
         "the panel does not show the refusal for a non-numeric seed"
+    );
+}
+
+/// Typing a name fills the seed box **in the same frame**.
+///
+/// **The third instance of this file's one defect, in a third widget.** The
+/// name box writes into `seed_text`, so it has to be emitted before the widget
+/// that renders `seed_text`. Emitted after, the frame shows the *previous*
+/// seed beside the new name's element count — a number the user can write down
+/// that opens a different universe from the one on screen, which is the exact
+/// thing §6 makes the seed for.
+///
+/// A state-level test cannot see this: `set_phrase` commits and reads in one
+/// call, and every one of those is green whatever order the panel paints in.
+#[test]
+fn typing_a_name_fills_the_seed_box_in_the_frame_the_name_lands() {
+    let mut harness = harness();
+    type_into(&harness, "name", "Emily");
+    harness.step();
+
+    let seed = borbax_universe::seed_from_phrase("Emily")
+        .unwrap_or_else(|| unreachable!("`Emily` is not blank, so it names a universe"));
+    let rendered = harness
+        .get_by_role_and_label(Role::TextInput, "seed")
+        .value()
+        .unwrap_or_else(|| unreachable!("a TextInput node always carries a value"));
+    assert_eq!(
+        rendered,
+        seed.to_string(),
+        "the seed box renders {rendered:?} one frame after `Emily` was typed — \
+         it was emitted before the name box that changed it"
+    );
+
+    let expected = format!("{} elements", Universe::generate(seed).table.len());
+    assert!(
+        harness.query_by_label_contains(&expected).is_some(),
+        "the frame `Emily` landed in does not show {expected:?}"
     );
 }

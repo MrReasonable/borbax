@@ -17,6 +17,7 @@
 //! | the physics version | `u8::from(universe.physics)` |
 //! | the seed, when typed | the user |
 //! | the seed, after "surprise me" | `borbax_rng::Stream::next_range` |
+//! | the seed, after a name is typed | [`borbax_universe::seed_from_phrase`] |
 //!
 //! and the universe behind the first two comes from
 //! [`borbax_universe::Universe::generate`], which has **exactly one call site**
@@ -130,5 +131,13 @@ pub const WINDOW_TITLE: &str = "Borbax";
 /// change it.
 ///
 /// It exists because the window should open on a universe rather than on the
-/// words "type a seed". Step 1b replaces the number with a name.
+/// words "type a seed".
+///
+/// **Step 1b did not replace it, and an earlier version of this sentence said
+/// it would.** The name box opens *empty*, hinted rather than pre-filled, and
+/// this constant is unchanged. Pre-filling a name would mean choosing the
+/// universe that name produces — a thumb on the scale in the one place the
+/// whole program is about the seed being arbitrary — while an empty box with
+/// no hint teaches nothing about what the box is for. The hint does both jobs
+/// and neither costs a universe.
 pub const OPENING_SEED: u64 = 1;
