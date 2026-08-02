@@ -9,7 +9,7 @@
 //!
 //! The discriminator, stated so a reviewer can check it rather than believe it:
 //! **every number on screen must be traceable to a call into a `borbax-*`
-//! crate.** Today there are exactly four numbers on screen:
+//! crate.** Today there are exactly five numbers on screen:
 //!
 //! | On screen | Comes from |
 //! |---|---|
@@ -23,7 +23,12 @@
 //! [`borbax_universe::Universe::generate`], which has **exactly one call site**
 //! in this crate — checked by `cargo xtask`, not merely asserted here.
 //!
-//! An earlier version of this list said "exactly three", named
+//! This count has now been wrong twice, in the commit that widened the table
+//! each time: an earlier version said "exactly three", and Step 1b added the
+//! phrase row while leaving the number at four. If it goes stale a third time,
+//! delete the number and let the table speak — the rows are the claim.
+//!
+//! That earlier version also named
 //! `Universe::table()` (a method that does not exist), omitted the seed, and
 //! claimed a grep for arithmetic finds only layout. **The arithmetic is not
 //! zero**: `state.rs` has a `wrapping_mul`/`wrapping_add` pair (the clock
