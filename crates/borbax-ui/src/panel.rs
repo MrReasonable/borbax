@@ -20,9 +20,13 @@ use crate::state::{ViewerState, moment};
 /// element count for sixteen milliseconds. Nothing in `tests/acceptance.rs` can
 /// see that, because a state-level test commits and reads in one call; the
 /// frame tests in `tests/panel.rs` are the guard, and moving `ui.label` above
-/// `ui.text_edit_singleline` is the mutation they exist to catch. Measured with
-/// `--no-fail-fast`: that mutation fails **three** of the four frame tests and
-/// leaves all twenty state-level tests green.
+/// `ui.text_edit_singleline` is the mutation they exist to catch. Re-measured
+/// with `--no-fail-fast` at Step 1b: that mutation fails **four** of the five
+/// frame tests and leaves all twenty-seven state-level tests green. (It said
+/// "three of the four" and "twenty" until Step 1b, which added a frame test and
+/// seven state tests without re-running it — the stale-figure class, in the
+/// file whose subject is that the tests must describe the window. If this goes
+/// stale again, drop the fraction and keep the named mutation.)
 ///
 /// **The button comes before the box, and that is the same rule again rather
 /// than a layout preference.** "surprise me" writes into `seed_text`, so it has
@@ -39,8 +43,24 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
     // rule again rather than a layout preference.** Typing a name writes into
     // `seed_text`, so it has to run before the widget that renders `seed_text`
     // is emitted — with it after, the frame shows the *previous* seed beside
-    // the new name's universe. Same defect as the "surprise me" button's, in a
-    // third widget, and the frame tests are what catch it.
+    // the new name's universe. `typing_a_name_fills_the_seed_box_in_the_frame_
+    // the_name_lands` is the guard, and moving this block below the seed row
+    // fails it and nothing else.
+    //
+    // **The two directions genuinely conflict, and this comment used to imply
+    // they did not.** The seed box and the button both write into
+    // `phrase_text`, and they run *after* this box has been painted — so in the
+    // frame a seed is typed, the name box still shows the old name for one
+    // frame before `egui`'s requested repaint clears it. Reordering does not
+    // fix that; it swaps which direction is broken, and the direction chosen
+    // here is the one that matters: the seed is the number §6 makes shareable
+    // and the thing a child writes down, so it must never be stale, whereas a
+    // name lingering for sixteen milliseconds is not a number anyone records.
+    //
+    // The lag is asserted rather than tolerated silently —
+    // `typing_a_seed_by_hand_empties_the_name_box_on_screen` pins both frames,
+    // so an accidental change in either direction is a failure rather than a
+    // surprise.
     let name_label = ui.label("name");
     // Hinted rather than pre-filled. A pre-filled name chooses the universe
     // that name produces; an empty box with no hint teaches nothing about what

@@ -330,17 +330,36 @@ const BANNED_PARALLEL_CALLS: &[&str] = &[
 /// would miss the imported case entirely.
 ///
 /// The class this decides, stated so the next person can see what is outside
-/// it: **these three literal identifiers, in comment-stripped and
-/// literal-stripped code, outside `#[cfg(test)]`**. A type alias
-/// (`type H = DefaultHasher;` is caught at the alias, but `use ... as H;` is
-/// not), a macro expansion, and a hasher from a future third-party crate are
-/// all outside it. Clippy's path resolution covers the first two; the third is
-/// a dependency review, which is where it belongs.
+/// it: **these three identifiers as whole tokens, in comment-stripped and
+/// literal-stripped code, outside `#[cfg(test)]`**.
+///
+/// Whole tokens rather than substrings, which was the machine reviewer's finding and is
+/// half right in a way worth recording. `DefaultHasherMetrics` did fire —
+/// measured — and that is a real false positive, and a check that cries wolf
+/// gets relaxed. Its second example, `make_random_state`, does **not** fire:
+/// the case differs. What token-matching costs is nothing: it still catches
+/// `ahash::RandomState` (`::` is not an identifier character), and the only
+/// true positive it loses is `SipHasher13`, which is `#[unstable]` and cannot
+/// be named on a stable toolchain at all.
+///
+/// Outside the class: a renaming import's *use site* (`H::new()` after
+/// `use ... as H;` — though the `use` line itself is caught, because it spells
+/// the identifier), a macro expansion, and a hasher from a future third-party
+/// crate. An earlier version of this paragraph drew a distinction between
+/// `type H = ..` and `use .. as H` that does not exist — both are caught where
+/// they are written and both escape at the use site. A determinism reviewer
+/// measured it. Clippy's path resolution covers the first two; the third is a
+/// dependency review, which is where it belongs.
 ///
 /// Test code is exempt for the same reason it is exempt from the transcendental
-/// scan, and here the exemption is load-bearing rather than incidental: proving
-/// that `seed_from_phrase` does *not* agree with a `DefaultHasher` means
-/// writing one down and comparing.
+/// scan — no more than that. An earlier version claimed the exemption was
+/// "load-bearing rather than incidental" because proving `seed_from_phrase`
+/// disagrees with a `DefaultHasher` would mean writing one down. **No such test
+/// exists**, and the sentence was a justification invented for an exemption
+/// that was simply inherited. What the exemption *is* load-bearing for is the
+/// `#[expect(clippy::disallowed_types)]` liveness anchor in
+/// `borbax-universe`'s phrase tests, which has to name a banned type in order
+/// to prove clippy still resolves it.
 const BANNED_TYPES: &[&str] = &["DefaultHasher", "RandomState", "SipHasher"];
 
 /// Directories scanned for §13.1 violations, relative to the workspace root.
@@ -3131,6 +3150,27 @@ fn check_no_platform_transcendentals(
     Ok(())
 }
 
+/// Does `code` name `ty` as a whole identifier token?
+///
+/// A bare `contains` fires on `DefaultHasherMetrics` and on any identifier with
+/// a banned name as a prefix or suffix — measured, and a check that cries wolf
+/// gets relaxed. Bytes rather than chars because every banned name is ASCII, so
+/// an identifier boundary is a byte boundary.
+fn names_type(code: &str, ty: &str) -> bool {
+    let bytes = code.as_bytes();
+    code.match_indices(ty).any(|(at, _)| {
+        let before_ok = at == 0
+            || !bytes
+                .get(at - 1)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        let after = at + ty.len();
+        let after_ok = !bytes
+            .get(after)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        before_ok && after_ok
+    })
+}
+
 /// Report every banned call in `src` that is not inside a `#[cfg(test)]` item.
 ///
 /// Test code is exempt because proving `det_math` is wired up at all means
@@ -3182,7 +3222,7 @@ fn scan_rust_source(rel: &str, src: &str, failures: &mut Vec<String>) {
                 }
             }
             for ty in BANNED_TYPES {
-                if code.contains(ty) {
+                if names_type(&code, ty) {
                     failures.push(format!(
                         "§13.1: unpinned hasher {ty} at {rel}:{} — its output is not stable \
                          across releases or across runs; derive seeds with \
@@ -5180,7 +5220,7 @@ mod tests {
         assert!(scan_for_derived_streams("probe.rs", "fn broken( {").is_err());
     }
 
-    use super::{BANNED_CALLS, BANNED_TYPES, scan_rust_source};
+    use super::{BANNED_CALLS, BANNED_TYPES, names_type, scan_rust_source};
 
     fn scan(src: &str) -> Vec<String> {
         let mut failures = Vec::new();
@@ -5190,36 +5230,39 @@ mod tests {
 
     /// The `path = ".."` values inside one named array of `clippy.toml`.
     ///
-    /// **Section-aware, and it has to be.** The first version of the
-    /// cross-check below read every `path = "` line in the file, which was
-    /// correct while `disallowed-methods` was the only array. Adding
-    /// `disallowed-types` broke it in the worst available direction: the three
-    /// hasher paths were fed to the *method* cross-check, which split
-    /// `std::collections::hash_map::DefaultHasher` at its first `::` and
-    /// reported it missing from `BANNED_CALLS` — a red test with a diagnosis
-    /// pointing at the wrong list entirely.
-    fn clippy_paths_in(toml: &str, key: &str) -> Vec<String> {
-        let mut paths = Vec::new();
-        let mut inside = false;
-        for line in toml.lines() {
-            if line.starts_with(key) && line.contains('[') {
-                inside = true;
-                continue;
-            }
-            if inside && line.starts_with(']') {
-                inside = false;
-                continue;
-            }
-            if !inside {
-                continue;
-            }
-            if let Some((_, rest)) = line.split_once("path = \"")
-                && let Some((path, _)) = rest.split_once('"')
-            {
-                paths.push(path.to_owned());
-            }
-        }
-        paths
+    /// **Parsed, not scanned, and that is a repair with a measurement behind
+    /// it.** The first version walked lines looking for `path = "`, tracking
+    /// which array it was inside by `starts_with`. A review lane fed it seven
+    /// TOML shapes and it mis-read three:
+    ///
+    /// - a **commented-out** entry was returned as if it were active — the
+    ///   silent direction, on a §13.1 guard. Someone disabling a hasher ban to
+    ///   unblock a build would leave this cross-check green while clippy, the
+    ///   half this test calls "the authority", enforced nothing;
+    /// - a single-line `key = [ .. ]` never reset the section flag, so the
+    ///   *types* array's paths were returned as the *methods* list — exactly
+    ///   the failure the section-awareness was added to fix, reachable again by
+    ///   a different trigger;
+    /// - `disallowed-types-extra` was swallowed into `disallowed-types` by
+    ///   prefix match.
+    ///
+    /// Each has a patch and the class does not, which is the argument
+    /// `xtask/Cargo.toml` already makes for parsing Rust with `syn` rather than
+    /// grepping it. The class this now decides is "whatever the TOML spec says
+    /// an array of tables with a `path` key is", and nothing is outside it.
+    fn clippy_paths_in(src: &str, key: &str) -> Vec<String> {
+        let doc: toml::Table = src
+            .parse()
+            .unwrap_or_else(|e| unreachable!("clippy.toml does not parse: {e}"));
+        let Some(entries) = doc.get(key).and_then(toml::Value::as_array) else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .filter_map(|entry| entry.get("path"))
+            .filter_map(toml::Value::as_str)
+            .map(str::to_owned)
+            .collect()
     }
 
     fn clippy_toml() -> String {
@@ -5240,11 +5283,15 @@ mod tests {
     /// `clippy.toml` names a resolvable path and [`BANNED_TYPES`] names the
     /// identifier as written — see that constant for why those differ.
     ///
-    /// The empty-list check is not padding. `clippy_paths_in` returns an empty
-    /// vector for a key that is absent *or* misspelled, and both directions of
-    /// the comparison below are vacuously satisfied by two empty lists — so
-    /// deleting `disallowed-types` from `clippy.toml` wholesale would leave
-    /// this test green without it.
+    /// **The empty-list check is a better diagnostic, not a load-bearing
+    /// assertion, and an earlier version of this comment claimed otherwise.**
+    /// It said both directions below "are vacuously satisfied by two empty
+    /// lists", so deleting `disallowed-types` wholesale would pass without it.
+    /// Measured false by a review lane: the `orphaned` direction iterates
+    /// `BANNED_TYPES`, which is never empty, so it fires either way. The assert
+    /// earns its place by naming the actual cause instead of listing three
+    /// orphans, and the commit message that shipped the false version is
+    /// corrected here rather than left standing.
     #[test]
     fn the_two_type_ban_lists_cover_the_same_types() {
         let toml = clippy_toml();
@@ -5284,6 +5331,79 @@ mod tests {
             "in BANNED_TYPES but not clippy.toml: {orphaned:?} — clippy is the \
              authority, so a type missing there is unenforced against every \
              spelling a text scan cannot see"
+        );
+    }
+
+    /// A banned name is matched as a token, not as a substring.
+    ///
+    /// **Both directions, or the "fix" is indistinguishable from deleting the
+    /// check.** The machine reviewer found the substring behaviour; the negative cases
+    /// are what stop the repair from over-correcting into silence.
+    #[test]
+    fn a_banned_hasher_is_matched_as_a_whole_token() {
+        // Fires: the bare name, a qualified path (`::` is not an identifier
+        // character), and a generic argument.
+        for names in [
+            "DefaultHasher::new()",
+            "ahash::RandomState::default()",
+            "BuildHasherDefault<DefaultHasher>",
+            "let h: SipHasher;",
+        ] {
+            assert!(
+                names_type(names, "DefaultHasher")
+                    || names_type(names, "RandomState")
+                    || names_type(names, "SipHasher"),
+                "{names:?} should be reported"
+            );
+        }
+        // Silent: a banned name as a prefix or a suffix of a longer identifier.
+        for quiet in [
+            "DefaultHasherMetrics",
+            "MyDefaultHasher",
+            "RandomStateBuilder",
+            "a_RandomState_thing",
+            "make_random_state",
+        ] {
+            for ty in BANNED_TYPES {
+                assert!(!names_type(quiet, ty), "{quiet:?} should NOT be reported");
+            }
+        }
+    }
+
+    /// `clippy.toml` is parsed, so a disabled entry reads as disabled.
+    ///
+    /// The line-based predecessor returned a **commented-out** entry as active
+    /// — the silent direction on a §13.1 guard — and lost its section on a
+    /// single-line array. Both shapes are pinned here.
+    #[test]
+    fn a_commented_out_ban_is_not_read_as_an_active_one() {
+        let src = "\
+disallowed-types = [
+  { path = \"a::Alpha\", reason = \"live\" },
+  # { path = \"b::Beta\", reason = \"temporarily disabled\" },
+]
+";
+        assert_eq!(clippy_paths_in(src, "disallowed-types"), vec!["a::Alpha"]);
+
+        // A one-line array must not leak into the next key's list.
+        let one_line = "\
+disallowed-methods = [ { path = \"f64::exp\" } ]
+disallowed-types = [ { path = \"x::Y\" } ]
+";
+        assert_eq!(
+            clippy_paths_in(one_line, "disallowed-methods"),
+            vec!["f64::exp"]
+        );
+        assert_eq!(clippy_paths_in(one_line, "disallowed-types"), vec!["x::Y"]);
+
+        // A key that merely starts with the one asked for is a different key.
+        let lookalike = "\
+disallowed-types-extra = [ { path = \"wrong::One\" } ]
+disallowed-types = [ { path = \"right::One\" } ]
+";
+        assert_eq!(
+            clippy_paths_in(lookalike, "disallowed-types"),
+            vec!["right::One"]
         );
     }
 

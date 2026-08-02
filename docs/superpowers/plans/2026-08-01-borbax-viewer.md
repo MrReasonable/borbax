@@ -302,7 +302,7 @@ this paragraph exists.
       has lost the point of it.
 
       *Shipped.* Typing `emily` writes `15709401653729972761` into the seed box
-      and paints `117 elements · physics v1`. 444 tests, up from 419.
+      and paints `117 elements · physics v1`. 452 tests, up from 419.
 
       **The signature is `-> Option<u64>`, not the `-> u64` above.** An
       infallible version has to invent a universe for the empty string, which
@@ -314,10 +314,15 @@ this paragraph exists.
       control has to guess whether `"7"` is seed 7 or a child called 7, and
       guessing means deleting `letters_in_the_seed_box_are_refused_not_hashed`,
       which exists specifically to forbid "be friendly, hash whatever was typed".
-      Verified rather than assumed: all 12 previously shipped `borbax-ui` tests
-      pass unchanged and `parse_seed` keeps all four refusals.
+      **Zero test functions were removed and no assertion was weakened** —
+      `parse_seed` keeps all four refusals, and
       `a_digit_in_the_name_box_names_a_universe_rather_than_selecting_one` is the
-      test that one box makes unwritable.
+      test that one box makes unwritable. (The first version of this sentence
+      said "all 12 previously shipped `borbax-ui` tests pass unchanged". A
+      reviewer measured both halves wrong: `main` has **24** `borbax-ui` tests,
+      not 12 — that was the acceptance file alone — and the 4 frame tests *were*
+      edited, to address their text box by label rather than by tree position.
+      Their assertions are untouched, which is the claim that was meant.)
 
       **The name box drives the seed box, and two rules follow.** Typing a seed
       by hand *clears* the name, because that name did not produce it — otherwise
@@ -328,13 +333,31 @@ this paragraph exists.
 
       The golden holds literal values with its authority stated as **the mint,
       not the test**. Its non-ASCII rows are load-bearing: absorbing `char`s
-      instead of bytes fails *only* the first non-ASCII row, and swapping
-      `to_ascii_lowercase` for `str::to_lowercase` fails *only* the Greek row —
-      both green on every ASCII row. `to_ascii_lowercase` is a determinism
-      decision: Rust's Unicode tables moved 16.0.0 → 17.0.0 inside this
-      project's pinned toolchain, so a Unicode-aware fold lets a compiler bump
-      silently reassign every named universe. NFC and NFD are different
-      universes, pinned deliberately. The phrase is **not** filtered through the
+      instead of bytes fails *only* the first non-ASCII **row**, and swapping
+      `to_ascii_lowercase` for `str::to_lowercase` fails *only* the Greek
+      **row** — both green on every ASCII row. (Row is the right unit and the
+      first draft of the source comment got it wrong:
+      `accents_are_part_of_the_name` catches the `to_lowercase` swap
+      independently and more cheaply. The Greek rows earn their place as the
+      only *golden* evidence, not as the only evidence.)
+
+      `to_ascii_lowercase` is a determinism decision: Rust's Unicode tables move
+      between compiler releases, so a Unicode-aware fold would let a bump
+      silently reassign every named universe. (An earlier version said the
+      tables "moved 16.0.0 → 17.0.0 inside this project's pinned toolchain". A
+      reviewer measured `.prototools`: it has one commit and has always read
+      `1.97.1`, so the pin has never crossed that boundary. The hazard is
+      prospective, which is the whole reason to close it now.)
+
+      The `split_whitespace` residue is closed the same way and it took a
+      reviewer to show the first attempt was not enough: a single `U+00A0`
+      golden row covered **2 of the 25** codepoints `char::is_whitespace`
+      accepts, and Unicode's stability policy does not cover `White_Space` at
+      all — it covers `Pattern_White_Space`, and `White_Space` has moved in
+      practice (`U+180E`, Unicode 6.3). The whole 25-codepoint set is now
+      enumerated and pinned.
+
+      NFC and NFD are different universes, pinned deliberately. The phrase is **not** filtered through the
       G2 blocklist — G2 constrains *generated* names, and a user typing "Carbon"
       breaches nothing.
 

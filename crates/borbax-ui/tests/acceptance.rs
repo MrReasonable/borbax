@@ -5,7 +5,7 @@
 //! `cfg(test)` — which is why `ViewerState::regenerations` is a shipped field
 //! rather than a test-gated one. A `#[cfg(test)]` field would be invisible here.
 
-use borbax_ui::state::{Outcome, ViewerState};
+use borbax_ui::state::{Outcome, ViewerState, parse_seed};
 use borbax_universe::{PhysicsVersion, Universe};
 
 /// Commit `seed` to a fresh state and hand back the line the window paints.
@@ -312,16 +312,31 @@ fn a_name_typed_into_the_viewer_opens_that_names_universe() {
 /// box holds something that names a universe, the seed box holds that
 /// universe's number — so the number can be written down, and the name never
 /// labels a universe it did not produce.
+/// **Both arms assert, and the `None` arm is a repair.** The helper used to be
+/// a bare `if let Some(..)`, which meant it checked nothing at two of its three
+/// call sites — both of them clear the name box on the line above, so
+/// `seed_from_phrase("")` is `None` and the whole body was skipped, by
+/// construction, every run, forever. A review lane measured that with an
+/// `eprintln!`. It is the "corpus filter that silently selects nothing" class
+/// CLAUDE.md names, and the fix is for the helper to have nothing to skip.
 fn the_boxes_agree(state: &ViewerState) {
-    if let Some(seed) = borbax_universe::seed_from_phrase(state.phrase_text()) {
-        assert_eq!(
-            state.seed_text(),
-            seed.to_string(),
-            "the name box says {:?} but the seed box says {:?}",
-            state.phrase_text(),
-            state.seed_text()
-        );
-        assert_eq!(state.status_line(), expected_for(seed));
+    match borbax_universe::seed_from_phrase(state.phrase_text()) {
+        Some(seed) => {
+            assert_eq!(
+                state.seed_text(),
+                seed.to_string(),
+                "the name box says {:?} but the seed box says {:?}",
+                state.phrase_text(),
+                state.seed_text()
+            );
+            assert_eq!(state.status_line(), expected_for(seed));
+        }
+        // Nothing is named, so the seed box stands on its own and the line on
+        // screen must describe whatever it holds — including a refusal.
+        None => match parse_seed(state.seed_text()) {
+            Ok(seed) => assert_eq!(state.status_line(), expected_for(seed)),
+            Err(refusal) => assert_eq!(state.status_line(), refusal.to_string()),
+        },
     }
 }
 

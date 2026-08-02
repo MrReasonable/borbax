@@ -61,6 +61,15 @@ unimplemented = "deny"
 # the Task 2 review demonstrated by walking through the gap in ours.
 disallowed_methods = "deny"
 
+# The §13.1 hasher ban, and it needs its own line for the same reason the one
+# above does. `disallowed_types` is warn-by-default, so before this line the
+# ban was held by CI passing `-D warnings` — which is true today and is a
+# different guarantee from the sibling list's. A determinism reviewer measured
+# the asymmetry: the comment above says "this line is what makes the list load-
+# bearing rather than advisory", and that was false of the type list, which had
+# no such line at all.
+disallowed_types = "deny"
+
 # `a[i]` is an unwrap wearing a hat. Warn rather than deny because the
 # geometry code indexes fixed-size arrays with proven bounds constantly —
 # those take an #[allow] with a one-line reason, and a bare #[allow] is a

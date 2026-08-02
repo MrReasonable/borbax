@@ -32,6 +32,13 @@ fn harness<'a>() -> Harness<'a, ViewerState> {
 /// `focus()` before `type_text` is not optional: `type_text` queues an
 /// `egui::Event::Text` addressed to whatever has focus, so without it the text
 /// never lands and the test fails looking *exactly* like the defect it hunts.
+fn name_box(harness: &Harness<'_, ViewerState>) -> String {
+    harness
+        .get_by_role_and_label(Role::TextInput, "name")
+        .value()
+        .unwrap_or_else(|| unreachable!("a TextInput node always carries a value"))
+}
+
 fn type_into(harness: &Harness<'_, ViewerState>, label: &str, text: &str) {
     let field = harness.get_by_role_and_label(Role::TextInput, label);
     field.focus();
@@ -205,5 +212,95 @@ fn typing_a_name_fills_the_seed_box_in_the_frame_the_name_lands() {
     assert!(
         harness.query_by_label_contains(&expected).is_some(),
         "the frame `Emily` landed in does not show {expected:?}"
+    );
+}
+
+/// An idle name box does not rebuild the universe every frame.
+///
+/// **The twin of `an_unchanged_seed_box_does_not_rebuild_the_universe`, and it
+/// was missing.** Measured by a review lane: replacing `if named.changed()`
+/// with an unconditional `state.reload_from_phrase();` failed **zero** tests
+/// across the whole crate. `naming_a_universe_generates_exactly_one` cannot see
+/// it, because it calls `set_phrase` directly and never goes through `draw`.
+///
+/// `Universe::generate` is ~146 µs and this body runs at the display's refresh
+/// rate, which is the same argument the seed box's version makes.
+#[test]
+fn an_unchanged_name_box_does_not_rebuild_the_universe() {
+    let mut harness = harness();
+    type_into(&harness, "name", "Emily");
+    harness.step();
+    assert_eq!(
+        harness.state().regenerations(),
+        1,
+        "typing one name should generate exactly one universe"
+    );
+
+    for _ in 0..30 {
+        harness.step();
+    }
+    assert_eq!(
+        harness.state().regenerations(),
+        1,
+        "30 idle frames rebuilt the universe — `reload_from_phrase` is being \
+         called from the paint body rather than from the name box's `changed()` \
+         response"
+    );
+}
+
+/// Typing a seed by hand empties the name box **on screen**.
+///
+/// **The wiring, which nothing tested.** Measured by a review lane: reverting
+/// `panel.rs` to Step 1's `state.reload()` — one identifier's difference from
+/// `state.commit_typed_seed()` — left all 24 tests in this crate green. The
+/// acceptance test that looks like it covers this calls `commit_typed_seed`
+/// directly, so it tests the method and never the call.
+///
+/// **Two `step()`s, and the first one is an assertion rather than a wait.** The
+/// name box is emitted *before* the seed box, so in the frame the seed is typed
+/// the name box has already been painted and still shows the old name. That is
+/// a genuine one-frame lag and it is pinned here rather than hidden: a
+/// `run()`-shaped call would step until quiescent and make it invisible, which
+/// is the vacuity trap this whole file exists to avoid. See `draw`'s doc for
+/// why the lag cannot be removed by reordering.
+#[test]
+fn typing_a_seed_by_hand_empties_the_name_box_on_screen() {
+    let mut harness = harness();
+    type_into(&harness, "name", "Emily");
+    harness.step();
+    assert_eq!(name_box(&harness), "Emily");
+
+    type_into(&harness, "seed", "4");
+    harness.step();
+    assert_eq!(
+        name_box(&harness),
+        "Emily",
+        "the one-frame lag has changed — if the name box now clears in the same \
+         frame, that is an improvement, but `draw`'s doc says it cannot and one \
+         of the two is now wrong"
+    );
+
+    harness.step();
+    assert_eq!(
+        name_box(&harness),
+        "",
+        "the name box still shows a name that did not produce the seed beside it"
+    );
+}
+
+/// "surprise me" empties the name box on screen too, for the same reason.
+#[test]
+fn a_surprise_seed_empties_the_name_box_on_screen() {
+    let mut harness = harness();
+    type_into(&harness, "name", "Emily");
+    harness.step();
+
+    harness.get_by_label("surprise me").click();
+    harness.step();
+    harness.step();
+    assert_eq!(
+        name_box(&harness),
+        "",
+        "the name box still claims to have produced a seed the button drew"
     );
 }
