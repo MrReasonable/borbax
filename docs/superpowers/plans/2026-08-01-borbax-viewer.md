@@ -33,11 +33,10 @@ shrinks to the golden-testable subset once the viewer owns presentation.
 A native desktop application. `eframe`/`egui` for the interface, `wgpu` for the
 3D scene, Rust throughout.
 
-**Native, per spec §14.0**, whose three reasons all still hold — the geometry is
-3D so a browser needs WebGL regardless and gains nothing; `wgpu` is already in
-the dependency tree for §13.5's GPU screening; and a web build adds a second
+**Native, per spec §14.0**, whose reasons still hold — the geometry is 3D so a
+browser needs WebGL regardless and gains nothing, and a web build adds a second
 language, a second toolchain and a wire protocol for a program on the same
-machine. The fourth reason is the one that decides it here:
+machine. The reason that decides it here is the fourth:
 
 > a double-clickable application is meaningfully easier for a child than "start a
 > server, then open localhost"
@@ -84,8 +83,21 @@ Everything in §5 applies unchanged, and the viewer is a new surface for
 breaching them, because a UI wants labels.
 
 - **No real element names, symbols, or data.** The viewer displays *generated*
-  names. `xtask`'s G2 blocklist scan must cover the viewer crate — a hard-coded
-  "Carbon" in a tooltip is exactly as much a breach as one in a data file.
+  names. A hard-coded "Carbon" in a tooltip is exactly as much a breach as one
+  in a data file.
+
+  **There is no `xtask` G2 blocklist scan to extend, for the viewer or for any
+  other crate** — an earlier version of this line said there was. Read from the
+  source at Step 1: `check_blocklist_present` asserts only that the *identifier*
+  `REAL_ELEMENT_SYMBOLS` still appears in `borbax-universe/src/naming.rs`, and
+  the blocklist itself is a **generation-time filter** consumed by
+  `is_real(symbol, name)`. No file in this repository is scanned for real
+  element names, and no check exists for real-world unit strings either. Step 7
+  therefore **writes three checks**; it does not add a path to an existing one.
+  It also carries a structural question nobody has costed: the vocabulary lives
+  in `borbax-universe`, and `xtask` depending on a chemistry crate to enforce
+  §5 inverts the gate — so the blocklist is either extracted or duplicated in
+  `xtask`, which is what `FORMAT_SEGMENTS` already does for G5.
 - **No real-world units.** Labels read "spans", "quanta", "thermals",
   "world-years". A tooltip saying "Å" or "kJ/mol" is a G4 breach.
 - **No real-world visual conventions.** CPK colouring (carbon black, oxygen
@@ -142,14 +154,26 @@ ten tasks later.
 
 ## Structure
 
-New crate `crates/borbax-viewer` (binary). Depends on `borbax-universe`,
-`borbax-molecule`, and later crates as they land. **Nothing depends on it** — it
-sits at the top of the crate order so it can never affect a result.
+New crate `crates/borbax-ui` (library plus a `borbax` binary). Depends on
+`borbax-universe`, `borbax-molecule`, and later crates as they land. **Nothing
+depends on it** — it sits at the top of the crate order so it can never affect a
+result.
+
+**`borbax-ui`, not `borbax-viewer`** — corrected at Step 1, which was the only
+moment it was free. Three reviewed documents already name this crate
+`borbax-ui`: the PRD's §18.3 repository layout, the V0 plan's File Structure,
+and Task 19 Step 3, which is written against `borbax-render` and `borbax-ui` as
+**a pair of backends over one geometry** — "one projection, two renderers, no
+duplicated maths". `borbax-viewer` appeared only here, in a document written in
+one sitting that has never been through `/review-plan`, and it breaks that
+pairing. The **binary** is `borbax`, because the double-clickable artefact is
+what a child finds in a folder and `-ui` names a fact about the repository.
 
 ```
 src/
-  main.rs        eframe entry, window, the seed control
-  state.rs       what is selected; nothing computed here
+  main.rs        eframe entry and the window — the ONLY file that names eframe
+  state.rs       every decision, and no UI import at all
+  panel.rs       the drawing — imports egui, contains no `format!`
   periodic.rs    the element table panel
   builder.rs     assembling a molecule from elements and bonds
   scene/
@@ -159,20 +183,100 @@ src/
   palette.rs     generated-property colour maps (never real-chemistry ones)
 ```
 
+**The seam is per-file and greppable, which is the point.** The original note
+against `state.rs` read "what is selected; nothing computed here", and Step 1
+found that exactly backwards: `state.rs` is where *everything* is computed,
+because it is the half a test can reach without a window. The rule that actually
+holds is about imports — `state.rs` names no UI type, `panel.rs` names `egui`
+(a CPU layout library that cannot open a window, so `egui_kittest` can drive it
+headlessly in CI), and only `main.rs` names `eframe`. Formatting lives in
+`state.rs` and `panel.rs` has no `format!`, so a test asserting on a string is
+asserting on what the window paints.
+
+**A `camera.rs` writing `.cos()` will fail the gate, and Step 3 should not be
+where that is discovered.** `clippy.toml`'s §13.1 ban resolves for every
+workspace member, and `xtask`'s textual scan has **no path exemption by
+design** — so a clippy `#[expect]` silences only half of it. The viewer produces
+no results, so routing camera trig through `det_math` is cost with no benefit;
+the likely answer is a per-site `#[expect]` plus an `xtask` ruling. Settle it
+before Step 3 rather than during it.
+
 **Dependencies.** `eframe` (bundles `egui` and `wgpu`) is the only substantial
 addition. It is a **binary-only, non-result-affecting** dependency, so §18's bar
-is the low one — it cannot touch simulation output. `wgpu` is already required
-by §13.5.
+is the low one — it cannot touch simulation output.
+
+**Its cost is new and wholly the viewer's, and an earlier version of this plan
+said otherwise twice.** It claimed `wgpu` "is already in the dependency tree for
+§13.5's GPU screening" and "is already required by §13.5". Measured against the
+tree at Step 1 rather than assumed: `wgpu`, `eframe` and `egui` appeared in
+**zero** manifests and **zero** `Cargo.lock` entries, the whole workspace had
+**13** lockfile packages, and §21 lists GPU screening as an explicit V1
+non-goal. The PRD's §14.0 is careful — it says the tree needs `wgpu` "either
+way", which is an argument about the *eventual* tree; this plan flattened
+"eventually" into "already". The native decision stands on its other reasons.
+
+The correction matters beyond tidiness, for the reason CLAUDE.md already records
+about the `glam`/`nalgebra` episode: a false justification gets reused later to
+wave through a dependency that has not earned it.
+
+What it actually costs, measured on the resolved graph at Step 1: **418
+packages in the lockfile**, `default-features = false` bringing the Linux leg
+from 265 to 193 and macOS from 167 to 164; ~888 s of new cold-build CPU; a
+build-cache archive going from 30 MB to ~600 MB per platform; and 34 hard
+`clippy::multiple_crate_versions` errors on day one, held by a crate-level
+`#![expect]` in each of the two targets.
 
 ---
 
 ## Steps
 
-- [ ] **1. The crate, the window, and the seed.** `borbax-viewer` opens a window,
+- [x] **1. The crate, the window, and the seed.** `borbax-ui` opens a window,
       takes a seed, calls `Universe::generate`, and shows the element count. Proves
       the whole chain works before any rendering exists.
+
+      *Shipped.* The line reads `87 elements · physics v1` — the version is read
+      from the universe rather than typed, because §6 says a universe is
+      `(seed, physics)` and a viewer that hardcodes the version becomes a liar
+      the day `V2` ships. Seeds are decimal `u64`; hex is refused deliberately
+      (`7f3a` looks like a seed because §6 spells addresses `U-7F3A21C9@1`, and
+      accepting it would settle an open §6 question in the top crate of the
+      workspace). 18 tests, of which three drive the real panel headlessly
+      through the accessibility tree — the only way to catch an immediate-mode
+      panel painting the count one frame behind the seed that produced it.
+
+      Two `xtask` guards landed with it, both closing holes that predate the
+      viewer: G1's data-file check was a hand-kept list of four crate paths and
+      is now every crate under `crates/` (unknown ⇒ covered), and
+      `[lints] workspace = true` — the trap that has silently disabled
+      `unsafe_code = "forbid"` in this repository once already — was enforced by
+      **nothing** and now has a check.
+
+- [ ] **1b. A name instead of a number.** A child types "Emily" and gets a
+      universe. `seed_from_phrase(&str) -> u64` in `borbax-universe`, **not** in
+      the viewer: hashing a phrase in the display layer is a display choice
+      reaching a `borbax-*` call, and the obvious spelling (`DefaultHasher`,
+      `RandomState`) is a flat §13.1 violation. Returns the *seed*, not a
+      `Universe`, so the viewer can show the phrase **and** the number it
+      produced — §6 requires the seed be the shareable thing, and a child who
+      cannot write down what she got has lost the point of it.
+
+      Needs a golden with literal expected values, not a round-trip: the mapping
+      is result-affecting and changing it silently reassigns every universe
+      anyone has named. Normalisation (`"Emily"` / `"emily"` / `" Emily "`) is
+      pinned with it. The phrase is **not** filtered through the G2 blocklist —
+      G2 constrains *generated* names, and a user typing "Carbon" breaches
+      nothing.
+
+      *Sequenced here rather than inside Step 1 because it changes a chemistry
+      crate and needs a chemistry-crate review, and rather than after Step 2
+      because the periodic table should arrive with a seed control a child can
+      use.*
+
 - [ ] **2. The periodic table panel.** Elements by period and group, selectable,
       with generated names and properties. First thing worth showing anyone.
+      **The first step with real G2 and G4 exposure** — generated names and
+      unit-bearing properties both reach the screen here, so the name and unit
+      checks from Step 7 land with this step, not five steps later.
 - [ ] **3. The 3D scene.** `wgpu` pipeline, orbit camera, instanced spheres. Render
       one hard-coded molecule from `embed`'s coordinates.
 - [ ] **4. Bonds, and colour by generated property.** Cylinders between bonded
@@ -181,8 +285,20 @@ by §13.5.
       bonds refused with the reason from `BondError`.
 - [ ] **6. The signature overlay.** The 42 sampled directions drawn as surface
       extents, toggleable.
-- [ ] **7. `xtask` covers the viewer** for G2 names, G4 units and real-chemistry
-      palettes.
+- [ ] **7. `xtask` gains the three §5 checks that do not exist yet** — real
+      element names, real-world unit strings, and real-chemistry palettes.
+      **Not "covers the viewer": these checks exist for no crate.** See the
+      Fiction-guarantees section. The name and unit checks are pulled forward to
+      Step 2, which is where the surface they guard first appears; a guard
+      arriving after its surface has shipped is this repository's recorded
+      failure mode. The palette check belongs with Step 4.
+
+      Also here: **`Universe::generate` must have exactly one call site in the
+      crate.** Step 1 shipped a `regenerations` counter that catches `reload`
+      migrating into the paint body, and it is honest about what it cannot see —
+      a `Universe::generate` written directly into `panel::draw` never touches
+      `reload` and never touches the counter. That variant needs the grep, not
+      the counter.
 
 Each step ends with something on screen that is better than the step before. If a
 step cannot be demonstrated by looking at it, it is the wrong step.

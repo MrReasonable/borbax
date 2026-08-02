@@ -16,19 +16,42 @@ use std::process::{Command, Stdio};
 /// for a data file to be doing in these crates.
 const DATA_EXTENSIONS: &[&str] = &["csv", "tsv", "json", "yaml", "yml", "parquet", "bin", "dat"];
 
-/// Crates that must contain no data files at all (G1).
+/// Directories under which **every** crate must contain no data files (G1).
 ///
-/// `experiments` is on the list even though it is not part of the simulation:
-/// it implements a working version of Tasks 8-9, so a molecule set or a
-/// signature table smuggled in there is the same breach by the same route.
+/// **This was a hand-kept list of four crate paths and it had already gone
+/// stale.** `crates/borbax-ui` was created without being added to it, so
+/// `crates/borbax-ui/assets/elements.json` passed `cargo xtask` cleanly — in the
+/// crate with the largest G2/G4 surface in the project, whose entire job is
+/// putting generated names on a screen and which therefore has a standing motive
+/// to acquire a lookup table. `borbax-units` and `borbax-rng` were never on it
+/// either.
+///
+/// So the list now names **roots, not crates**, and applies Task 10's rule for
+/// exactly this failure: **invert the default — unknown ⇒ covered.** A crate
+/// added under `crates/` is guarded on the day it is created, by nobody
+/// remembering anything. The predecessor's verdict was computed from the paths
+/// it knew, so a path it did not know was a silent pass; this one's verdict is
+/// "is this file under a scanned root", which is total.
+///
+/// `experiments` is a root of its own even though it is not part of the
+/// simulation: it implements a working version of Tasks 8-9, so a molecule set
+/// or a signature table smuggled in there is the same breach by the same route.
 /// Measurement *output* is not exempt either — it belongs in `docs/` or gets
-/// regenerated, exactly as it would for the crates below.
-const CHEMISTRY_CRATES: &[&str] = &[
-    "crates/borbax-universe",
-    "crates/borbax-molecule",
-    "crates/borbax-reaction",
-    "experiments",
-];
+/// regenerated.
+///
+/// `xtask` is deliberately absent, for the same reason it is absent from
+/// [`TRANSCENDENTAL_SCAN_ROOTS`]: it is a build tool that cannot reach a
+/// simulation result, and `.pre-commit-config.yaml` and friends would have to be
+/// exempted one by one.
+///
+/// **Checked against the tree before this widened**: no `.csv`, `.tsv`, `.json`,
+/// `.yaml`, `.yml`, `.parquet`, `.bin` or `.dat` exists anywhere under `crates/`
+/// or `experiments/` today, so this costs nothing now. It is also safe for Task
+/// 19: `borbax-render`'s SVG goldens are `.svg` and `insta`'s snapshots are
+/// `.snap`, and neither extension is in [`DATA_EXTENSIONS`] — a golden is
+/// generated output that a reader can verify by eye, not smuggled reference
+/// data.
+const DATA_FREE_ROOTS: &[&str] = &["crates", "experiments"];
 
 /// Real chemical-format tokens that must never appear anywhere (G5).
 /// §5, G5 — real chemical interchange formats, as **identifier segments**.
@@ -390,6 +413,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_signature_surface_is_pinned(root, &mut failures)?;
     check_no_closure_predicate_branch(root, &mut failures)?;
     check_packing_matches_probe(root, &mut failures)?;
+    check_every_member_inherits_the_lints(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -2347,10 +2371,21 @@ fn sig_unanalysable_at(rel: &str, line: usize, what: &str) -> String {
 }
 
 /// G1 — no real chemistry data enters the repository.
+///
+/// Walks [`DATA_FREE_ROOTS`] whole rather than a list of crate paths, so a crate
+/// created tomorrow is covered today. See that constant for why the hand-kept
+/// version was replaced and what it had already missed.
 fn check_no_data_files(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
-    for krate in CHEMISTRY_CRATES {
-        let dir = root.join(krate);
+    for scan_root in DATA_FREE_ROOTS {
+        let dir = root.join(scan_root);
         if !dir.exists() {
+            // **Loud, not silent.** `crates/` not existing means the layout has
+            // moved and this check looked at nothing — the state a §5 guard is
+            // least able to afford, and the shape `check_blocklist_present`
+            // already records being caught by.
+            failures.push(format!(
+                "G1: scan root {scan_root:?} does not exist, so the data-file check did not look"
+            ));
             continue;
         }
         for entry in walk(&dir)? {
@@ -2359,11 +2394,95 @@ fn check_no_data_files(root: &Path, failures: &mut Vec<String>) -> Result<(), St
             };
             if DATA_EXTENSIONS.contains(&ext) {
                 failures.push(format!(
-                    "G1: data file in chemistry crate: {}",
+                    "G1: data file under {scan_root}: {}",
                     entry.display()
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// Every workspace member opts in to `[workspace.lints]`.
+///
+/// **Nothing enforced this, and the trap it guards has already cost this
+/// repository twice.** `[workspace.lints]` is *inert* for a member that omits
+/// `[lints] workspace = true` — the crate does not inherit the workspace value,
+/// it has no lints at all. `xtask` shipped that way, so `unsafe_code = "forbid"`
+/// forbade nothing and `unwrap_used = "deny"` denied nothing, verified at the
+/// time by planting an `.unwrap()` that drew no lint. The identical shape hit
+/// `rust-version` the day before. Both were found by accident.
+///
+/// Four manifests carry a *comment* warning about this. A comment is not a
+/// guard: `fmt`, `clippy`, `test`, `test --release` and `doc` all stay green
+/// when the two lines are deleted, which is precisely what makes the omission
+/// attractive. `crates/borbax-ui` is the crate with a standing motive to try it
+/// — §13.1's transcendental ban reaches every member, and an orbit camera at
+/// Step 3 of the viewer plan needs `sin` and `cos`. The honest answer there is a
+/// per-site `#[expect(..., reason = "...")]`; the quiet one is dropping the
+/// lints table, and this is what makes the quiet one fail.
+///
+/// Fail-closed on an unreadable manifest, for the reason
+/// `check_no_real_chemical_formats` gives about untokenisable files: "could not
+/// read" and "read it and it was fine" must not produce the same verdict.
+fn check_every_member_inherits_the_lints(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut examined = 0_usize;
+
+    for scan_root in DATA_FREE_ROOTS.iter().chain(std::iter::once(&"xtask")) {
+        let dir = root.join(scan_root);
+        if !dir.exists() {
+            continue;
+        }
+        for manifest in walk(&dir)?
+            .into_iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == "Cargo.toml"))
+        {
+            let rel = manifest
+                .strip_prefix(root)
+                .unwrap_or(&manifest)
+                .display()
+                .to_string();
+            let Ok(src) = std::fs::read_to_string(&manifest) else {
+                failures.push(format!(
+                    "lints: {rel} could not be read, so its `[lints] workspace = true` \
+                     was not checked"
+                ));
+                continue;
+            };
+            examined += 1;
+
+            // Deliberately textual and deliberately strict about the spelling.
+            // `[lints] workspace = true` and `lints.workspace = true` are the
+            // two forms cargo accepts; a `[lints.clippy]` override table is
+            // *rejected by cargo itself* alongside `workspace = true`, so there
+            // is no third shape to admit here.
+            let has_table = src.contains("[lints]") && src.contains("workspace = true");
+            let has_dotted = src.contains("lints.workspace = true");
+            if !has_table && !has_dotted {
+                failures.push(format!(
+                    "lints: {rel} does not opt in to `[workspace.lints]` — without \
+                     `[lints] workspace = true` the crate has NO lints rather than the \
+                     workspace's, so `unsafe_code = \"forbid\"` and `unwrap_used = \"deny\"` \
+                     are silently inert in it"
+                ));
+            }
+        }
+    }
+
+    // The bookkeeping check, which is the half that does not test itself: this
+    // counts **manifests read**, not crates or directories, and the number is
+    // asserted because a walk that silently matched nothing would report a
+    // clean gate over an unchecked workspace. Six members exist at the time of
+    // writing; the bar is deliberately below that and above zero, so adding a
+    // crate does not move it and deleting the filter does.
+    if examined < 2 {
+        failures.push(format!(
+            "lints: only {examined} manifest(s) were read, so this check did not look — \
+             the workspace layout has moved"
+        ));
     }
     Ok(())
 }

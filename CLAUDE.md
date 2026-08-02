@@ -9,12 +9,13 @@ whose chemistry is **invented from a 64-bit seed**, not modelled on the real wor
 Molecules are shapes; binding is a geometric complementarity test; catalysis,
 membranes and heredity are all downstream consequences of that single mechanism.
 
-**Tasks 1-7 of 21 are complete** — the workspace and fiction-guarantee gate,
-`borbax-units` with the portable-transcendental chokepoint, `borbax-rng`,
-element generation by fusion, bond energies with the assembled `Universe`,
-molecule graphs with canonical labelling, and the geodesic directions with the
-60-rotation permutation table. Everything else is spec and plan. Read them
-before proposing anything:
+**V0 Tasks 1-10 of 21 are complete**, and **Step 1 of the viewer** on top of
+them — the workspace and fiction-guarantee gate, `borbax-units` with the
+portable-transcendental chokepoint, `borbax-rng`, element generation by fusion,
+bond energies with the assembled `Universe`, molecule graphs with canonical
+labelling, the geodesic directions with the 60-rotation permutation table, 3D
+embedding by stress majorization, the shape signature, and the binding kernel.
+Everything else is spec and plan. Read them before proposing anything:
 
 | Document | What it is |
 |---|---|
@@ -124,9 +125,17 @@ the review *body*, where they never become review threads — a thread query
 returns clean while a finding sits unaddressed. Sweep both: the thread list, and
 every review body for `Nitpick comments (n)` / `Actionable comments posted: n`.
 
-Next action if starting fresh: the **viewer** — see
+Next action if starting fresh: **viewer Step 1b** — a name instead of a number —
+then Step 2, the periodic table panel. See
 `docs/superpowers/plans/2026-08-01-borbax-viewer.md`. Task 10 merged as PR #19
-on 2026-08-01, bringing V0 Tasks 1-10 in.
+on 2026-08-01, bringing V0 Tasks 1-10 in; viewer Step 1 followed it and created
+`crates/borbax-ui`.
+
+**The crate is `borbax-ui` and the binary is `borbax`.** The viewer plan
+originally said `borbax-viewer`; three reviewed documents say `borbax-ui`,
+including Task 19 Step 3, which is written against `borbax-render` and
+`borbax-ui` as a *pair* of backends over one geometry. The plan was amended, not
+the spec.
 
 **The viewer is V1 work pulled forward, and that is a deliberate deviation from
 the spec's sequencing rather than an oversight.** §14.5 puts static headless SVG
@@ -137,12 +146,21 @@ to look at. Task 19's SVG goldens are **not** replaced — they are how §13.6
 proves the geometry is identical across platforms, which a screenshot cannot
 do. The plan file says all of this; read it before re-sequencing anything back.
 
-**Task 8 has a preamble in the plan and it is load-bearing.** Task 6's review
-routed a finding there — `canonicalise` discards the ordering, so a naive
-`embed(&Mol12)` gives one species two shapes — and the *first* version of that
-finding had a false mechanism and a discriminator that would have rejected a
-correct implementation. Read the "Withdrawn on measurement" block before
-writing `embed`'s signature, not after.
+**The viewer's seam is per-file and a reviewer should check it by grep, not by
+reading.** `crates/borbax-ui/src/state.rs` names no UI type, `panel.rs` names
+`egui` and contains no `format!`, and only `main.rs` names `eframe`. That is
+what lets `egui_kittest` drive the real drawing code headlessly in CI — `egui`
+lays out on the CPU and cannot open a window. It also means every string the
+window paints comes from `state.rs`, so a test asserting on one is asserting on
+what is shown; a `format!` migrating into `panel.rs` leaves those tests green
+over a window they have stopped describing.
+
+**Step 3 has a hazard worth settling before it starts.** An orbit camera needs
+`sin` and `cos`, `clippy.toml`'s §13.1 ban resolves for every workspace member,
+and `xtask`'s textual scan has **no path exemption by design** — so a clippy
+`#[expect]` silences only half of it. The viewer produces no results, so routing
+camera trig through `det_math` is cost with no benefit. Decide it, with the
+determinism auditor, before there is a half-built scene depending on the answer.
 
 **Task 5b is scaffolding, not a V0 task.** It respecifies `abundance` as a
 fusion/fission process and is fully written up, but it gates nothing, the shipped
@@ -164,6 +182,7 @@ cargo test --locked -p borbax-molecule signature                # one crate, one
 cargo test --locked -p borbax-units --doc                       # doc tests (compile_fail unit-mixing tests live here)
 cargo xtask                                                     # fiction-guarantee checks (spec §5) — CI gate
 cargo run --locked -p borbax-experiments --release --bin g2     # G2 locality measurement (docs/experiments/)
+cargo run --locked -p borbax-ui --release                       # the viewer — a window, a seed, a universe
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --no-deps --document-private-items
