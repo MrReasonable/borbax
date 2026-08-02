@@ -310,6 +310,39 @@ const BANNED_PARALLEL_CALLS: &[&str] = &[
     ".par_extend(",
 ];
 
+/// §13.1 — hashers whose output is not pinned across releases or across runs.
+///
+/// **`clippy.toml`'s `disallowed-types` list is the authority; this is a second
+/// pass**, on exactly the terms [`BANNED_CALLS`] states: this runs in the
+/// sub-second pre-commit hook where clippy does not, and it reads files as
+/// text, so code behind an inactive `cfg` — which clippy never builds and
+/// therefore never lints — is still seen. `clippy.toml` carries the criterion
+/// and the argument; this carries the spellings.
+///
+/// **Bare identifiers, not paths, and that is the opposite choice from
+/// [`BANNED_CALLS`].** There the method form (`.exp()`) and the path form
+/// (`f64::exp`) are both needed because `exp` is a name that belongs to a
+/// *type*, so the bare word is meaningless on its own. A hasher is imported and
+/// then written unqualified — `use std::hash::DefaultHasher;` followed by
+/// `DefaultHasher::new()` — so the bare identifier is the spelling that
+/// actually appears, and it is distinctive enough to match on: none of these
+/// three names belongs to anything else in this workspace, and a path form
+/// would miss the imported case entirely.
+///
+/// The class this decides, stated so the next person can see what is outside
+/// it: **these three literal identifiers, in comment-stripped and
+/// literal-stripped code, outside `#[cfg(test)]`**. A type alias
+/// (`type H = DefaultHasher;` is caught at the alias, but `use ... as H;` is
+/// not), a macro expansion, and a hasher from a future third-party crate are
+/// all outside it. Clippy's path resolution covers the first two; the third is
+/// a dependency review, which is where it belongs.
+///
+/// Test code is exempt for the same reason it is exempt from the transcendental
+/// scan, and here the exemption is load-bearing rather than incidental: proving
+/// that `seed_from_phrase` does *not* agree with a `DefaultHasher` means
+/// writing one down and comparing.
+const BANNED_TYPES: &[&str] = &["DefaultHasher", "RandomState", "SipHasher"];
+
 /// Directories scanned for §13.1 violations, relative to the workspace root.
 ///
 /// `experiments` is here for the same reason it is in [`DATA_FREE_ROOTS`]: it
@@ -3148,6 +3181,16 @@ fn scan_rust_source(rel: &str, src: &str, failures: &mut Vec<String>) {
                     ));
                 }
             }
+            for ty in BANNED_TYPES {
+                if code.contains(ty) {
+                    failures.push(format!(
+                        "§13.1: unpinned hasher {ty} at {rel}:{} — its output is not stable \
+                         across releases or across runs; derive seeds with \
+                         borbax_rng::Stream (Domain::Hash)",
+                        i + 1
+                    ));
+                }
+            }
         }
 
         let mut opens: i64 = 0;
@@ -5137,12 +5180,140 @@ mod tests {
         assert!(scan_for_derived_streams("probe.rs", "fn broken( {").is_err());
     }
 
-    use super::{BANNED_CALLS, scan_rust_source};
+    use super::{BANNED_CALLS, BANNED_TYPES, scan_rust_source};
 
     fn scan(src: &str) -> Vec<String> {
         let mut failures = Vec::new();
         scan_rust_source("t.rs", src, &mut failures);
         failures
+    }
+
+    /// The `path = ".."` values inside one named array of `clippy.toml`.
+    ///
+    /// **Section-aware, and it has to be.** The first version of the
+    /// cross-check below read every `path = "` line in the file, which was
+    /// correct while `disallowed-methods` was the only array. Adding
+    /// `disallowed-types` broke it in the worst available direction: the three
+    /// hasher paths were fed to the *method* cross-check, which split
+    /// `std::collections::hash_map::DefaultHasher` at its first `::` and
+    /// reported it missing from `BANNED_CALLS` — a red test with a diagnosis
+    /// pointing at the wrong list entirely.
+    fn clippy_paths_in(toml: &str, key: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        let mut inside = false;
+        for line in toml.lines() {
+            if line.starts_with(key) && line.contains('[') {
+                inside = true;
+                continue;
+            }
+            if inside && line.starts_with(']') {
+                inside = false;
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            if let Some((_, rest)) = line.split_once("path = \"")
+                && let Some((path, _)) = rest.split_once('"')
+            {
+                paths.push(path.to_owned());
+            }
+        }
+        paths
+    }
+
+    fn clippy_toml() -> String {
+        let toml = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("clippy.toml"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        assert!(!toml.is_empty(), "clippy.toml not found or empty");
+        toml
+    }
+
+    /// §13.1's hasher ban, held in step across its two enforcement points.
+    ///
+    /// Same argument as `the_two_ban_lists_cover_the_same_functions`: two
+    /// lists are only redundant while they agree, and nothing else keeps them
+    /// in step. The match is on the **last path segment**, because
+    /// `clippy.toml` names a resolvable path and [`BANNED_TYPES`] names the
+    /// identifier as written — see that constant for why those differ.
+    ///
+    /// The empty-list check is not padding. `clippy_paths_in` returns an empty
+    /// vector for a key that is absent *or* misspelled, and both directions of
+    /// the comparison below are vacuously satisfied by two empty lists — so
+    /// deleting `disallowed-types` from `clippy.toml` wholesale would leave
+    /// this test green without it.
+    #[test]
+    fn the_two_type_ban_lists_cover_the_same_types() {
+        let toml = clippy_toml();
+        let paths = clippy_paths_in(&toml, "disallowed-types");
+        assert!(
+            !paths.is_empty(),
+            "clippy.toml has no `disallowed-types` array — §13.1's hasher ban \
+             has no authoritative half, and the textual list below cannot see \
+             a `use ... as` rename or a macro expansion on its own"
+        );
+
+        let mut missing = Vec::new();
+        for path in &paths {
+            let leaf = path.rsplit("::").next().unwrap_or(path);
+            if !BANNED_TYPES.contains(&leaf) {
+                missing.push(path.clone());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "in clippy.toml but not BANNED_TYPES: {missing:?} — the text scan is \
+             the only thing that would catch one of these being deleted from \
+             clippy.toml, so it has to know about them"
+        );
+
+        let mut orphaned = Vec::new();
+        for ty in BANNED_TYPES {
+            if !paths
+                .iter()
+                .any(|p| p.rsplit("::").next().unwrap_or(p) == *ty)
+            {
+                orphaned.push((*ty).to_owned());
+            }
+        }
+        assert!(
+            orphaned.is_empty(),
+            "in BANNED_TYPES but not clippy.toml: {orphaned:?} — clippy is the \
+             authority, so a type missing there is unenforced against every \
+             spelling a text scan cannot see"
+        );
+    }
+
+    /// The hasher ban catches the spelling anyone would actually write.
+    ///
+    /// Probed rather than asserted: the mutation this exists to stop is
+    /// `seed_from_phrase` drafted with a `DefaultHasher`, which passed all six
+    /// gate legs before this guard landed.
+    #[test]
+    fn reports_an_unpinned_hasher() {
+        let found = scan("fn f() -> DefaultHasher { DefaultHasher::new() }\n");
+        assert!(
+            found.iter().any(|f| f.contains("DefaultHasher")),
+            "{found:?}"
+        );
+        assert!(
+            scan("fn f() -> RandomState { RandomState::new() }\n")
+                .iter()
+                .any(|f| f.contains("RandomState"))
+        );
+        // Imported and written unqualified — the spelling a path form misses,
+        // and the reason `BANNED_TYPES` holds bare identifiers.
+        assert!(
+            scan("use std::hash::DefaultHasher;\n")
+                .iter()
+                .any(|f| f.contains("DefaultHasher")),
+        );
+        // The exemption that makes the golden's own negative control writable:
+        // a test may name a hasher in order to prove we do not agree with it.
+        assert!(scan("#[cfg(test)]\nmod t {\n    use std::hash::DefaultHasher;\n}\n").is_empty());
     }
 
     #[test]
@@ -5254,24 +5425,20 @@ mod tests {
 
     #[test]
     fn the_two_ban_lists_cover_the_same_functions() {
-        let clippy_toml = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.join("clippy.toml"))
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .unwrap_or_default();
-        assert!(!clippy_toml.is_empty(), "clippy.toml not found or empty");
+        let clippy_toml = clippy_toml();
+        let method_paths = clippy_paths_in(&clippy_toml, "disallowed-methods");
+        assert!(
+            !method_paths.is_empty(),
+            "clippy.toml has no `disallowed-methods` array — both directions \
+             below are vacuous over an empty list"
+        );
 
         let mut missing = Vec::new();
-        for line in clippy_toml.lines() {
-            let Some(rest) = line.split_once("path = \"") else {
-                continue;
-            };
-            let Some((path, _)) = rest.1.split_once('"') else {
-                continue;
-            };
+        for path in &method_paths {
             let Some((_, func)) = path.split_once("::") else {
                 continue;
             };
+            let path = path.as_str();
             // Both spellings required, and the method match exact.
             //
             // This was a prefix match, so `.sinh()` "covered" `sin`, `.exp2()`
@@ -5329,7 +5496,9 @@ mod tests {
                 continue;
             }
             if !CLIPPY_ONLY.contains(&func)
-                && !clippy_toml.contains(&format!("path = \"{width}::{func}\""))
+                && !method_paths
+                    .iter()
+                    .any(|p| p == &format!("{width}::{func}"))
             {
                 orphaned.push((*banned).to_owned());
             }
