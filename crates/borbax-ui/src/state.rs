@@ -58,13 +58,19 @@ pub enum SeedError {
     #[error("type a seed")]
     Empty,
     /// Something was typed, and it was not a whole number.
-    #[error("seeds are whole numbers, 0 to 18446744073709551615")]
+    ///
+    /// The bound is interpolated from [`u64::MAX`] rather than transcribed. It
+    /// is the domain of `Universe::generate`, and a typed copy would stay on
+    /// screen saying something false if that domain ever narrows — with the test
+    /// that pins this string passing throughout, since it pins the literal to
+    /// itself.
+    #[error("seeds are whole numbers, 0 to {}", u64::MAX)]
     NotANumber,
     /// A negative whole number.
     #[error("seeds are not negative")]
     Negative,
     /// A whole number too large to be a seed.
-    #[error("that is larger than the largest seed, 18446744073709551615")]
+    #[error("that is larger than the largest seed, {}", u64::MAX)]
     TooLarge,
 }
 
@@ -195,9 +201,22 @@ impl ViewerState {
     /// by which a future edit could reach for `rand` "because the viewer
     /// already does".
     ///
+    /// **[`Domain::Hash`], and the first version of this said
+    /// [`Domain::Universe`], which was a real collision rather than a stylistic
+    /// one.** `Stream::new(m, Domain::Universe, 0)` is bit-for-bit the stream
+    /// `borbax_universe`'s own `stream(seed)` helper returns — the one element
+    /// generation draws its shell pattern from. Two reviewers measured the
+    /// aliasing independently and it was exact on every moment tried. Nothing
+    /// was wrong on screen, because the universe is keyed on the *drawn* seed
+    /// and not on `moment`; what was wrong is that a future change to element
+    /// generation's first draw would silently change which universes this button
+    /// offers, and `Domain`'s own doc says the enum exists to stop exactly that.
+    /// `Domain::Hash` is documented for this case — "using a `Stream` as a hash
+    /// function" — and turning a clock reading into a seed is that.
+    ///
     /// Pure in `moment`. The clock lives in [`moment()`], at the edge.
     pub fn randomise(&mut self, moment: u64) {
-        let seed = Stream::new(moment, Domain::Universe, 0).next_range(RANDOM_SEED_CEILING);
+        let seed = Stream::new(moment, Domain::Hash, 0).next_range(RANDOM_SEED_CEILING);
         seed.to_string().clone_into(&mut self.seed_text);
         self.reload();
     }
