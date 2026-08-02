@@ -7,7 +7,7 @@ use core::num::IntErrorKind;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borbax_rng::{Domain, Stream};
-use borbax_universe::Universe;
+use borbax_universe::{Universe, seed_from_phrase};
 use thiserror::Error;
 
 /// One more than the largest seed the "surprise me" button will offer.
@@ -145,6 +145,7 @@ pub enum Outcome {
 /// Everything the window shows, and nothing about how it is drawn.
 #[derive(Debug)]
 pub struct ViewerState {
+    phrase_text: String,
     seed_text: String,
     outcome: Outcome,
     regenerations: u64,
@@ -161,6 +162,7 @@ impl ViewerState {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            phrase_text: String::new(),
             seed_text: String::new(),
             outcome: Outcome::Rejected(SeedError::Empty),
             regenerations: 0,
@@ -218,6 +220,72 @@ impl ViewerState {
     pub fn randomise(&mut self, moment: u64) {
         let seed = Stream::new(moment, Domain::Hash, 0).next_range(RANDOM_SEED_CEILING);
         seed.to_string().clone_into(&mut self.seed_text);
+        // The button produced this seed, so no name did. Leaving a name beside
+        // it would attribute a universe to something that did not make it —
+        // the same class of defect `Outcome` exists to prevent one field along.
+        self.phrase_text.clear();
+        self.reload();
+    }
+
+    /// The text in the name box, for the panel to edit in place.
+    pub const fn phrase_text_mut(&mut self) -> &mut String {
+        &mut self.phrase_text
+    }
+
+    /// The text in the name box.
+    #[must_use]
+    pub fn phrase_text(&self) -> &str {
+        &self.phrase_text
+    }
+
+    /// Put `phrase` in the name box and open the universe it names.
+    ///
+    /// The convenience spelling for tests and for anything holding a phrase
+    /// already; the panel edits [`Self::phrase_text_mut`] in place and calls
+    /// [`Self::reload_from_phrase`], which is the same body.
+    pub fn set_phrase(&mut self, phrase: &str) {
+        phrase.clone_into(&mut self.phrase_text);
+        self.reload_from_phrase();
+    }
+
+    /// Derive the seed the name box currently names, and load that universe.
+    ///
+    /// **An empty or blank name box deliberately leaves the seed box alone**,
+    /// rather than clearing it. The alternative was considered and rejected on
+    /// the state the window opens in: it opens with the name box empty and a
+    /// universe on screen, because a viewer whose first screen asks you to do
+    /// something has spent its opening move on a chore. Any rule under which an
+    /// empty name box clears the seed contradicts that opening state, so the
+    /// two would have to disagree about the same visible input. Leaving it
+    /// alone means an empty name box reads as "the name box is not currently
+    /// driving", which is exactly what it means at startup.
+    ///
+    /// **The name is a key, not a label** — see
+    /// [`borbax_universe::seed_from_phrase`] for why that was the choice, and
+    /// note the direction: the phrase goes *in*, a number comes back, and no
+    /// `&str` crosses into a chemistry type.
+    pub fn reload_from_phrase(&mut self) {
+        if let Some(seed) = seed_from_phrase(&self.phrase_text) {
+            seed.to_string().clone_into(&mut self.seed_text);
+            self.reload();
+        }
+    }
+
+    /// The seed box was edited by hand, so nothing is named any more.
+    ///
+    /// **Clearing the name box is the point of this method existing**, and it
+    /// is why the panel does not simply call [`Self::reload`] on the seed box's
+    /// `changed()` as it did in Step 1. With the name left standing, typing
+    /// `42` into the seed box beside a name box reading `Emily` puts a universe
+    /// on screen labelled with a name that did not produce it — a plausible
+    /// attribution to the wrong thing, which is precisely the state [`Outcome`]
+    /// was made an enum to prevent one field along.
+    ///
+    /// It cannot live inside [`Self::reload`]: that is also the path
+    /// [`Self::reload_from_phrase`] takes, which would wipe the name a
+    /// keystroke after setting it.
+    pub fn commit_typed_seed(&mut self) {
+        self.phrase_text.clear();
         self.reload();
     }
 

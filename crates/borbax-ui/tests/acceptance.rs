@@ -280,3 +280,145 @@ fn the_reported_count_is_this_universes_table_length() {
         assert_eq!(status_after(&seed.to_string()), expected_for(seed));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Step 1b — a name instead of a number.
+// ---------------------------------------------------------------------------
+
+/// The whole point of the step: a child types her name and gets a universe.
+///
+/// **The name is a key, not a label** — Ian's decision, stated in his framing as
+/// "Emily" giving Emily's universe on any machine, forever. The alternative put
+/// to him was a random seed with a text box in front of it, which makes the name
+/// decoration: that is the "surprise me" button, and it already exists.
+#[test]
+fn a_name_typed_into_the_viewer_opens_that_names_universe() {
+    let mut state = ViewerState::new();
+    state.set_phrase("Emily");
+
+    let seed = borbax_universe::seed_from_phrase("Emily")
+        .unwrap_or_else(|| unreachable!("`Emily` is not blank, so it names a universe"));
+    assert_eq!(state.status_line(), expected_for(seed));
+    assert_eq!(
+        state.seed_text(),
+        seed.to_string(),
+        "the seed box shows the number the name produced, so it can be written down"
+    );
+}
+
+/// A name and a seed cannot disagree about which universe is on screen.
+///
+/// **The invariant, and it is what the two-box design buys.** Whenever the name
+/// box holds something that names a universe, the seed box holds that
+/// universe's number — so the number can be written down, and the name never
+/// labels a universe it did not produce.
+fn the_boxes_agree(state: &ViewerState) {
+    if let Some(seed) = borbax_universe::seed_from_phrase(state.phrase_text()) {
+        assert_eq!(
+            state.seed_text(),
+            seed.to_string(),
+            "the name box says {:?} but the seed box says {:?}",
+            state.phrase_text(),
+            state.seed_text()
+        );
+        assert_eq!(state.status_line(), expected_for(seed));
+    }
+}
+
+/// A digit typed into the *name* box is a name, not a seed.
+///
+/// **This is the two-box decision made checkable, and it is the test that would
+/// be impossible with one box.** A single control has to guess whether `"7"`
+/// means seed 7 or a child called 7, and guessing means deleting
+/// `letters_in_the_seed_box_are_refused_not_hashed` — the test that forbids "be
+/// friendly, hash whatever was typed". With two boxes each control keeps its
+/// own unambiguous job and `parse_seed` keeps all four of its refusals.
+#[test]
+fn a_digit_in_the_name_box_names_a_universe_rather_than_selecting_one() {
+    let mut state = ViewerState::new();
+    state.set_phrase("7");
+
+    let named = borbax_universe::seed_from_phrase("7")
+        .unwrap_or_else(|| unreachable!("`7` is not blank, so it names a universe"));
+    assert_ne!(named, 7, "the name box fell through to seed parsing");
+    assert_eq!(state.status_line(), expected_for(named));
+    the_boxes_agree(&state);
+}
+
+/// Typing a seed by hand clears the name, because that name did not produce it.
+///
+/// Without this the window shows `Emily` beside a universe Emily did not name —
+/// a plausible number attributed to the wrong thing, which is the class
+/// `Outcome` was made an enum to prevent one field along.
+#[test]
+fn typing_a_seed_by_hand_stops_claiming_the_old_name_produced_it() {
+    let mut state = ViewerState::new();
+    state.set_phrase("Emily");
+    assert!(!state.phrase_text().is_empty());
+
+    "42".clone_into(state.seed_text_mut());
+    state.commit_typed_seed();
+
+    assert_eq!(
+        state.phrase_text(),
+        "",
+        "the name outlived the seed it named"
+    );
+    assert_eq!(state.status_line(), expected_for(42));
+    the_boxes_agree(&state);
+}
+
+/// "surprise me" clears the name too, and for the same reason.
+#[test]
+fn a_surprise_seed_stops_claiming_the_old_name_produced_it() {
+    let mut state = ViewerState::new();
+    state.set_phrase("Emily");
+    state.randomise(1_234_567_890);
+
+    assert_eq!(state.phrase_text(), "");
+    the_boxes_agree(&state);
+}
+
+/// Emptying the name box leaves the universe alone rather than blanking it.
+///
+/// The alternative — clearing the seed box — was rejected because it
+/// contradicts the state the window opens in: name box empty, a universe on
+/// screen. Two rules for the same visible input is the wart; this is the
+/// version where an empty name box means "not currently driving", at startup
+/// and after a deletion alike.
+#[test]
+fn emptying_the_name_box_does_not_take_the_universe_with_it() {
+    let mut state = ViewerState::new();
+    state.set_phrase("Emily");
+    let named = state.status_line();
+
+    state.set_phrase("");
+    assert_eq!(state.status_line(), named);
+    // And blank-but-not-empty behaves the same, since it names nothing either.
+    state.set_phrase("   ");
+    assert_eq!(state.status_line(), named);
+}
+
+/// The same name gives the same universe however the viewer got there.
+#[test]
+fn a_name_is_a_key_and_not_a_label() {
+    let mut typed = ViewerState::new();
+    typed.set_phrase("Emily");
+
+    let mut differently = ViewerState::new();
+    differently.set_phrase("  eMiLy ");
+
+    assert_eq!(typed.status_line(), differently.status_line());
+    assert_eq!(typed.seed_text(), differently.seed_text());
+}
+
+/// Naming a universe generates exactly one, not one per keystroke path.
+#[test]
+fn naming_a_universe_generates_exactly_one() {
+    let mut state = ViewerState::new();
+    state.set_phrase("Emily");
+    assert_eq!(state.regenerations(), 1);
+    // A name that names nothing must not generate at all.
+    state.set_phrase("  ");
+    assert_eq!(state.regenerations(), 1);
+}

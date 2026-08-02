@@ -72,12 +72,19 @@ pub mod naming;
               public with it. The redundancy is the belt to the module's braces"
 )]
 pub(crate) mod packing;
+/// A typed phrase in, a seed out — and the phrase goes no further.
+///
+/// Deliberately **not** part of [`naming`], which is about *generated* element
+/// names and the G2 blocklist that constrains them. Nothing a user types is
+/// subject to G2.
+pub mod phrase;
 
 // `NotABondOrder` travels with `BondOrder`: a public fallible conversion whose
 // error type is not nameable from the same path forces a downstream `match` to
 // reach into `bonds::` for one item.
 pub use bonds::{BondEnergyMatrix, BondOrder, NotABondOrder};
 pub use element::{Element, ElementId, PeriodicTable, ShellPattern};
+pub use phrase::seed_from_phrase;
 
 use borbax_rng::{Domain, Stream};
 use borbax_units::{Span, Thermal};

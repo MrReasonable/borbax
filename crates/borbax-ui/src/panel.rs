@@ -35,7 +35,34 @@ use crate::state::{ViewerState, moment};
 /// would have caught it getting worse. Both widgets are now asserted through the
 /// accessibility tree.
 pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
-    ui.label("seed");
+    // **The name box comes before the seed box, and that is the frame-order
+    // rule again rather than a layout preference.** Typing a name writes into
+    // `seed_text`, so it has to run before the widget that renders `seed_text`
+    // is emitted — with it after, the frame shows the *previous* seed beside
+    // the new name's universe. Same defect as the "surprise me" button's, in a
+    // third widget, and the frame tests are what catch it.
+    let name_label = ui.label("name");
+    // Hinted rather than pre-filled. A pre-filled name chooses the universe
+    // that name produces; an empty box with no hint teaches nothing about what
+    // the box is for. A fixed literal like the labels around it — the "no
+    // `format!`" rule is about strings built from state, which is what a test
+    // can be wrong about.
+    //
+    // **`labelled_by` is load-bearing rather than politeness.** There are two
+    // text boxes now, so `get_by_role(Role::TextInput)` is ambiguous and the
+    // obvious repair is to index the tree — which pins the tests to the *order*
+    // widgets are emitted in, in a file whose entire subject is that the order
+    // is a decision that changes. Naming each box instead means the frame tests
+    // address the one they mean, and a reordering breaks nothing that is not
+    // actually broken. It is also the AccessKit relation a screen reader needs.
+    let named = ui
+        .add(egui::TextEdit::singleline(state.phrase_text_mut()).hint_text("type a name"))
+        .labelled_by(name_label.id);
+    if named.changed() {
+        state.reload_from_phrase();
+    }
+
+    let seed_label = ui.label("seed");
 
     ui.horizontal(|ui| {
         // `moment()` is the crate's only wall-clock read, and it is called here
@@ -46,11 +73,18 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
             state.randomise(moment());
         }
 
-        let response = ui.text_edit_singleline(state.seed_text_mut());
+        let response = ui
+            .text_edit_singleline(state.seed_text_mut())
+            .labelled_by(seed_label.id);
         // Gated on `changed()`, not called unconditionally. `Universe::generate`
         // is ~146 us and this body runs at the display's refresh rate.
+        //
+        // `commit_typed_seed` rather than `reload`, which is the Step 1
+        // spelling: a seed typed by hand was not produced by whatever is in the
+        // name box, so the name box is cleared. Calling `reload` here leaves a
+        // universe on screen labelled with a name that did not make it.
         if response.changed() {
-            state.reload();
+            state.commit_typed_seed();
         }
     });
 
