@@ -292,26 +292,66 @@ this paragraph exists.
       case-sensitive, so `elements.JSON` passed — and on macOS and Windows that
       rename is invisible to the person making it.
 
-- [ ] **1b. A name instead of a number.** A child types "Emily" and gets a
-      universe. `seed_from_phrase(&str) -> u64` in `borbax-universe`, **not** in
-      the viewer: hashing a phrase in the display layer is a display choice
-      reaching a `borbax-*` call, and the obvious spelling (`DefaultHasher`,
-      `RandomState`) is a flat §13.1 violation. Returns the *seed*, not a
-      `Universe`, so the viewer can show the phrase **and** the number it
-      produced — §6 requires the seed be the shareable thing, and a child who
-      cannot write down what she got has lost the point of it.
+- [x] **1b. A name instead of a number.** A child types "Emily" and gets a
+      universe. `seed_from_phrase` in `borbax-universe`, **not** in the viewer:
+      hashing a phrase in the display layer is a display choice reaching a
+      `borbax-*` call, and the obvious spelling (`DefaultHasher`, `RandomState`)
+      is a flat §13.1 violation. Returns the *seed*, not a `Universe`, so the
+      viewer can show the phrase **and** the number it produced — §6 requires the
+      seed be the shareable thing, and a child who cannot write down what she got
+      has lost the point of it.
 
-      Needs a golden with literal expected values, not a round-trip: the mapping
-      is result-affecting and changing it silently reassigns every universe
-      anyone has named. Normalisation (`"Emily"` / `"emily"` / `" Emily "`) is
-      pinned with it. The phrase is **not** filtered through the G2 blocklist —
-      G2 constrains *generated* names, and a user typing "Carbon" breaches
-      nothing.
+      *Shipped.* Typing `emily` writes `15709401653729972761` into the seed box
+      and paints `117 elements · physics v1`. 444 tests, up from 419.
 
-      *Sequenced here rather than inside Step 1 because it changes a chemistry
-      crate and needs a chemistry-crate review, and rather than after Step 2
-      because the periodic table should arrive with a seed control a child can
-      use.*
+      **The signature is `-> Option<u64>`, not the `-> u64` above.** An
+      infallible version has to invent a universe for the empty string, which
+      reopens `an_empty_seed_box_does_not_quietly_mean_universe_zero` one crate
+      down — a real element count on screen attributed to a name nobody typed.
+      That test post-dates this plan step.
+
+      **Two boxes, not one, and that is what kept every shipped test.** A single
+      control has to guess whether `"7"` is seed 7 or a child called 7, and
+      guessing means deleting `letters_in_the_seed_box_are_refused_not_hashed`,
+      which exists specifically to forbid "be friendly, hash whatever was typed".
+      Verified rather than assumed: all 12 previously shipped `borbax-ui` tests
+      pass unchanged and `parse_seed` keeps all four refusals.
+      `a_digit_in_the_name_box_names_a_universe_rather_than_selecting_one` is the
+      test that one box makes unwritable.
+
+      **The name box drives the seed box, and two rules follow.** Typing a seed
+      by hand *clears* the name, because that name did not produce it — otherwise
+      the window shows `Emily` beside a universe Emily did not name. An empty
+      name box deliberately does **not** clear the seed, because the window opens
+      with the name box empty and a universe on screen, so the opposite rule
+      would make the opening state contradict itself.
+
+      The golden holds literal values with its authority stated as **the mint,
+      not the test**. Its non-ASCII rows are load-bearing: absorbing `char`s
+      instead of bytes fails *only* the first non-ASCII row, and swapping
+      `to_ascii_lowercase` for `str::to_lowercase` fails *only* the Greek row —
+      both green on every ASCII row. `to_ascii_lowercase` is a determinism
+      decision: Rust's Unicode tables moved 16.0.0 → 17.0.0 inside this
+      project's pinned toolchain, so a Unicode-aware fold lets a compiler bump
+      silently reassign every named universe. NFC and NFD are different
+      universes, pinned deliberately. The phrase is **not** filtered through the
+      G2 blocklist — G2 constrains *generated* names, and a user typing "Carbon"
+      breaches nothing.
+
+      **§13.1's hasher ban landed first, in its own commit, before any golden
+      literal was minted.** `DefaultHasher`, `RandomState` and `SipHasher`
+      passed all six gate legs beforehand: `clippy.toml` had no
+      `disallowed-types` key at all and `xtask` had no hasher entry, so the ban
+      §13.1 states was held by prose. A golden minted from a `DefaultHasher`
+      draft is green forever and moves on the next rustc bump, arriving as a
+      golden failure whose obvious diagnosis ("regenerate") is the wrong one.
+
+      **One decision the golden structurally cannot defend**, which is why
+      `absorb` is a named function with its own test: `Stream::sub` over
+      `Stream::new` is invisible in the output, since a `Stream::new` version
+      would have its own self-consistent table with every test green. The hazard
+      is that `Stream::new(acc, Hash, 0)` — reachable, because a `&str` may
+      contain NUL — is bit-for-bit the "surprise me" button's stream.
 
 - [ ] **2. The periodic table panel.** Elements by period and group, selectable,
       with generated names and properties. First thing worth showing anyone.
