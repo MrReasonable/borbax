@@ -656,7 +656,11 @@ fn two_cells_never_answer_to_the_same_label() {
 /// **The only test here that says anything about the shipped program.** The
 /// others use a harness sized so the whole table fits, which makes clipping a
 /// non-subject; this one reads [`borbax_ui::WINDOW_SIZE`] — never a retyped
-/// literal — because the defect it hunts is a function of the real window. The
+/// literal — because the defect it hunts is a function of the real window.
+///
+/// Precisely: it asserts about the size the program **requests**, since
+/// `eframe` may have that scaled or clamped by the platform. That is the
+/// geometry this repository controls, and the only one observable headlessly. The
 /// widest measured table is ~3531 px of content against a 900 px window, so
 /// most universes do not fit and a grid that does not scroll leaves the tail
 /// permanently unreachable.
@@ -722,38 +726,73 @@ fn every_cell_is_on_screen_after_scrolling_at_the_size_the_window_opens_at() {
     );
 }
 
-/// The grid is operable from the keyboard.
+/// The grid is operable from the keyboard, without anything calling `focus()`.
 ///
-/// **A separate concern from reachability, and the one test here that
-/// legitimately uses `focus()`.** Reachability asks whether a cell can be
-/// brought under the pointer; this asks whether it can be reached at all without
-/// one. `focus()` bypasses geometry, which is exactly why it must not be used
-/// for the other question — and exactly why it is right for this one.
+/// **Rewritten after a reviewer pointed out the first version proved nothing.**
+/// It called `Node::focus()` and then pressed Enter, which asserts that a
+/// focused cell activates while assuming the thing actually in question — that
+/// a keyboard user can *get* to the grid at all. `focus()` issues an AccessKit
+/// action and bypasses the focus order entirely, so the test was green over a
+/// grid no keyboard could reach.
 ///
-/// It matters more than politeness at 74 columns: a row that wide is unpleasant
-/// to navigate by mouse, and the accessibility relations this needs are the same
-/// ones every other test in this file addresses widgets through.
+/// Three separate properties, all measured before this was written:
+///
+/// - **Tab reaches a cell** — the first press lands on the first cell.
+/// - **Arrows move within the grid** — `egui` does 2D spatial navigation for
+///   free, which matters at 74 columns where Tab alone would be unusable.
+/// - **Enter activates the focused cell.**
+///
+/// The reviewer's proposed remedy — swapping `selectable_label` for
+/// `egui::Button::selectable` so cells enter the tab order — was **refuted by
+/// measurement**: both spellings emit `Role::Button` and both are already
+/// Tab-reachable, so the widget was never the problem. (The same review claimed
+/// the cells should be queried as `Role::ToggleButton`; measured, `egui` emits
+/// `Role::Button` for both, and every query in this file would find nothing.)
 #[test]
 fn the_grid_is_operable_from_the_keyboard() {
     let mut harness = wide_harness();
     type_into(&harness, "seed", "7");
     harness.step();
 
-    let (only, _, _) = three_symbols(7);
-    harness.get_by_role_and_label(Role::Button, &only).focus();
+    let cells: Vec<String> = harness
+        .state()
+        .rows()
+        .iter()
+        .flat_map(|r| r.cells.iter().map(|c| c.symbol.to_owned()))
+        .collect();
+    assert!(cells.len() > 2, "the fixture needs a table");
+
+    // **Tab, not `focus()`.** This is the assertion the first version was
+    // missing: nothing here reaches into the accessibility tree to place focus.
+    harness.key_combination(&[egui::Key::Tab]);
     harness.step();
+    let focused = |h: &Harness<'_, ViewerState>| -> Option<String> {
+        cells
+            .iter()
+            .find(|s| h.get_by_label(s).is_focused())
+            .cloned()
+    };
+    let first = focused(&harness);
     assert!(
-        harness
-            .get_by_role_and_label(Role::Button, &only)
-            .is_focused(),
-        "a cell cannot take keyboard focus, so the grid is mouse-only"
+        first.is_some(),
+        "no cell takes keyboard focus, so the table is mouse-only"
     );
 
+    // Arrows move along the row — free from `egui`'s spatial navigation, and
+    // the only usable way through a row 74 wide.
+    harness.key_combination(&[egui::Key::ArrowRight]);
+    harness.step();
+    let second = focused(&harness);
+    assert!(second.is_some(), "focus left the grid on ArrowRight");
+    assert_ne!(second, first, "ArrowRight did not move the focus");
+
+    // Enter activates whatever is focused.
     harness.key_combination(&[egui::Key::Enter]);
     harness.step();
+    let chosen = second.unwrap_or_default();
     assert_eq!(
         harness
-            .get_by_role_and_label(Role::Button, &only)
+            .get_by_role_and_label(Role::Button, &chosen)
             .accesskit_node()
             .toggled(),
         Some(egui::accesskit::Toggled::True),

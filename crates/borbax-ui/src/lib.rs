@@ -149,7 +149,13 @@ pub const WINDOW_TITLE: &str = "Borbax";
 /// and neither costs a universe.
 pub const OPENING_SEED: u64 = 1;
 
-/// The size the window opens at, in points.
+/// The size the window **requests** at startup, in logical points (§14.0).
+///
+/// Requested, not guaranteed: `eframe` hands this to the platform, which may
+/// scale it or clamp it to the monitor. So the frame test that reads this
+/// constant is asserting about the geometry the program *asks for*, which is the
+/// thing this repository controls — not about a physical window it cannot
+/// observe headlessly.
 ///
 /// **Shared with the tests deliberately, and that is the whole reason it is a
 /// constant.** `every_cell_is_reachable_at_the_size_the_window_actually_opens`
