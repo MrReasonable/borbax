@@ -7,8 +7,173 @@ use core::num::IntErrorKind;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borbax_rng::{Domain, Stream};
-use borbax_universe::{Universe, seed_from_phrase};
+use borbax_universe::{Element, ElementId, Universe, seed_from_phrase};
 use thiserror::Error;
+
+/// What a property row shows when nothing is selected.
+const EMPTY_VALUE: &str = "\u{2014}";
+
+/// One property of `element`, as `(value, unit)`, in [`PROPERTY_LABELS`] order.
+///
+/// **`{:.3}` fixed, never bare `{}`.** `Display` on an `f64` prints the shortest
+/// round-tripping decimal, so widths jump between `0.3` and
+/// `0.30000000000000004` from row to row. Measured ranges make three decimals
+/// right for all of them: mass 1…208.78, radius 0.300…2.087, affinity
+/// 0.140…1.000, energy/unit −0.278…5.710, instability 0…1.
+///
+/// **No `is_finite` guard**, deliberately. Measured: zero non-finite values
+/// across 180 864 elements × 6 fields. A branch that cannot fire cannot be
+/// tested, and an untestable branch is the vacuous-guard shape this repository
+/// keeps re-discovering.
+///
+/// **`Mass::to_f64()`, never `{:?}`.** `Mass` is fixed-point over `i64`, so its
+/// `Debug` prints raw 1/1024 sub-units — `Mass(1792)` for a mass of 1.75, wrong
+/// by a factor of 1024. Three of the other four units `Debug`-print something
+/// close enough to survive review, which is what makes this worth stating.
+fn property(i: usize, element: &Element, shells: usize) -> (String, &'static str) {
+    match i {
+        // The element *is* this number — element N is N copies of one base
+        // unit. Never "atomic number", never "Z", never "protons": there are no
+        // protons in Borbax.
+        0 => (element.units.to_string(), "base units"),
+        1 => (format!("{} of {}", element.period + 1, shells), ""),
+        // `group` is the count of units in the incomplete outer shell, not a
+        // family index. The column position already shows the group; the number
+        // worth painting is the count, with its meaning attached.
+        2 => (element.group.to_string(), "units"),
+        // Zero is a sentence and non-zero is a bare number, deliberately: the
+        // closed shell is the interesting value and the one a child can be told
+        // something about.
+        3 if element.valence == 0 => ("none \u{2014} a closed shell".to_owned(), ""),
+        3 => (element.valence.to_string(), "bonding slots"),
+        4 => (format!("{:.3}", element.mass.to_f64()), "mass units"),
+        5 => (format!("{:.3}", element.radius.get()), "spans"),
+        // Dimensionless, and no bar is drawn. The documented range is [-1, +1]
+        // but the attained range is [0.140476, 1.0], so a bar on the documented
+        // scale would put every element in the top half and teach that this
+        // universe has no "negative" elements when the scale is simply not
+        // reached.
+        6 => (format!("{:.3}", element.affinity), ""),
+        7 => (
+            format!("{:.3}", element.energy_per_unit.get()),
+            "quanta per unit",
+        ),
+        // Dimensionless. NOT a rate, and the gloss says so in words that avoid
+        // "half-life", "radioactive" and "per world-year".
+        _ => (format!("{:.3}", element.instability), ""),
+    }
+}
+
+/// One period of the table, as a row of cells in group order.
+///
+/// Borrows its strings from the universe rather than owning them: the whole
+/// table's cells are rebuilt on every paint, and ~120 `String` allocations a
+/// frame buys nothing when the borrow is free.
+#[derive(Debug)]
+pub struct PeriodRow<'a> {
+    /// The row's label, already built: `shell 2`.
+    ///
+    /// **A `String` rather than the number, because `panel.rs` has no
+    /// `format!`.** That is the seam doing its job rather than an inconvenience:
+    /// a row label built where it is painted is a label no test can assert on
+    /// without describing a window it has stopped describing.
+    ///
+    /// **1-based, and the field it comes from is 0-based.** A row labelled
+    /// `shell 0` is the one number a child reads wrong, and the `+ 1` is a
+    /// display decision, so it belongs on this side of the seam.
+    pub shell_label: String,
+    /// Which period this is, 0-based as the element carries it.
+    ///
+    /// Kept beside the label so the row break compares numbers rather than
+    /// re-parsing the string it just built.
+    pub period: u8,
+    /// The elements of this period, in group order.
+    pub cells: Vec<Cell<'a>>,
+}
+
+/// One element's cell in the grid.
+#[derive(Debug)]
+pub struct Cell<'a> {
+    /// Which element this cell is.
+    pub id: ElementId,
+    /// The generated symbol — **not** the name.
+    ///
+    /// **Symbols are unique within a universe and names are not.** Measured
+    /// over 2000 universes: zero symbol collisions (`mint` regenerates against
+    /// a `taken` set that holds symbols only) against 357 duplicate names
+    /// across 321 universes — 16.05%, the first at seed 16, where `meax` names
+    /// both `Mx` and `Me`. A cell labelled by name would therefore be ambiguous
+    /// in one universe in six, which makes the accessibility tree ambiguous and
+    /// every frame test silently address the wrong cell.
+    ///
+    /// It is also the only thing that fits: names run 5–9 characters and the
+    /// widest measured row holds 74 of them.
+    pub symbol: &'a str,
+    /// Whether this is the selected cell.
+    pub selected: bool,
+}
+
+/// One line of the properties block.
+///
+/// **Four fields rather than a `(label, value)` pair, and the split of `value`
+/// from `unit` is what makes G4 checkable.** With the unit word inside the
+/// formatted value, an allow-list over what reaches the screen would have to
+/// parse sentences, and a unit assembled at runtime would be indistinguishable
+/// from a declared one. As its own `&'static str` the attained set is
+/// enumerable, which is exactly what
+/// `every_unit_word_on_screen_is_one_this_universe_invented` asserts over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyRow {
+    /// What the row is called.
+    pub label: &'static str,
+    /// The value, formatted but carrying no unit.
+    pub value: String,
+    /// This universe's own unit word, or `""` when the value is dimensionless.
+    pub unit: &'static str,
+    /// A plain-English line under the row, for the two that need one.
+    ///
+    /// **Attached to its row rather than collected at the bottom.** A footnote
+    /// adjacent to nothing is a footnote nobody reads, and a fixed footnote
+    /// position would make the panel index into the row order — the coupling
+    /// `labelled_by` removed from the frame tests at Step 1b.
+    pub gloss: Option<&'static str>,
+}
+
+/// The labels of the properties block, in the order they are painted.
+///
+/// Named separately from the values so the empty state can paint the same rows
+/// with nothing in them: a block that appears on first click reflows the grid,
+/// and a grid that jumps when you click it is the worst interaction on this
+/// screen.
+const PROPERTY_LABELS: [&str; 9] = [
+    "made of",
+    "shell",
+    "outer shell",
+    "bonding slots",
+    "mass",
+    "size",
+    "surface",
+    "binding energy",
+    "instability",
+];
+
+/// The two rows that need a sentence, and the sentences.
+///
+/// **Both avoid a real-chemistry word, deliberately and by name.** `surface`
+/// must never be glossed as electronegativity — G3 says `affinity` has a
+/// different range, a different meaning and different behaviour, and the
+/// measured range is [0.140476, 1.0], so it does not even reach the negative
+/// half the documented scale describes. `instability` must never be glossed as
+/// a half-life, a decay rate, or anything "per world-year": §7.1 calls it a
+/// probability per world-year while Task 15 consumes it as an unbounded
+/// Gillespie propensity, and a viewer that writes a rate settles an open
+/// physics question in the crate least entitled to settle one.
+///
+/// Held by `no_explanatory_line_borrows_a_word_from_real_chemistry`, because
+/// neither `xtask` guard can see these: they are not element names and not
+/// units.
+const SURFACE_GLOSS: &str = "how much of this element sits on the outside";
+const INSTABILITY_GLOSS: &str = "how far this sits from the most stable element in this universe";
 
 /// One more than the largest seed the "surprise me" button will offer.
 ///
@@ -134,12 +299,36 @@ fn sign_or_digits(trimmed: &str) -> SeedError {
 pub enum Outcome {
     /// The typed seed was refused, and why.
     Rejected(SeedError),
-    /// The universe the typed seed generated.
+    /// The universe the typed seed generated, and which of its elements is
+    /// selected.
     ///
     /// **Boxed**, and not for taste: `size_of::<Universe>()` is 232 bytes, so
     /// without the box `clippy::large_enum_variant` fires — every `Outcome`
     /// anywhere would carry the universe's footprint to hold a four-byte error.
-    Loaded(Box<Universe>),
+    Loaded {
+        /// The universe on screen.
+        universe: Box<Universe>,
+        /// The selected element, or `None` until a cell is clicked.
+        ///
+        /// **Inside the variant rather than beside it, and that is the same
+        /// argument this enum was made for one field along.** A
+        /// `selected: Option<ElementId>` field on [`ViewerState`] would have
+        /// four combinations with `outcome` and two of them are meaningless: a
+        /// selection in a universe that does not exist, and — the expensive one
+        /// — a selection made in a *previous* universe, which paints one
+        /// element's properties under another element's heading. Ids do not
+        /// carry their table with them, so slot 40 of seed 7 and slot 40 of
+        /// seed 11 are both valid and entirely different elements; nothing
+        /// downstream could detect the substitution.
+        ///
+        /// In here it is unrepresentable. [`ViewerState::reload`] assigns
+        /// `self.outcome` wholesale, so the old selection is dropped with the
+        /// old universe — there is no `self.selected = None` line to forget at
+        /// the next call site, and no rule for a future reader to remember.
+        /// The same reasoning that made [`ViewerState::reload`] private: make
+        /// it impossible rather than merely tested.
+        selected: Option<ElementId>,
+    },
 }
 
 /// Everything the window shows, and nothing about how it is drawn.
@@ -319,6 +508,132 @@ impl ViewerState {
     /// would spend most of the frame budget regenerating a universe nobody
     /// asked for again, and by Step 2 there are 120 element cells behind it.
     /// [`Self::regenerations`] is what makes that claim testable.
+    /// Select the element with this id, if this universe has such a slot.
+    ///
+    /// **Refused rather than clamped**, and [`borbax_universe::PeriodicTable::get`]'s
+    /// own doc gives the reason: clamping "silently answers with a *different
+    /// element's* properties, which nothing downstream can detect". There is
+    /// nothing sensible to do on failure and nothing to report — every id the
+    /// panel can produce came out of [`Self::rows`], which minted it from the
+    /// table itself.
+    ///
+    /// Selecting while the seed is refused does nothing: there is no universe
+    /// to select in, which is the state the enum makes unrepresentable.
+    pub fn select(&mut self, id: ElementId) {
+        if let Outcome::Loaded { universe, selected } = &mut self.outcome
+            && universe.table.get(id).is_some()
+        {
+            *selected = Some(id);
+        }
+    }
+
+    /// Which element is selected, if any.
+    #[must_use]
+    pub const fn selected(&self) -> Option<ElementId> {
+        match &self.outcome {
+            Outcome::Rejected(_) => None,
+            Outcome::Loaded { selected, .. } => *selected,
+        }
+    }
+
+    /// The table laid out by period and group.
+    ///
+    /// Empty when the seed was refused, so the panel paints no grid rather than
+    /// an empty one.
+    ///
+    /// **A single forward pass with no arithmetic**, which is what keeps the
+    /// "viewer computes no physics" rule from even being a question here. The
+    /// grid needs no extents: `group` *is* the column index and a change of
+    /// `period` *is* the row break. Verified over 5000 universes — `period`
+    /// rises by exactly one at each break, `group` runs 0,1,2,… contiguously
+    /// within a period, and the first element is always (0, 0), with zero
+    /// exceptions. That is forced by the generator rather than lucky: `period`
+    /// and `group` are written from a shell counter and a within-shell counter
+    /// that increment together.
+    ///
+    /// It is a property of `generate_elements` and not a documented contract of
+    /// `PeriodicTable`, so `the_column_a_cell_sits_in_is_its_group` pins it.
+    #[must_use]
+    pub fn rows(&self) -> Vec<PeriodRow<'_>> {
+        let Outcome::Loaded { universe, selected } = &self.outcome else {
+            return Vec::new();
+        };
+        let mut rows: Vec<PeriodRow<'_>> = Vec::new();
+        for (id, element) in universe.table.iter() {
+            let cell = Cell {
+                id,
+                symbol: &element.symbol,
+                selected: *selected == Some(id),
+            };
+            match rows.last_mut() {
+                Some(row) if row.period == element.period => row.cells.push(cell),
+                _ => rows.push(PeriodRow {
+                    period: element.period,
+                    shell_label: format!("shell {}", u16::from(element.period) + 1),
+                    cells: vec![cell],
+                }),
+            }
+        }
+        rows
+    }
+
+    /// The heading over the properties block: `Mx · meax`, or the empty prompt.
+    ///
+    /// **Symbol first.** It is what was just clicked, so the heading confirms
+    /// rather than asking the reader to look something up — and it is the half
+    /// that is unique by construction. `·` because [`Self::status_line`]
+    /// already separates with it.
+    #[must_use]
+    pub fn selection_heading(&self) -> String {
+        self.selected_element().map_or_else(
+            || "pick an element".to_owned(),
+            // Two elements of one universe may share a name (measured: 16.05%
+            // of universes), and that is deliberately not surfaced. Only one
+            // heading is on screen at a time, so the collision is invisible;
+            // and a badge announcing it would teach that Borbax is broken, when
+            // in fact G2 never required names to be unique.
+            |element| format!("{} · {}", element.symbol, element.name),
+        )
+    }
+
+    /// The nine property rows, with values when something is selected.
+    ///
+    /// **The same nine labels either way**, so the block has a fixed footprint
+    /// and the grid above it never reflows on the first click.
+    #[must_use]
+    pub fn selection_properties(&self) -> Vec<PropertyRow> {
+        let element = self.selected_element();
+        let shells = self.rows().len();
+        PROPERTY_LABELS
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                let (value, unit) = element
+                    .map_or_else(|| (EMPTY_VALUE.to_owned(), ""), |e| property(i, e, shells));
+                PropertyRow {
+                    label,
+                    value,
+                    unit: if element.is_some() { unit } else { "" },
+                    gloss: match (i, element.is_some()) {
+                        (6, true) => Some(SURFACE_GLOSS),
+                        (8, true) => Some(INSTABILITY_GLOSS),
+                        _ => None,
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// The selected element, if there is one.
+    fn selected_element(&self) -> Option<&Element> {
+        match &self.outcome {
+            Outcome::Rejected(_) => None,
+            Outcome::Loaded { universe, selected } => {
+                selected.and_then(|id| universe.table.get(id))
+            }
+        }
+    }
+
     fn reload(&mut self) {
         self.outcome = match parse_seed(&self.seed_text) {
             Ok(seed) => {
@@ -330,7 +645,15 @@ impl ViewerState {
                 // and generation are split, at which point the counter would
                 // report the wrong thing while its test stayed green.
                 self.regenerations = self.regenerations.saturating_add(1);
-                Outcome::Loaded(Box::new(universe))
+                // **Nothing is selected in a universe nobody has looked at
+                // yet**, and this is the line that makes a stale selection
+                // unrepresentable rather than merely cleared: the whole
+                // `Outcome` is replaced, so the previous universe's selection
+                // is dropped with the universe it belonged to.
+                Outcome::Loaded {
+                    universe: Box::new(universe),
+                    selected: None,
+                }
             }
             Err(refusal) => Outcome::Rejected(refusal),
         };
@@ -383,7 +706,7 @@ impl ViewerState {
             // it shows 32 bits of a 64-bit seed, and no encoder for it exists
             // anywhere in the workspace. Inventing one here would settle an
             // open §6 question in the crate least entitled to settle it.
-            Outcome::Loaded(universe) => format!(
+            Outcome::Loaded { universe, .. } => format!(
                 "{} elements · physics v{}",
                 universe.table.len(),
                 u8::from(universe.physics)

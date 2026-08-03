@@ -442,3 +442,468 @@ fn naming_a_universe_generates_exactly_one() {
     state.set_phrase("  ");
     assert_eq!(state.regenerations(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Step 2 — the periodic table panel.
+// ---------------------------------------------------------------------------
+
+/// A state showing `seed`'s universe.
+fn loaded(seed: &str) -> ViewerState {
+    let mut state = ViewerState::new();
+    seed.clone_into(state.seed_text_mut());
+    state.commit_typed_seed();
+    state
+}
+
+/// The id of a loaded state's first cell.
+///
+/// Indexing is denied workspace-wide, and a panicking index in a test is still a
+/// panicking index — it replaces a clear assertion failure with a slice
+/// out-of-bounds carrying no message.
+fn first_cell(state: &ViewerState) -> borbax_universe::ElementId {
+    let id = state
+        .rows()
+        .first()
+        .and_then(|row| row.cells.first())
+        .map(|cell| cell.id);
+    assert!(
+        id.is_some(),
+        "a loaded universe always has at least one cell"
+    );
+    id.unwrap_or(borbax_universe::ElementId::ZERO)
+}
+
+/// Every element of `seed`'s universe reaches exactly one cell, and no cell
+/// holds anything the table does not.
+///
+/// **Both directions, and the reverse arm is the one that earns its place.**
+/// Forward alone is satisfied by a grid that also carries padding cells — the
+/// `ElementId::ZERO` filler somebody writes to make rows rectangular, which puts
+/// a real element's symbol in a slot no element occupies. It also kills
+/// `row = i / 18, col = i % 18` and every other wrap-based layout that looks
+/// like a table from a distance.
+#[test]
+fn every_element_sits_at_its_own_period_and_group_and_no_cell_holds_two() {
+    for seed in ["1", "7", "42", "15709401653729972761"] {
+        let state = loaded(seed);
+        let universe = Universe::generate(parse_seed(seed).unwrap_or_default());
+
+        let placed: Vec<_> = state
+            .rows()
+            .iter()
+            .flat_map(|row| row.cells.iter().map(|c| c.id))
+            .collect();
+        let mut sorted = placed.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            placed.len(),
+            "seed {seed}: a cell was painted twice"
+        );
+        assert_eq!(
+            placed.len(),
+            universe.table.len(),
+            "seed {seed}: the grid holds a different number of cells than the table has \
+             elements — either an element is missing or a padding cell was invented"
+        );
+        for id in &placed {
+            assert!(
+                universe.table.get(*id).is_some(),
+                "seed {seed}: the grid holds {id:?}, which this table has no slot for"
+            );
+        }
+    }
+}
+
+/// The column a cell sits in is its group, and the row is its period.
+///
+/// **This pins a property of `generate_elements`, not of `PeriodicTable`.**
+/// `rows()` walks the table in one forward pass and starts a new row when
+/// `period` changes — which is only a correct layout because `group` runs
+/// 0,1,2,… contiguously inside each period. Verified over 5000 universes with
+/// zero exceptions, but it is nowhere documented as a contract, so if it ever
+/// stops holding the grid silently transposes elements rather than failing.
+#[test]
+fn the_column_a_cell_sits_in_is_its_group() {
+    for seed in 1..200_u64 {
+        let state = loaded(&seed.to_string());
+        let universe = Universe::generate(seed);
+        for (r, row) in state.rows().iter().enumerate() {
+            for (c, cell) in row.cells.iter().enumerate() {
+                let element = universe.table.get(cell.id);
+                assert!(element.is_some(), "seed {seed}: cell {c} has no element");
+                let Some(element) = element else { continue };
+                assert_eq!(
+                    usize::from(element.group),
+                    c,
+                    "seed {seed}: {} sits in column {c} but its group is {}",
+                    element.symbol,
+                    element.group
+                );
+                assert_eq!(
+                    usize::from(element.period),
+                    r,
+                    "seed {seed}: {} sits in row {r} but its period is {}",
+                    element.symbol,
+                    element.period
+                );
+            }
+        }
+    }
+}
+
+/// Two universes do not have to agree on the shape of the table.
+///
+/// Kills a shape computed once — a `OnceLock`, a `static`, or a grid built in
+/// `new()` and never rebuilt by `reload`.
+///
+/// **Asserted on the `(rows, cols)` pair, never on rows alone.** Row counts
+/// collapse to {2, 3, 4} across every universe, so "several seeds all gave the
+/// same number of rows" is a 1-in-18 000 coincidence rather than a defect — a
+/// test asserting on rows alone would be a flake with a plausible story.
+#[test]
+fn two_universes_do_not_have_to_agree_on_the_shape_of_the_table() {
+    let shapes: std::collections::BTreeSet<(usize, usize)> = (1..64_u64)
+        .map(|seed| {
+            let state = loaded(&seed.to_string());
+            let rows = state.rows();
+            let widest = rows.iter().map(|r| r.cells.len()).max().unwrap_or_default();
+            (rows.len(), widest)
+        })
+        .collect();
+    assert!(
+        shapes.len() > 1,
+        "every seed produced the same table shape {shapes:?} — the grid is not being \
+         rebuilt from the universe"
+    );
+}
+
+/// Nothing is selected until something is selected.
+///
+/// Kills `selected: Some(ElementId::ZERO)` as a default, which opens the window
+/// painting element 0's properties under a heading nobody clicked — the same
+/// class as `an_empty_seed_box_does_not_quietly_mean_universe_zero` one field
+/// along. Every other test here selects first, so only this one sees the
+/// opening state.
+#[test]
+fn nothing_is_selected_until_something_is_selected() {
+    let state = loaded("7");
+    assert_eq!(state.selected(), None);
+    assert_eq!(state.selection_heading(), "pick an element");
+    assert!(
+        state
+            .rows()
+            .iter()
+            .all(|r| r.cells.iter().all(|c| !c.selected)),
+        "a cell was drawn selected before anything was clicked"
+    );
+    // The empty block still paints all nine labels, so the grid above it does
+    // not reflow on the first click.
+    let rows = state.selection_properties();
+    assert_eq!(rows.len(), 9);
+    assert!(
+        rows.iter().all(|r| r.unit.is_empty() && r.gloss.is_none()),
+        "the empty state must carry no unit and no gloss: {rows:?}"
+    );
+}
+
+/// A selection cannot outlive the universe it was made in.
+///
+/// **Two mutations, and the first is what someone writes the first hour they
+/// want "keep the same element when I change the seed".** Lifting `selected` to
+/// a `ViewerState` field compiles, reads as a tidy-up, and silently paints slot
+/// 40 of the *new* universe under the old element's heading — both are valid
+/// ids, so nothing downstream can detect the substitution. The second is
+/// `Rejected { last_selected }`, the same instinct one variant over.
+///
+/// The property is currently held by the type rather than by this test, which
+/// is the point: the test exists so that lifting the field out is a failure
+/// rather than a refactor.
+#[test]
+fn a_selection_cannot_outlive_the_universe_it_was_made_in() {
+    let mut state = loaded("7");
+    let first = first_cell(&state);
+    state.select(first);
+    assert_eq!(state.selected(), Some(first));
+
+    // Reload into a different, valid universe.
+    "11".clone_into(state.seed_text_mut());
+    state.commit_typed_seed();
+    assert_eq!(
+        state.selected(),
+        None,
+        "the selection survived a change of universe"
+    );
+
+    // And reload into a refused seed.
+    let next = first_cell(&state);
+    state.select(next);
+    assert!(state.selected().is_some());
+    "not a seed".clone_into(state.seed_text_mut());
+    state.commit_typed_seed();
+    assert_eq!(
+        state.selected(),
+        None,
+        "a selection survived into a state with no universe at all"
+    );
+}
+
+/// An id this universe has no slot for selects nothing.
+///
+/// Kills `table.get(id).unwrap()` and its quieter cousin, clamping to the last
+/// slot — which is in range, plausible, and undetectable downstream, which is
+/// exactly what `PeriodicTable::get` is fallible to prevent.
+#[test]
+fn an_element_id_this_universe_has_no_slot_for_selects_nothing() {
+    let mut state = loaded("7");
+    let count = state.rows().iter().map(|r| r.cells.len()).sum::<usize>();
+    let past_the_end = borbax_universe::ElementId::from_index(count + 1);
+    assert!(
+        past_the_end.is_some(),
+        "the fixture needs a constructible id"
+    );
+    if let Some(id) = past_the_end {
+        state.select(id);
+    }
+    assert_eq!(
+        state.selected(),
+        None,
+        "an out-of-range id was stored, so the properties block will read some other \
+         element's numbers"
+    );
+}
+
+/// The properties shown are the selected element's and not a neighbour's.
+///
+/// Kills an off-by-one at the read. Derived over **every** element of several
+/// universes rather than one, because an off-by-one at index 0 is invisible.
+#[test]
+fn the_properties_shown_are_the_selected_elements_and_not_a_neighbours() {
+    for seed in ["1", "7", "42"] {
+        let mut state = loaded(seed);
+        let universe = Universe::generate(parse_seed(seed).unwrap_or_default());
+        let ids: Vec<_> = state
+            .rows()
+            .iter()
+            .flat_map(|r| r.cells.iter().map(|c| c.id))
+            .collect();
+        for id in ids {
+            state.select(id);
+            let element = universe.table.get(id);
+            assert!(element.is_some());
+            let Some(element) = element else { continue };
+            assert_eq!(
+                state.selection_heading(),
+                format!("{} · {}", element.symbol, element.name),
+                "seed {seed}: the heading names the wrong element"
+            );
+            // Looked up by label rather than by position: an index here would
+            // pin the row order, which is a layout decision this test has no
+            // opinion about, and it would panic rather than assert if the order
+            // changed.
+            let rows = state.selection_properties();
+            let value_of = |label: &str| {
+                rows.iter()
+                    .find(|r| r.label == label)
+                    .map(|r| r.value.clone())
+            };
+            assert_eq!(
+                value_of("made of"),
+                Some(element.units.to_string()),
+                "seed {seed}: `made of` came from the wrong element"
+            );
+            assert_eq!(
+                value_of("outer shell"),
+                Some(element.group.to_string()),
+                "seed {seed}: `outer shell` came from the wrong element"
+            );
+        }
+    }
+}
+
+/// Every unit word on screen is one this universe invented.
+///
+/// **This is the fail-on-unknown half of G4 and the only one there can be.** A
+/// source deny-list over real units cannot invert — there is no finite set of
+/// them — so `xtask`'s scan catches the spellings anyone writes and nothing
+/// else. This is an allow-list over the *attained* set, so it also catches a
+/// real unit assembled at runtime, which no source scan can see, and a
+/// *missing* unit word, which is a bare number attributed to nothing.
+///
+/// **Asserted on the attained set, never against the declared constant** — that
+/// would be a guard whose two sides are the same expression.
+#[test]
+fn every_unit_word_on_screen_is_one_this_universe_invented() {
+    const INVENTED: [&str; 7] = [
+        "",
+        "base units",
+        "units",
+        "mass units",
+        "spans",
+        "quanta per unit",
+        "bonding slots",
+    ];
+    let mut attained = std::collections::BTreeSet::new();
+    for seed in 1..40_u64 {
+        let mut state = loaded(&seed.to_string());
+        let ids: Vec<_> = state
+            .rows()
+            .iter()
+            .flat_map(|r| r.cells.iter().map(|c| c.id))
+            .collect();
+        for id in ids {
+            state.select(id);
+            for row in state.selection_properties() {
+                attained.insert(row.unit);
+            }
+        }
+    }
+    for unit in &attained {
+        assert!(
+            INVENTED.contains(unit),
+            "the word {unit:?} reached the screen and this universe did not invent it"
+        );
+    }
+    // Negative arms: no Step 2 property carries a temperature or a time, so
+    // either arriving means a property acquired a dimension it does not have —
+    // and `world-years` is also the forbidden phrasing for `instability`.
+    assert!(!attained.contains("thermals"));
+    assert!(!attained.contains("world-years"));
+    // And the block must not be all-dimensionless, which would pass the loop
+    // above while showing bare numbers attributed to nothing.
+    assert!(
+        attained.len() > 1,
+        "no property carried a unit word at all: {attained:?}"
+    );
+}
+
+/// No element reaches the screen under a real name or symbol.
+///
+/// **Neither `xtask` guard can reach this**, and that is why it is here: a
+/// display-side *derivation* has no literal to scan. `&name[..2]` for a narrow
+/// cell turns a generated `helion` into `He`; `name.to_uppercase()` and
+/// `symbol.chars().next()` are the same move. The mint checks `is_real` once,
+/// at generation, and never again on anything the viewer computes from it.
+#[test]
+fn no_element_reaches_the_screen_under_a_real_name_or_symbol() {
+    for seed in 1..120_u64 {
+        let mut state = loaded(&seed.to_string());
+        let cells: Vec<(borbax_universe::ElementId, String)> = state
+            .rows()
+            .iter()
+            .flat_map(|r| r.cells.iter().map(|c| (c.id, c.symbol.to_owned())))
+            .collect();
+        for (id, symbol) in cells {
+            state.select(id);
+            let heading = state.selection_heading();
+            let name = heading.split(" · ").nth(1).unwrap_or_default().to_owned();
+            assert!(
+                !borbax_universe::naming::is_real(&symbol, &name),
+                "seed {seed}: the screen shows {symbol}/{name}, which collides with \
+                 something real"
+            );
+        }
+    }
+}
+
+/// Selecting an element does not regenerate the universe.
+///
+/// Kills `select()` calling `reload()` — the plausible "refresh the view"
+/// implementation, which costs a generation per click and would also reset the
+/// seed box.
+#[test]
+fn selecting_an_element_does_not_regenerate_the_universe() {
+    let mut state = loaded("7");
+    let before = state.regenerations();
+    let ids: Vec<_> = state
+        .rows()
+        .iter()
+        .flat_map(|r| r.cells.iter().map(|c| c.id))
+        .collect();
+    for id in ids {
+        state.select(id);
+    }
+    assert_eq!(
+        state.regenerations(),
+        before,
+        "selecting rebuilt the universe"
+    );
+}
+
+/// The same universe gives the same table however the viewer got there.
+///
+/// Kills a grid pushed to rather than rebuilt — cells accumulating across seed
+/// changes.
+#[test]
+fn the_same_universe_gives_the_same_table_however_the_viewer_got_there() {
+    let direct = loaded("7");
+    let mut wandered = loaded("11");
+    "42".clone_into(wandered.seed_text_mut());
+    wandered.commit_typed_seed();
+    "7".clone_into(wandered.seed_text_mut());
+    wandered.commit_typed_seed();
+
+    let shape = |s: &ViewerState| -> Vec<Vec<String>> {
+        s.rows()
+            .iter()
+            .map(|r| r.cells.iter().map(|c| c.symbol.to_owned()).collect())
+            .collect()
+    };
+    assert_eq!(shape(&direct), shape(&wandered));
+}
+
+/// No explanatory line borrows a word from real chemistry.
+///
+/// **The only thing standing between "surface, unlike electronegativity…" and a
+/// child's screen.** These words are not element names and not units, so both
+/// `xtask` guards are blind to them; and they cannot be added to the generator's
+/// blocklist, which would change *generation*. A closed set of `&'static str`
+/// constants is enumerable at compile time, so this needs no scan.
+#[test]
+fn no_explanatory_line_borrows_a_word_from_real_chemistry() {
+    const FORBIDDEN: [&str; 8] = [
+        "electronegativity",
+        "electron",
+        "half-life",
+        "halflife",
+        "radioactive",
+        "decays at",
+        "per world-year",
+        "atomic number",
+    ];
+    let mut state = loaded("7");
+    let pick = first_cell(&state);
+    state.select(pick);
+
+    let mut prose: Vec<String> = state
+        .selection_properties()
+        .iter()
+        .flat_map(|r| {
+            [
+                r.label.to_owned(),
+                r.unit.to_owned(),
+                r.gloss.unwrap_or_default().to_owned(),
+            ]
+        })
+        .collect();
+    prose.push(state.selection_heading());
+
+    for line in &prose {
+        let lower = line.to_ascii_lowercase();
+        for word in FORBIDDEN {
+            assert!(
+                !lower.contains(word),
+                "the panel says {line:?}, which borrows {word:?} from real chemistry"
+            );
+        }
+    }
+    // The positive arm: the two glosses must actually be there, or this test
+    // passes over a panel that explains nothing.
+    let glossed = state
+        .selection_properties()
+        .iter()
+        .filter(|r| r.gloss.is_some())
+        .count();
+    assert_eq!(glossed, 2, "the two explanatory lines are missing");
+}

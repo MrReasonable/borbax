@@ -148,3 +148,19 @@ pub const WINDOW_TITLE: &str = "Borbax";
 /// no hint teaches nothing about what the box is for. The hint does both jobs
 /// and neither costs a universe.
 pub const OPENING_SEED: u64 = 1;
+
+/// The size the window opens at, in points.
+///
+/// **Shared with the tests deliberately, and that is the whole reason it is a
+/// constant.** `every_cell_is_reachable_at_the_size_the_window_actually_opens`
+/// is the only test that says anything about the shipped program rather than
+/// about a harness someone sized generously — and a retyped `800.0` in the test
+/// is a number somebody guessed, which stops tracking the window the first time
+/// the window changes.
+///
+/// It matters more at Step 2 than it did at Step 1. The widest measured table is
+/// **74 columns**, whose content extent is ~3531 px and does not shrink to fit:
+/// `egui`'s `Grid` sizes columns to content, so there is no reflow to rescue a
+/// window that is too narrow. Most universes therefore do *not* fit, which is
+/// why the grid scrolls horizontally rather than assuming width.
+pub const WINDOW_SIZE: [f32; 2] = [1200.0, 700.0];

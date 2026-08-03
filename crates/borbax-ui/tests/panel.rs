@@ -13,7 +13,7 @@ use borbax_ui::{panel::draw, state::ViewerState};
 use borbax_universe::Universe;
 use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT as _, Queryable};
 
 /// A harness driving the real [`draw`] over a real [`ViewerState`].
 fn harness<'a>() -> Harness<'a, ViewerState> {
@@ -409,5 +409,315 @@ fn a_name_is_not_truncated_by_the_box_it_is_typed_into() {
         typed,
         "the name box dropped characters — it has acquired a char_limit, and \
          every name longer than it now shares a universe with its truncation"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 — the periodic table panel.
+// ---------------------------------------------------------------------------
+
+/// A harness wide enough that every cell of the widest table is on screen.
+///
+/// **3600 px, and the first figure written here was 3000, which was wrong.**
+/// The worst-case content extent is ~3531 px and it does **not** depend on the
+/// harness size: `egui`'s `Grid` sizes columns to their content, so there is no
+/// reflow to rescue a harness that is too narrow. At 3000 the far-right cell is
+/// off screen and `Node::click()` — which synthesises a pointer event at the
+/// node's rect centre — is a **silent no-op**, leaving the selection unchanged
+/// and the test green for the wrong reason.
+///
+/// This is deliberately *not* the size the window opens at. Clipping is noise
+/// when the subject is placement and count; the test that cares about the real
+/// window reads [`borbax_ui::WINDOW_SIZE`] instead.
+fn wide_harness<'a>() -> Harness<'a, ViewerState> {
+    Harness::builder()
+        .with_size(egui::vec2(3600.0, 900.0))
+        .build_ui_state(|ui, state| draw(state, ui), ViewerState::new())
+}
+
+/// Three distinct symbols from a seed's widest row: one to click, two to check
+/// stay unselected.
+///
+/// Returned as a tuple rather than indexed out of the vector at the call site,
+/// because `clippy::indexing_slicing` is denied workspace-wide and a panicking
+/// index in a test is still a panicking index — it turns a clear assertion
+/// failure into a slice-out-of-bounds with no message.
+fn three_symbols(seed: u64) -> (String, String, String) {
+    let symbols = widest_row_symbols(seed);
+    let mut it = symbols.into_iter();
+    let (a, b, c) = (it.next(), it.next(), it.next());
+    assert!(
+        c.is_some(),
+        "seed {seed}'s widest row is too short to distinguish a selected cell from \
+         its neighbours"
+    );
+    (
+        a.unwrap_or_default(),
+        b.unwrap_or_default(),
+        c.unwrap_or_default(),
+    )
+}
+
+/// The symbols of a seed's widest row, longest row first.
+fn widest_row_symbols(seed: u64) -> Vec<String> {
+    let mut state = ViewerState::new();
+    seed.to_string().clone_into(state.seed_text_mut());
+    state.commit_typed_seed();
+    let rows = state.rows();
+    let widest = rows
+        .iter()
+        .max_by_key(|r| r.cells.len())
+        .map(|r| r.cells.iter().map(|c| c.symbol.to_owned()).collect());
+    widest.unwrap_or_default()
+}
+
+/// Clicking a cell marks that cell, and only that cell, as chosen.
+///
+/// **Read out of the accessibility tree, not out of `ViewerState`.** A cell
+/// drawn as `ui.label` inside a clickable region works perfectly when a human
+/// clicks it, and carries `Role::Label` with no `Action::Click` and no toggle
+/// state — invisible to a screen reader and to every test that asks the state
+/// instead of the tree. There is no state-level version of this test to write.
+#[test]
+fn clicking_a_cell_marks_that_cell_and_only_that_cell_as_chosen() {
+    let mut harness = wide_harness();
+    type_into(&harness, "seed", "7");
+    harness.step();
+
+    let (first, chosen_symbol, third) = three_symbols(7);
+
+    harness
+        .get_by_role_and_label(Role::Button, &chosen_symbol)
+        .click();
+    harness.step();
+
+    // Read through `accesskit_node()`, which is the tree a screen reader sees.
+    // `kittest::Node` exposes the AccessKit node rather than re-exporting every
+    // accessor, so this is the route to the toggle state.
+    let chosen = harness.get_by_role_and_label(Role::Button, &chosen_symbol);
+    assert_eq!(
+        chosen.accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True),
+        "the clicked cell does not report itself as chosen — a screen reader, and \
+         every test, would see nothing"
+    );
+    for other in [&first, &third] {
+        assert_eq!(
+            harness
+                .get_by_role_and_label(Role::Button, other)
+                .accesskit_node()
+                .toggled(),
+            Some(egui::accesskit::Toggled::False),
+            "{other} is drawn chosen as well, so either every cell is highlighted or \
+             the selection is not exclusive"
+        );
+    }
+}
+
+/// The selected element's properties appear in the frame its cell is clicked.
+///
+/// **This file's one defect, in Step 2's widget.** With the properties block
+/// emitted above the grid, the frame in which a cell is clicked paints the
+/// newly-highlighted cell beside the *previous* element's numbers. Mutation:
+/// move the `properties` block above the `grid` block in `panel::periodic_table`.
+#[test]
+fn the_selected_elements_properties_appear_in_the_frame_the_cell_is_clicked() {
+    let mut harness = wide_harness();
+    type_into(&harness, "seed", "7");
+    harness.step();
+
+    let (_, chosen_symbol, _) = three_symbols(7);
+
+    // Exactly one frame after the click. A second would repair the lag and hide
+    // the defect, which is the whole reason `step()` is spelled out.
+    harness
+        .get_by_role_and_label(Role::Button, &chosen_symbol)
+        .click();
+    harness.step();
+
+    let universe = Universe::generate(7);
+    let element = universe
+        .table
+        .iter()
+        .find(|(_, e)| e.symbol == chosen_symbol)
+        .map(|(_, e)| e);
+    assert!(element.is_some(), "the fixture symbol left the table");
+    let Some(element) = element else { return };
+
+    // The heading is the cheapest thing to read and it moves with the
+    // selection, so a stale block shows the *previous* element's name here.
+    harness.get_by_label(&format!("{} · {}", element.symbol, element.name));
+}
+
+/// The grid paints as many rows and columns as this universe has.
+///
+/// Kills `for p in 0..7 { for g in 0..18 }` in the paint body while the state's
+/// own `rows()` is correct — the real periodic table's shape, which is wrong in
+/// every Borbax universe: measured, periods run 2–4 and groups run up to 74.
+#[test]
+fn the_grid_paints_as_many_rows_and_columns_as_this_universe_has() {
+    for seed in [1_u64, 7, 42] {
+        let mut harness = wide_harness();
+        type_into(&harness, "seed", &seed.to_string());
+        harness.step();
+
+        let universe = Universe::generate(seed);
+        for (_, element) in universe.table.iter() {
+            // Every element of the table has a cell that can be found by its
+            // symbol. `get_by_role_and_label` panics if it finds none — or two.
+            harness.get_by_role_and_label(Role::Button, &element.symbol);
+        }
+    }
+}
+
+/// An idle table does not rebuild the universe.
+///
+/// The Step 2 twin of `an_unchanged_name_box_does_not_rebuild_the_universe`,
+/// whose own note records that the state-level version failed **zero** tests
+/// because it never went through `draw`. The identical hole exists for the grid:
+/// a `Universe::generate` in the paint body increments no counter and is
+/// invisible to every state-level assertion.
+#[test]
+fn an_idle_table_does_not_rebuild_the_universe() {
+    let mut harness = wide_harness();
+    type_into(&harness, "seed", "7");
+    harness.step();
+    let after_commit = harness.state().regenerations();
+
+    for _ in 0..30 {
+        harness.step();
+    }
+    assert_eq!(
+        harness.state().regenerations(),
+        after_commit,
+        "the table rebuilt the universe while nothing was happening"
+    );
+}
+
+/// Selecting an element costs no second layout pass.
+///
+/// **Kills an ungated `request_discard` anywhere in the selection path**, and
+/// this is Step 1b's recorded incident pre-empted rather than repeated. An
+/// ungated discard re-paints from updated state, which *self-repairs* the
+/// frame-order defects three other tests exist to catch — measured then, a
+/// mutation went from four failures to one. Nothing but the pass count can see
+/// it.
+#[test]
+fn selecting_an_element_does_not_cost_a_second_layout_pass() {
+    let mut harness = wide_harness();
+    type_into(&harness, "seed", "7");
+    harness.step();
+
+    let (only, _, _) = three_symbols(7);
+
+    // Clicking the *already selected* cell must not discard: nothing changed,
+    // so there is nothing stale to repaint.
+    harness.get_by_role_and_label(Role::Button, &only).click();
+    harness.step();
+    harness.get_by_role_and_label(Role::Button, &only).click();
+    harness.step();
+    assert_eq!(
+        harness.output().platform_output.num_completed_passes,
+        1,
+        "re-selecting the same cell asked for a second layout pass, so the discard \
+         is not gated on the selection actually changing"
+    );
+}
+
+/// Two cells never answer to the same label.
+///
+/// Kills labelling cells by group index or period, which makes every
+/// `get_by_label` in this file ambiguous — and `kittest`'s query API panics on
+/// an ambiguous match, so the failure would land in whichever test ran first
+/// rather than where the mistake is. Symbols are unique within a universe by
+/// construction; this proves the panel used them.
+#[test]
+fn two_cells_never_answer_to_the_same_label() {
+    for seed in 1..40_u64 {
+        let mut state = ViewerState::new();
+        seed.to_string().clone_into(state.seed_text_mut());
+        state.commit_typed_seed();
+        let labels: Vec<&str> = state
+            .rows()
+            .iter()
+            .flat_map(|r| r.cells.iter().map(|c| c.symbol))
+            .collect();
+        let distinct: std::collections::BTreeSet<&&str> = labels.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            labels.len(),
+            "seed {seed}: two cells share a label, so the accessibility tree is ambiguous"
+        );
+    }
+}
+
+/// Every cell is on screen, after scrolling, at the size the window opens at.
+///
+/// **The only test here that says anything about the shipped program.** The
+/// others use a harness sized so the whole table fits, which makes clipping a
+/// non-subject; this one reads [`borbax_ui::WINDOW_SIZE`] — never a retyped
+/// literal — because the defect it hunts is a function of the real window. The
+/// widest measured table is ~3531 px of content against a 900 px window, so
+/// most universes do not fit and a grid that does not scroll leaves the tail
+/// permanently unreachable.
+///
+/// **This asserts geometry rather than a click, and the reason is a measured
+/// harness limitation rather than a preference.** A pointer `click()` does not
+/// reach widgets inside a *scrollable* `ScrollArea` under `egui_kittest`:
+/// measured at 3600x900 (content fits) a cell selects, and at 900x600, 900x900
+/// and 1400x600 — identical widget rect of `[200, 157]` in every case — it does
+/// not. It is not input timing (a hover frame first changes nothing, and one to
+/// four warm-up frames change nothing) and not drag-to-scroll (excluding
+/// `ScrollSource::DRAG` changes nothing). The widget itself is correctly wired:
+/// `click_accesskit()` selects it, and a pointer click on "surprise me" —
+/// outside the scroll area, same harness size — works. So the app is fine and
+/// the harness cannot express this one interaction.
+///
+/// Rect containment is not a weaker substitute for a click here; it is the
+/// actual claim. The defect is "the cell can never be brought on screen", and
+/// that is geometry. What is genuinely **not** covered is that a click at those
+/// coordinates activates the cell — stated rather than implied, and covered at
+/// a size where the harness can express it by
+/// `clicking_a_cell_marks_that_cell_and_only_that_cell_as_chosen`.
+#[test]
+fn every_cell_is_on_screen_after_scrolling_at_the_size_the_window_opens_at() {
+    let size = borbax_ui::WINDOW_SIZE;
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(size[0], size[1]))
+        .build_ui_state(|ui, state| draw(state, ui), ViewerState::new());
+    type_into(&harness, "seed", "7");
+    harness.step();
+
+    let symbols = widest_row_symbols(7);
+    assert!(symbols.len() > 20, "seed 7's widest row should be long");
+
+    // Picked from `rows()` rather than hard-coded: a literal symbol pins one
+    // seed's table and stops tracking it.
+    let last = symbols.last().cloned().unwrap_or_default();
+
+    let before = harness.get_by_role_and_label(Role::Button, &last).rect();
+    assert!(
+        before.min.x > size[0],
+        "the fixture assumes the last cell starts off screen; it is at {before:?} in a          {}-point window, so this test would pass without any scrolling at all",
+        size[0]
+    );
+
+    harness
+        .get_by_role_and_label(Role::Button, &last)
+        .scroll_to_me();
+    // **Three steps, measured.** A scroll takes effect over frames: the cell
+    // sits at x = 2456 after one and two steps and reaches x = 852 on the third.
+    // A fixed, explained count rather than a `run()`-shaped call, which would
+    // step until quiescent and reintroduce the vacuity the rest of this file
+    // forbids.
+    for _ in 0..3 {
+        harness.step();
+    }
+
+    let after = harness.get_by_role_and_label(Role::Button, &last).rect();
+    assert!(
+        after.min.x >= 0.0 && after.max.x <= size[0],
+        "after scrolling, the last cell of the widest row is at {after:?}, which is          outside a {}-point window — the grid does not scroll, so the tail of every          wide table is unreachable",
+        size[0]
     );
 }

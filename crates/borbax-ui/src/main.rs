@@ -6,7 +6,7 @@
 //! headlessly. The residual untested surface is that one forwarding line —
 //! it takes no decision, and it is visually checkable.
 
-use borbax_ui::{WINDOW_TITLE, panel::draw, state::ViewerState};
+use borbax_ui::{WINDOW_SIZE, WINDOW_TITLE, panel::draw, state::ViewerState};
 
 /// The application, which is a [`ViewerState`] and a way to draw it.
 struct Viewer {
@@ -27,7 +27,13 @@ impl eframe::App for Viewer {
 fn main() -> eframe::Result {
     eframe::run_native(
         WINDOW_TITLE,
-        eframe::NativeOptions::default(),
+        eframe::NativeOptions {
+            // Read from the constant rather than typed here, so the frame test
+            // that asserts every cell is reachable is asserting about *this*
+            // window and not one it guessed.
+            viewport: egui::ViewportBuilder::default().with_inner_size(WINDOW_SIZE),
+            ..Default::default()
+        },
         Box::new(|_cc| {
             Ok(Box::new(Viewer {
                 // `opening`, not `new`: the window shows a universe from the
