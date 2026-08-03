@@ -3301,30 +3301,14 @@ fn check_the_viewer_calls_the_chemistry_once(
     // **This check's only correct response is deletion**, and it says so rather
     // than being worked around: `peak` and `closures` are legitimate things a
     // later step will want to show.
-    let mut pattern_sites = Vec::new();
-    for path in walk(viewer_src)?
-        .into_iter()
-        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-    {
-        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        // **`(` without the closing paren.** Requiring `)` matched only an
-        // *empty* argument list, so `x.pattern(&table)` scored nothing and the
-        // guard would go silent the day `pattern` took an argument — the
-        // fail-open direction this check exists to close. The `(` stays, because
-        // `.pattern` as a *field* is not a call.
-        let Some(hits) = count_outside_tests(&src, PATTERN_CALL) else {
-            continue;
-        };
-        if hits > 0 {
-            pattern_sites.push(
-                path.strip_prefix(root)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string(),
-            );
-        }
-    }
-    if !pattern_sites.is_empty() {
+    // **`(` without the closing paren.** Requiring `)` matched only an *empty*
+    // argument list, so `x.pattern(&table)` scored nothing and the guard would
+    // go silent the day `pattern` took an argument — the fail-open direction
+    // this check exists to close. The `(` stays, because `.pattern` as a *field*
+    // is not a call.
+    let (pattern_total, pattern_sites) =
+        call_sites_under(root, viewer_src, PATTERN_CALL, ".pattern()", failures)?;
+    if pattern_total > 0 {
         failures.push(format!(
             "viewer seam: `.pattern()` is called in {pattern_sites:?}. Step 2 has no \
              consumer for `PeriodicTable::pattern()` — the grid reads `period` and \
@@ -3344,42 +3328,14 @@ fn check_the_viewer_calls_the_chemistry_once(
     // 141 us call running every frame, which is 0.85% of a frame budget — too
     // small to see and invisible to every test. The plan deferred this grep to
     // Step 7; the surface it guards exists now.
-    let mut call_sites = Vec::new();
-    for path in walk(viewer_src)?
-        .into_iter()
-        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-    {
-        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        // **Shipped code only.** A `#[cfg(test)]` module that legitimately calls
-        // `Universe::generate` would otherwise fire this guard on correct code,
-        // and a guard that fires on correct code gets deleted — which is the
-        // structural pressure that made the last one worth evading.
-        //
-        // The rule is positional and the convention it leans on is real: every
-        // `#[cfg(test)] mod tests` in this workspace sits at the end of its
-        // file. Anything after the first such attribute is test code. Stated
-        // rather than parsed because the alternative is an AST walk for one
-        // needle, and being wrong here is fail-*open* only for a call written
-        // below a test module, which would be a strange place to hide one.
-        let Some(hits) = count_outside_tests(&src, GENERATE_CALL) else {
-            failures.push(format!(
-                "viewer seam: {VIEWER}/src/{} could not be lexed, so its \
-                 `Universe::generate` calls were not counted",
-                path.strip_prefix(viewer_src).unwrap_or(&path).display()
-            ));
-            continue;
-        };
-        if hits > 0 {
-            call_sites.push((path, hits));
-        }
-    }
-    let total: usize = call_sites.iter().map(|(_, n)| n).sum();
+    let (total, where_) = call_sites_under(
+        root,
+        viewer_src,
+        GENERATE_CALL,
+        "Universe::generate",
+        failures,
+    )?;
     if total != 1 {
-        let where_ = call_sites
-            .iter()
-            .map(|(p, n)| format!("{}x{n}", p.strip_prefix(root).unwrap_or(p).display()))
-            .collect::<Vec<_>>()
-            .join(", ");
         failures.push(format!(
             "viewer seam: `Universe::generate` has {total} call site(s) in {VIEWER}/src \
              ({where_}), expected exactly 1 (in state.rs, inside `reload`). A second one \
@@ -3389,7 +3345,95 @@ fn check_the_viewer_calls_the_chemistry_once(
              a hole a symbol-aware check would close"
         ));
     }
+
+    // Exactly one `embed` and one `canonicalise` call site.
+    //
+    // **The same argument as `Universe::generate`, at the price that made §8.6
+    // a rule.** Both are per-species work: `canonicalise` searches for a
+    // canonical labelling and `embed` runs 240 fixed stress-majorization
+    // iterations. Written into a paint body they would run every frame, and
+    // `re_embeds` would never see it — a counter on a state method is untouched
+    // by a call that does not go through the state method, which is exactly what
+    // the `regenerations` doc says about its own blind spot one function above.
+    //
+    // **Two counters, never one over the pair**, because they are not the same
+    // quantity and will stop being called together: `canonicalise` returns a
+    // `Result` and can fail, so a combined count would report "embeddings" while
+    // measuring "attempts" the first time one of them is retried.
+    for (needle, what, site) in [
+        (EMBED_CALL, "embed", "molecule.rs, inside `build`"),
+        (
+            CANONICALISE_CALL,
+            "canonicalise",
+            "molecule.rs, inside `build`",
+        ),
+    ] {
+        let (total, where_) = call_sites_under(root, viewer_src, needle, what, failures)?;
+        if total != 1 {
+            failures.push(format!(
+                "viewer seam: `{what}` has {total} call site(s) in {VIEWER}/src ({where_}), \
+                 expected exactly 1 (in {site}). This counts **call sites in shipped \
+                 code**, which is not the same as work done — `if x {{ {what}(a) }} else \
+                 {{ {what}(b) }}` is two sites and one call — so it bounds where the \
+                 chemistry is reached from and says nothing about how often. That bound \
+                 is `ViewerState::re_embeds`'s job, and it cannot see a call written \
+                 straight into a paint body or a frame system, which is why this exists. \
+                 The hole, stated so the right probe gets run: an alias hiding the *only* \
+                 site gives 0 and fails, so it is not that — it is an alias hiding a \
+                 *second* site (`use borbax_molecule::{what} as lay_out;`) while a \
+                 literal one keeps the count at 1"
+            ));
+        }
+    }
     Ok(())
+}
+
+/// Count `needle` across every shipped `.rs` file under `viewer_src`.
+///
+/// Returns the total and a human-readable site list for the failure message.
+///
+/// **A file that cannot be lexed is a failure, never a zero**, and unifying the
+/// three callers on this is what closed a live hole: the `.pattern()` count used
+/// to `continue` silently on an unlexable file, so a syntax error anywhere under
+/// `src` made that half of the guard pass by scanning nothing. The
+/// `Universe::generate` half already failed loudly; now all of them do.
+///
+/// **Shipped code only.** A `#[cfg(test)]` module that legitimately calls one of
+/// these would otherwise fire the guard on correct code, and a guard that fires
+/// on correct code gets deleted — which is the structural pressure that made the
+/// last one worth evading.
+fn call_sites_under(
+    root: &Path,
+    viewer_src: &Path,
+    needle: &[&str],
+    what: &str,
+    failures: &mut Vec<String>,
+) -> Result<(usize, String), String> {
+    let mut sites = Vec::new();
+    for path in walk(viewer_src)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let Some(hits) = count_outside_tests(&src, needle) else {
+            failures.push(format!(
+                "viewer seam: crates/borbax-ui/src/{} could not be lexed, so its \
+                 `{what}` calls were not counted",
+                path.strip_prefix(viewer_src).unwrap_or(&path).display()
+            ));
+            continue;
+        };
+        if hits > 0 {
+            sites.push((path, hits));
+        }
+    }
+    let total = sites.iter().map(|(_, n)| n).sum();
+    let where_ = sites
+        .iter()
+        .map(|(p, n)| format!("{}x{n}", p.strip_prefix(root).unwrap_or(p).display()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok((total, where_))
 }
 
 /// Wall-clock is readable in exactly one file under [`DATA_FREE_ROOTS`].
@@ -4324,6 +4368,22 @@ const PATTERN_CALL: &[&str] = &[".", "pattern", "("];
 
 /// The token run that spells a `Universe::generate` call.
 const GENERATE_CALL: &[&str] = &["Universe", ":", ":", "generate"];
+
+/// The token run that spells an `embed(..)` call.
+///
+/// **The `(` is required and it is doing two jobs.** It keeps `use
+/// borbax_molecule::embed;` — which is an import, not a call — from scoring, and
+/// it keeps the needle from matching a bare mention. Identifiers lex whole, so
+/// `re_embeds(` is one token `re_embeds` and does not match; that matters,
+/// because the counter this guard's sibling reads is spelled exactly that.
+const EMBED_CALL: &[&str] = &["embed", "("];
+
+/// The token run that spells a `canonicalise(..)` call.
+///
+/// Matches the free function and a `.canonicalise(..)` method equally, which is
+/// deliberate: `Signature::canonicalise` is also chemistry, and the viewer has
+/// no more business calling one per frame than the other.
+const CANONICALISE_CALL: &[&str] = &["canonicalise", "("];
 
 /// Count how many times `needle` — a `::`-joined path or a `.method()` — appears
 /// in `src` **outside** any `#[cfg(test)]` item.
