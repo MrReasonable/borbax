@@ -107,6 +107,27 @@ const FORMAT_SUBSTRINGS: &[&str] = &[
 /// "file"]`; `SMILES` -> `["smiles"]`; `b"pdb"` -> `["b", "pdb"]`. Whole-segment
 /// matching is what lets `smi` be in the vocabulary without firing on `smith`.
 fn identifier_segments(name: &str) -> Vec<String> {
+    segments_preserving_case(name)
+        .iter()
+        .map(|seg| seg.to_ascii_lowercase())
+        .collect()
+}
+
+/// [`identifier_segments`] without the case fold.
+///
+/// **The G2 symbol tier needs the original case and the name tier must not
+/// have it**, so the boundary rules live here once and the fold is applied on
+/// top. Writing a second splitter instead would let the two drift, and the
+/// boundary logic is the part that has already been fixed twice — once for
+/// `b"pdb"` keeping its prefix glued on, once for `SMILESParser` absorbing the
+/// word after the acronym.
+///
+/// Case matters for symbols and not for names because `Fe` is iron while `fe`,
+/// `nO`, `aT` and `iN` are ordinary fragments of source code — measured, a
+/// case-insensitive symbol rule gives **442** false positives on this tree
+/// against **0** for the case-sensitive one. Case carries no meaning in a name:
+/// `Carbon`, `carbon` and `CARBON` all read as carbon.
+fn segments_preserving_case(name: &str) -> Vec<String> {
     let chars: Vec<char> = name.chars().collect();
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -144,7 +165,7 @@ fn identifier_segments(name: &str) -> Vec<String> {
         if boundary {
             out.push(std::mem::take(&mut cur));
         }
-        cur.push(ch.to_ascii_lowercase());
+        cur.push(*ch);
     }
     if !cur.is_empty() {
         out.push(cur);
@@ -482,6 +503,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_no_closure_predicate_branch(root, &mut failures)?;
     check_packing_matches_probe(root, &mut failures)?;
     check_every_member_inherits_the_lints(root, &mut failures)?;
+    check_no_real_chemistry_in_literals(root, &mut failures)?;
     check_the_viewer_stays_a_leaf(root, &mut failures)?;
     check_the_viewer_seam_holds(root, &mut failures)?;
     check_wall_clock_has_one_home(root, &mut failures)?;
@@ -3296,6 +3318,433 @@ fn scan_format_tokens(stream: proc_macro2::TokenStream, hits: &mut Vec<(String, 
     }
 }
 
+/// The root the fiction scans cover. **Unknown ⇒ covered.**
+///
+/// `crates/` and not the workspace: `experiments/` is deliberately out of
+/// scope, declared here rather than skipped silently. It holds measurement
+/// probes that ship to nobody and print to no child, and it carries the only
+/// two hits the one-letter symbol tier finds on this tree (`"N"` in
+/// `src/bin/fusion.rs` and `src/bin/ptable.rs`, both axis labels). `xtask`
+/// itself is out for the reason [`UNSCANNED_CRATE_DIRS`] gives — it holds these
+/// vocabularies as data, so scanning it would fire on every entry.
+const FICTION_SCAN_ROOT: &str = "crates";
+
+/// The one file allowed to contain the blocklist, by exact path.
+///
+/// It **must exist**: a missing or moved `naming.rs` is reported as a failure,
+/// not treated as "nothing to exempt". That is the `check_blocklist_present`
+/// lesson — a guard that reports success when its subject has vanished is worse
+/// than no guard, because the green tick is read as evidence.
+const BLOCKLIST_FILE: &str = "borbax-universe/src/naming.rs";
+
+/// `xtask`'s own copy of the real element symbols (G2).
+///
+/// **Duplicated, never imported**, and the duplication is the point. `xtask`
+/// depending on `borbax-universe` to enforce §5 inverts the gate: deleting the
+/// blocklist would make the gate *fail to compile* rather than fail, and a gate
+/// that goes down with the thing it guards is worse than one that reports red.
+/// It would also make [`check_blocklist_present`] vacuous, since its whole job
+/// is asserting the identifier still exists.
+///
+/// Held honest by `the_blocklist_the_guard_uses_is_the_blocklist_the_generator_uses`,
+/// which extracts both arrays from `naming.rs` as text and compares them in both
+/// directions — the same shape as the `clippy.toml` ↔ [`BANNED_CALLS`] pair.
+const REAL_SYMBOLS: &[&str] = &[
+    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl",
+    "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As",
+    "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In",
+    "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb",
+    "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl",
+    "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk",
+    "Cf", "Es", "Fm", "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh",
+    "Fl", "Mc", "Lv", "Ts", "Og",
+];
+
+/// `xtask`'s own copy of the real element names and chemical terms (G2).
+///
+/// Duplicated rather than imported, for the reason [`REAL_SYMBOLS`] gives.
+const REAL_WORDS_COPY: &[&str] = &[
+    "hydrogen",
+    "helium",
+    "lithium",
+    "beryllium",
+    "boron",
+    "carbon",
+    "nitrogen",
+    "oxygen",
+    "fluorine",
+    "neon",
+    "sodium",
+    "magnesium",
+    "aluminium",
+    "aluminum",
+    "silicon",
+    "phosphorus",
+    "sulfur",
+    "sulphur",
+    "chlorine",
+    "argon",
+    "potassium",
+    "calcium",
+    "scandium",
+    "titanium",
+    "vanadium",
+    "chromium",
+    "manganese",
+    "iron",
+    "cobalt",
+    "nickel",
+    "copper",
+    "zinc",
+    "gallium",
+    "germanium",
+    "arsenic",
+    "selenium",
+    "bromine",
+    "krypton",
+    "rubidium",
+    "strontium",
+    "yttrium",
+    "zirconium",
+    "niobium",
+    "molybdenum",
+    "technetium",
+    "ruthenium",
+    "rhodium",
+    "palladium",
+    "silver",
+    "cadmium",
+    "indium",
+    "tin",
+    "antimony",
+    "tellurium",
+    "iodine",
+    "xenon",
+    "caesium",
+    "cesium",
+    "barium",
+    "lanthanum",
+    "cerium",
+    "tungsten",
+    "platinum",
+    "gold",
+    "mercury",
+    "thallium",
+    "lead",
+    "bismuth",
+    "polonium",
+    "astatine",
+    "radon",
+    "francium",
+    "radium",
+    "actinium",
+    "thorium",
+    "uranium",
+    "neptunium",
+    "plutonium",
+    "water",
+    "protein",
+    "enzyme",
+    "peptide",
+    "lipid",
+    "sugar",
+    "glucose",
+    "amine",
+    "acid",
+    "alcohol",
+    "ester",
+    "ketone",
+    "methane",
+    "ammonia",
+    "benzene",
+    "cellulose",
+    "chitin",
+];
+
+/// Real-world unit spellings that may not appear in a string literal (G4).
+///
+/// **A deny-list over an open vocabulary cannot invert to fail-on-unknown**, and
+/// saying so is part of shipping it: there is no finite set of real-world units,
+/// so this catches the spellings anyone actually writes and nothing else. The
+/// fail-on-unknown half lives in `borbax-ui`'s
+/// `every_unit_word_on_screen_is_one_this_universe_invented`, an allow-list over
+/// the *attained* set of unit words, which also catches one assembled at runtime
+/// that no source scan can see. Neither half is sufficient; anyone proposing to
+/// drop the acceptance test because "xtask covers it" is proposing to make the
+/// guarantee pass-on-unknown.
+///
+/// Matched as case-insensitive substrings, so every entry must be distinctive
+/// enough to survive that. The ones that are **not** on this list are the
+/// interesting part, each measured against this tree:
+///
+/// - `second` — 3 hits (`"{first} {second}"`, `"a second layout pass"`).
+/// - `pm`, `fm` — 2 and 1, and they are also *element symbols*, so they would
+///   collide with the G2 fixtures.
+/// - `year` — `world-years` is a **sanctioned** unit and contains it.
+/// - `mol` alone — `Molecule` and `Mol12` are everywhere; it appears here only
+///   inside the compound `kj/mol`, which is a literal.
+/// - `metre`, `meter`, `gram`, `mole`, `litre`, `liter` — all fire as substrings
+///   of ordinary words (`parameter`, `program`/`diagram`/`histogram`,
+///   `molecule`, `obliterate`). They are matched as whole segments instead.
+const REAL_UNIT_SUBSTRINGS: &[&str] = &[
+    "angstrom",
+    "kelvin",
+    "celsius",
+    "fahrenheit",
+    "joule",
+    "newton",
+    "pascal",
+    "dalton",
+    "kilogram",
+    "kj/mol",
+    "kcal",
+    "g/mol",
+    "j/mol",
+    "hertz",
+    "\u{c5}",
+    "\u{212b}",
+    "\u{b0}c",
+    "\u{b0}f",
+    "\u{b5}m",
+    // **The escaped spellings, because the scan reads source text and not
+    // decoded strings.** A literal written `"\u{c5}"` renders as an angstrom
+    // sign on screen and contains no `\u{c5}` character for a substring match to
+    // find — measured, it walked past the first version of this list. Both
+    // codepoints for the sign are listed: U+00C5 (Latin capital A with ring) and
+    // U+212B (the angstrom sign proper), which look identical and are
+    // interchangeable in practice.
+    "\\u{c5}",
+    "\\u{212b}",
+    "\\u{b0}c",
+    "\\u{b0}f",
+    "\\u{b5}m",
+];
+
+/// Real-world units that are ordinary words inside other words, so they are
+/// matched as whole segments rather than substrings. See [`REAL_UNIT_SUBSTRINGS`].
+const REAL_UNIT_SEGMENTS: &[&str] = &[
+    "metre", "metres", "meter", "meters", "gram", "grams", "mole", "moles", "litre", "litres",
+    "liter", "liters", "amu", "ev", "nm",
+];
+
+/// G2 and G4 — no real element name, symbol or real-world unit in a literal.
+///
+/// **Neither check existed for any crate before Step 2**, and an earlier plan
+/// said otherwise. [`check_blocklist_present`] asserts only that the
+/// *identifier* `REAL_ELEMENT_SYMBOLS` still appears in one file; the blocklist
+/// itself is a generation-time filter. No file was scanned for real element
+/// names, and nothing at all was scanned for real-world units.
+///
+/// **The generator cannot mint a breach** — `naming::is_real` rejects and
+/// redraws — so the subject here is the *display layer inventing a name the
+/// generator did not produce*: a hard-coded `"Carbon"`, a `match units { 1 => "H" }`
+/// table, a `"—"`-style placeholder that reaches for a real symbol.
+///
+/// **The rule is a split and the split is measured, not chosen.** Over this
+/// tree, string literals only, comments stripped, `naming.rs` excluded:
+///
+/// | tier | match | false positives |
+/// |---|---|---|
+/// | real names | whole segment, case-insensitive | 0 |
+/// | two-letter symbols | whole segment, case-**sensitive** | 0 |
+/// | one-letter symbols | whole **literal**, case-sensitive | 0 |
+/// | *(rejected)* any symbol, case-insensitive | | **442** |
+///
+/// The case asymmetry looks like the `elements.JSON` mistake and is not, so the
+/// numbers stay here: `elements.JSON` is a *filesystem* lesson — on macOS and
+/// Windows that is the same file, so the rename is invisible to whoever makes
+/// it. Two string literals differing in case are two different tokens. And case
+/// is semantic in the symbol vocabulary while meaningless in the name
+/// vocabulary.
+///
+/// **Residual, stated so nobody reads this as total:** a hard-coded `"FE"` or
+/// `"fe"` escapes, and so does a name assembled at runtime — `&name[..2]`
+/// turning "helion" into `"He"` has no literal to scan. The second is covered by
+/// `no_element_reaches_the_screen_under_a_real_name_or_symbol` in `borbax-ui`,
+/// which asserts against `is_real` over what is actually displayed.
+fn check_no_real_chemistry_in_literals(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let scan_root = root.join(FICTION_SCAN_ROOT);
+    if !scan_root.exists() {
+        failures.push(format!(
+            "§5: {FICTION_SCAN_ROOT}/ does not exist, so no file was scanned for real \
+             element names or real-world units. Reported rather than skipped — a \
+             renamed root is how a guard goes quiet while every other check stays green"
+        ));
+        return Ok(());
+    }
+    let blocklist = scan_root.join(BLOCKLIST_FILE);
+    if !blocklist.exists() {
+        failures.push(format!(
+            "§5: the blocklist at {FICTION_SCAN_ROOT}/{BLOCKLIST_FILE} is missing, so the \
+             one file exempt from the name scan cannot be identified. If it moved, move \
+             this check with it"
+        ));
+    }
+
+    for path in walk(&scan_root)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        if path == blocklist {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        let Ok(stream) = src.parse::<proc_macro2::TokenStream>() else {
+            failures.push(format!(
+                "§5: {rel} could not be lexed, so it was not scanned for real element \
+                 names or units. Reported rather than skipped"
+            ));
+            continue;
+        };
+        let mut literals = Vec::new();
+        collect_shipped_literals(stream, &mut literals);
+        for lit in literals {
+            for (word, why) in fiction_breaches(&lit) {
+                failures.push(format!(
+                    "§5: {rel} has `{word}` in the string literal {lit} — {why}. The viewer \
+                     shows *generated* names and this universe's own units; a real one in a \
+                     label is exactly as much a breach as one in a data file"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every string literal in `stream`, skipping `#[doc]` groups and `#[cfg(test)]`
+/// items.
+///
+/// The `#[doc]` skip is what makes the prose in this repository legal: these
+/// files necessarily quote what they forbid. It is a **Bracket** test, which is
+/// why `borbax-units`' unit descriptions had to become doc comments rather than
+/// macro arguments — a bare literal inside `unit!(..)` sits in a *Parenthesis*
+/// group and would not be skipped.
+fn collect_shipped_literals(stream: proc_macro2::TokenStream, out: &mut Vec<String>) {
+    // **Consulted for the next *brace* group, which is the bug the first draft
+    // shipped.** The flag was set on seeing `#[cfg(test)]` and then only ever
+    // cleared in the literal arm, so the `mod tests { .. }` body it was supposed
+    // to skip was recursed into anyway. Nothing on the tree fired, because no
+    // test currently spells a real name outside `naming.rs` — which is exactly
+    // the shape of a guard that is wrong and looks right.
+    let mut skip_next_body = false;
+    for tt in stream {
+        match tt {
+            proc_macro2::TokenTree::Group(g) => {
+                let mut inner = g.stream().into_iter().peekable();
+                let is_bracket = matches!(g.delimiter(), proc_macro2::Delimiter::Bracket);
+                let is_doc = is_bracket
+                    && inner.peek().is_some_and(
+                        |t| matches!(t, proc_macro2::TokenTree::Ident(i) if i == "doc"),
+                    );
+                let is_cfg_test =
+                    is_bracket && g.stream().to_string().replace(' ', "") == "cfg(test)";
+                let is_body = matches!(g.delimiter(), proc_macro2::Delimiter::Brace);
+                if is_cfg_test {
+                    // The item this attribute decorates is test code, and a test
+                    // fixture legitimately spells out what it forbids.
+                    skip_next_body = true;
+                } else if is_body && skip_next_body {
+                    skip_next_body = false;
+                } else if !is_doc {
+                    collect_shipped_literals(g.stream(), out);
+                }
+            }
+            proc_macro2::TokenTree::Literal(lit) => out.push(lit.to_string()),
+            proc_macro2::TokenTree::Ident(_) | proc_macro2::TokenTree::Punct(_) => {}
+        }
+    }
+}
+
+/// A literal's whole words, split on non-alphanumerics only, case preserved.
+///
+/// **Deliberately *not* [`segments_preserving_case`], and the difference is a
+/// measured false positive.** That splitter also breaks on camelCase, so `NaN`
+/// becomes `["Na", "N"]` and sodium matches — six times on this tree, in
+/// `packing.rs`, `layout.rs`, `geodesic.rs` and `borbax-units` itself, every one
+/// of them a §13.4 comment about float handling. `Na` inside `NaN` is not
+/// sodium, and a guard that fires on correct code gets deleted.
+///
+/// **The residual this buys, stated rather than hidden:** a two-letter symbol
+/// glued to another word inside a single token is missed — `"NaCl"` scores
+/// nothing. That is a real hole and it is the smaller one. The spelling a label
+/// actually uses is a word: `"Sodium"` (caught by the name tier), `"Na"`
+/// (caught here), `"carbon (C)"` (caught by the name tier). A hard-coded
+/// `"NaCl"` in a UI label is caught by nothing and is worth a check of its own
+/// the day formulas reach the screen — which is Step 5, where `BondError` text
+/// first arrives.
+fn whole_words_preserving_case(name: &str) -> Vec<String> {
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The G2/G4 breaches in one string literal's raw token text, with the reason.
+fn fiction_breaches(lit: &str) -> Vec<(String, &'static str)> {
+    let mut hits = Vec::new();
+    if !lit.starts_with('"') && !lit.starts_with('r') && !lit.starts_with('b') {
+        // Not a string literal — a number or a char. Nothing to say about it.
+        return hits;
+    }
+    let lower = lit.to_ascii_lowercase();
+    let content = lit.trim_matches(|c| c == '"' || c == '#' || c == 'r' || c == 'b');
+
+    // **The union of both splittings, and `cArBoN` is why.** `identifier_segments`
+    // breaks on camelCase, so a mixed-case spelling shatters into `c|Ar|Bo|N` and
+    // matches nothing — measured, it walked straight past this guard. Whole words
+    // catch that; camelCase segments catch `HydrogenPeroxide`, which whole words
+    // would miss. Neither alone is enough and the union costs nothing, because
+    // names are long enough that both splittings measure clean on this tree.
+    let name_forms: Vec<String> = identifier_segments(lit)
+        .into_iter()
+        .chain(
+            whole_words_preserving_case(lit)
+                .iter()
+                .map(|w| w.to_ascii_lowercase()),
+        )
+        .collect();
+    for word in REAL_WORDS_COPY {
+        if name_forms.iter().any(|seg| seg == word) {
+            hits.push((
+                (*word).to_owned(),
+                "a real element name or chemical term (G2)",
+            ));
+        }
+    }
+    for sym in REAL_SYMBOLS.iter().filter(|s| s.len() == 2) {
+        if whole_words_preserving_case(lit)
+            .iter()
+            .any(|seg| seg == sym)
+        {
+            hits.push(((*sym).to_owned(), "a real element symbol (G2)"));
+        }
+    }
+    for sym in REAL_SYMBOLS.iter().filter(|s| s.len() == 1) {
+        if content == *sym {
+            hits.push(((*sym).to_owned(), "a real element symbol (G2)"));
+        }
+    }
+    for unit in REAL_UNIT_SUBSTRINGS {
+        if lower.contains(unit) {
+            hits.push(((*unit).to_owned(), "a real-world unit (G4)"));
+        }
+    }
+    for unit in REAL_UNIT_SEGMENTS {
+        if identifier_segments(lit).iter().any(|seg| seg == unit) {
+            hits.push(((*unit).to_owned(), "a real-world unit (G4)"));
+        }
+    }
+    hits
+}
+
 /// §13.1 — every transcendental must route through `borbax_units::det_math`.
 ///
 /// A direct call is invisible locally and only diverges on another platform,
@@ -4168,6 +4617,7 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::scan_for_derived_streams;
+    use super::{REAL_SYMBOLS, REAL_WORDS_COPY, collect_shipped_literals, fiction_breaches};
     use super::{
         SIGNATURE_SURFACE, SigFacing, SigItem, alias_names, bookkeeping_against,
         check_surface_bookkeeping, compare_signature_surface, scan_signature_surface,
@@ -6539,6 +6989,271 @@ disallowed-types = [ { path = \"right::One\" } ]
         assert!(
             code_without_prose("fn f() { let _ = \"closed\"; }\n").is_some(),
             "ordinary code must lex"
+        );
+    }
+
+    /// Every G2/G4 breach found in one source fixture, by the real scan path.
+    fn fiction_hits(src: &str) -> Vec<String> {
+        let stream = src
+            .parse::<proc_macro2::TokenStream>()
+            .unwrap_or_else(|_| proc_macro2::TokenStream::new());
+        let mut lits = Vec::new();
+        collect_shipped_literals(stream, &mut lits);
+        lits.iter()
+            .flat_map(|l| fiction_breaches(l))
+            .map(|(w, _)| w)
+            .collect()
+    }
+
+    /// A real element name hard-coded into a display string is caught.
+    ///
+    /// The generator cannot mint one — `naming::is_real` rejects and redraws —
+    /// so the subject is the display layer inventing a name the generator did
+    /// not produce.
+    #[test]
+    fn a_hardcoded_real_element_name_in_a_display_string_is_caught() {
+        for src in [
+            r#"fn f() -> &'static str { "Carbon" }"#,
+            r#"fn f() -> &'static str { "carbon (C)" }"#,
+            r#"const T: &[&str] = &["Hydrogen", "Helium"];"#,
+            r#"fn f() -> &'static str { "made of water" }"#,
+        ] {
+            assert!(
+                !fiction_hits(src).is_empty(),
+                "a real name reached the screen unnoticed: {src}"
+            );
+        }
+    }
+
+    /// Real symbols are caught in the spellings a person actually writes.
+    ///
+    /// Two-letter symbols as whole words; one-letter symbols only as the entire
+    /// literal, because `"N"` is a maths label far more often than nitrogen.
+    #[test]
+    fn a_hardcoded_real_symbol_is_caught_in_the_spellings_a_person_writes() {
+        for src in [
+            r#"fn f() -> &'static str { "He" }"#,
+            r#"fn f() -> &'static str { "Fe" }"#,
+            r#"fn f() -> &'static str { "C" }"#,
+            r#"const T: &[&str] = &["H", "He", "Li"];"#,
+        ] {
+            assert!(
+                !fiction_hits(src).is_empty(),
+                "a real symbol reached the screen unnoticed: {src}"
+            );
+        }
+        // The negative arm, and it is what keeps the one-letter tier from being
+        // the 442-false-positive version. A single letter *inside* a sentence is
+        // not an element.
+        assert!(
+            fiction_hits(r#"fn f() -> &'static str { "N of M" }"#).is_empty(),
+            "a one-letter symbol must only match as the WHOLE literal"
+        );
+    }
+
+    /// Names fold case; symbols do not. Both halves asserted.
+    ///
+    /// **The numbers are the reason and they belong here**, because this
+    /// asymmetry looks like the `elements.JSON` mistake to anyone applying that
+    /// lesson uniformly: a case-insensitive symbol rule gives **442** false
+    /// positives on this tree (`n`×93, `k`×50, `at`×44, `i`×40, `u`×32) against
+    /// **0** for the case-sensitive one. `elements.JSON` is a *filesystem*
+    /// lesson — those are the same file on macOS, so the rename is invisible.
+    /// Two string literals differing in case are two different tokens.
+    #[test]
+    fn a_case_flipped_real_name_is_still_caught_and_a_case_flipped_symbol_is_not() {
+        for spelling in ["Carbon", "carbon", "CARBON", "cArBoN"] {
+            assert!(
+                !fiction_hits(&format!("fn f() -> &'static str {{ \"{spelling}\" }}")).is_empty(),
+                "case must not matter for a name: {spelling}"
+            );
+        }
+        for spelling in ["fe", "FE", "nO", "aT", "iN", "no", "at", "in"] {
+            assert!(
+                fiction_hits(&format!("fn f() -> &'static str {{ \"{spelling} x\" }}")).is_empty(),
+                "case MUST matter for a symbol, or this guard fires 442 times: {spelling}"
+            );
+        }
+    }
+
+    /// `Na` inside `NaN` is not sodium.
+    ///
+    /// **Measured, and it is why the symbol tier splits on whole words rather
+    /// than reusing [`super::identifier_segments`]**, which also breaks on
+    /// camelCase and turns `NaN` into `["Na", "N"]`. Six real files fired —
+    /// `packing.rs`, `layout.rs`, `geodesic.rs` and `borbax-units` itself — every
+    /// one of them a §13.4 comment about float handling. A guard that fires on
+    /// correct code gets deleted.
+    // The fixtures below quote real assertion messages verbatim, braces and all,
+    // because the point is that this guard sees what is actually written in the
+    // tree. They are source text handed to a lexer, never a format string.
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "fixture text copied from the real tree, lexed rather than formatted"
+    )]
+    #[test]
+    fn nan_is_not_sodium() {
+        for src in [
+            r#"fn f() { assert!(x, "NaN did not sort last: {v:?}"); }"#,
+            r#"fn f() { assert!(x, "unexpected NaN payload: 0x{:016x}"); }"#,
+            r#"fn f() { assert!(x, "a NaN pivot must fail the factorisation"); }"#,
+        ] {
+            assert!(
+                fiction_hits(src).is_empty(),
+                "the float spelling NaN was read as sodium: {src}"
+            );
+        }
+    }
+
+    /// A format placeholder and an ordinary English word are not units.
+    ///
+    /// Each of these was measured on the tree and each is why the token beside
+    /// it is absent from the vocabulary: `second` (3 hits), `pm`/`fm` (2 and 1,
+    /// and both are also element symbols), `mol` alone (`Molecule`, `Mol12`),
+    /// `metre`/`gram`/`mole`/`liter` inside `parameter`, `histogram`,
+    /// `molecule`, `obliterate`. And `world-years` contains `year`, so `year`
+    /// can never be a bare entry.
+    #[test]
+    fn a_format_placeholder_is_not_a_unit() {
+        for src in [
+            r#"fn f() -> &'static str { "{first} {second}" }"#,
+            r#"fn f() -> &'static str { "a second layout pass" }"#,
+            r#"fn f() -> &'static str { "parameter histogram molecule" }"#,
+            r#"fn f() -> &'static str { "obliterate the diagram" }"#,
+            r#"fn f() -> &'static str { "12 world-years" }"#,
+            r#"fn f() -> &'static str { "0.92 spans" }"#,
+            r#"fn f() -> &'static str { "2.60 quanta per unit" }"#,
+        ] {
+            assert!(
+                fiction_hits(src).is_empty(),
+                "an invented unit or ordinary word was read as a real-world unit: {src}"
+            );
+        }
+    }
+
+    /// A real unit is caught in the spellings that matter.
+    #[test]
+    fn a_real_world_unit_is_caught_in_every_spelling_that_matters() {
+        for src in [
+            r#"fn f() -> &'static str { "1.15 \u{c5}" }"#,
+            r#"fn f() -> &'static str { "2.4 kJ/mol" }"#,
+            r#"fn f() -> &'static str { "204 Kelvin" }"#,
+            r#"fn f() -> &'static str { "12 nm" }"#,
+            r#"fn f() -> &'static str { "70.7 amu" }"#,
+            r#"fn f() -> &'static str { "3 grams" }"#,
+            r#"fn f() -> &'static str { "5 metres" }"#,
+        ] {
+            assert!(
+                !fiction_hits(src).is_empty(),
+                "a real-world unit reached a label unnoticed: {src}"
+            );
+        }
+    }
+
+    /// The disclaimers are doc comments, and a bare literal is **not** exempt.
+    ///
+    /// **This is the test that decides how G4 is enforced**, and it is silent
+    /// under either fix that was rejected. `borbax-units` necessarily names the
+    /// units it disclaims ("Not Kelvin, not Celsius"); as a bare `$doc:literal`
+    /// those words sit in a *Parenthesis* group, which the `#[doc]` skip — a
+    /// **Bracket** test — cannot reach, so the crate that exists to disclaim
+    /// real units would fail the guard that enforces them.
+    ///
+    /// A path exemption for that file is a hand-kept list of one, and it would
+    /// silence the first fixture below. A `Not `-prefix rule would silence the
+    /// first fixture *and* `"Not Å"` in any UI label — a guard satisfiable by
+    /// editing the string it fired on trains people to edit strings. Taking
+    /// `$(#[$doc:meta])*` instead means the words arrive as `#[doc = "…"]` and
+    /// the existing skip covers them, with zero new exemption surface.
+    #[test]
+    fn the_disclaimers_are_doc_comments_and_a_bare_literal_is_not_exempt() {
+        let bare = r#"macro_rules! u { ($n:ident, $d:literal) => { pub struct $n; }; }
+u!(Thermal, "Temperature, in thermals. Not Kelvin, not Celsius.");"#;
+        assert!(
+            !fiction_hits(bare).is_empty(),
+            "a bare literal in a macro's parenthesis group must NOT be exempt — this is \
+             the spelling a path exemption would have silenced"
+        );
+
+        let doc = r"macro_rules! u { ($(#[$d:meta])* $n:ident) => { $(#[$d])* pub struct $n; }; }
+u!(
+    /// Temperature, in thermals. Not Kelvin, not Celsius.
+    Thermal
+);";
+        assert!(
+            fiction_hits(doc).is_empty(),
+            "the shipped spelling must be silent, or borbax-units cannot describe itself"
+        );
+
+        // And the rule that was rejected, shown failing: a disclaimer prefix
+        // must not launder a real unit in an ordinary label.
+        assert!(
+            !fiction_hits(r#"fn f() -> &'static str { "Not \u{c5}" }"#).is_empty(),
+            "`Not ` must not be a way to write a real unit into a label"
+        );
+    }
+
+    /// `xtask`'s copy of the blocklist is the generator's blocklist.
+    ///
+    /// **The highest-value test of the pair.** The copy is what makes the gate
+    /// independent of the crate it guards — importing would mean deleting the
+    /// blocklist makes the gate *fail to compile* rather than fail. The cost of
+    /// a copy is that it can silently narrow while looking maintained, and this
+    /// is what stops that: both directions, with a floor on each count so the
+    /// test cannot pass over two empty lists.
+    #[test]
+    fn the_blocklist_the_guard_uses_is_the_blocklist_the_generator_uses() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("crates/borbax-universe/src/naming.rs"));
+        let src = path.and_then(|p| std::fs::read_to_string(p).ok());
+        assert!(
+            src.is_some(),
+            "naming.rs could not be read — reported rather than skipped, because a \
+             guard that goes quiet when its subject moves is worse than no guard"
+        );
+        let src = src.unwrap_or_default();
+
+        let extract = |key: &str| -> Vec<String> {
+            let Some(from) = src.find(key) else {
+                return Vec::new();
+            };
+            let tail = &src[from..];
+            let Some(end) = tail.find("\n];") else {
+                return Vec::new();
+            };
+            tail[..end]
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect()
+        };
+
+        let symbols = extract("const REAL_ELEMENT_SYMBOLS: &[&str] = &[");
+        let words = extract("const REAL_WORDS: &[&str] = &[");
+
+        // Floors first. Without them the whole test is satisfied by two empty
+        // lists compared against two empty lists — the vacuous shape this
+        // repository has shipped before.
+        assert!(
+            symbols.len() >= 100,
+            "only {} symbols extracted from naming.rs; the extraction broke, not the list",
+            symbols.len()
+        );
+        assert!(
+            words.len() >= 80,
+            "only {} words extracted from naming.rs; the extraction broke, not the list",
+            words.len()
+        );
+
+        assert_eq!(
+            symbols, REAL_SYMBOLS,
+            "xtask's symbol copy has drifted from naming.rs"
+        );
+        assert_eq!(
+            words, REAL_WORDS_COPY,
+            "xtask's word copy has drifted from naming.rs"
         );
     }
 }

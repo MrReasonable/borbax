@@ -222,9 +222,29 @@ pub fn canonical_cmp(a: f64, b: f64) -> core::cmp::Ordering {
 /// It cannot move a golden: `#[inline]` grants no licence to reassociate float
 /// arithmetic, and the release asm was verified byte-identical with and
 /// without.
+/// **The description arrives as a doc *comment*, not as a string literal**, and
+/// that is a G4 enforcement decision rather than a style one. These
+/// descriptions necessarily name the real units they disclaim — "Not Kelvin,
+/// not Celsius" — and a bare `$doc:literal` puts those words in a string
+/// literal inside a parenthesised macro group, where the `xtask` unit scan's
+/// `#[doc]` skip cannot reach them: that skip tests for a **Bracket** group, and
+/// `unit!(..)`'s arguments are a Parenthesis group. So the crate that exists to
+/// disclaim real-world units would fail the guard that enforces them.
+///
+/// The two obvious repairs are both worse. A path exemption for this file is a
+/// hand-kept list of one, against the *unknown ⇒ fail* rule the rest of `xtask`
+/// is built on. A content rule allowing a real unit preceded by `Not ` is worse
+/// still: a guard satisfiable by editing the string it fired on trains people to
+/// edit strings, and the first thing anyone does when `"Å"` fires is try
+/// `"Not Å"`.
+///
+/// Taking `$(#[$doc:meta])*` instead means the words arrive as `#[doc = "…"]`
+/// bracket groups, which the **existing** skip already covers. It removes an
+/// exemption surface rather than adding one. Rendered rustdoc is unchanged; the
+/// only difference is that `///x` desugars with a leading space.
 macro_rules! unit {
-    ($name:ident, $doc:literal $(, $extra_derive:ident)*) => {
-        #[doc = $doc]
+    ($(#[$doc:meta])* $name:ident $(, $extra_derive:ident)*) => {
+        $(#[$doc])*
         ///
         /// Scaling by a dimensionless scalar is allowed and like-over-like
         /// division yields a ratio, but there is deliberately no way to
@@ -428,14 +448,22 @@ macro_rules! unit {
 // `Thermal` deliberately has no `Default` — see the macro's doc comment.
 // Write `Thermal::ZERO` where zero really is meant, so it shows up in a diff.
 unit!(
-    Thermal,
-    "Temperature, in thermals. Not Kelvin, not Celsius."
+    /// Temperature, in thermals. Not Kelvin, not Celsius.
+    Thermal
 );
-unit!(Quanta, "Energy, in quanta. Not joules.", Default);
-unit!(Span, "Distance, in spans. Not metres.", Default);
 unit!(
+    /// Energy, in quanta. Not joules.
+    Quanta,
+    Default
+);
+unit!(
+    /// Distance, in spans. Not metres.
+    Span,
+    Default
+);
+unit!(
+    /// Time, in world-years — defined by the generated world's own orbit.
     WorldYear,
-    "Time, in world-years — defined by the generated world's own orbit.",
     Default
 );
 
