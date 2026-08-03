@@ -352,41 +352,56 @@ mod tests {
 
     /// Pitch stops short of the pole, however far the drag goes.
     ///
-    /// **The discriminator is the clamp's removal**, and the arm that carries
-    /// the information is the *horizontal* reach of the eye. At the pole the eye
-    /// sits directly above the molecule, the horizontal component is zero, and
-    /// the engine's basis has nothing to build screen-right from — past it,
-    /// screen-right flips through 180 degrees and the whole image turns over
-    /// between one frame and the next.
+    /// **Two earlier versions of this test could not fail, in different ways,
+    /// and the second is the instructive one.**
     ///
-    /// Asserting on the *up* vector instead cannot fail, and this project has
-    /// already shipped that test once: the engine re-derives up from the view
-    /// direction, so it comes back positive on both sides of the pole.
+    /// The first asserted on the *up* vector. That cannot fail: the engine
+    /// re-derives up from the view direction, so it comes back positive on both
+    /// sides of the pole. This project shipped that version once.
+    ///
+    /// The second asserted that the eye's *horizontal reach* never gets small.
+    /// That reads as obviously right — at the pole the eye stands directly over
+    /// the molecule and the reach really is zero — and it still cannot catch the
+    /// defect, because **past** the pole the reach grows again. A limit widened
+    /// to `pi/2 + 0.5` leaves the eye 0.479 of a radius out from the axis, which
+    /// clears any floor comfortably while the image is upside down. It also
+    /// stepped pitch by 0.5 rad, so the sweep jumped over the pole without ever
+    /// sampling near it. Both faults found by running the mutation, not by
+    /// reading it.
+    ///
+    /// What is claimed here is the **sign**. Yaw stays at zero, so the eye sits
+    /// on `+Z` and `cos(pitch)` is what holds it there; crossing the pole makes
+    /// that negative, which is precisely when screen-right flips through 180
+    /// degrees and the image turns over between frames. The floor beneath it is
+    /// a separate claim — that the basis never becomes degenerate — and steps
+    /// are 0.05 rad so the sweep converges onto the clamp instead of stepping
+    /// across it.
     #[test]
     fn the_camera_never_reaches_the_pole() {
         for direction in [1.0, -1.0] {
             let mut cam = Orbit::framing(1.0);
-            let mut lowest = f64::INFINITY;
-            for _ in 0..2000 {
-                cam.drag(0.0, direction * 50.0);
-                let eye = cam.eye();
-                // Compared **squared**, so there is no `sqrt` and no `hypot`.
-                // Not a lint dodge: `hypot` is not correctly rounded by
-                // IEEE-754, so reaching for it here would put a platform
-                // transcendental in a file whose header says there are none.
-                let horizontal_sq = eye[0] * eye[0] + eye[2] * eye[2];
-                if horizontal_sq < lowest {
-                    lowest = horizontal_sq;
-                }
-            }
-            // sin of the 1e-3 rad margin, times the distance, squared to match —
-            // with slack for the clamp landing exactly on the limit.
             let floor = cam.distance() * 5e-4;
-            assert!(
-                lowest > floor * floor,
-                "the eye came within {lowest:.3e} of standing directly over the \
-                 molecule, so the view basis is about to flip"
-            );
+            let mut samples = 0u32;
+            for _ in 0..4000 {
+                cam.drag(0.0, direction * 5.0);
+                let eye = cam.eye();
+                // Yaw stays at zero through this sweep, so the eye's `z` is
+                // `distance * cos(pitch)` and its **sign** is the whole claim.
+                assert!(
+                    eye[2] > 0.0,
+                    "the eye crossed the pole — at yaw 0 it is now at z = {:.6}, so \
+                     screen-right has flipped and the image is upside down",
+                    eye[2]
+                );
+                assert!(
+                    eye[2] > floor,
+                    "the eye came within {:.3e} of standing directly over the \
+                     molecule, so the view basis is degenerate",
+                    eye[2]
+                );
+                samples += 1;
+            }
+            assert_eq!(samples, 4000, "the sweep did not run");
         }
     }
 
