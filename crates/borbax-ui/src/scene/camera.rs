@@ -233,7 +233,7 @@ fn normalise(v: Vec3) -> Vec3 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Camera, PITCH_LIMIT, RADIANS_PER_POINT, Vec3, WORLD_UP, cross, dot, sub};
+    use super::{Camera, PITCH_LIMIT, RADIANS_PER_POINT, Vec3, cross, dot, sub};
 
     /// Every `(yaw, pitch)` a drag can reach, plus both clamp boundaries.
     fn poses() -> Vec<(f64, f64)> {
@@ -393,18 +393,32 @@ mod tests {
     /// NaN — a black window. That much a NaN guard catches.
     ///
     /// What it does not catch: letting pitch pass the pole. Every vector stays
-    /// finite, unit-length and orthogonal, the determinant stays `+1` — and
-    /// `up` has swung through the vertical and now points *down*, so the image
-    /// is upside down and continues to be for the next half turn. `dot(up,
-    /// WORLD_UP) > 0` is the arm that sees it.
+    /// finite, unit-length and orthogonal, and the determinant stays `+1` —
+    /// what flips is **`right`**, and with it the whole image, left for right,
+    /// discontinuously and in one frame.
+    ///
+    /// **The obvious arm for that is vacuous, and it took a mutation to find
+    /// out.** The first version of this test asserted `dot(up, WORLD_UP) > 0`,
+    /// reasoning that passing the pole tips the view upside down. It cannot
+    /// fire: working the construction through, `right` normalises to
+    /// `sign(cos pitch) * [cos yaw, 0, -sin yaw]` and `up`'s vertical component
+    /// is therefore `|cos pitch|`, which is never negative. The assertion read
+    /// as coverage of the exact failure the clamp exists to prevent while being
+    /// unable to fail — and it passed a `PITCH_LIMIT` widened to `π/2 + 0.5`,
+    /// which is precisely the "guards the NaN, permits the flip" fix.
+    ///
+    /// The arm that works falls out of the same algebra: within the clamp
+    /// `cos pitch > 0`, so **`right` does not depend on pitch at all**. Compare
+    /// it against the same yaw at pitch zero and a pole crossing negates it.
     #[test]
     fn the_camera_does_not_degenerate_at_the_poles() {
+        const TARGET: Vec3 = [0.0, 0.0, 0.0];
         let mut checked = 0_u32;
 
         // Far past both poles, in steps a drag could actually deliver, and from
         // both directions so a one-sided clamp fails.
         for direction in [1.0_f64, -1.0] {
-            let mut cam = Camera::new([0.0, 0.0, 0.0], 3.0);
+            let mut cam = Camera::new(TARGET, 3.0);
             for _ in 0..40 {
                 cam.turn(0.3, direction * 0.2);
                 let b = cam.basis();
@@ -424,12 +438,18 @@ mod tests {
                     "pitch reached {}, outside the clamp at {PITCH_LIMIT}",
                     cam.pitch
                 );
+
+                // The same yaw, level with the target — `right` must be
+                // identical, because within the clamp it is a function of yaw
+                // alone.
+                let mut level = Camera::new(TARGET, 3.0);
+                level.yaw = cam.yaw;
                 assert!(
-                    dot(b.up, WORLD_UP) > 0.0,
-                    "`up` pointed downward at pitch {} — the view has passed the pole \
-                     and flipped. Every vector here is finite, unit-length and \
-                     orthogonal, and the determinant is still +1, so this is the arm \
-                     that has to catch it",
+                    dot(b.right, level.basis().right) > 0.0,
+                    "`right` reversed at pitch {} — the view has passed the pole and \
+                     the image is mirrored left for right. Every vector here is \
+                     finite, unit-length and orthogonal and the determinant is still \
+                     +1, so this is the only arm that can see it",
                     cam.pitch
                 );
                 checked += 1;
