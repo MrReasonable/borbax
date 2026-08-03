@@ -123,6 +123,7 @@
 
 pub mod app;
 pub mod molecule;
+pub mod orbit;
 pub mod panel;
 pub mod state;
 
