@@ -281,7 +281,7 @@ disclaim those units would fail the guard that enforces them.
 
 - A **path exemption** is a hand-kept list of one, against the recorded *unknown
   ⇒ fail* rule.
-- A **`Not `-prefix disclaimer rule** is worse than it looks: a guard satisfiable
+- A **`Not`-prefix disclaimer rule** is worse than it looks: a guard satisfiable
   by editing the string it fired on trains people to edit strings, and the first
   thing anyone does when `"Å"` fires is try `"Not Å"`.
 
@@ -475,9 +475,10 @@ Seam: `a_new_viewer_file_is_covered_without_being_named`,
 | add `("periodic.rs", &[])` to the seam table | the `eframe` count |
 | `state.rs` acquires `egui` | Tier 0 |
 
-Also, **after Step 2 lands**: move `ui.label(status_line)` to the top of `draw`
-and record the failure count. If it *drops* from Step 1b's four, a
-`request_discard` has been ungated somewhere.
+**Done, and it held.** Moving `ui.label(status_line)` to the top of `draw` still
+fails exactly **four** frame tests, as it did at Step 1b. That was checked
+because a new `request_discard` that is not gated self-repairs those defects and
+takes the count down silently — the defect round 3 of Step 1b actually shipped.
 
 ---
 
@@ -559,7 +560,7 @@ wrong and the tree said so.
   fine and the harness cannot express that one interaction.
 - **The grid was unreadable and every test was green over it.** `Grid`'s default
   column spacing is sized for prose, so each two-character symbol got a ~55 px
-  column: at 900 px only **eight** cells of a 58-cell row were on screen, and the
+  column: at the 900-point window of the time, only **eight** cells of a 58-cell row were on screen, and the
   one thing this step exists to show — that the shape changes with the seed — was
   invisible behind a scroll nobody would think to drag. Caught by *looking at the
   window*, which is the same way Step 1's opening-state defect was caught. With

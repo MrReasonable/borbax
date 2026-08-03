@@ -419,7 +419,7 @@ fn a_name_is_not_truncated_by_the_box_it_is_typed_into() {
 /// A harness wide enough that every cell of the widest table is on screen.
 ///
 /// **3600 px, and the first figure written here was 3000, which was wrong.**
-/// The worst-case content extent is ~3531 px and it does **not** depend on the
+/// The worst-case content extent is ~3531 points and it does **not** depend on the
 /// harness size: `egui`'s `Grid` sizes columns to their content, so there is no
 /// reflow to rescue a harness that is too narrow. At 3000 the far-right cell is
 /// off screen and `Node::click()` — which synthesises a pointer event at the
@@ -677,7 +677,7 @@ fn two_cells_never_answer_to_the_same_label() {
 /// Precisely: it asserts about the size the program **requests**, since
 /// `eframe` may have that scaled or clamped by the platform. That is the
 /// geometry this repository controls, and the only one observable headlessly. The
-/// widest measured table is ~3531 px of content against a 900 px window, so
+/// widest measured table is ~3531 points of content against a window's 1200 points, so
 /// most universes do not fit and a grid that does not scroll leaves the tail
 /// permanently unreachable.
 ///
