@@ -2783,6 +2783,32 @@ fn check_the_engine_stays_in_the_viewer(
         }
     }
 
+    // **The positive half, and it is not symmetry for its own sake.** Every
+    // check above is a *negative*: it fires when a crate that should not name an
+    // engine does. Negatives alone cannot tell "the engine is confined to the
+    // viewer" from "there is no engine anywhere" — delete Bevy from the viewer's
+    // manifest and every assertion above passes, loudly reporting success over a
+    // program that no longer draws. This is `check_blocklist_present`'s "Loud,
+    // not `Ok(())`" lesson, and the degeneration `check_wall_clock_has_one_home`
+    // is documented as unable to see.
+    let viewer_src = std::fs::read_to_string(&viewer_manifest).map_err(|e| e.to_string())?;
+    let viewer_deps = manifest_dependency_names(&code_only(&viewer_src));
+    if !viewer_deps.iter().any(|d| {
+        ENGINE_CRATES
+            .iter()
+            .any(|e| d == *e || d.starts_with(&format!("{e}_")))
+    }) {
+        failures.push(format!(
+            "§13.4: {} names no engine, so this check passed by there being nothing to \
+             confine rather than by the confinement holding. If the viewer has stopped \
+             drawing, say so here; if it has moved, move this check with it",
+            viewer_manifest
+                .strip_prefix(root)
+                .unwrap_or(&viewer_manifest)
+                .display()
+        ));
+    }
+
     // **A scan that read no manifests is a failure, not a pass.** The counter
     // counts manifests, which is what the message says; the workspace has one
     // per member plus the roots, so anything below 5 means the layout moved and
@@ -3033,6 +3059,14 @@ fn banned_idents_given(file: &str, gpu_files: &[&str]) -> Vec<&'static str> {
     if !gpu_files.contains(&file) {
         banned.push("wgpu");
     }
+    // **`bevy` must be an identifier needle and cannot be a substring one**,
+    // which is why it lives here rather than in `viewer_banned_imports`. The
+    // drawing tier is *allowed* `bevy_egui` — that is where `egui` now comes
+    // from — and `"bevy_egui".contains("bevy")` is true, so a substring ban
+    // would fire on the one import the tier exists to permit.
+    if file != VIEWER_SHELL_FILE {
+        banned.push("bevy");
+    }
     banned
 }
 
@@ -3061,9 +3095,9 @@ fn viewer_banned_imports(file: &str) -> &'static [&'static str] {
     if file == VIEWER_SHELL_FILE {
         &[]
     } else if VIEWER_DRAWING_FILES.contains(&file) {
-        &["eframe", "format!"]
+        &["format!"]
     } else {
-        &["egui", "eframe"]
+        &["egui"]
     }
 }
 
@@ -3094,7 +3128,7 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
 
     // The per-file import seam, checked over code rather than prose, over
     // **every** `.rs` file rather than a list of two.
-    let mut eframe_homes = Vec::new();
+    let mut bevy_homes = Vec::new();
     let mut wgpu_homes = Vec::new();
     for path in walk(&viewer_src)?
         .into_iter()
@@ -3153,8 +3187,8 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
             }
         }
 
-        if code.contains("eframe") {
-            eframe_homes.push(name.clone());
+        if names_type(&code, "bevy") {
+            bevy_homes.push(name.clone());
         }
         if names_type(&code, "wgpu") {
             wgpu_homes.push(name);
@@ -3170,13 +3204,16 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     // reopens it with a green build, which is the hand-kept-list failure mode
     // moved from the file level down into the entry, where it is *less* visible.
     // Counting the homes is what makes the invariant independent of the list.
-    eframe_homes.sort();
-    if eframe_homes != [VIEWER_SHELL_FILE] {
+    bevy_homes.sort();
+    if bevy_homes != [VIEWER_SHELL_FILE] {
         failures.push(format!(
-            "viewer seam: `eframe` is named in code by {eframe_homes:?} under \
-             {VIEWER}/src, expected exactly [\"{VIEWER_SHELL_FILE}\"]. `eframe` opens \
-             a window, so every file that names it is a file no headless test can \
-             reach; confining it to one is what keeps the drawing code testable"
+            "viewer seam: `bevy` is named in code by {bevy_homes:?} under \
+             {VIEWER}/src, expected exactly [\"{VIEWER_SHELL_FILE}\"]. The engine opens \
+             a window and owns the frame loop, so every file that names it is a file \
+             no headless test can reach; confining it to one is what keeps the drawing \
+             code testable and the decisions in `state.rs` reachable with no app at \
+             all. Matched as a whole identifier, so `bevy_egui` — which the drawing \
+             tier is deliberately allowed — is not this"
         ));
     }
 
@@ -7672,12 +7709,22 @@ disallowed-types = [ { path = \"right::One\" } ]
     /// this is the moment it was worth fixing.
     #[test]
     fn a_viewer_file_nobody_named_is_covered_rather_than_exempt() {
-        for unnamed in ["periodic.rs", "elements.rs", "scene.rs", "lib.rs"] {
+        for unnamed in ["periodic.rs", "elements.rs", "scene/mesh.rs", "lib.rs"] {
             assert_eq!(
                 viewer_banned_imports(unnamed),
-                ["egui", "eframe"],
-                "{unnamed} was not given the default tier, so a file added tomorrow \
-                 is unguarded"
+                ["egui"],
+                "{unnamed} was not given the default substring tier, so a file added \
+                 tomorrow is unguarded"
+            );
+            // **The other half of the tier, and it has to be asserted
+            // separately.** `bevy` moved to the identifier-matched list when the
+            // engine changed, because `bevy_egui` — which the drawing tier is
+            // allowed — contains `bevy` as a substring. A test that only checked
+            // `viewer_banned_imports` would report the default tier intact while
+            // the engine ban had quietly left it.
+            assert!(
+                viewer_banned_idents(unnamed).contains(&"bevy"),
+                "{unnamed} may name the engine without being the shell"
             );
         }
     }
@@ -7693,15 +7740,18 @@ disallowed-types = [ { path = \"right::One\" } ]
         let banned = viewer_banned_imports("panel.rs");
         assert!(
             !banned.contains(&"egui"),
-            "a drawing file must be allowed `egui` — it is what `egui_kittest` drives"
+            "a drawing file must be allowed `egui` — it is what `egui_kittest` drives, \
+             and since the move to Bevy it arrives as `bevy_egui::egui`"
         );
         assert!(
             banned.contains(&"format!"),
             "a drawing file must not build strings; that is the price of the licence"
         );
         assert!(
-            banned.contains(&"eframe"),
-            "only the shell may open a window"
+            viewer_banned_idents("panel.rs").contains(&"bevy"),
+            "only the shell may name the engine — a drawing file gets `bevy_egui` and \
+             not `bevy`, which is exactly why this needle is matched at identifier \
+             boundaries rather than as a substring"
         );
     }
 
