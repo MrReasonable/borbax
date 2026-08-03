@@ -9,6 +9,8 @@
 //! [`crate::state::ViewerState::status_line`], so a test asserting on that
 //! string is asserting on what is actually shown.
 
+use bevy_egui::egui;
+
 use crate::state::{ViewerState, moment};
 
 /// Make the panel readable by a child sitting next to you.

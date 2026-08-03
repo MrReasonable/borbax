@@ -47,20 +47,28 @@
 //!
 //! | File | May name in code | Holds |
 //! |---|---|---|
-//! | [`state`] | no UI type at all | every decision, and every test that can reach one |
-//! | [`panel`] | `egui` | the drawing, and no `format!` |
-//! | `main.rs` | `eframe` | the window, and nothing else |
+//! | [`state`] | no engine or UI type at all | every decision, and every test that can reach one |
+//! | [`panel`] | `egui` (via `bevy_egui`) | the drawing, and no `format!` |
+//! | `main.rs` | `bevy` | the window, and nothing else |
 //!
 //! **"In code" is load-bearing and a plain `grep` will not tell you this.** The
-//! prose necessarily quotes what it forbids — this paragraph names `eframe`, and
+//! prose necessarily quotes what it forbids — this paragraph names `bevy`, and
 //! [`panel`]'s module doc says "there is no `format!` in this file" — so a raw
-//! `grep -rl eframe src/` reports three files and a `grep format! panel.rs`
+//! `grep -rl bevy src/` reports three files and a `grep format! panel.rs`
 //! reports one, both correctly and both uselessly. `cargo xtask` strips
 //! whole-line comments before matching, which is the check that means anything.
 //!
+//! **`bevy` is matched as a whole identifier and `egui` as a substring**, and
+//! the asymmetry is deliberate. `bevy_egui` is what the drawing tier is
+//! *allowed* — it is where `egui` comes from now — so a substring `bevy` ban
+//! would fire on the one import the tier exists to permit. A substring `egui`
+//! ban is what catches `bevy_egui` in a file with no drawing licence.
+//!
 //! `egui` is a pure CPU layout library and cannot open a window, which is what
-//! lets `egui_kittest` drive [`panel::draw`] headlessly in CI. `eframe` is the
-//! shell that can, so it is confined to the one file no test reaches.
+//! lets `egui_kittest` drive [`panel::draw`] headlessly in CI — measured to
+//! survive the move to Bevy completely, because neither it nor [`panel`] ever
+//! named `eframe`. Bevy is the shell that opens a window and owns the frame
+//! loop, so it is confined to the one file no test reaches.
 //!
 //! Formatting lives in [`state::ViewerState::status_line`] rather than in
 //! [`panel`] for a reason with a failure attached: a test that asserts on the
@@ -76,7 +84,7 @@
 //! or letting a display choice reach a `borbax-*` call.
 #![expect(
     clippy::multiple_crate_versions,
-    reason = "`eframe`'s dependency tree emits 31 of these — `windows-sys` at \
+    reason = "the engine's dependency tree emits these — `windows-sys` at \
               four versions, the eight `windows_*` target shims and \
               `windows-targets` at two each, `objc2` plus five `objc2-*` crates \
               at two each, `hashbrown` and `redox_syscall` at three, \
@@ -107,11 +115,13 @@
               binary is ever renamed to match the package, or a second bin or \
               example is added whose crate name does, this attribute stops \
               covering it and 31 errors arrive under `-D warnings`. The count \
-              is re-measured on any `eframe` bump, never copied forward"
+              is re-measured on any engine bump, never copied forward. The \
+              count and the crate list below were measured against `eframe` and \
+              are stale for Bevy; `#[expect]` is what makes that a build \
+              failure to be re-measured rather than a comment to be believed"
 )]
 
 pub mod panel;
-pub mod scene;
 pub mod state;
 
 /// The window's title, and the application's permanent name.
@@ -170,4 +180,9 @@ pub const OPENING_SEED: u64 = 1;
 /// `egui`'s `Grid` sizes columns to content, so there is no reflow to rescue a
 /// window that is too narrow. Most universes therefore do *not* fit, which is
 /// why the grid scrolls horizontally rather than assuming width.
-pub const WINDOW_SIZE: [f32; 2] = [1200.0, 700.0];
+/// **`u16`, so there is one source of truth and no cast.** The window wants
+/// `u32` and the test harness wants `f32`, and `as` conversions are denied at
+/// the workspace (§13.1). Both are reachable from `u16` through a *lossless*
+/// `From`, so this constant serves both without a second constant that could
+/// drift from it and without an `#[expect]` sitting over a narrowing cast.
+pub const WINDOW_SIZE: [u16; 2] = [1200, 700];

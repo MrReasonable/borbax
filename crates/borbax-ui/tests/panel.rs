@@ -9,6 +9,10 @@
 //! frame, sixteen milliseconds, which nobody demonstrating the app will catch
 //! and no state-level assertion can reach.
 
+// `egui` through the bridge, never as a direct dependency — see the manifest.
+// Taking it from `bevy_egui` means a future `bevy_egui` bump that moves egui is
+// a compile error here rather than two incompatible `egui`s in one binary.
+use bevy_egui::egui;
 use borbax_ui::{panel::draw, state::ViewerState};
 use borbax_universe::Universe;
 use egui::accesskit::Role;
@@ -701,7 +705,12 @@ fn two_cells_never_answer_to_the_same_label() {
 /// `clicking_a_cell_marks_that_cell_and_only_that_cell_as_chosen`.
 #[test]
 fn every_cell_is_on_screen_after_scrolling_at_the_size_the_window_opens_at() {
-    let size = borbax_ui::WINDOW_SIZE;
+    // `f32::from`, not `as`: `From<u16> for f32` is lossless and needs no
+    // expectation. See `borbax_ui::WINDOW_SIZE`.
+    let size = [
+        f32::from(borbax_ui::WINDOW_SIZE[0]),
+        f32::from(borbax_ui::WINDOW_SIZE[1]),
+    ];
     let mut harness = Harness::builder()
         .with_size(egui::vec2(size[0], size[1]))
         .build_ui_state(|ui, state| draw(state, ui), ViewerState::new());
