@@ -5453,6 +5453,19 @@ mod tests {
              authority, so a type missing there is unenforced against every \
              spelling a text scan cannot see"
         );
+
+        // An exemption that exempts something nobody bans enforces nothing, and
+        // would say so to no one. Today `a_banned_hasher_is_matched_as_a_whole_token`
+        // happens to cover it through a fixture line; this makes the coverage
+        // intent rather than coincidence.
+        for exempt in TEXT_SCAN_ONLY {
+            assert!(
+                BANNED_TYPES.contains(exempt),
+                "{exempt:?} is exempted from the clippy half but is not banned at \
+                 all — TEXT_SCAN_ONLY names types the text scan enforces alone, \
+                 not types nothing enforces"
+            );
+        }
     }
 
     /// A banned name is matched as a token, not as a substring.

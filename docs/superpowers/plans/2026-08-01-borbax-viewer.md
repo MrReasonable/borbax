@@ -302,7 +302,7 @@ this paragraph exists.
       has lost the point of it.
 
       *Shipped.* Typing `emily` writes `15709401653729972761` into the seed box
-      and paints `117 elements · physics v1`. 452 tests, up from 419.
+      and paints `117 elements · physics v1`. 457 tests, up from 419.
 
       **The signature is `-> Option<u64>`, not the `-> u64` above.** An
       infallible version has to invent a universe for the empty string, which
