@@ -382,11 +382,39 @@ this paragraph exists.
       is that `Stream::new(acc, Hash, 0)` — reachable, because a `&str` may
       contain NUL — is bit-for-bit the "surprise me" button's stream.
 
-- [ ] **2. The periodic table panel.** Elements by period and group, selectable,
+- [x] **2. The periodic table panel.** Elements by period and group, selectable,
       with generated names and properties. First thing worth showing anyone.
       **The first step with real G2 and G4 exposure** — generated names and
       unit-bearing properties both reach the screen here, so the name and unit
       checks from Step 7 land with this step, not five steps later.
+
+      *Shipped as PR #24, thirteen commits, 502 tests.* The design and every
+      measurement behind it are in
+      `docs/superpowers/plans/2026-08-03-viewer-step2-design.md`; read that
+      rather than this paragraph before touching the panel.
+
+      **The table is 2–4 rows by up to 74 columns where a real one is 7×18**, so
+      it scrolls horizontally and does not reflow — column alignment is where the
+      families are. Cells show the **symbol only**, against this plan's "symbol
+      and name": element names collide in 16.05% of universes and would make
+      `egui_kittest`'s query API panic.
+
+      **Two defects were caught only by looking at the window, and every test
+      was green over both.** The grid's default spacing showed eight cells of a
+      58-cell row, hiding the one thing the step exists to show; and the panel
+      shipped grey-on-black at `Color32::from_gray(140)` until Ian said it was
+      hard to read — whereupon the *first* fix made the cells invisible
+      (white-on-white) with all 58 tests still passing.
+
+      **Five review rounds, and every finding in all five was in the guards
+      rather than the feature.** Four were defects introduced while fixing
+      earlier ones. Worth reading before Step 7 widens any of those guards.
+
+      **It surfaced a real physics defect** — every monomer has negative binding
+      energy and instability pegged at 1.0, because the strain term charges a
+      lone unit for a shell that is not there. **Issue #25**, sequenced after
+      Step 3, to land with the `N^(2/3)` and Task 15 items it shares a golden
+      regeneration with.
 - [ ] **3. The 3D scene.** `wgpu` pipeline, orbit camera, instanced spheres. Render
       one hard-coded molecule from `embed`'s coordinates.
 - [ ] **4. Bonds, and colour by generated property.** Cylinders between bonded
