@@ -125,11 +125,21 @@ the review *body*, where they never become review threads — a thread query
 returns clean while a finding sits unaddressed. Sweep both: the thread list, and
 every review body for `Nitpick comments (n)` / `Actionable comments posted: n`.
 
-Next action if starting fresh: **viewer Step 1b** — a name instead of a number —
-then Step 2, the periodic table panel. See
+Next action if starting fresh: **viewer Step 2**, the periodic table panel. See
 `docs/superpowers/plans/2026-08-01-borbax-viewer.md`. Task 10 merged as PR #19
 on 2026-08-01, bringing V0 Tasks 1-10 in; viewer Step 1 followed it and created
-`crates/borbax-ui`.
+`crates/borbax-ui`; **Step 1b landed a name instead of a number** — typing
+`emily` gives that name's universe, with the seed it produced written into the
+box beside it so it can be copied down.
+
+Step 1b also closed §13.1's hasher ban, which existed only as a comment:
+`DefaultHasher`, `RandomState` and `SipHasher` passed all six gate legs before
+it. The ban now has four enforcement points, and each exists because the
+previous one could go silent — `clippy.toml`'s `disallowed-types`, `xtask`'s
+textual `BANNED_TYPES`, per-type `#[expect]` liveness anchors (a wrong module
+prefix leaves clippy resolving nothing at exit 0), and a check that the lint is
+`deny` in the manifest (an `#[expect]` sets the level for its own item, so it
+cannot see the level being dropped).
 
 **The crate is `borbax-ui` and the binary is `borbax`.** The viewer plan
 originally said `borbax-viewer`; three reviewed documents say `borbax-ui`,

@@ -337,10 +337,26 @@ const BANNED_PARALLEL_CALLS: &[&str] = &[
 /// half right in a way worth recording. `DefaultHasherMetrics` did fire —
 /// measured — and that is a real false positive, and a check that cries wolf
 /// gets relaxed. Its second example, `make_random_state`, does **not** fire:
-/// the case differs. What token-matching costs is nothing: it still catches
-/// `ahash::RandomState` (`::` is not an identifier character), and the only
-/// true positive it loses is `SipHasher13`, which is `#[unstable]` and cannot
-/// be named on a stable toolchain at all.
+/// the case differs.
+///
+/// **"Costs nothing real" was wrong, and `FxRandomState` above is why.** Under
+/// substring matching, `RandomState` caught `rustc_hash::FxRandomState`;
+/// tokenising lost it. That is not a curiosity — `rustc-hash` is the crate
+/// CLAUDE.md names as *the* approved deterministic hasher, and its own source
+/// says of `FxRandomState`: "This mirrors what
+/// `std::collections::hash_map::RandomState` does". Randomly seeded per
+/// process, in the crate someone reaching for determinism would add. It is
+/// behind that crate's non-default `rand` feature today, so it is a forward
+/// hazard rather than a live one — which is exactly when a guard is free.
+/// Verified in the vendored source; two review lanes disagreed about whether
+/// the type existed and one was wrong.
+///
+/// `std::hash::SipHasher13` really is `#[unstable]` and unnameable on stable —
+/// but `siphasher::sip::SipHasher13` and `SipHasher24` are exported on stable
+/// by a mainstream crate. They are outside this class deliberately: keyed
+/// explicitly they are deterministic, so banning the identifier would cry
+/// wolf. A third-party hasher arriving in a result-affecting path is a
+/// dependency review, which is where it belongs.
 ///
 /// Outside the class: a renaming import's *use site* (`H::new()` after
 /// `use ... as H;` — though the `use` line itself is caught, because it spells
@@ -360,7 +376,7 @@ const BANNED_PARALLEL_CALLS: &[&str] = &[
 /// `#[expect(clippy::disallowed_types)]` liveness anchor in
 /// `borbax-universe`'s phrase tests, which has to name a banned type in order
 /// to prove clippy still resolves it.
-const BANNED_TYPES: &[&str] = &["DefaultHasher", "RandomState", "SipHasher"];
+const BANNED_TYPES: &[&str] = &["DefaultHasher", "RandomState", "SipHasher", "FxRandomState"];
 
 /// Directories scanned for §13.1 violations, relative to the workspace root.
 ///
@@ -5267,10 +5283,104 @@ mod tests {
         };
         entries
             .iter()
-            .filter_map(|entry| entry.get("path"))
-            .filter_map(toml::Value::as_str)
-            .map(str::to_owned)
+            .map(|entry| {
+                // **Both forms, because clippy accepts both.** A reviewer
+                // measured it rather than trusting the lint-configuration page,
+                // which says bare strings are invalid: clippy 1.97.1 fires on
+                // `disallowed-types = [ "std::hash::RandomState" ]` identically
+                // to the table form. `filter_map(|e| e.get("path"))` dropped
+                // those silently, which is the direction that matters — a type
+                // clippy bans would be invisible to the textual scan forever,
+                // and the cross-check that exists to notice would say nothing.
+                entry
+                    .as_str()
+                    .or_else(|| entry.get("path").and_then(toml::Value::as_str))
+                    .unwrap_or_else(|| {
+                        unreachable!(
+                            "a `{key}` entry is neither a path string nor a table with a \
+                             `path` key: {entry:?}"
+                        )
+                    })
+                    .to_owned()
+            })
             .collect()
+    }
+
+    fn workspace_cargo_toml() -> String {
+        let toml = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("Cargo.toml"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        assert!(!toml.is_empty(), "workspace Cargo.toml not found or empty");
+        toml
+    }
+
+    /// §13.1's two ban lists are still **denied**, not merely configured.
+    ///
+    /// **The third state, and neither existing guard can see it.** The
+    /// `#[expect(clippy::disallowed_types)]` anchors in `borbax-universe` cannot:
+    /// `#[expect]` is itself a lint-level attribute and overrides the outer
+    /// level inside its own scope, so the lint still fires there and the
+    /// expectation stays fulfilled. The cross-check below cannot: it compares
+    /// path lists and knows nothing about levels. Three review lanes measured
+    /// the same escape independently — flipping one word in the workspace
+    /// manifest to `"allow"` and planting a real `DefaultHasher` gives clippy
+    /// exit 0 with every anchor green.
+    ///
+    /// `clippy.toml` holds the *list*; the manifest holds the *level*, and a
+    /// list at `warn` is advisory. `disallowed_types` in particular is
+    /// warn-by-default, so before it was denied the ban rested entirely on CI
+    /// passing `-D warnings`.
+    #[test]
+    fn the_ban_lists_are_denied_and_not_merely_configured() {
+        let manifest: toml::Table = workspace_cargo_toml()
+            .parse()
+            .unwrap_or_else(|e| unreachable!("workspace Cargo.toml does not parse: {e}"));
+        let clippy_lints = manifest
+            .get("workspace")
+            .and_then(|w| w.get("lints"))
+            .and_then(|l| l.get("clippy"));
+        for lint in ["disallowed_types", "disallowed_methods"] {
+            assert_eq!(
+                clippy_lints
+                    .and_then(|c| c.get(lint))
+                    .and_then(toml::Value::as_str),
+                Some("deny"),
+                "[workspace.lints.clippy] {lint} is not `deny` — §13.1's ban is \
+                 advisory, and nothing else can see this: the #[expect] anchors \
+                 set the level for their own items, and the path cross-check \
+                 knows nothing about levels"
+            );
+        }
+    }
+
+    /// No ban entry is silenced with `allow-invalid`.
+    ///
+    /// Clippy warns when a configured path does not resolve, and offers
+    /// `allow-invalid = true` to suppress it — measured, that is clippy's own
+    /// help text. The warning is a config diagnostic with no lint level, so
+    /// `-D warnings` never promoted it anyway; what `allow-invalid` removes is
+    /// the last visible sign that an entry is enforcing nothing. Two reviewers
+    /// reached for it independently while probing, which is how likely it is to
+    /// be pasted in for real.
+    #[test]
+    fn no_ban_entry_is_silenced_with_allow_invalid() {
+        let doc: toml::Table = clippy_toml()
+            .parse()
+            .unwrap_or_else(|e| unreachable!("clippy.toml does not parse: {e}"));
+        for key in ["disallowed-types", "disallowed-methods"] {
+            let Some(entries) = doc.get(key).and_then(toml::Value::as_array) else {
+                continue;
+            };
+            for entry in entries {
+                assert!(
+                    entry.get("allow-invalid").is_none(),
+                    "a `{key}` entry carries `allow-invalid`, which silences the one \
+                     diagnostic that says the path stopped resolving: {entry:?}"
+                );
+            }
+        }
     }
 
     fn clippy_toml() -> String {
@@ -5327,6 +5437,9 @@ mod tests {
 
         let mut orphaned = Vec::new();
         for ty in BANNED_TYPES {
+            if TEXT_SCAN_ONLY.contains(ty) {
+                continue;
+            }
             if !paths
                 .iter()
                 .any(|p| p.rsplit("::").next().unwrap_or(p) == *ty)
@@ -5356,11 +5469,10 @@ mod tests {
             "ahash::RandomState::default()",
             "BuildHasherDefault<DefaultHasher>",
             "let h: SipHasher;",
+            "rustc_hash::FxRandomState::default()",
         ] {
             assert!(
-                names_type(names, "DefaultHasher")
-                    || names_type(names, "RandomState")
-                    || names_type(names, "SipHasher"),
+                BANNED_TYPES.iter().any(|ty| names_type(names, ty)),
                 "{names:?} should be reported"
             );
         }
@@ -5550,6 +5662,19 @@ disallowed-types = [ { path = \"right::One\" } ]
     /// wolf gets relaxed, so these keep the path form only.
     const METHOD_FORM_IS_TYPE_BLIND: &[&str] = &["max", "min"];
 
+    /// Enforced by the **text scan alone**, because clippy has no path to
+    /// resolve.
+    ///
+    /// `rustc-hash` is not a workspace dependency, so a `disallowed-types`
+    /// entry for `FxRandomState` would be inert *and* would make clippy warn on
+    /// every run — silenceable only with `allow-invalid`, which is the very
+    /// switch `no_ban_entry_is_silenced_with_allow_invalid` forbids. Same shape
+    /// as [`BANNED_PARALLEL_CALLS`] and for the reason that constant already
+    /// gives: a text scan is the only check available until the day it would be
+    /// too late to add one. Move it the day `rustc-hash` becomes a direct
+    /// dependency.
+    const TEXT_SCAN_ONLY: &[&str] = &["FxRandomState"];
+
     /// Enforced by clippy alone, because they have legitimate library-code
     /// uses that need a per-site `#[expect]` — which the text scan cannot
     /// express, and deliberately so.
@@ -5559,10 +5684,15 @@ disallowed-types = [ { path = \"right::One\" } ]
     fn the_two_ban_lists_cover_the_same_functions() {
         let clippy_toml = clippy_toml();
         let method_paths = clippy_paths_in(&clippy_toml, "disallowed-methods");
+        // As with the type cross-check: a better diagnostic, not a load-bearing
+        // assertion. The `orphaned` direction iterates `BANNED_CALLS`, which is
+        // never empty, so it fires either way. An earlier version of this
+        // message claimed both directions were vacuous over an empty list —
+        // the same false claim this commit corrected one screen above, written
+        // fresh into its sibling. A reviewer caught it.
         assert!(
             !method_paths.is_empty(),
-            "clippy.toml has no `disallowed-methods` array — both directions \
-             below are vacuous over an empty list"
+            "clippy.toml has no `disallowed-methods` array"
         );
 
         let mut missing = Vec::new();
