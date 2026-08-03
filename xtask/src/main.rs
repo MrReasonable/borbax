@@ -2786,6 +2786,72 @@ const VIEWER_SHELL_FILE: &str = "main.rs";
 /// default rather than by nobody.
 const VIEWER_DRAWING_FILES: &[&str] = &["panel.rs"];
 
+/// The files that may name `wgpu`, relative to `crates/borbax-ui/src`.
+///
+/// **Empty is the correct state, not an unfinished one.** No file names `wgpu`
+/// today, so the licence list is empty and every file is refused. Step 3's
+/// offscreen renderer adds one entry — `scene/draw.rs` — in the commit that
+/// creates the file, which is what makes granting the licence a visible act
+/// rather than a side effect of writing an import.
+///
+/// It governs [`check_the_viewer_seam_holds`]'s `wgpu` count as well as its ban,
+/// so it binds [`VIEWER_SHELL_FILE`] too even though the shell's ban list is
+/// empty — exactly as `eframe` is pinned to one file whose own ban list is
+/// empty.
+const VIEWER_GPU_FILES: &[&str] = &[];
+
+/// What a file under `crates/borbax-ui/src` may not name as a whole identifier.
+///
+/// **Separate from [`viewer_banned_imports`] because the match rule differs, and
+/// the difference is load-bearing in both directions.**
+///
+/// `egui` is matched as a *substring* on purpose: that is what catches
+/// `egui_wgpu` and `egui_kittest` in a file with no `egui` licence, and
+/// narrowing it to an identifier would open both.
+///
+/// These two cannot take that rule. A substring `wgpu` counts `egui_wgpu`,
+/// which makes the `egui` rule and the `wgpu` rule indistinguishable and reports
+/// a number one higher than the thing it names for every drawing file. And a
+/// substring `epaint` fires on **`request_repaint`** — measured: `panel.rs`
+/// already contains `repaints` in prose today, and `ctx.request_repaint()` is
+/// ordinary correct code a continuously-animating scene will write. A guard that
+/// fires on correct code gets deleted, which is the structural pressure that
+/// makes the boundary worth getting right rather than exempting.
+///
+/// **Why `epaint` at all**, when nothing names it: it is `egui`'s painting
+/// layer, re-exported through `egui` itself, so `use epaint::PaintCallbackInfo;`
+/// satisfies the strictest tier's letter — it names no `egui` — while defeating
+/// its purpose. It carries no licence list because no file has a reason to want
+/// it; the day one does, it needs one.
+///
+/// **These bind [`VIEWER_SHELL_FILE`] as well**, which is the one place this
+/// function deliberately disagrees with [`viewer_banned_imports`]. The shell's
+/// empty ban list is justified by "no headless test reaches it, so there is
+/// nothing to protect" — true of `eframe`, and the licence for `wgpu` is a
+/// different question: it is which files were *chosen* to hold GPU code. The
+/// shell may well want `wgpu` for the render state; when it does it joins
+/// [`VIEWER_GPU_FILES`] like any other file.
+fn viewer_banned_idents(file: &str) -> Vec<&'static str> {
+    banned_idents_given(file, VIEWER_GPU_FILES)
+}
+
+/// [`viewer_banned_idents`] with the licence list passed in.
+///
+/// **Split out so the licensed arm is reachable from a test.**
+/// [`VIEWER_GPU_FILES`] is empty today, which makes `contains` always false and
+/// the exemption branch dead — so the obvious inversion of the condition
+/// (`if contains` rather than `if !contains`, banning `wgpu` in exactly the
+/// files allowed to have it and nowhere else) is invisible to any test written
+/// against the real constant. Handing the list in is what lets both arms be
+/// exercised before a file needs the licence.
+fn banned_idents_given(file: &str, gpu_files: &[&str]) -> Vec<&'static str> {
+    let mut banned = vec!["epaint"];
+    if !gpu_files.contains(&file) {
+        banned.push("wgpu");
+    }
+    banned
+}
+
 /// What a file under `crates/borbax-ui/src` may not name in code.
 ///
 /// **The default is the strictest tier, and that inversion is the whole
@@ -2845,6 +2911,7 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     // The per-file import seam, checked over code rather than prose, over
     // **every** `.rs` file rather than a list of two.
     let mut eframe_homes = Vec::new();
+    let mut wgpu_homes = Vec::new();
     for path in walk(&viewer_src)?
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
@@ -2888,8 +2955,25 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
             }
         }
 
+        for needle in viewer_banned_idents(&name) {
+            if names_type(&code, needle) {
+                failures.push(format!(
+                    "viewer seam: {VIEWER}/src/{name} names `{needle}` in code. `wgpu` \
+                     belongs only to the files listed in `VIEWER_GPU_FILES`, and \
+                     `epaint` — `egui`'s painting layer, which the strictest tier's \
+                     `egui` needle does not see — belongs to none. Matched at \
+                     identifier boundaries, so `egui_wgpu` and `request_repaint` are \
+                     not this. If this file is meant to hold GPU code, add it to \
+                     `VIEWER_GPU_FILES` and say what it renders"
+                ));
+            }
+        }
+
         if code.contains("eframe") {
-            eframe_homes.push(name);
+            eframe_homes.push(name.clone());
+        }
+        if names_type(&code, "wgpu") {
+            wgpu_homes.push(name);
         }
     }
 
@@ -2909,6 +2993,34 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
              {VIEWER}/src, expected exactly [\"{VIEWER_SHELL_FILE}\"]. `eframe` opens \
              a window, so every file that names it is a file no headless test can \
              reach; confining it to one is what keeps the drawing code testable"
+        ));
+    }
+
+    // **`wgpu` is named by exactly the files licensed to name it**, and the
+    // count is the half the per-file ban list cannot do.
+    //
+    // The ban list is keyed on a tier, and being in a tier is a licence for
+    // *that tier's* needles: a file added to `VIEWER_DRAWING_FILES` gets
+    // `["eframe", "format!"]` and — before this — nothing about `wgpu` at all.
+    // So the ban alone lets a lax entry reopen the rule with a green build,
+    // which is precisely why `eframe_homes` exists two lines up. Counting makes
+    // the invariant independent of the tier table.
+    //
+    // **The equality is against the licence list, so it fails in both
+    // directions.** An unlicensed file naming `wgpu` fails; a licensed file that
+    // has stopped naming it also fails, because a stale entry is a licence
+    // nobody is using and the next file added under that name inherits it.
+    wgpu_homes.sort();
+    let mut licensed: Vec<&str> = VIEWER_GPU_FILES.to_vec();
+    licensed.sort_unstable();
+    if wgpu_homes != licensed {
+        failures.push(format!(
+            "viewer seam: `wgpu` is named in code by {wgpu_homes:?} under {VIEWER}/src, \
+             expected exactly {licensed:?}. Rendering code is confined to named files so \
+             the rest of the crate stays drivable with no GPU — `state.rs` in particular \
+             is the file whose entire identity is that a test can reach it without a \
+             window or an adapter. Note this counts whole identifiers: `egui_wgpu` is \
+             caught by the `egui` needle instead, in every tier that bans it"
         ));
     }
 
@@ -5120,7 +5232,10 @@ mod tests {
         SIGNATURE_SURFACE, SigFacing, SigItem, alias_names, bookkeeping_against,
         check_surface_bookkeeping, compare_signature_surface, scan_signature_surface,
     };
-    use super::{code_without_prose, count_outside_tests, viewer_banned_imports};
+    use super::{
+        banned_idents_given, code_without_prose, count_outside_tests, viewer_banned_idents,
+        viewer_banned_imports,
+    };
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
     use super::{identifier_segments, scan_format_tokens};
 
@@ -7420,6 +7535,96 @@ disallowed-types = [ { path = \"right::One\" } ]
             "every other file is restricted; an empty ban list everywhere is the \
              vacuous version of this guard"
         );
+    }
+
+    /// `wgpu` and `epaint` are refused by default, exactly as `egui` is.
+    ///
+    /// **Both were holes on `main`, found by reading the tier table rather than
+    /// by a test.** `viewer_banned_imports` returns `["egui", "eframe"]` for the
+    /// strictest tier, and raw `wgpu` matches neither — so `state.rs`, the file
+    /// whose whole identity is "a test can reach it without a window", could
+    /// write `use wgpu::Device;` and pass. `egui_wgpu` *was* caught, by the
+    /// substring `egui`, and that asymmetry is what made the hole look closed.
+    #[test]
+    fn an_unnamed_viewer_file_may_name_neither_wgpu_nor_epaint() {
+        for unnamed in ["state.rs", "panel.rs", "scene/pipeline.rs", "lib.rs"] {
+            let banned = viewer_banned_idents(unnamed);
+            assert!(
+                banned.contains(&"wgpu"),
+                "{unnamed} may name `wgpu` without holding the licence"
+            );
+            assert!(
+                banned.contains(&"epaint"),
+                "{unnamed} may name `epaint`, which is `egui`'s painting layer and \
+                 invisible to the `egui` needle"
+            );
+        }
+    }
+
+    /// The licence list is the *only* thing that lifts the `wgpu` ban.
+    ///
+    /// Written against a synthetic list because the real one is empty, which
+    /// leaves the exemption arm unreachable — see [`super::banned_idents_given`].
+    /// The negative arm is the one that carries the information: without it this
+    /// passes on a function that lifts the ban for everybody.
+    #[test]
+    fn only_a_licensed_file_may_name_wgpu() {
+        let gpu = ["scene/draw.rs"];
+        assert!(
+            !banned_idents_given("scene/draw.rs", &gpu).contains(&"wgpu"),
+            "a listed file must be allowed `wgpu`; that is what the list is for"
+        );
+        assert!(
+            banned_idents_given("scene/camera.rs", &gpu).contains(&"wgpu"),
+            "an unlisted file next door must still be refused — unknown means strict, \
+             and this arm is what catches the inverted condition"
+        );
+        assert!(
+            banned_idents_given("scene/draw.rs", &gpu).contains(&"epaint"),
+            "the GPU licence covers `wgpu` and nothing else"
+        );
+    }
+
+    /// No file holds the GPU licence yet, which is why the test above is
+    /// written against a synthetic list.
+    ///
+    /// It is not a placeholder: it fails the day a file is added to
+    /// [`super::VIEWER_GPU_FILES`] without this test being read, which is the
+    /// moment someone should be checking that the entry was deliberate and that
+    /// `only_a_licensed_file_may_name_wgpu` still exercises both arms.
+    #[test]
+    fn the_gpu_licence_list_is_empty_until_a_file_earns_it() {
+        assert!(
+            super::VIEWER_GPU_FILES.is_empty(),
+            "{:?} now holds the GPU licence — check the entry was deliberate, and that \
+             the seam tests still cover both arms of the exemption",
+            super::VIEWER_GPU_FILES
+        );
+    }
+
+    /// `request_repaint` is not `epaint`, and `egui_wgpu` is not `wgpu`.
+    ///
+    /// **The near-miss is live, not hypothetical.** `panel.rs` contains the word
+    /// `repaints` in prose today, and `ctx.request_repaint()` is ordinary code a
+    /// continuously-animating scene writes — a substring `epaint` needle fires on
+    /// it, on correct code, in the tier that file is in. Guards that cry wolf get
+    /// deleted; that is why these two are matched at identifier boundaries while
+    /// `egui` deliberately is not.
+    #[test]
+    fn the_new_needles_do_not_fire_on_the_words_that_contain_them() {
+        assert!(
+            !names_type("ctx.request_repaint();", "epaint"),
+            "`request_repaint` is correct code and must not read as `epaint`"
+        );
+        assert!(
+            !names_type("use egui_wgpu::Renderer;", "wgpu"),
+            "`egui_wgpu` is caught by the `egui` needle, not by this one — counting it \
+             twice makes the two rules indistinguishable"
+        );
+        // The positive arms, without which the two above pass on a matcher that
+        // never fires at all.
+        assert!(names_type("use epaint::Color32;", "epaint"));
+        assert!(names_type("use wgpu::Device;", "wgpu"));
     }
 
     /// A type named inside a string literal is prose, not an import.
