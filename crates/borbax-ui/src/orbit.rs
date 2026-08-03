@@ -126,6 +126,16 @@ pub struct Orbit {
     was_pressed: bool,
 }
 
+impl Default for Orbit {
+    /// A camera framing a molecule of unit gyration radius.
+    ///
+    /// Exists so the engine can hold this in a resource before any universe has
+    /// been laid out. The first molecule replaces it.
+    fn default() -> Self {
+        Self::framing(1.0)
+    }
+}
+
 impl Orbit {
     /// A camera standing back far enough to see a molecule of this gyration
     /// radius, level with it.

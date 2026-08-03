@@ -147,3 +147,186 @@ fn the_app_opens_on_a_universe() {
         opening.status_line()
     );
 }
+
+/// Build the app and run it far enough that startup and the first frames have
+/// happened.
+fn started() -> App {
+    let mut app = headless_app();
+    app.finish();
+    app.cleanup();
+    app.update();
+    app.update();
+    app
+}
+
+/// There are exactly two cameras, and the panel is drawn through the one that
+/// is *not* confined to the scene's region.
+///
+/// **This is the Step 3 form of the empty window, and it is not hypothetical.**
+/// `bevy_egui` takes egui's screen rectangle from the camera its context is
+/// attached to. Put the context on the 3D camera — whose viewport covers only
+/// the area below the panel — and the entire periodic table slides down into
+/// that area under a blank bar. Nothing crashes. Rendered and looked at, which
+/// is the only way it was found.
+///
+/// Which camera the engine picks is otherwise spawn-order dependent, so the
+/// automatic choice is switched off and this asserts the deliberate one.
+#[test]
+fn the_panel_is_drawn_through_the_full_window_camera() {
+    let mut app = started();
+    let world = app.world_mut();
+
+    let mut all = world.query::<(Entity, &Camera)>();
+    let cameras: Vec<_> = all.iter(world).map(|(e, c)| (e, c.order)).collect();
+    assert_eq!(
+        cameras.len(),
+        2,
+        "expected one camera for the scene and one for the panel, found {cameras:?}"
+    );
+
+    let mut scene = world.query_filtered::<Entity, With<borbax_ui::scene::SceneCamera>>();
+    let scene_camera = scene
+        .iter(world)
+        .next()
+        .unwrap_or_else(|| unreachable!("the scene camera is spawned at startup"));
+
+    let mut egui_cameras = world.query_filtered::<Entity, With<bevy_egui::PrimaryEguiContext>>();
+    let egui_camera = egui_cameras
+        .iter(world)
+        .next()
+        .unwrap_or_else(|| unreachable!("some camera must carry the egui context"));
+
+    assert_ne!(
+        scene_camera, egui_camera,
+        "the egui context is on the scene camera, so egui's screen rectangle is \
+         the scene's viewport — the periodic table will render inside the 3D \
+         region with a blank bar above it, and no test but this one can see it"
+    );
+}
+
+/// The scene has a light.
+///
+/// **A physically-based material with nothing shining on it renders black**, and
+/// black against a dark background is a scene that satisfies every other
+/// assertion here and shows nothing at all.
+#[test]
+fn the_scene_has_a_light() {
+    let mut app = started();
+    let world = app.world_mut();
+    let mut lights = world.query::<&DirectionalLight>();
+    assert!(
+        lights.iter(world).count() > 0,
+        "no light, so every atom renders black"
+    );
+}
+
+/// One entity per atom, each with a mesh and a material.
+#[test]
+fn there_is_one_atom_entity_per_atom_of_the_molecule() {
+    let expected = borbax_ui::state::ViewerState::opening().demo().map_or_else(
+        || unreachable!("the opening universe builds a molecule"),
+        |d| d.embedding.len(),
+    );
+
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms =
+        world.query_filtered::<(&Mesh3d, &MeshMaterial3d<StandardMaterial>), With<borbax_ui::scene::Atom>>();
+    assert_eq!(
+        atoms.iter(world).count(),
+        expected,
+        "the scene does not hold one entity per atom"
+    );
+}
+
+/// Every atom shares one material handle.
+///
+/// **This is what makes "no colour encodes any property" checkable rather than a
+/// matter of reading the code.** Step 4 owns palettes, and it lands with the
+/// guard that says a palette may not be built out of an element's mass, valence
+/// or affinity. Until then a per-atom colour is not merely out of scope — one
+/// keyed on an index looks exactly like a property map and encodes nothing.
+#[test]
+fn every_atom_is_painted_with_the_same_material() {
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms =
+        world.query_filtered::<&MeshMaterial3d<StandardMaterial>, With<borbax_ui::scene::Atom>>();
+    let handles: Vec<_> = atoms.iter(world).map(|m| m.0.id()).collect();
+    assert!(!handles.is_empty(), "no atoms, so this asserted nothing");
+    let first = handles
+        .first()
+        .copied()
+        .unwrap_or_else(|| unreachable!("checked non-empty above"));
+    assert!(
+        handles.iter().all(|h| *h == first),
+        "the atoms hold {} distinct materials — a per-atom colour is a palette, \
+         and a palette lands with its own G6 guard at Step 4",
+        handles
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    );
+}
+
+/// The mesh handle resolves to a mesh that has vertices.
+///
+/// Fails on a handle to an asset that was never inserted, and on a mesh built
+/// with no geometry — neither of which is an error, and both of which draw
+/// nothing.
+#[test]
+fn the_atom_mesh_has_geometry() {
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms = world.query_filtered::<&Mesh3d, With<borbax_ui::scene::Atom>>();
+    let handle = atoms
+        .iter(world)
+        .next()
+        .map_or_else(|| unreachable!("the scene holds atoms"), |m| m.0.clone());
+    let meshes = world.resource::<Assets<Mesh>>();
+    let mesh = meshes
+        .get(&handle)
+        .unwrap_or_else(|| unreachable!("the atom mesh handle resolves"));
+    assert!(
+        mesh.count_vertices() > 0,
+        "the atom mesh has no vertices, so nothing is drawn and nothing errors"
+    );
+}
+
+/// An idle scene does not rebuild itself.
+///
+/// **The counter in `ViewerState` cannot see this**, and that is why it is a
+/// separate test: rebuilding the atom entities every frame calls no chemistry at
+/// all, so `re_embeds` stays flat while the scene is torn down and respawned
+/// sixty times a second. It is also exactly the entity churn that shuffles Bevy's
+/// query order.
+///
+/// The natural wrong implementation is `run_if(resource_changed::<Viewer>)` —
+/// which looks right and is not, because the panel takes the viewer mutably
+/// every frame and that marks it changed every frame.
+#[test]
+fn an_idle_scene_keeps_the_atoms_it_already_has() {
+    let mut app = started();
+
+    let before: Vec<Entity> = {
+        let world = app.world_mut();
+        let mut atoms = world.query_filtered::<Entity, With<borbax_ui::scene::Atom>>();
+        atoms.iter(world).collect()
+    };
+    assert!(!before.is_empty(), "no atoms, so this asserted nothing");
+
+    for _ in 0..30 {
+        app.update();
+    }
+
+    let after: Vec<Entity> = {
+        let world = app.world_mut();
+        let mut atoms = world.query_filtered::<Entity, With<borbax_ui::scene::Atom>>();
+        atoms.iter(world).collect()
+    };
+    assert_eq!(
+        before, after,
+        "the atom entities were replaced while nothing changed, so the scene is \
+         being rebuilt every frame"
+    );
+}

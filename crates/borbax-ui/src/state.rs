@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use borbax_rng::{Domain, Stream};
 use borbax_universe::{Element, ElementId, Universe, seed_from_phrase};
+
+use crate::molecule::Demo;
 use thiserror::Error;
 
 /// What a property row shows when nothing is selected.
@@ -329,6 +331,20 @@ pub enum Outcome {
         /// The same reasoning that made `reload` private: make
         /// it impossible rather than merely tested.
         selected: Option<ElementId>,
+        /// The molecule on screen, laid out once when this universe loaded.
+        ///
+        /// **Inside the variant for exactly the reason `selected` is**, and the
+        /// failure it prevents is worse. A `scene: Option<Demo>` field beside
+        /// `outcome` would let the previous universe's molecule stay on screen
+        /// next to the new universe's element count — a shape drawn from
+        /// elements that are not the ones named beside it, which nothing
+        /// downstream could detect. In here there is no line to forget: `reload`
+        /// replaces the whole `Outcome`.
+        ///
+        /// `None` means the universe has no molecule to show. Measured over 500
+        /// universes it never happened; it is data rather than a panic because
+        /// "measured never" is not "cannot".
+        scene: Option<Box<Demo>>,
     },
 }
 
@@ -339,6 +355,7 @@ pub struct ViewerState {
     seed_text: String,
     outcome: Outcome,
     regenerations: u64,
+    re_embeds: u64,
 }
 
 impl Default for ViewerState {
@@ -356,6 +373,7 @@ impl ViewerState {
             seed_text: String::new(),
             outcome: Outcome::Rejected(SeedError::Empty),
             regenerations: 0,
+            re_embeds: 0,
         }
     }
 
@@ -521,7 +539,9 @@ impl ViewerState {
     /// Selecting while the seed is refused does nothing: there is no universe
     /// to select in, which is the state the enum makes unrepresentable.
     pub fn select(&mut self, id: ElementId) {
-        if let Outcome::Loaded { universe, selected } = &mut self.outcome
+        if let Outcome::Loaded {
+            universe, selected, ..
+        } = &mut self.outcome
             && universe.table.get(id).is_some()
         {
             *selected = Some(id);
@@ -556,7 +576,10 @@ impl ViewerState {
     /// `PeriodicTable`, so `the_column_a_cell_sits_in_is_its_group` pins it.
     #[must_use]
     pub fn rows(&self) -> Vec<PeriodRow<'_>> {
-        let Outcome::Loaded { universe, selected } = &self.outcome else {
+        let Outcome::Loaded {
+            universe, selected, ..
+        } = &self.outcome
+        else {
             return Vec::new();
         };
         let mut rows: Vec<PeriodRow<'_>> = Vec::new();
@@ -629,9 +652,9 @@ impl ViewerState {
     fn selected_element(&self) -> Option<&Element> {
         match &self.outcome {
             Outcome::Rejected(_) => None,
-            Outcome::Loaded { universe, selected } => {
-                selected.and_then(|id| universe.table.get(id))
-            }
+            Outcome::Loaded {
+                universe, selected, ..
+            } => selected.and_then(|id| universe.table.get(id)),
         }
     }
 
@@ -639,6 +662,22 @@ impl ViewerState {
         self.outcome = match parse_seed(&self.seed_text) {
             Ok(seed) => {
                 let universe = Universe::generate(seed);
+                // **Adjacent to the call it counts**, like `regenerations` one
+                // line below and for the same reason: an increment at function
+                // entry counts *commits*, a different quantity that agrees today
+                // and would stop agreeing the moment building and loading split.
+                //
+                // It counts layouts, not `canonicalise` attempts. Those happen
+                // together today and will not always — `canonicalise` returns a
+                // `Result` — and a counter over the pair would report
+                // "molecules laid out" while measuring "molecules tried".
+                // **Boxed**, for the reason `universe` beside it is: an
+                // `Embedding` carries fixed-size arrays for the largest
+                // molecule the graph type allows, so an unboxed one would make
+                // every `Outcome` anywhere carry that footprint to hold a
+                // four-byte refusal.
+                let scene = crate::molecule::build(&universe).map(Box::new);
+                self.re_embeds = self.re_embeds.saturating_add(1);
                 // Incremented **here**, adjacent to the call it counts, and not
                 // at the top of this function. An increment at the entry counts
                 // *commits*, which is a different quantity that happens to
@@ -654,6 +693,7 @@ impl ViewerState {
                 Outcome::Loaded {
                     universe: Box::new(universe),
                     selected: None,
+                    scene,
                 }
             }
             Err(refusal) => Outcome::Rejected(refusal),
@@ -682,6 +722,69 @@ impl ViewerState {
     #[must_use]
     pub const fn regenerations(&self) -> u64 {
         self.regenerations
+    }
+
+    /// How many molecules have been laid out since this state was created.
+    ///
+    /// **The §8.6 guard, and it counts layouts rather than attempts.** `embed`
+    /// runs 240 fixed solver iterations and `canonicalise` searches for a
+    /// labelling; both are per-species work that must never reach a frame. This
+    /// rises exactly once per universe loaded.
+    ///
+    /// **What it cannot see, stated so nobody reads it as covering more than it
+    /// does.** It does not see an `embed` written straight into a paint body or
+    /// a frame system — such a call never touches `reload`, so it never touches
+    /// this counter. That variant is held by `cargo xtask` instead, which
+    /// requires exactly one call site in this crate. It also says nothing about
+    /// per-frame *scene* cost: rebuilding the atom entities every frame calls no
+    /// chemistry at all and would leave this number flat.
+    #[must_use]
+    pub const fn re_embeds(&self) -> u64 {
+        self.re_embeds
+    }
+
+    /// The molecule to draw, if this universe has one.
+    #[must_use]
+    pub const fn demo(&self) -> Option<&Demo> {
+        match &self.outcome {
+            Outcome::Rejected(_) => None,
+            Outcome::Loaded { scene, .. } => match scene {
+                Some(demo) => Some(demo),
+                None => None,
+            },
+        }
+    }
+
+    /// The line printed under the scene, saying what is being looked at.
+    ///
+    /// **Without it the scene reads as "the element you clicked, in 3D"**, which
+    /// is false — the molecule is built from this universe's lowest elements
+    /// that fit the shape, and has nothing to do with the selection. It sits
+    /// outside the viewport, because there is no text inside the viewport.
+    ///
+    /// Built here rather than where it is painted, so a test asserting on this
+    /// string is asserting on what the window shows.
+    #[must_use]
+    pub fn scene_caption(&self) -> String {
+        let Outcome::Loaded {
+            universe, scene, ..
+        } = &self.outcome
+        else {
+            return String::new();
+        };
+        let Some(demo) = scene else {
+            return "this universe builds no molecule".to_owned();
+        };
+        let mut symbols = demo
+            .elements
+            .iter()
+            .filter_map(|id| universe.table.get(*id))
+            .map(|e| e.symbol.as_str());
+        let Some(centre) = symbols.next() else {
+            return "this universe builds no molecule".to_owned();
+        };
+        let leaves = symbols.collect::<Vec<_>>().join(", ");
+        format!("{centre} holding {leaves}")
     }
 
     /// The one line the panel paints under the seed box.

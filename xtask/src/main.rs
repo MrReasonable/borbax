@@ -2995,9 +2995,19 @@ const VIEWER_SHELL_FILE: &str = "main.rs";
 /// and nothing on screen. Moving the construction into `app.rs` is what lets
 /// `tests/app.rs` assert about the *same* `App` the binary runs.
 ///
-/// So the licence is two files, and the second one is the one under test.
+/// So the licence is three files, and the middle one is the one under test.
 /// Everything else in the crate still names no engine at all.
-const VIEWER_ENGINE_FILES: &[&str] = &["main.rs", "app.rs"];
+///
+/// **`scene.rs` was added deliberately at Step 3, which is the only way a file
+/// gets here.** The default tier is the strict one, so the new file failed three
+/// checks the moment it existed and had to be argued onto this list rather than
+/// arriving on it. What earns it the licence: the 3D scene is entities, meshes,
+/// cameras and input — all of it engine vocabulary with no honest spelling that
+/// avoids the engine. What is *not* on this list, and stays off it deliberately,
+/// is the arithmetic behind it: the molecule is built in `molecule.rs` and the
+/// camera's angles live in `orbit.rs`, both in the strictest tier and both
+/// testable with no app at all.
+const VIEWER_ENGINE_FILES: &[&str] = &["main.rs", "app.rs", "scene.rs"];
 
 /// The files that draw, and may therefore name `egui`.
 ///
