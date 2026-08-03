@@ -3103,6 +3103,14 @@ fn check_wall_clock_has_one_home(root: &Path, failures: &mut Vec<String>) -> Res
     Ok(())
 }
 
+/// The token run that spells a call into the `libm` crate.
+///
+/// Tokens rather than the text `"libm::"` so that `#[cfg(test)]` bodies are
+/// skipped by the same machinery the viewer's call-site counts already use —
+/// see [`check_libm_has_one_home`]'s source half for the probe that made that
+/// necessary.
+const LIBM_CALL: &[&str] = &["libm", ":", ":"];
+
 /// The one manifest that may declare `libm`.
 const LIBM_HOME_MANIFEST: &str = "crates/borbax-units/Cargo.toml";
 
@@ -3315,14 +3323,23 @@ fn check_libm_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<()
             .to_string_lossy()
             .replace('\\', "/");
         let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let Some(code) = code_without_prose(&src) else {
+        // **Shipped code only, and the probe is why.** The first version counted
+        // `libm::` over comment-stripped text, which includes `#[cfg(test)]`
+        // bodies — and `det_math.rs`'s own tests call `libm::cbrt` and
+        // `libm::tan` to prove the wrappers are the portable ones. So rewriting
+        // every wrapper to `x.cos()` left the count at 2 and the positive
+        // assertion below stayed silent, in the one state it exists to forbid.
+        // Its message said "no `libm::` call at all", which was true of what it
+        // counted and false of what it claimed to defend. Found by running the
+        // mutation rather than by reading the code.
+        let Some(calls) = count_outside_tests(&src, LIBM_CALL) else {
             failures.push(format!(
-                "§13.1: {rel} ended inside a string or comment, so its `libm` call \
-                 sites could not be counted. Reported rather than skipped"
+                "§13.1: {rel} could not be lexed, so its `libm::` call sites were not \
+                 counted. Reported rather than skipped: a file the lexer gives up on \
+                 is the one most likely to be hiding something"
             ));
             continue;
         };
-        let calls = code.matches("libm::").count();
         if rel == LIBM_HOME_SOURCE {
             home_calls = calls;
         } else if calls > 0 {
