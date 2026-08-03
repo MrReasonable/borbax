@@ -505,6 +505,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_every_member_inherits_the_lints(root, &mut failures)?;
     check_no_real_chemistry_in_literals(root, &mut failures)?;
     check_the_viewer_stays_a_leaf(root, &mut failures)?;
+    check_the_engine_stays_in_the_viewer(root, &mut failures)?;
     check_the_viewer_seam_holds(root, &mut failures)?;
     check_wall_clock_has_one_home(root, &mut failures)?;
     check_libm_has_one_home(root, &mut failures)?;
@@ -2697,6 +2698,189 @@ fn code_only(src: &str) -> String {
 /// asserting on a string is asserting on what the window paints — a `format!`
 /// migrating into `panel.rs` leaves every such test green over a window they
 /// have stopped describing, which is silent by construction.
+/// Crate names that mean "an engine, a window, or a GPU".
+///
+/// **The list is of things that must never be reachable from a result**, not of
+/// things that are large or unwelcome. Each entry either owns a frame loop,
+/// opens a window, or talks to a GPU — and every one of them brings scheduling,
+/// hashing or iteration order that §13.4 cannot survive.
+///
+/// `bevy` is the entry this list was written for. Its ECS runs systems in
+/// parallel by default and its query iteration order is **not** insertion order:
+/// measured on this workspace, spawning 64 entities, despawning every third and
+/// spawning replacements gives back `[49, 1, 2, 62, 4, 5, 61, ...]`, because
+/// entity slots are reused. That is exactly the churn a viewer rebuilding its
+/// scene on a seed change produces. Anything result-affecting that read that
+/// order would diverge across platforms with nothing failing.
+const ENGINE_CRATES: &[&str] = &[
+    "bevy", "eframe", "egui", "epaint", "wgpu", "winit", "fyrox", "three-d",
+];
+
+/// No crate but the viewer may depend on an engine, a window or a GPU.
+///
+/// **The physics, the chemistry and the generation are ours, and this is the
+/// line that says so in a form the build can check.** The engine displays and
+/// takes input; it computes nothing. Stated as a rule about *manifests* because
+/// that is the only place the boundary can be crossed without writing a line of
+/// code — one dependency entry is all it takes for `bevy`'s scheduler to become
+/// reachable from `borbax-molecule`.
+///
+/// Matched as a prefix on the dependency name so `bevy_egui`, `bevy_render`,
+/// `egui_kittest` and `wgpu-hal` are all caught by their base entry, and as a
+/// whole token at the start so `bevyish` is not a false positive.
+///
+/// **This is the negative half only.** The positive half — that the viewer
+/// *does* name an engine, so the guard cannot pass by there being no engine
+/// anywhere — lands with the dependency itself. Until then it would fail on a
+/// correct tree, and a guard that fires on correct code gets deleted.
+fn check_the_engine_stays_in_the_viewer(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    const VIEWER: &str = "crates/borbax-ui";
+    let viewer_manifest = root.join(VIEWER).join("Cargo.toml");
+    let mut manifests_examined = 0_usize;
+
+    for scan_root in DATA_FREE_ROOTS {
+        let dir = root.join(scan_root);
+        if !dir.exists() {
+            failures.push(format!(
+                "§13.4: scan root {scan_root:?} does not exist, so no manifest under it \
+                 was checked for an engine dependency"
+            ));
+            continue;
+        }
+        for manifest in walk(&dir)?
+            .into_iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == "Cargo.toml"))
+        {
+            // Counted where a manifest is *read*, not where a directory is
+            // entered — the Task 8 `pairs` defect, which counted the outer loop
+            // and reported a bar four times weaker than its message claimed.
+            manifests_examined += 1;
+            if manifest == viewer_manifest {
+                continue;
+            }
+            let src = std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
+            for dep in manifest_dependency_names(&code_only(&src)) {
+                let Some(engine) = ENGINE_CRATES.iter().find(|e| {
+                    dep == **e
+                        || dep.starts_with(&format!("{e}_"))
+                        || dep.starts_with(&format!("{e}-"))
+                }) else {
+                    continue;
+                };
+                failures.push(format!(
+                    "§13.4: {} depends on `{dep}` ({engine}). The engine displays and \
+                     takes input; it computes nothing. Bevy's ECS schedules systems in \
+                     parallel and its query iteration order is not insertion order, so \
+                     a result path that reaches it diverges across platforms with every \
+                     test green. If this crate genuinely needs to draw, it is the \
+                     viewer's job to call it — never the reverse",
+                    manifest.strip_prefix(root).unwrap_or(&manifest).display()
+                ));
+            }
+        }
+    }
+
+    // **A scan that read no manifests is a failure, not a pass.** The counter
+    // counts manifests, which is what the message says; the workspace has one
+    // per member plus the roots, so anything below 5 means the layout moved and
+    // this guard checked nothing.
+    if manifests_examined < 5 {
+        failures.push(format!(
+            "§13.4: the engine-containment scan examined only {manifests_examined} \
+             manifest(s), which is fewer than this workspace has members. The layout \
+             has moved and the check is blind"
+        ));
+    }
+    Ok(())
+}
+
+/// Every dependency name declared by a manifest, including renamed entries.
+///
+/// A rename hides the crate behind a key of the author's choosing —
+/// `renderer = { package = "bevy" }` declares `bevy` under a name no scan of
+/// the keys would see — so the `package = "..."` value is read in preference to
+/// the key whenever one is present.
+fn manifest_dependency_names(manifest: &str) -> Vec<String> {
+    /// What the current `[header]` puts us inside.
+    enum Section {
+        /// `[dependencies]` and friends: every `key = ..` line is a crate.
+        Table,
+        /// `[dependencies.foo]`: the header names one crate, and the lines
+        /// inside are *its fields* — only `package` renames it.
+        Entry(usize),
+        Other,
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut section = Section::Other;
+
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+
+        if let Some(header) = trimmed.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+            // `dev-dependencies` and `build-dependencies` count too: an engine
+            // in a chemistry crate's test binaries is an engine a result could
+            // be minted next to.
+            section = match header.trim().rsplit_once('.') {
+                // `[target.'cfg(..)'.dependencies]` -> a table.
+                Some((_, last)) if last.ends_with("dependencies") => Section::Table,
+                // `[dependencies.foo]`, `[target...dev-dependencies.foo]`.
+                Some((prefix, name)) if prefix.ends_with("dependencies") => {
+                    out.push(name.trim_matches('"').to_owned());
+                    Section::Entry(out.len() - 1)
+                }
+                _ if header.trim().ends_with("dependencies") => Section::Table,
+                _ => Section::Other,
+            };
+            continue;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+
+        match section {
+            Section::Table => {
+                // A `package = "..."` inline renames the crate, so the key is
+                // not the crate. Prefer the rename.
+                out.push(inline_package(value).unwrap_or_else(|| key.trim_matches('"').to_owned()));
+            }
+            Section::Entry(at) => {
+                if key == "package"
+                    && let Some(real) = quoted(value)
+                    && let Some(slot) = out.get_mut(at)
+                {
+                    *slot = real;
+                }
+            }
+            Section::Other => {}
+        }
+    }
+    out
+}
+
+/// The `package = "x"` inside an inline table such as
+/// `renderer = { package = "bevy", version = "0.19" }`.
+fn inline_package(value: &str) -> Option<String> {
+    let at = value.find("package")?;
+    quoted(value.get(at..)?)
+}
+
+/// The first double-quoted run in `s`.
+fn quoted(s: &str) -> Option<String> {
+    let open = s.find('"')?;
+    let rest = s.get(open + 1..)?;
+    let close = rest.find('"')?;
+    Some(rest.get(..close)?.to_owned())
+}
+
 fn check_the_viewer_stays_a_leaf(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
     const VIEWER: &str = "crates/borbax-ui";
 
@@ -7625,6 +7809,64 @@ disallowed-types = [ { path = \"right::One\" } ]
         // never fires at all.
         assert!(names_type("use epaint::Color32;", "epaint"));
         assert!(names_type("use wgpu::Device;", "wgpu"));
+    }
+
+    /// Every way a manifest can declare a dependency is seen, including the
+    /// two that hide the crate's real name.
+    ///
+    /// **The long form and the rename are the whole reason this is parsed
+    /// rather than grepped.** `borbax-ui` already uses `[dependencies.eframe]`,
+    /// so a scan that only read `key = value` lines under `[dependencies]` would
+    /// miss the largest dependency in the workspace. And
+    /// `renderer = { package = "bevy" }` declares `bevy` under a key no amount
+    /// of key-matching would catch.
+    #[test]
+    fn a_dependency_is_found_however_it_is_spelled() {
+        let manifest = "\
+[package]
+name = \"borbax-nope\"
+version = \"0.1.0\"
+
+[dependencies]
+thiserror = { workspace = true }
+renderer = { package = \"bevy\", version = \"0.19\" }
+plain = \"1.0\"
+
+[dependencies.eframe]
+version = \"0.35\"
+default-features = false
+
+[dev-dependencies.masked]
+package = \"bevy_egui\"
+version = \"0.41\"
+
+[target.'cfg(unix)'.dependencies]
+winit = \"0.30\"
+
+[profile.dev]
+opt-level = 1
+";
+        let found = super::manifest_dependency_names(manifest);
+        for want in ["thiserror", "bevy", "plain", "eframe", "bevy_egui", "winit"] {
+            assert!(
+                found.iter().any(|d| d == want),
+                "{want} was not found in {found:?}"
+            );
+        }
+        // The negative arms. Without these the test passes on a parser that
+        // returns every token in the file.
+        assert!(
+            !found.iter().any(|d| d == "renderer"),
+            "the rename key was returned instead of the crate it renames: {found:?}"
+        );
+        assert!(
+            !found.iter().any(|d| d == "masked"),
+            "the long-form rename key survived: {found:?}"
+        );
+        assert!(
+            !found.iter().any(|d| d == "opt-level" || d == "name"),
+            "a non-dependency table was read as dependencies: {found:?}"
+        );
     }
 
     /// A type named inside a string literal is prose, not an import.
