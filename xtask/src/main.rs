@@ -3154,19 +3154,27 @@ fn check_no_platform_transcendentals(
 ///
 /// A bare `contains` fires on `DefaultHasherMetrics` and on any identifier with
 /// a banned name as a prefix or suffix — measured, and a check that cries wolf
-/// gets relaxed. Bytes rather than chars because every banned name is ASCII, so
-/// an identifier boundary is a byte boundary.
+/// gets relaxed.
+///
+/// **Boundaries are tested as `char`s, not bytes**, which is the second
+/// version. Bytes looked safe because every banned name is ASCII, but a Rust
+/// identifier is not: `λDefaultHasher` is a legal identifier whose preceding
+/// byte is the tail of a multi-byte sequence and therefore not
+/// `is_ascii_alphanumeric`, so the byte version fired on it. A false positive
+/// rather than a miss, and marginal — but the fix costs four characters and it
+/// lets the doc above say "identifier boundary" instead of "ASCII identifier
+/// boundary", which is the difference between a class and a habit.
 fn names_type(code: &str, ty: &str) -> bool {
-    let bytes = code.as_bytes();
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
     code.match_indices(ty).any(|(at, _)| {
-        let before_ok = at == 0
-            || !bytes
-                .get(at - 1)
-                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
-        let after = at + ty.len();
-        let after_ok = !bytes
-            .get(after)
-            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        let before_ok = !code
+            .get(..at)
+            .and_then(|head| head.chars().next_back())
+            .is_some_and(is_ident);
+        let after_ok = !code
+            .get(at + ty.len()..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(is_ident);
         before_ok && after_ok
     })
 }
@@ -5363,6 +5371,10 @@ mod tests {
             "RandomStateBuilder",
             "a_RandomState_thing",
             "make_random_state",
+            // Non-ASCII identifier characters are identifier characters. The
+            // byte-boundary version fired on both of these.
+            "\u{3bb}DefaultHasher",
+            "DefaultHasher\u{3bb}",
         ] {
             for ty in BANNED_TYPES {
                 assert!(!names_type(quiet, ty), "{quiet:?} should NOT be reported");

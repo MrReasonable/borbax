@@ -43,7 +43,9 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
     // rule again rather than a layout preference.** Typing a name writes into
     // `seed_text`, so it has to run before the widget that renders `seed_text`
     // is emitted — with it after, the frame shows the *previous* seed beside
-    // the new name's universe. `typing_a_name_fills_the_seed_box_in_the_frame_
+    // the new name's universe, which **§6** makes the expensive kind of wrong:
+    // the seed is the shareable artefact, so a stale one is a number a child
+    // writes down that opens a different universe from the one on screen. `typing_a_name_fills_the_seed_box_in_the_frame_
     // the_name_lands` is the guard, and moving this block below the seed row
     // fails it and nothing else.
     //
@@ -53,8 +55,8 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
     // frame a seed is typed, the name box still shows the old name for one
     // frame before `egui`'s requested repaint clears it. Reordering does not
     // fix that; it swaps which direction is broken, and the direction chosen
-    // here is the one that matters: the seed is the number §6 makes shareable
-    // and the thing a child writes down, so it must never be stale, whereas a
+    // here is the one that matters: **§6** makes the seed the shareable thing
+    // and it is what a child writes down, so it must never be stale, whereas a
     // name lingering for sixteen milliseconds is not a number anyone records.
     //
     // The lag is asserted rather than tolerated silently —
@@ -97,12 +99,17 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
             .text_edit_singleline(state.seed_text_mut())
             .labelled_by(seed_label.id);
         // Gated on `changed()`, not called unconditionally. `Universe::generate`
-        // is ~146 us and this body runs at the display's refresh rate.
+        // is ~146 us and this body runs at the display's refresh rate — the
+        // per-frame shape **§8.6** forbids, one layer above the simulation.
         //
         // `commit_typed_seed` rather than `reload`, which is the Step 1
         // spelling: a seed typed by hand was not produced by whatever is in the
-        // name box, so the name box is cleared. Calling `reload` here leaves a
-        // universe on screen labelled with a name that did not make it.
+        // name box, so the name box is cleared. **§6** makes the seed a
+        // universe's address, and an address labelled with a name that did not
+        // produce it is the misattribution `Outcome` exists to prevent one
+        // field along. Calling `reload` here reintroduces it — and did, until
+        // `typing_a_seed_by_hand_empties_the_name_box_on_screen` was written:
+        // the substitution failed zero of 24 tests.
         if response.changed() {
             state.commit_typed_seed();
         }
