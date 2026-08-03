@@ -257,7 +257,13 @@ fn name_box(harness: &Harness<'_, ViewerState>) -> String {
 ///
 /// **The wiring, which nothing tested.** Measured by a review lane: reverting
 /// `panel.rs` to Step 1's `state.reload()` — one identifier's difference from
-/// `state.commit_typed_seed()` — left all 32 tests in this crate green. The
+/// `state.commit_typed_seed()` — left every test that then existed green, which
+/// is why this test was written. (A "refresh" of that historical figure to the
+/// then-current count was wrong three ways at once, and a reviewer measured all
+/// three: the measurement was against 24 tests, the crate held a different
+/// number by then, and the sentence claimed this test does *not* catch the
+/// mutation it demonstrably does. Numbers of this shape are dropped on sight
+/// now — see `draw`'s doc for the same rule.) The
 /// acceptance test that looks like it covers this calls `commit_typed_seed`
 /// directly, so it tests the method and never the call.
 ///
@@ -303,8 +309,16 @@ fn typing_a_seed_by_hand_empties_the_name_box_in_the_same_frame() {
         .get_by_role_and_label(Role::TextInput, "seed")
         .value()
         .unwrap_or_else(|| unreachable!("a TextInput node always carries a value"));
+    // **Derived, not written down.** The first version hard-coded the
+    // twenty-one digits, which smuggles a copy of `phrase.rs`'s golden into a
+    // UI frame test — a deliberate remapping would then fail here with a
+    // message about frame timing. The sibling test above already shows the
+    // right shape.
+    let emily = borbax_universe::seed_from_phrase("Emily")
+        .unwrap_or_else(|| unreachable!("`Emily` is not blank, so it names a universe"));
     assert_eq!(
-        seed_shown, "157094016537299727614",
+        seed_shown,
+        format!("{emily}4"),
         "type_text appends, so this should be Emily's seed with a `4` on the end"
     );
     assert!(
@@ -315,9 +329,10 @@ fn typing_a_seed_by_hand_empties_the_name_box_in_the_same_frame() {
     );
 }
 
-/// "surprise me" empties the name box on screen too, for the same reason.
+/// "surprise me" empties the name box in the same frame too, for the same
+/// reason — one `step()`, because `request_discard` re-lays the pass.
 #[test]
-fn a_surprise_seed_empties_the_name_box_on_screen() {
+fn a_surprise_seed_empties_the_name_box_in_the_same_frame() {
     let mut harness = harness();
     type_into(&harness, "name", "Emily");
     harness.step();
@@ -331,36 +346,41 @@ fn a_surprise_seed_empties_the_name_box_on_screen() {
     );
 }
 
-/// A long name is not truncated by the box it is typed into.
+/// A name is not truncated by the box it is typed into, **at any length**.
 ///
 /// **The other half of the length-cap hazard, and it lives here rather than in
 /// `borbax-universe`.** That crate's
 /// `no_prefix_of_a_phrase_is_enough_to_decide_the_universe` guards the byte
-/// loop; nothing guarded the widget. `egui::TextEdit` has a `char_limit`
-/// builder, and a reviewer measured `.char_limit(8)` on the name box passing
-/// **all 452 tests in the workspace** while collapsing two different full names
-/// onto one universe — because no test above four characters ever went through
-/// `draw`.
+/// loop; nothing guarded the widget. A reviewer measured `.char_limit(8)` on
+/// the name box passing **all 452 tests in the workspace** while collapsing two
+/// different full names onto one universe, because no test above four
+/// characters ever went through `draw`.
 ///
-/// Two harnesses rather than one, because `type_text` appends.
+/// **The first version of this test compared two names sharing a 20-character
+/// stem, and a reviewer showed that discriminates caps of 20 or less and
+/// nothing above — `.char_limit(512)` passed all 457.** That is the *same*
+/// defect, in the sibling file, committed in the same pass that repaired it:
+/// a guard bounded by a length someone guessed.
+///
+/// So this asserts the property directly — whatever was typed is what the box
+/// holds — over a name longer than any `char_limit` anyone would write. **The
+/// class it decides, stated so the next person can see its edge:** every cap at
+/// or below the length typed here. That is a number, and it is chosen to sit
+/// above the ones a person reaches for (8, 32, 64, 128, 256, 512, 1024) rather
+/// than above a name anyone would type. Measured at 8, 20, 512 and 1024: all
+/// four fail.
 #[test]
-fn a_long_name_is_not_truncated_by_the_box_it_is_typed_into() {
-    let stem = "elizabeth alexandra ";
+fn a_name_is_not_truncated_by_the_box_it_is_typed_into() {
+    let mut harness = harness();
+    let typed = "elizabeth alexandra mary windsor ".repeat(64);
+    let typed = typed.trim_end();
+    type_into(&harness, "name", typed);
+    harness.step();
 
-    let mut first = harness();
-    type_into(&first, "name", &format!("{stem}mary"));
-    first.step();
-    let mary = first.state().seed_text().to_owned();
-
-    let mut second = harness();
-    type_into(&second, "name", &format!("{stem}rose"));
-    second.step();
-
-    assert_ne!(
-        mary,
-        second.state().seed_text(),
-        "two names sharing a {}-character prefix produced one universe — the \
-         name box has acquired a char_limit",
-        stem.len()
+    assert_eq!(
+        harness.state().phrase_text(),
+        typed,
+        "the name box dropped characters — it has acquired a char_limit, and \
+         every name longer than it now shares a universe with its truncation"
     );
 }

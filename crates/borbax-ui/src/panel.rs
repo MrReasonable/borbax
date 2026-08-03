@@ -22,7 +22,8 @@ use crate::state::{ViewerState, moment};
 /// frame tests in `tests/panel.rs` are the guard, and moving `ui.label` above
 /// `ui.text_edit_singleline` is the mutation they exist to catch: it fails
 /// several of them and leaves **every** state-level test green, which is the
-/// asymmetry that justifies the file existing.
+/// asymmetry that justifies the file existing. (`typing_a_name_fills_the_seed_box_in_the_frame_the_name_lands`
+/// is one of them — spelled on one line so it can be grepped.)
 ///
 /// **No fraction, deliberately.** It has been written twice and gone stale
 /// twice — "three of the four", then "four of the five" in the very commit that
@@ -72,9 +73,22 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
     // would have made removing the defect look like a regression. A reviewer
     // measured `request_discard` closing it in a single pass.
     //
-    // It is called only inside `changed()`/`clicked()`, which is the "rare
-    // occasion" the API's own doc asks for — an extra layout pass every frame
-    // would be real CPU cost and `egui` warns about it.
+    // **The discard is gated on the name box actually having something in it,
+    // and that gate is load-bearing rather than an optimisation.** Ungated, it
+    // fired on every seed keystroke — and because a discarded pass re-paints
+    // from updated state, it *self-repaired* the stale-status defect these
+    // frame tests exist to catch. Measured: with the discard ungated, moving
+    // `ui.label(state.status_line())` to the top of this function failed
+    // **one** frame test; before `request_discard` existed it failed four, and
+    // with the gate it fails four again. A fix that quietly disarms the guard
+    // around it is worse than the defect it repaired, and this one did.
+    //
+    // The gate also keeps the discard to the "rare occasion" the API's own doc
+    // asks for. `egui` paints a red `PERF WARNING: request_discard has been
+    // called N frames in a row` at three consecutive multipass frames in debug
+    // builds — which is what holding a key down in the seed box would have
+    // produced for anyone running `cargo run -p borbax-ui` without
+    // `--release`.
     let name_label = ui.label("name");
     // Hinted rather than pre-filled. A pre-filled name chooses the universe
     // that name produces; an empty box with no hint teaches nothing about what
@@ -104,11 +118,15 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
         // function of the number handed to it — every test of this button passes
         // a fixed moment instead of racing a clock.
         if ui.button("surprise me").clicked() {
+            // Read *before* the mutation: the discard is needed only if there
+            // was a name on screen for this pass to have painted stale.
+            let name_was_showing = !state.phrase_text().is_empty();
             state.randomise(moment());
-            // Same reason as the seed box below: this clears the name box after
-            // it has already been laid out for this pass.
-            ui.ctx()
-                .request_discard("the surprise button cleared the name box after it was painted");
+            if name_was_showing {
+                ui.ctx().request_discard(
+                    "the surprise button cleared the name box after it was painted",
+                );
+            }
         }
 
         let response = ui
@@ -124,14 +142,16 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
         // universe's address, and an address labelled with a name that did not
         // produce it is the misattribution `Outcome` exists to prevent one
         // field along. Calling `reload` here reintroduces it — and did, until
-        // `typing_a_seed_by_hand_empties_the_name_box_on_screen` was written:
-        // the substitution failed zero of 24 tests.
+        // `typing_a_seed_by_hand_empties_the_name_box_in_the_same_frame` was written:
+        // the substitution failed zero tests.
         if response.changed() {
+            // See the surprise button above, and the note at the top of `draw`.
+            let name_was_showing = !state.phrase_text().is_empty();
             state.commit_typed_seed();
-            // The name box was painted above, before this line cleared it. See
-            // the note at the top of `draw`.
-            ui.ctx()
-                .request_discard("a typed seed cleared the name box after it was painted");
+            if name_was_showing {
+                ui.ctx()
+                    .request_discard("a typed seed cleared the name box after it was painted");
+            }
         }
     });
 

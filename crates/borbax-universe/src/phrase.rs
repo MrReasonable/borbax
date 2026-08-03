@@ -318,8 +318,8 @@ mod tests {
     /// outer level inside its scope, so dropping
     /// `disallowed_types = "deny"` to `"allow"` in the workspace manifest
     /// leaves every anchor fulfilled and the ban dead. Measured. That third
-    /// state is held by `check_the_lint_levels_are_deny` in `xtask`, which
-    /// reads the manifest — not by anything here.
+    /// state is held by `the_ban_lists_are_denied_and_not_merely_configured`
+    /// in `xtask`, which reads the manifest — not by anything here.
     #[test]
     #[expect(
         clippy::disallowed_types,
@@ -437,7 +437,9 @@ mod tests {
     /// It does *not* catch a last-byte-only accumulator, which an earlier
     /// version of this sentence claimed: a reviewer measured `acc = absorb(0,
     /// byte)` leaving this test green, because the five prefixes and both
-    /// anagram pairs all end in different bytes. Five other tests fail on it.
+    /// anagram pairs all end in different bytes. Six other tests in this file
+    /// fail on it, seven workspace-wide — the count is given because an earlier
+    /// draft said five, which matched no reading.
     #[test]
     fn no_prefix_and_no_anagram_shares_a_seed() {
         let prefixes = ["e", "em", "emi", "emil", "emily"];
@@ -538,8 +540,12 @@ mod tests {
             for position in 0..base.len() {
                 for shift in 0..8_u8 {
                     let mut bytes = base.as_bytes().to_vec();
+                    // Indexed rather than `get_mut(..) else { continue }`:
+                    // `position < base.len() == bytes.len()`, so that arm could
+                    // never be taken — and an unreachable `continue` is exactly
+                    // what this test's doc criticises its predecessor for.
                     let Some(target) = bytes.get_mut(position) else {
-                        continue;
+                        unreachable!("position is drawn from 0..base.len()")
                     };
                     *target ^= 1 << shift;
                     let Ok(flipped) = std::str::from_utf8(&bytes) else {
@@ -662,10 +668,17 @@ mod tests {
         // A ladder rather than one length. The first version used a single
         // 512-byte pair, which discriminates every cap up to 511 and nothing
         // above — and a reviewer measured `.take(512)`, `.take(4096)` and
-        // `.take(100_000)` all passing the whole 452-test suite. A "do not hash
-        // a ten-megabyte paste" guard, which is the scenario this test's own
-        // doc names, would be written at exactly those numbers.
-        for len in [512_usize, 4096, 65_536] {
+        // `.take(100_000)` all passing the whole suite. A "do not hash a
+        // ten-megabyte paste" guard, the scenario this test's own doc names,
+        // would be written at exactly those numbers.
+        //
+        // **The class this decides: every cap at or below the top rung.** A
+        // second reviewer caught the first ladder stopping at 65_536 while the
+        // comment above still listed 100_000 as one of three measured escapes —
+        // prose reading as though all three were closed with one still open. The
+        // top rung now sits above it. There is no length beyond which this is
+        // free, so the number is stated rather than implied.
+        for len in [512_usize, 4096, 65_536, 131_072] {
             let stem = "a".repeat(len - 1);
             assert_ne!(
                 seed(&format!("{stem}x")),
