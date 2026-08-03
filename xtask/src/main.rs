@@ -2721,6 +2721,79 @@ fn check_the_viewer_stays_a_leaf(root: &Path, failures: &mut Vec<String>) -> Res
     Ok(())
 }
 
+/// A whole file with comments, string literals and character literals removed.
+///
+/// **Stronger than [`code_only`], and the seam check needs the difference.**
+/// `code_only` drops whole-line `//` comments and nothing else, so a type named
+/// inside a string literal reads as code. That is not hypothetical: `lib.rs`
+/// carries an `#![expect]` attribute whose `reason` string names `eframe` while
+/// explaining why a lint fires, which is documentation and is
+/// exactly as much prose as the `//!` block above it. Scanning it as code failed
+/// the seam on correct code — and a guard that fires on correct code gets
+/// deleted, which is the structural pressure that makes this worth getting
+/// right rather than exempting.
+///
+/// Naming a type inside a string literal is definitionally not using it: there
+/// is no import, no call and no path resolution through a `&str`. Whereas
+/// `format!` survives, because the macro name sits *outside* the literal it
+/// builds.
+///
+/// Returns `None` when the file ends mid-string or mid-comment, so a file that
+/// cannot be lexed is reported rather than silently treated as empty.
+fn code_without_prose(src: &str) -> Option<String> {
+    let mut lex = LexState::default();
+    let stripped = src
+        .lines()
+        .map(|line| strip_comments_and_literals(line, &mut lex))
+        .collect::<Vec<_>>()
+        .join("\n");
+    lex.is_clean().then_some(stripped)
+}
+
+/// The one file under `crates/borbax-ui/src` that may open a window.
+const VIEWER_SHELL_FILE: &str = "main.rs";
+
+/// The files that draw, and may therefore name `egui`.
+///
+/// **Membership is a licence, not a description.** Being on this list is what
+/// grants a file `egui`; it costs the file `format!` in exchange, because a
+/// string built where it is painted is a string no test can assert on without
+/// describing a window it has stopped describing. Adding a name here is the
+/// deliberate act; forgetting to is caught by [`viewer_banned_imports`]'s
+/// default rather than by nobody.
+const VIEWER_DRAWING_FILES: &[&str] = &["panel.rs"];
+
+/// What a file under `crates/borbax-ui/src` may not name in code.
+///
+/// **The default is the strictest tier, and that inversion is the whole
+/// design.** The shipped version of this rule was a two-entry table, so a new
+/// `.rs` file — which is exactly what Step 2 wanted to add — was checked for
+/// *nothing*: it could name `eframe`, or build strings while calling itself a
+/// drawing file. Enumerating the files instead moves the hand-kept-list failure
+/// mode down into the entry, where `("periodic.rs", &[])` is one word wide and
+/// builds green. Defaulting to strict means the way to get a licence is to ask
+/// for one.
+///
+/// Three tiers:
+///
+/// - unnamed (**default**) — names no UI type at all. This is `state.rs`'s rule
+///   and it is an *identity*, not a consequence of what the file happens to
+///   import, so it cannot be derived from the file's own contents.
+/// - [`VIEWER_DRAWING_FILES`] — may name `egui` (which lays out on the CPU and
+///   cannot open a window, so `egui_kittest` drives it headlessly), may not
+///   build strings.
+/// - [`VIEWER_SHELL_FILE`] — the shell that can open a window, so no test
+///   reaches it and there is nothing to protect.
+fn viewer_banned_imports(file: &str) -> &'static [&'static str] {
+    if file == VIEWER_SHELL_FILE {
+        &[]
+    } else if VIEWER_DRAWING_FILES.contains(&file) {
+        &["eframe", "format!"]
+    } else {
+        &["egui", "eframe"]
+    }
+}
+
 /// The viewer's per-file import seam, and its single `Universe::generate` site.
 ///
 /// Split out of [`check_the_viewer_stays_a_leaf`] because the combined function
@@ -2729,36 +2802,146 @@ fn check_the_viewer_stays_a_leaf(root: &Path, failures: &mut Vec<String>) -> Res
 fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
     const VIEWER: &str = "crates/borbax-ui";
     let viewer_src = root.join(VIEWER).join("src");
+    // **A missing directory is a failure, not a skip**, and the first version of
+    // this function returned `Ok(())` here. That is the same fail-open shape as
+    // the `crates/` rename that blinded `check_every_member_inherits_the_lints`
+    // while eight other guards fired: rename or move `crates/borbax-ui` and the
+    // *entire* seam check — every tier, the `eframe` count and the
+    // `Universe::generate` count — passes silently, with nothing in the output
+    // saying it checked nothing.
     if !viewer_src.exists() {
+        failures.push(format!(
+            "viewer seam: {VIEWER}/src does not exist, so the seam was not checked. \
+             If the viewer has moved, move this check with it; a silent pass here \
+             disables the per-file seam, the `eframe` count and the \
+             `Universe::generate` count at once"
+        ));
         return Ok(());
     }
 
-    // The per-file import seam, checked over code rather than prose.
-    for (file, banned) in [
-        ("state.rs", &["egui", "eframe"][..]),
-        ("panel.rs", &["eframe", "format!"][..]),
-    ] {
-        let path = viewer_src.join(file);
-        let Ok(src) = std::fs::read_to_string(&path) else {
+    // The per-file import seam, checked over code rather than prose, over
+    // **every** `.rs` file rather than a list of two.
+    let mut eframe_homes = Vec::new();
+    for path in walk(&viewer_src)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let Some(code) = code_without_prose(&src) else {
             failures.push(format!(
-                "viewer seam: {VIEWER}/src/{file} could not be read, so its seam was \
-                 not checked"
+                "viewer seam: {VIEWER}/src/{name} ended inside a string or comment, so \
+                 it could not be scanned. Reported rather than skipped: a file the \
+                 lexer gives up on is the one file most likely to be hiding something"
             ));
             continue;
         };
-        let code = code_only(&src);
-        for needle in banned {
+
+        for needle in viewer_banned_imports(&name) {
             if code.contains(needle) {
                 failures.push(format!(
-                    "viewer seam: {VIEWER}/src/{file} contains `{needle}` in code. \
-                     `state.rs` names no UI type, `panel.rs` names `egui` only and \
-                     builds no strings, and only `main.rs` names `eframe` — that split \
-                     is what lets `egui_kittest` drive the real drawing code with no \
-                     window, and what keeps every string assertion pointed at what the \
-                     window actually paints"
+                    "viewer seam: {VIEWER}/src/{name} contains `{needle}` in code. \
+                     Files name no UI type by default, named drawing files may name \
+                     `egui` but build no strings, and only `{VIEWER_SHELL_FILE}` may \
+                     name `eframe` — that split is what lets `egui_kittest` drive the \
+                     real drawing code with no window, and what keeps every string \
+                     assertion pointed at what the window actually paints. If this is \
+                     a new drawing file, add it to `VIEWER_DRAWING_FILES` and say why \
+                     it draws"
                 ));
             }
         }
+
+        if code.contains("eframe") {
+            eframe_homes.push(name);
+        }
+    }
+
+    // **`eframe` lives in exactly one file, and that file is `main.rs`.**
+    //
+    // This is the half a per-file ban list cannot enforce, and before this it
+    // was enforced by *nobody*: "only `main.rs` names `eframe`" held only
+    // because there happened to be three files and two of them banned the
+    // string. A fourth file added with a lax entry — `("periodic.rs", &[])` —
+    // reopens it with a green build, which is the hand-kept-list failure mode
+    // moved from the file level down into the entry, where it is *less* visible.
+    // Counting the homes is what makes the invariant independent of the list.
+    eframe_homes.sort();
+    if eframe_homes != [VIEWER_SHELL_FILE] {
+        failures.push(format!(
+            "viewer seam: `eframe` is named in code by {eframe_homes:?} under \
+             {VIEWER}/src, expected exactly [\"{VIEWER_SHELL_FILE}\"]. `eframe` opens \
+             a window, so every file that names it is a file no headless test can \
+             reach; confining it to one is what keeps the drawing code testable"
+        ));
+    }
+
+    check_the_viewer_calls_the_chemistry_once(root, &viewer_src, failures)?;
+    Ok(())
+}
+
+/// The viewer's call-site counts: one `Universe::generate`, no `.pattern()`.
+///
+/// Split from [`check_the_viewer_seam_holds`] when the per-file tiers pushed the
+/// combined function past `clippy::too_many_lines` — the same split, for the
+/// same reason, that separated the seam from
+/// [`check_the_viewer_stays_a_leaf`].
+fn check_the_viewer_calls_the_chemistry_once(
+    root: &Path,
+    viewer_src: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    const VIEWER: &str = "crates/borbax-ui";
+
+    // **`PeriodicTable::pattern()` has no consumer in the viewer at Step 2.**
+    //
+    // The attractive wrong implementation is building the grid's rows from
+    // `pattern().closures`: the closure list gives exactly the row boundaries,
+    // it *works*, and it makes the viewer derive its layout from the shell law
+    // instead of reading `period`/`group` off each element. That is a second
+    // encoding of the same fact in the crate least entitled to hold one, and it
+    // opens the door to `peak` and `k` reaching the screen as undisclosed
+    // physics.
+    //
+    // **This check's only correct response is deletion**, and it says so rather
+    // than being worked around: `peak` and `closures` are legitimate things a
+    // later step will want to show.
+    let mut pattern_sites = Vec::new();
+    for path in walk(viewer_src)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        // Already reported by the seam loop above if it cannot be lexed; skip
+        // quietly here rather than saying the same thing twice about one file.
+        let Some(code) = code_without_prose(&src) else {
+            continue;
+        };
+        let shipped = code
+            .find("#[cfg(test)]")
+            .map_or(code.as_str(), |at| &code[..at]);
+        if shipped.contains(".pattern()") {
+            pattern_sites.push(
+                path.strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    if !pattern_sites.is_empty() {
+        failures.push(format!(
+            "viewer seam: `.pattern()` is called in {pattern_sites:?}. Step 2 has no \
+             consumer for `PeriodicTable::pattern()` — the grid reads `period` and \
+             `group` off each element, and deriving the layout from the shell law \
+             instead would be the viewer holding a second encoding of the physics. If \
+             you are adding a legitimate consumer, delete this check and say what it \
+             shows"
+        ));
     }
 
     // Exactly one `Universe::generate` call site.
@@ -2771,7 +2954,7 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     // small to see and invisible to every test. The plan deferred this grep to
     // Step 7; the surface it guards exists now.
     let mut call_sites = Vec::new();
-    for path in walk(&viewer_src)?
+    for path in walk(viewer_src)?
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
     {
@@ -3989,6 +4172,7 @@ mod tests {
         SIGNATURE_SURFACE, SigFacing, SigItem, alias_names, bookkeeping_against,
         check_surface_bookkeeping, compare_signature_surface, scan_signature_surface,
     };
+    use super::{code_without_prose, viewer_banned_imports};
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
     use super::{identifier_segments, scan_format_tokens};
 
@@ -6230,5 +6414,131 @@ disallowed-types = [ { path = \"right::One\" } ]
                 "{broken:?} -> {found:?}"
             );
         }
+    }
+
+    /// An unnamed viewer file gets the **strictest** tier, not the laxest.
+    ///
+    /// This is the whole inversion. The shipped check was a two-entry table, so
+    /// a new `.rs` file under `crates/borbax-ui/src` was checked for *nothing* —
+    /// it could name `eframe`, or build strings while calling itself a drawing
+    /// file. Step 2 is the first step that wanted to add a file, which is why
+    /// this is the moment it was worth fixing.
+    #[test]
+    fn a_viewer_file_nobody_named_is_covered_rather_than_exempt() {
+        for unnamed in ["periodic.rs", "elements.rs", "scene.rs", "lib.rs"] {
+            assert_eq!(
+                viewer_banned_imports(unnamed),
+                ["egui", "eframe"],
+                "{unnamed} was not given the default tier, so a file added tomorrow \
+                 is unguarded"
+            );
+        }
+    }
+
+    /// Being a drawing file is a **licence with a price**: `egui` in exchange
+    /// for `format!`.
+    ///
+    /// The pair matters. A drawing file that could also build strings would put
+    /// a string where it is painted, and every test asserting on that string
+    /// would be describing a window it had stopped describing.
+    #[test]
+    fn a_named_drawing_file_trades_format_for_egui() {
+        let banned = viewer_banned_imports("panel.rs");
+        assert!(
+            !banned.contains(&"egui"),
+            "a drawing file must be allowed `egui` — it is what `egui_kittest` drives"
+        );
+        assert!(
+            banned.contains(&"format!"),
+            "a drawing file must not build strings; that is the price of the licence"
+        );
+        assert!(
+            banned.contains(&"eframe"),
+            "only the shell may open a window"
+        );
+    }
+
+    /// Exactly one file is unrestricted, and it is the one no test can reach.
+    #[test]
+    fn only_the_shell_file_may_name_eframe() {
+        assert!(
+            viewer_banned_imports(super::VIEWER_SHELL_FILE).is_empty(),
+            "the shell has nothing to protect — no headless test reaches it"
+        );
+        // The negative arm. Without it this test passes over a
+        // `viewer_banned_imports` that returns `&[]` for everything.
+        assert!(
+            !viewer_banned_imports("state.rs").is_empty(),
+            "every other file is restricted; an empty ban list everywhere is the \
+             vacuous version of this guard"
+        );
+    }
+
+    /// A type named inside a string literal is prose, not an import.
+    ///
+    /// **Measured on the real tree, and it failed the seam on correct code.**
+    /// `crates/borbax-ui/src/lib.rs` carries an `#![expect]` attribute whose
+    /// `reason` string names `eframe` while explaining why the lint fires —
+    /// documentation, and exactly
+    /// as much prose as the `//!` block above it. The weaker `code_only` strip
+    /// reads it as code. A guard that fires on correct code gets deleted, so
+    /// this is not a nicety.
+    #[test]
+    fn a_type_named_in_a_string_literal_is_not_an_import() {
+        let src = "#![expect(clippy::x, reason = \"`eframe` emits 31 of these\")]\nfn f() {}\n";
+        let stripped = code_without_prose(src);
+        // Asserted before defaulting, deliberately. `unwrap_or_default()` on a
+        // `None` gives `""`, which contains no needle and would make every
+        // assertion below pass over a fixture that had stopped lexing.
+        assert!(stripped.is_some(), "the fixture must lex");
+        let code = stripped.unwrap_or_default();
+        assert!(
+            !code.contains("eframe"),
+            "prose inside an attribute string was read as an import: {code:?}"
+        );
+    }
+
+    /// …and the macro name survives the literal it builds.
+    ///
+    /// The reverse arm, and it is what keeps the strip from disarming the
+    /// `format!` half of the seam. `format!` sits *outside* the string, so
+    /// removing string contents must not remove it — otherwise `panel.rs` could
+    /// build every string it liked.
+    #[test]
+    fn stripping_a_literal_does_not_strip_the_macro_that_builds_it() {
+        let stripped = code_without_prose("fn f() -> String { format!(\"eframe {}\", 1) }\n");
+        assert!(stripped.is_some(), "the fixture must lex");
+        let code = stripped.unwrap_or_default();
+        assert!(
+            code.contains("format!"),
+            "the `format!` half of the seam was disarmed by the literal strip: {code:?}"
+        );
+        assert!(
+            !code.contains("eframe"),
+            "the literal's *contents* should still be gone: {code:?}"
+        );
+    }
+
+    /// A file that ends mid-string is reported, never silently read as empty.
+    ///
+    /// The failure mode this forbids is the quiet one: an unlexable file
+    /// stripped to nothing contains no banned needle, so it *passes* every tier
+    /// while being the file most likely to be hiding something.
+    #[test]
+    fn a_file_that_ends_inside_a_string_is_reported_rather_than_scanned() {
+        assert!(
+            code_without_prose("fn f() { let _ = \"unterminated;\n").is_none(),
+            "an unterminated string must not strip to a clean empty scan"
+        );
+        assert!(
+            code_without_prose("fn f() { /* unterminated\n").is_none(),
+            "an unterminated block comment must not strip to a clean empty scan"
+        );
+        // The positive arm, so this cannot pass by `code_without_prose` always
+        // returning `None`.
+        assert!(
+            code_without_prose("fn f() { let _ = \"closed\"; }\n").is_some(),
+            "ordinary code must lex"
+        );
     }
 }
