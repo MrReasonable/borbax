@@ -26,6 +26,8 @@ use crate::panel::draw;
 use crate::state::ViewerState;
 use crate::{WINDOW_SIZE, WINDOW_TITLE};
 use bevy::prelude::*;
+use bevy::render::RenderPlugin;
+use bevy::render::settings::{RenderCreation, WgpuSettings};
 use bevy::window::WindowResolution;
 use bevy_egui::{EguiContexts, EguiPlugin, egui};
 
@@ -83,36 +85,47 @@ fn draw_panel(mut contexts: EguiContexts<'_, '_>, mut viewer: ResMut<'_, Viewer>
 ///
 /// Returned rather than run so a test can drive it. `run()` is the binary's job.
 pub fn viewer_app() -> App {
-    build(Windowing::Real)
+    build(Shell::Window)
 }
 
-/// The same application with the windowing backend left out.
+/// The same application with the platform backends left out.
 ///
-/// **For tests, and the difference is exactly one plugin.** `winit` permits one
-/// event loop per process and creates it eagerly, so a test that built the real
-/// app would fail on the second call with `RecreationAttempt` — and `cargo test`
-/// runs a whole file's tests in one process.
+/// **For tests, and the difference is two named things rather than one.** An
+/// earlier version of this function differed from [`viewer_app`] by exactly one
+/// plugin and said so, because that narrowness is what stops a test asserting
+/// about wiring the binary does not have. It now differs by two, and both are
+/// forced:
 ///
-/// The narrowness is the point. Everything a test asserts on — the camera, the
-/// window's configuration, the resources, the schedules — is built by the same
-/// code path the binary uses, so a test cannot pass over wiring the binary does
-/// not have. What is *not* covered is `winit` itself: whether a real OS window
-/// appears. Nothing here claims otherwise.
+/// - **`winit`**, because it permits one event loop per process and creates it
+///   eagerly, so the second test in a file would fail with `RecreationAttempt`.
+/// - **the graphics backend**, because Bevy asks the platform for a real device
+///   while the app is being built and calls `.expect("Unable to find a GPU!")`
+///   when there is none. A runner without a driver therefore aborts every test
+///   in `tests/app.rs` inside `bevy_render`, with a message that reads like a
+///   defect in this crate. Measured on this machine before the change: the
+///   headless app held a live `RenderDevice`.
+///
+/// What that costs is stated rather than discovered later: **no assertion here
+/// can ever be about a pixel.** That was never available on a driverless runner
+/// anyway, so nothing is given up that CI could have had. Everything these tests
+/// do assert on — the cameras, the window's configuration, the resources, the
+/// schedules, entity transforms, visibility and projection — is built by the
+/// same code path the binary uses and is unaffected by there being no device.
 #[doc(hidden)]
 pub fn headless_app() -> App {
-    build(Windowing::None)
+    build(Shell::Headless)
 }
 
-/// Whether to attach the platform's windowing backend.
+/// Which platform backends the app attaches.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Windowing {
-    /// The shipped configuration: `winit` opens a real window.
-    Real,
-    /// `winit` omitted so more than one app can exist in a process.
-    None,
+enum Shell {
+    /// The shipped configuration: a real window and a real graphics device.
+    Window,
+    /// Neither, so many apps can exist in one process and none needs a driver.
+    Headless,
 }
 
-fn build(windowing: Windowing) -> App {
+fn build(shell: Shell) -> App {
     let mut app = App::new();
     let plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
@@ -125,9 +138,25 @@ fn build(windowing: Windowing) -> App {
         }),
         ..default()
     });
-    match windowing {
-        Windowing::Real => app.add_plugins(plugins),
-        Windowing::None => app.add_plugins(plugins.build().disable::<bevy::winit::WinitPlugin>()),
+    match shell {
+        Shell::Window => app.add_plugins(plugins),
+        // `backends: None` rather than dropping `RenderPlugin`: the render
+        // plugin is what registers `Mesh3d`, `MeshMaterial3d`, `Camera3d`,
+        // visibility and frustum culling, so removing it would take the whole
+        // scene out of reach of every test. Asking for no backend keeps all of
+        // that and skips only the device.
+        Shell::Headless => app.add_plugins(
+            plugins
+                .build()
+                .disable::<bevy::winit::WinitPlugin>()
+                .set(RenderPlugin {
+                    render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                        backends: None,
+                        ..default()
+                    })),
+                    ..default()
+                }),
+        ),
     }
     .add_plugins(EguiPlugin::default())
     // `opening`, not `new`: the window shows a universe from the first frame
