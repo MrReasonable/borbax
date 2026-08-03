@@ -321,11 +321,12 @@ pub enum Outcome {
         /// seed 11 are both valid and entirely different elements; nothing
         /// downstream could detect the substitution.
         ///
-        /// In here it is unrepresentable. [`ViewerState::reload`] assigns
+        /// In here it is unrepresentable. `ViewerState::reload` — private,
+        /// which is why this is not a link — assigns
         /// `self.outcome` wholesale, so the old selection is dropped with the
         /// old universe — there is no `self.selected = None` line to forget at
         /// the next call site, and no rule for a future reader to remember.
-        /// The same reasoning that made [`ViewerState::reload`] private: make
+        /// The same reasoning that made `reload` private: make
         /// it impossible rather than merely tested.
         selected: Option<ElementId>,
     },
