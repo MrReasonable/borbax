@@ -3597,7 +3597,7 @@ fn check_no_real_chemistry_in_literals(
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
     {
-        if path == blocklist {
+        if path == blocklist || is_test_only_tree(&path) {
             continue;
         }
         let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -3646,13 +3646,61 @@ fn names_cfg_test(stream: &proc_macro2::TokenStream) -> bool {
     is_cfg && mentions_test_ident(stream)
 }
 
-/// Whether `test` appears as a bare identifier anywhere in `stream`.
+/// Whether `test` appears as a bare identifier anywhere in `stream`, **outside
+/// any `not(..)`**.
+///
+/// **`not(..)` inverts the predicate, so descending into it answers the opposite
+/// question.** `#[cfg(not(test))]` marks *shipped-only* code; reading it as
+/// test-only means the block beneath it is skipped, and shipped code going
+/// unscanned is the one direction this guard must never fail in.
+/// `#[cfg(all(not(test), unix))]` is the same shape.
+///
+/// **`cfg_test` in this same file already refuses `not` for exactly this
+/// reason**, with a doc comment recording that its stated justification had
+/// been wrong while its mutation test passed — and this function reintroduced
+/// the defect 1900 lines away. Pinned here by
+/// `cfg_not_test_is_not_read_as_a_test_module`.
 fn mentions_test_ident(stream: &proc_macro2::TokenStream) -> bool {
-    stream.clone().into_iter().any(|tt| match tt {
-        proc_macro2::TokenTree::Ident(i) => i == "test",
-        proc_macro2::TokenTree::Group(g) => mentions_test_ident(&g.stream()),
-        proc_macro2::TokenTree::Literal(_) | proc_macro2::TokenTree::Punct(_) => false,
-    })
+    let mut it = stream.clone().into_iter();
+    while let Some(tt) = it.next() {
+        match tt {
+            proc_macro2::TokenTree::Ident(i) if i == "test" => return true,
+            // Skip the `not` and the parenthesised group that follows it.
+            proc_macro2::TokenTree::Ident(i) if i == "not" => {
+                it.next();
+            }
+            proc_macro2::TokenTree::Group(g) => {
+                if mentions_test_ident(&g.stream()) {
+                    return true;
+                }
+            }
+            proc_macro2::TokenTree::Ident(_)
+            | proc_macro2::TokenTree::Literal(_)
+            | proc_macro2::TokenTree::Punct(_) => {}
+        }
+    }
+    false
+}
+
+/// Whether a path lives in a crate's integration-test, benchmark or example
+/// tree.
+///
+/// **Skipped, because nothing in them reaches a screen and the alternative
+/// fires on correct code.** A file under `crates/*/tests/` carries no
+/// `#[cfg(test)]` attribute — the whole file *is* the test — so the attribute
+/// pairing that exempts a unit-test module cannot see it, and a fixture
+/// legitimately naming a real element would fail the gate. A check that fires
+/// on correct code gets deleted, and it would take the name and unit scans with
+/// it.
+///
+/// What covers the gap: the display path is asserted directly by
+/// `no_element_reaches_the_screen_under_a_real_name_or_symbol` in `borbax-ui`,
+/// which runs `naming::is_real` over what the panel actually shows — and that
+/// catches a name *derived* at runtime, which no source scan can see either way.
+fn is_test_only_tree(path: &Path) -> bool {
+    path.components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .any(|c| matches!(c, "tests" | "benches" | "examples"))
 }
 
 /// Every string literal in `stream`, skipping `#[doc]` groups and `#[cfg(test)]`
@@ -7484,6 +7532,36 @@ fn shipped() -> &'static str { "Carbon" }
         assert!(
             !fiction_hits(shipped).is_empty(),
             "a feature named `test-utils` must not exempt shipped code"
+        );
+    }
+
+    /// `#[cfg(not(test))]` is shipped-only and must never be skipped.
+    ///
+    /// **The one direction this guard cannot fail in**, and it was failing:
+    /// `mentions_test_ident` recursed into every group, so `not(test)` answered
+    /// the opposite of the question asked and the block beneath was treated as
+    /// test code. `cfg_test` in this same file already refuses `not` and its
+    /// doc records the identical lesson — this function reintroduced it 1900
+    /// lines away.
+    #[test]
+    fn cfg_not_test_is_not_read_as_a_test_module() {
+        for attr in [
+            "#[cfg(not(test))]",
+            "#[cfg(all(not(test), unix))]",
+            "#[cfg(any(not(test), doc))]",
+        ] {
+            let src = format!("{attr}\nmod shipped {{ const F: &str = \"Carbon\"; }}");
+            assert!(
+                !fiction_hits(&src).is_empty(),
+                "{attr} marks SHIPPED code and it was skipped, so a real element name \
+                 ships unscanned"
+            );
+        }
+        // The other direction still holds, or the fix has simply disabled the
+        // pairing.
+        assert!(
+            fiction_hits("#[cfg(test)]\nmod tests { const F: &str = \"Carbon\"; }").is_empty(),
+            "a real test module must still be skipped"
         );
     }
 }

@@ -126,6 +126,10 @@ same labels with `—` values, so the grid never reflows on first click.
 
 ### The nine property rows
 
+All values are `{:.3}` fixed — the examples below say `70.700`, not `70.70`, and
+an earlier draft of this table showed two decimals against a three-decimal
+formatter.
+
 Heading: `Mx · meax` — **symbol first**, because the symbol is what she just
 clicked and it is the only identifier unique by construction.
 
@@ -135,10 +139,10 @@ clicked and it is the only identifier unique by construction.
 | `shell` | `2 of 3` | |
 | `outer shell` | `14 units` | |
 | `bonding slots` | `4`, or `none — a closed shell` | |
-| `mass` | `70.70` `mass units` | |
-| `size` | `0.92` `spans` | |
-| `surface` | `0.63` | how much of this element sits on the outside |
-| `binding energy` | `2.60` `quanta per unit` | |
+| `mass` | `70.700` `mass units` | |
+| `size` | `0.920` `spans` | |
+| `surface` | `0.630` | how much of this element sits on the outside |
+| `binding energy` | `2.600` `quanta per unit` | |
 | `instability` | `0.075` | how far this sits from the most stable element in this universe |
 
 Row shape is **four fields**, which is the reconciliation of a real conflict:
@@ -152,7 +156,7 @@ struct PropertyRow {
 }
 ```
 
-Product wanted the unit inside the value (`"0.92 spans"`) because that reads
+Product wanted the unit inside the value (`"0.920 spans"`) because that reads
 better to a child. QA showed that destroys the guard: an allow-list would have
 to parse sentences, and a unit assembled by `format!` would be indistinguishable
 from a declared one. Four fields give product the reading (`panel.rs` emits

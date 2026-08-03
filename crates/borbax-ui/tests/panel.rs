@@ -778,6 +778,18 @@ fn the_grid_is_operable_from_the_keyboard() {
         .collect();
     assert!(cells.len() > 2, "the fixture needs a table");
 
+    // **The starting point is asserted rather than assumed.** `type_into`
+    // leaves the seed field focused, and the Tab below only means anything
+    // relative to that — if the precondition ever stopped holding, this test
+    // would still press Tab from wherever focus happened to be and could pass
+    // or fail for reasons that have nothing to do with the grid.
+    assert!(
+        harness
+            .get_by_role_and_label(Role::TextInput, "seed")
+            .is_focused(),
+        "the fixture assumes the seed box holds focus before Tab"
+    );
+
     // **Tab, not `focus()`.** This is the assertion the first version was
     // missing: nothing here reaches into the accessibility tree to place focus.
     harness.key_combination(&[egui::Key::Tab]);
