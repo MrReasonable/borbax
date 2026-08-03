@@ -3628,6 +3628,33 @@ fn check_no_real_chemistry_in_literals(
     Ok(())
 }
 
+/// Whether a bracket group is a `#[cfg(..)]` that includes `test`.
+///
+/// **Not an equality test against `"cfg(test)"`, which is what this was.**
+/// `#[cfg(all(test, feature = "x"))]` and `#[cfg(any(test, doc))]` are ordinary
+/// spellings, and against a string comparison none of them matched — so the test
+/// module underneath was scanned as shipped code and its fixtures, which
+/// legitimately spell out real element names, fired the guard. A check that
+/// fires on correct code gets deleted.
+///
+/// Deliberately narrow in the other direction: `test` must appear as a bare
+/// **identifier**, so `#[cfg(feature = "test-utils")]` does not qualify — there
+/// the word is inside a string literal and the item is shipped code.
+fn names_cfg_test(stream: &proc_macro2::TokenStream) -> bool {
+    let mut tokens = stream.clone().into_iter();
+    let is_cfg = matches!(tokens.next(), Some(proc_macro2::TokenTree::Ident(i)) if i == "cfg");
+    is_cfg && mentions_test_ident(stream)
+}
+
+/// Whether `test` appears as a bare identifier anywhere in `stream`.
+fn mentions_test_ident(stream: &proc_macro2::TokenStream) -> bool {
+    stream.clone().into_iter().any(|tt| match tt {
+        proc_macro2::TokenTree::Ident(i) => i == "test",
+        proc_macro2::TokenTree::Group(g) => mentions_test_ident(&g.stream()),
+        proc_macro2::TokenTree::Literal(_) | proc_macro2::TokenTree::Punct(_) => false,
+    })
+}
+
 /// Every string literal in `stream`, skipping `#[doc]` groups and `#[cfg(test)]`
 /// items.
 ///
@@ -3653,8 +3680,7 @@ fn collect_shipped_literals(stream: proc_macro2::TokenStream, out: &mut Vec<Stri
                     && inner.peek().is_some_and(
                         |t| matches!(t, proc_macro2::TokenTree::Ident(i) if i == "doc"),
                     );
-                let is_cfg_test =
-                    is_bracket && g.stream().to_string().replace(' ', "") == "cfg(test)";
+                let is_cfg_test = is_bracket && names_cfg_test(&g.stream());
                 let is_body = matches!(g.delimiter(), proc_macro2::Delimiter::Brace);
                 if is_cfg_test {
                     // The item this attribute decorates is test code, and a test
@@ -3663,23 +3689,27 @@ fn collect_shipped_literals(stream: proc_macro2::TokenStream, out: &mut Vec<Stri
                 } else if is_body && skip_next_body {
                     skip_next_body = false;
                 } else if !is_doc {
-                    // **Cleared here too, and that is the fix for a real
-                    // escape.** `#[cfg(test)]` is legal on an item that opens no
-                    // brace — `#[cfg(test)] use super::*;` or
-                    // `#[cfg(test)] mod tests;` — and with the flag cleared only
-                    // by the next brace, it survived to swallow the next brace in
-                    // the file, which can be *shipped* code. The scan then
-                    // reported nothing about it. `check_no_platform_transcendentals`
-                    // has the same rule for the same reason
-                    // (`a_cfg_test_item_that_opens_no_block_does_not_start_a_region`).
-                    skip_next_body = false;
+                    // **The flag deliberately survives an attribute group.**
+                    // `#[cfg(test)] #[allow(..)] mod tests { .. }` is ordinary,
+                    // and clearing here made that module scan as shipped code —
+                    // measured, its fixtures fired the guard. The terminator is
+                    // what ends an item, and that is handled on `;` below.
                     collect_shipped_literals(g.stream(), out);
                 }
             }
             proc_macro2::TokenTree::Literal(lit) => out.push(lit.to_string()),
-            // A `;` ends a braceless `#[cfg(test)] use ...;` — see the note
-            // above. Idents are the item keyword between the attribute and its
-            // body (`mod`, `fn`), so they must NOT clear the flag.
+            // **A `;` ends the item, and this is the whole fix.**
+            // `#[cfg(test)]` is legal on an item that opens no brace —
+            // `#[cfg(test)] use super::*;` or `#[cfg(test)] mod tests;` — and
+            // with the flag cleared only by the next brace it survived to
+            // swallow the next brace in the file, which can be *shipped* code:
+            // the scan then reported nothing about it, silently.
+            // `check_no_platform_transcendentals` carries the same rule for the
+            // same reason (`a_cfg_test_item_that_opens_no_block_does_not_start_a_region`).
+            //
+            // Idents are the item keyword between the attribute and its body
+            // (`mod`, `fn`) and attribute groups may sit there too, so neither
+            // clears the flag.
             proc_macro2::TokenTree::Punct(p) if p.as_char() == ';' => skip_next_body = false,
             proc_macro2::TokenTree::Ident(_) | proc_macro2::TokenTree::Punct(_) => {}
         }
@@ -7379,17 +7409,32 @@ fn shipped() -> &'static str { "Carbon" }
             "a braceless #[cfg(test)] swallowed the next block, so shipped code went \
              unscanned"
         );
-        // The pairing it is supposed to do still works.
-        let paired = r#"
+        // The same shape with `mod tests;` rather than `use`.
+        let declared = r#"
 #[cfg(test)]
-mod tests {
-    const FIXTURE: &str = "Carbon";
-}
+mod tests;
+
+fn shipped() -> &'static str { "Carbon" }
 "#;
         assert!(
-            fiction_hits(paired).is_empty(),
-            "a real test module must still be skipped, or every fixture fires"
+            !fiction_hits(declared).is_empty(),
+            "a braceless `mod tests;` swallowed the next block"
         );
+
+        // The pairing it is supposed to do still works — **including across an
+        // intervening attribute**, which the first version of this fix broke:
+        // clearing the flag on any non-brace group meant `#[allow(..)]` between
+        // the `cfg` and the module made that module scan as shipped code, and
+        // its fixtures fired the guard.
+        for paired in [
+            "#[cfg(test)]\nmod tests { const F: &str = \"Carbon\"; }",
+            "#[cfg(test)]\n#[allow(clippy::all)]\nmod tests { const F: &str = \"Carbon\"; }",
+        ] {
+            assert!(
+                fiction_hits(paired).is_empty(),
+                "a real test module must still be skipped, or every fixture fires: {paired}"
+            );
+        }
     }
 
     /// `eV` and `nM` are caught, not split into single letters.
@@ -7410,5 +7455,35 @@ mod tests {
                 "a real unit escaped by its capitalisation: {src}"
             );
         }
+    }
+
+    /// A `cfg` that includes `test` in any shape pairs with its module.
+    ///
+    /// **The string comparison this replaced matched only the literal
+    /// `cfg(test)`.** `#[cfg(all(test, feature = "x"))]` is an ordinary
+    /// spelling, and against that comparison the module underneath was scanned
+    /// as shipped code — so its fixtures, which legitimately name real
+    /// elements, fired the guard. A check that fires on correct code gets
+    /// deleted.
+    #[test]
+    fn a_cfg_that_includes_test_in_any_shape_skips_its_module() {
+        for attr in [
+            "#[cfg(test)]",
+            "#[cfg(all(test, feature = \"x\"))]",
+            "#[cfg(any(test, doc))]",
+        ] {
+            let src = format!("{attr}\nmod tests {{ const F: &str = \"Carbon\"; }}");
+            assert!(
+                fiction_hits(&src).is_empty(),
+                "{attr} did not pair with its module, so a test fixture fires the guard"
+            );
+        }
+        // The other direction, and it is what keeps this from becoming a way to
+        // hide shipped code: `test` inside a *string* is not a `cfg(test)`.
+        let shipped = "#[cfg(feature = \"test-utils\")]\nmod m { const F: &str = \"Carbon\"; }";
+        assert!(
+            !fiction_hits(shipped).is_empty(),
+            "a feature named `test-utils` must not exempt shipped code"
+        );
     }
 }
