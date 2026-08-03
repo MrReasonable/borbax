@@ -2947,15 +2947,14 @@ fn check_the_viewer_calls_the_chemistry_once(
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
     {
         let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        // Already reported by the seam loop above if it cannot be lexed; skip
-        // quietly here rather than saying the same thing twice about one file.
-        let Some(code) = code_without_prose(&src) else {
+        // **`(` without the closing paren.** Requiring `)` matched only an
+        // *empty* argument list, so `x.pattern(&table)` scored nothing and the
+        // guard would go silent the day `pattern` took an argument — the
+        // fail-open direction this check exists to close. The `(` stays, because
+        // `.pattern` as a *field* is not a call.
+        let Some(hits) = count_outside_tests(&src, PATTERN_CALL) else {
             continue;
         };
-        let Some(hits) = count_outside_tests(&src, &[".", "pattern", "(", ")"]) else {
-            continue;
-        };
-        let _ = &code;
         if hits > 0 {
             pattern_sites.push(
                 path.strip_prefix(root)
@@ -3002,11 +3001,11 @@ fn check_the_viewer_calls_the_chemistry_once(
         // rather than parsed because the alternative is an AST walk for one
         // needle, and being wrong here is fail-*open* only for a call written
         // below a test module, which would be a strange place to hide one.
-        let Some(hits) = count_outside_tests(&src, &["Universe", ":", ":", "generate"]) else {
+        let Some(hits) = count_outside_tests(&src, GENERATE_CALL) else {
             failures.push(format!(
                 "viewer seam: {VIEWER}/src/{} could not be lexed, so its \
                  `Universe::generate` calls were not counted",
-                path.file_name().unwrap_or_default().to_string_lossy()
+                path.strip_prefix(viewer_src).unwrap_or(&path).display()
             ));
             continue;
         };
@@ -3686,6 +3685,19 @@ fn mentions_test_ident(stream: &proc_macro2::TokenStream) -> bool {
     false
 }
 
+/// The token run that spells a `.pattern(..)` call.
+///
+/// **Named, so the test and the check cannot pass different needles.** The first
+/// version of this was `[".", "pattern", "(", ")"]` — matching only an *empty*
+/// argument list, so `pattern(&table)` scored nothing. The unit test caught
+/// nothing when that was reintroduced, because it supplied its own needle
+/// literal rather than this constant: the test pinned `count_outside_tests`, and
+/// the defect was in what the caller handed it.
+const PATTERN_CALL: &[&str] = &[".", "pattern", "("];
+
+/// The token run that spells a `Universe::generate` call.
+const GENERATE_CALL: &[&str] = &["Universe", ":", ":", "generate"];
+
 /// Count how many times `needle` — a `::`-joined path or a `.method()` — appears
 /// in `src` **outside** any `#[cfg(test)]` item.
 ///
@@ -3916,15 +3928,22 @@ fn fiction_breaches(lit: &str) -> Vec<(String, &'static str)> {
             ));
         }
     }
-    for sym in REAL_SYMBOLS.iter().filter(|s| s.len() == 2) {
-        if whole_words_preserving_case(lit)
-            .iter()
-            .any(|seg| seg == sym)
-        {
-            hits.push(((*sym).to_owned(), "a real element symbol (G2)"));
-        }
-    }
-    for sym in REAL_SYMBOLS.iter().filter(|s| s.len() == 1) {
+    // **Symbols match the whole literal, at either length.** The two-letter tier
+    // used to match whole *words* inside a literal, which is unshippable:
+    // measured, seven ordinary sentence-initial English words are element
+    // symbols, so `"No universe loaded"` fired as nobelium, `"In this period"`
+    // as indium, and `"At the top"`, `"Be careful"`, `"As shown above"`,
+    // `"He typed a name"` and `"Am I right"` fired too. Those are exactly the
+    // strings a UI writes, so this would have fired on correct code the first
+    // time anyone wrote a sentence — and a check that fires on correct code gets
+    // deleted, taking the name and unit scans with it.
+    //
+    // **What it costs, stated rather than hidden:** a symbol embedded in a
+    // sentence — `"element Fe"` — escapes. The breach that actually happens is a
+    // hard-coded table (`&["H", "He", "Li"]`, each a whole literal) or a real
+    // *name*; the name tier still matches by word, because names do not collide
+    // with English this way.
+    for sym in REAL_SYMBOLS {
         if content == *sym {
             hits.push(((*sym).to_owned(), "a real element symbol (G2)"));
         }
@@ -4827,6 +4846,7 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::scan_for_derived_streams;
+    use super::{GENERATE_CALL, PATTERN_CALL};
     use super::{REAL_SYMBOLS, REAL_WORDS_COPY, collect_shipped_literals, fiction_breaches};
     use super::{
         SIGNATURE_SURFACE, SigFacing, SigItem, alias_names, bookkeeping_against,
@@ -7663,13 +7683,13 @@ mod tests {
 fn sneaked(u: &U) { let _ = Universe::generate(2); let _ = u.table.pattern(); }
 ";
         assert_eq!(
-            count_outside_tests(below, &["Universe", ":", ":", "generate"]),
+            count_outside_tests(below, GENERATE_CALL),
             Some(1),
             "a `Universe::generate` below the test module was not counted, and the one \
              inside it should not be"
         );
         assert_eq!(
-            count_outside_tests(below, &[".", "pattern", "(", ")"]),
+            count_outside_tests(below, PATTERN_CALL),
             Some(1),
             "a `.pattern()` below the test module was not counted"
         );
@@ -7683,26 +7703,79 @@ mod tests {
 }
 ";
         assert_eq!(
-            count_outside_tests(inside, &["Universe", ":", ":", "generate"]),
+            count_outside_tests(inside, GENERATE_CALL),
             Some(0),
             "a test module's own calls must stay exempt"
         );
 
-        // `.pattern` as a *field* is not a call — the parentheses are what make
-        // it one, which is why the delimiter is part of the needle.
+        // **A call WITH arguments still counts**, and this is the fixture the
+        // needle's first form failed: requiring the closing paren matched only
+        // an empty argument list, so `pattern(&table)` scored nothing and the
+        // guard would go silent the day the method took an argument. The probe
+        // that should have caught it did not — the fixture above calls
+        // `pattern()` with no arguments, so both spellings matched it.
         assert_eq!(
             count_outside_tests(
-                "fn f(x: T) { let _ = x.pattern; }",
-                &[".", "pattern", "(", ")"]
+                "fn f(u: &U) { let _ = u.table.pattern(&thing, 2); }",
+                PATTERN_CALL
             ),
+            Some(1),
+            "a `.pattern(..)` call with arguments was not counted"
+        );
+
+        // `.pattern` as a *field* is not a call — the opening paren is what
+        // makes it one, which is why the delimiter is part of the needle.
+        assert_eq!(
+            count_outside_tests("fn f(x: T) { let _ = x.pattern; }", &[".", "pattern", "("]),
             Some(0),
             "a field read was counted as a call"
         );
 
         // Unlexable input is reported, never silently counted as zero.
-        assert_eq!(
-            count_outside_tests("fn f( {", &["Universe", ":", ":", "generate"]),
-            None
+        assert_eq!(count_outside_tests("fn f( {", GENERATE_CALL), None);
+    }
+
+    /// An ordinary English sentence is not an element symbol.
+    ///
+    /// **Seven sentence-initial English words are element symbols**, and the
+    /// two-letter tier matched whole *words* inside a literal, so every one of
+    /// these fired on correct code: `No` (nobelium), `In` (indium), `At`
+    /// (astatine), `Be` (beryllium), `As` (arsenic), `He` (helium), `Am`
+    /// (americium). They are exactly what a UI writes.
+    ///
+    /// The earlier measurement of "0 false positives on this tree" was true and
+    /// useless: none of these strings existed yet. A corpus that happens to be
+    /// clean says nothing about the rule.
+    #[test]
+    fn an_ordinary_english_sentence_is_not_an_element_symbol() {
+        for line in [
+            "No universe loaded",
+            "In this period",
+            "At the top of the table",
+            "Be careful with that seed",
+            "As shown above",
+            "He typed a name",
+            "Am I looking at the right element",
+        ] {
+            let src = format!("fn f() -> &'static str {{ \"{line}\" }}");
+            assert!(
+                fiction_hits(&src).is_empty(),
+                "an ordinary sentence fired the symbol tier: {line}"
+            );
+        }
+        // The positive arm, so this cannot pass by the tier being switched off.
+        for sym in ["He", "Fe", "No", "In", "C", "N"] {
+            let src = format!("fn f() -> &'static str {{ \"{sym}\" }}");
+            assert!(
+                !fiction_hits(&src).is_empty(),
+                "a bare symbol literal must still be caught: {sym}"
+            );
+        }
+        // And a real *name* inside a sentence is still caught, because names do
+        // not collide with English the way two-letter symbols do.
+        assert!(
+            !fiction_hits(r#"fn f() -> &'static str { "made of Carbon" }"#).is_empty(),
+            "the name tier must still match by word"
         );
     }
 }

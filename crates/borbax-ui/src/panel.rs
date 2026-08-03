@@ -247,8 +247,10 @@ fn periodic_table(state: &mut ViewerState, ui: &mut egui::Ui) {
     egui::ScrollArea::horizontal().show(ui, |ui| {
         // **Tight spacing, and this was caught by looking at the window rather
         // than by any test.** `Grid`'s default column spacing is sized for
-        // prose, which gave each two-character symbol a ~55 px column: at 900 px
-        // only **eight** of a 58-cell row were on screen, so the one thing this
+        // prose, which gave each two-character symbol a ~55-point column: at the
+        // 900-point window of the time, only **eight** of a 58-cell row were on
+        // screen (`WINDOW_SIZE` is 1200 now, and widened for the same reason), so
+        // the one thing this
         // step exists to show — that the table's *shape* changes with the seed —
         // was invisible behind a scroll nobody would think to drag. Every test
         // was green over it, because the accessibility tree carries all 80 cells
