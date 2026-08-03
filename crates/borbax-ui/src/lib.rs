@@ -121,6 +121,7 @@
               failure to be re-measured rather than a comment to be believed"
 )]
 
+pub mod app;
 pub mod panel;
 pub mod state;
 
