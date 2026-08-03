@@ -5342,10 +5342,25 @@ mod tests {
             .and_then(|w| w.get("lints"))
             .and_then(|l| l.get("clippy"));
         for lint in ["disallowed_types", "disallowed_methods"] {
+            // **Both spellings Cargo accepts.** `lint = "deny"` and
+            // `lint = { level = "deny", priority = 1 }` are the same thing, and
+            // the second is the form Cargo *asks* for when group priorities
+            // conflict — so a legal edit that keeps the deny would have failed
+            // this test. It fails closed, but it is the same one-form blindness
+            // `clippy_paths_in` was repaired for, in the check written to
+            // repair it.
+            //
+            // This landed a commit later than its own commit message said it
+            // did: the scripted edit that was meant to apply it reported a miss
+            // and the miss was not chased. A reviewer read the diff against the
+            // claim and caught it, which is the recorded remedy working.
+            let configured = clippy_lints.and_then(|c| c.get(lint)).and_then(|entry| {
+                entry
+                    .as_str()
+                    .or_else(|| entry.get("level").and_then(toml::Value::as_str))
+            });
             assert_eq!(
-                clippy_lints
-                    .and_then(|c| c.get(lint))
-                    .and_then(toml::Value::as_str),
+                configured,
                 Some("deny"),
                 "[workspace.lints.clippy] {lint} is not `deny` — §13.1's ban is \
                  advisory, and nothing else can see this: the #[expect] anchors \
@@ -5353,6 +5368,131 @@ mod tests {
                  knows nothing about levels"
             );
         }
+    }
+
+    /// Clippy lint **group** names, as of 1.97.1.
+    ///
+    /// A hand-kept closed list, which this codebase distrusts elsewhere and for
+    /// good reason — it covers every group clippy has today and would miss one
+    /// a future release invents. The enumeration-free alternative is to stop
+    /// reading the manifest and *ask clippy*, with a `trybuild`-style fixture
+    /// that must be rejected. That is stronger and it is real work; this is the
+    /// cheap version, and the gap is written down rather than left implied.
+    const CLIPPY_GROUPS: &[&str] = &[
+        "all",
+        "correctness",
+        "suspicious",
+        "style",
+        "complexity",
+        "perf",
+        "pedantic",
+        "nursery",
+        "restriction",
+        "cargo",
+        "deprecated",
+    ];
+
+    /// No lint **group** outranks the specific denies beneath it.
+    ///
+    /// **The fourth state, and the third guard in a row defeated by its
+    /// neighbour rather than by anything wrong with itself.**
+    /// `the_ban_lists_are_denied_and_not_merely_configured` asserts the string
+    /// `"deny"` is written down. Cargo applies lower priority first, so a
+    /// sibling group at priority >= 0 lands *after* every bare
+    /// `lint = "deny"` (which is priority 0) and silences it — with the deny
+    /// still written down verbatim and that test still green.
+    ///
+    /// Measured on the real tree at 1.97.1: adding
+    /// `all = { level = "allow", priority = 1 }` and planting an
+    /// `f64::total_cmp` and a `DefaultHasher` in shipped library code took
+    /// clippy's disallowed-diagnostic count from **3 to 0**, left all 78 xtask
+    /// tests green, and left all three `#[expect]` anchors fulfilled.
+    ///
+    /// **This one reaches a result, unlike the hasher half.** `CLIPPY_ONLY`
+    /// names `total_cmp` as enforced by clippy *alone*, deliberately — the text
+    /// scan cannot express a per-site `#[expect]`. Its own reason string says
+    /// it "orders on the sign bit, and a runtime NaN's sign differs by
+    /// architecture", which is precisely a §13.4 cross-platform divergence with
+    /// no second guard behind it.
+    ///
+    /// `warn` counts as outranking: these bans are `deny` because a warning is
+    /// advisory, and a group demoting them to `warn` at priority >= 0 is the
+    /// same defect one step smaller.
+    ///
+    /// Measured, so the list below is a fact rather than a guess:
+    /// `disallowed_types` and `disallowed_methods` live in the `style` group,
+    /// so `all` and `style` reach them and `pedantic`, `nursery`,
+    /// `restriction` and `cargo` do not. The manifest's own three groups sit at
+    /// priority -1, which is why it is safe today.
+    #[test]
+    fn no_lint_group_outranks_the_specific_denies() {
+        let manifest: toml::Table = workspace_cargo_toml()
+            .parse()
+            .unwrap_or_else(|e| unreachable!("workspace Cargo.toml does not parse: {e}"));
+        let clippy = manifest
+            .get("workspace")
+            .and_then(|w| w.get("lints"))
+            .and_then(|l| l.get("clippy"))
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| unreachable!("[workspace.lints.clippy] is missing"));
+
+        for (name, value) in clippy {
+            if !CLIPPY_GROUPS.contains(&name.as_str()) {
+                continue;
+            }
+            // A bare string level carries cargo's default priority, which is 0.
+            let priority = value
+                .get("priority")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or(0);
+            let level = value
+                .as_str()
+                .or_else(|| value.get("level").and_then(toml::Value::as_str))
+                .unwrap_or_else(|| unreachable!("[workspace.lints.clippy] {name} has no level"));
+            assert!(
+                level == "deny" || level == "forbid" || priority < 0,
+                "[workspace.lints.clippy] group `{name}` is `{level}` at priority \
+                 {priority}, so it lands after every bare `lint = \"deny\"` and \
+                 silences it — including §13.4's `f64::total_cmp` ban, which the \
+                 text scan deliberately cannot enforce. Put the group at a \
+                 negative priority, as the three already here are"
+            );
+        }
+    }
+
+    /// `.cargo/config.toml` does not cap the lints the gate depends on.
+    ///
+    /// `[build] rustflags = ["--cap-lints=allow"]` silences every §13.1 and
+    /// §13.4 clippy ban — measured. (The narrower
+    /// `rustflags = ["-Aclippy::disallowed_types"]` does *not*, also measured,
+    /// so this is specifically the `--cap-lints` form.)
+    ///
+    /// Lower severity than the group escape above because `--cap-lints=allow`
+    /// also kills `unsafe_code = "forbid"` and every other workspace lint,
+    /// which makes it conspicuous in a diff — where a lint-group priority reads
+    /// like ordinary config tidying. Checked anyway because this file is
+    /// committed, and the check costs a line.
+    #[test]
+    fn the_cargo_config_does_not_cap_lints() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join(".cargo/config.toml"));
+        let Some(src) = path.and_then(|p| std::fs::read_to_string(p).ok()) else {
+            return;
+        };
+        let config: toml::Table = src
+            .parse()
+            .unwrap_or_else(|e| unreachable!(".cargo/config.toml does not parse: {e}"));
+        assert!(
+            config
+                .get("build")
+                .and_then(|b| b.get("rustflags"))
+                .is_none(),
+            ".cargo/config.toml sets `build.rustflags`. `--cap-lints=allow` there \
+             silences every §13.1 and §13.4 clippy ban while the whole gate stays \
+             green; if a rustflag is genuinely wanted, this check needs to learn \
+             which ones are safe rather than being deleted"
+        );
     }
 
     /// No ban entry is silenced with `allow-invalid`.

@@ -437,9 +437,10 @@ mod tests {
     /// It does *not* catch a last-byte-only accumulator, which an earlier
     /// version of this sentence claimed: a reviewer measured `acc = absorb(0,
     /// byte)` leaving this test green, because the five prefixes and both
-    /// anagram pairs all end in different bytes. Six other tests in this file
-    /// fail on it, seven workspace-wide — the count is given because an earlier
-    /// draft said five, which matched no reading.
+    /// anagram pairs all end in different bytes. **Six** other tests fail on it,
+    /// all six in this file and none elsewhere — the count is given because two
+    /// earlier drafts got it wrong in both directions, saying five and then
+    /// seven.
     #[test]
     fn no_prefix_and_no_anagram_shares_a_seed() {
         let prefixes = ["e", "em", "emi", "emil", "emily"];
@@ -672,12 +673,14 @@ mod tests {
         // ten-megabyte paste" guard, the scenario this test's own doc names,
         // would be written at exactly those numbers.
         //
-        // **The class this decides: every cap at or below the top rung.** A
-        // second reviewer caught the first ladder stopping at 65_536 while the
-        // comment above still listed 100_000 as one of three measured escapes —
-        // prose reading as though all three were closed with one still open. The
-        // top rung now sits above it. There is no length beyond which this is
-        // free, so the number is stated rather than implied.
+        // **The class this decides: every cap at or below 131_071**, one below
+        // the top rung — a cap exactly at the rung truncates both sides of the
+        // pair identically and they still differ. A reviewer measured the edge
+        // rather than accepting "at or below the top rung", which was off by
+        // one. The first ladder stopped at 65_536 while the comment above still
+        // listed 100_000 as a measured escape, so the prose read as though all
+        // three were closed with one still open. There is no length beyond
+        // which this is free, so the number is stated rather than implied.
         for len in [512_usize, 4096, 65_536, 131_072] {
             let stem = "a".repeat(len - 1);
             assert_ne!(

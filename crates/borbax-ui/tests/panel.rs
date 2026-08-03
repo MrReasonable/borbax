@@ -56,6 +56,16 @@ fn the_element_count_appears_in_the_frame_the_seed_lands() {
     // function — but they would agree by luck of purity rather than by
     // construction, and the shape is the one that stops agreeing the day
     // anything about generation becomes context-dependent.
+    // The other half of the discard gate: with the name box empty there is
+    // nothing stale to repaint, so no discard is wanted and one pass is right.
+    // Ungated, this reads 2 — which is the assertion that fails when the gate
+    // goes.
+    assert_eq!(
+        harness.output().platform_output.num_completed_passes,
+        1,
+        "a seed typed with no name showing should not cost a second layout pass"
+    );
+
     let universe = Universe::generate(7);
     let expected = format!(
         "{} elements · physics v{}",
@@ -301,6 +311,20 @@ fn typing_a_seed_by_hand_empties_the_name_box_in_the_same_frame() {
         "",
         "the frame shows a name that did not produce the seed beside it"
     );
+    // **The gate on `request_discard`, which nothing else covers.** Deleting
+    // `if name_was_showing` failed 0 of 457 tests — and an ungated discard is
+    // what round 2 shipped, so it is a demonstrated regression rather than a
+    // hypothetical: it silently re-repairs the stale-status defect that three
+    // of the four frame-order guards exist to catch.
+    //
+    // A discard costs a second layout pass, so the pass count is the one
+    // observable that tells a gated discard from an ungated one. Here the name
+    // box *was* showing, so the discard is correct and there are two.
+    assert_eq!(
+        harness.output().platform_output.num_completed_passes,
+        2,
+        "clearing a showing name box should discard the pass that painted it"
+    );
 
     // The frame-level analogue of `the_boxes_agree`: whatever the seed box
     // holds, the line underneath describes *that*, with nothing left over from
@@ -365,10 +389,12 @@ fn a_surprise_seed_empties_the_name_box_in_the_same_frame() {
 /// So this asserts the property directly — whatever was typed is what the box
 /// holds — over a name longer than any `char_limit` anyone would write. **The
 /// class it decides, stated so the next person can see its edge:** every cap at
-/// or below the length typed here. That is a number, and it is chosen to sit
-/// above the ones a person reaches for (8, 32, 64, 128, 256, 512, 1024) rather
-/// than above a name anyone would type. Measured at 8, 20, 512 and 1024: all
-/// four fail.
+/// or below **2110**, one below the length typed — a cap at exactly the typed
+/// length truncates nothing. A reviewer measured that edge rather than taking
+/// "at or below the length typed here", which was off by one. The length is
+/// chosen to sit above the caps a person reaches for (8, 32, 64, 128, 256, 512,
+/// 1024) rather than above a name anyone would type. Measured at 8, 20, 512 and
+/// 1024: all four fail.
 #[test]
 fn a_name_is_not_truncated_by_the_box_it_is_typed_into() {
     let mut harness = harness();

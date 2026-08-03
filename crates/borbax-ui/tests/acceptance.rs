@@ -71,13 +71,16 @@ fn the_viewer_opens_on_a_universe_rather_than_an_instruction() {
 /// somebody has been reading for a year.
 ///
 /// **Measured: substituting the literal `1` for `u8::from(universe.physics)`
-/// passes this entire test suite — all 24 tests, this one included.** The
-/// discriminator asked for — "change `PhysicsVersion::CURRENT` and the line must
-/// move" — is not available, because `PhysicsVersion` has exactly one variant.
-/// Every test that could be written today compares 1 against 1. The figure has
-/// been re-measured each time the suite grew (16, then 18, then 24) rather than
-/// carried forward, because a number quoted from an earlier run is the one kind
-/// of evidence that rots without anyone noticing.
+/// passes every test in this crate, this one included.** The discriminator
+/// asked for — "change `PhysicsVersion::CURRENT` and the line must move" — is
+/// not available, because `PhysicsVersion` has exactly one variant. Every test
+/// that could be written today compares 1 against 1.
+///
+/// **The count is deliberately gone.** It was re-measured three times as the
+/// suite grew (16, 18, 24) under a sentence promising it always would be — and
+/// then Step 1b took this crate to 36 and did not, in the one place that had
+/// made the promise. A reviewer caught it. The mutation is the durable claim;
+/// the denominator is a fact about how many tests happen to exist this week.
 ///
 /// So what this is: a **latent** guard. It derives its expectation from
 /// `PhysicsVersion::CURRENT` rather than from a literal, so it stays vacuous
