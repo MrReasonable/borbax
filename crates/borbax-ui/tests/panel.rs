@@ -312,7 +312,8 @@ fn typing_a_seed_by_hand_empties_the_name_box_in_the_same_frame() {
         "the frame shows a name that did not produce the seed beside it"
     );
     // **The gate on `request_discard`, which nothing else covers.** Deleting
-    // `if name_was_showing` failed 0 of 457 tests — and an ungated discard is
+    // `if name_was_showing` failed 0 of the 457 tests the workspace then held —
+    // and an ungated discard is
     // what round 2 shipped, so it is a demonstrated regression rather than a
     // hypothetical: it silently re-repairs the stale-status defect that three
     // of the four frame-order guards exist to catch.
@@ -376,15 +377,15 @@ fn a_surprise_seed_empties_the_name_box_in_the_same_frame() {
 /// `borbax-universe`.** That crate's
 /// `no_prefix_of_a_phrase_is_enough_to_decide_the_universe` guards the byte
 /// loop; nothing guarded the widget. A reviewer measured `.char_limit(8)` on
-/// the name box passing **all 452 tests in the workspace** while collapsing two
+/// the name box passing the **entire** workspace suite while collapsing two
 /// different full names onto one universe, because no test above four
 /// characters ever went through `draw`.
 ///
 /// **The first version of this test compared two names sharing a 20-character
 /// stem, and a reviewer showed that discriminates caps of 20 or less and
-/// nothing above — `.char_limit(512)` passed all 457.** That is the *same*
-/// defect, in the sibling file, committed in the same pass that repaired it:
-/// a guard bounded by a length someone guessed.
+/// nothing above — `.char_limit(512)` passed the whole suite.** That is the
+/// *same* defect, in the sibling file, committed in the same pass that repaired
+/// it: a guard bounded by a length someone guessed.
 ///
 /// So this asserts the property directly — whatever was typed is what the box
 /// holds — over a name longer than any `char_limit` anyone would write. **The

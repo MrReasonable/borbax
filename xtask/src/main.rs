@@ -5436,6 +5436,29 @@ mod tests {
             .and_then(toml::Value::as_table)
             .unwrap_or_else(|| unreachable!("[workspace.lints.clippy] is missing"));
 
+        // **The floor the specific denies actually sit at, not the literal 0.**
+        // The first version compared every group against zero, which is only
+        // right while the denies carry cargo's default priority. Give them a
+        // negative priority and a group at a *higher* negative priority still
+        // lands after them: `disallowed_types = { level = "deny", priority = -5 }`
+        // beside `all = { level = "allow", priority = -1 }` silences both bans
+        // while this test and its sibling stay green. Measured — clippy's
+        // disallowed-diagnostic count went to 0 with an `f64::total_cmp` and a
+        // `DefaultHasher` planted in shipped library code. The machine reviewer
+        // found it, one step down the number line from the escape this test was
+        // written for.
+        let deny_priority = ["disallowed_types", "disallowed_methods"]
+            .iter()
+            .filter_map(|lint| clippy.get(*lint))
+            .map(|value| {
+                value
+                    .get("priority")
+                    .and_then(toml::Value::as_integer)
+                    .unwrap_or(0)
+            })
+            .min()
+            .unwrap_or_else(|| unreachable!("[workspace.lints.clippy] has neither specific deny"));
+
         for (name, value) in clippy {
             if !CLIPPY_GROUPS.contains(&name.as_str()) {
                 continue;
@@ -5450,12 +5473,13 @@ mod tests {
                 .or_else(|| value.get("level").and_then(toml::Value::as_str))
                 .unwrap_or_else(|| unreachable!("[workspace.lints.clippy] {name} has no level"));
             assert!(
-                level == "deny" || level == "forbid" || priority < 0,
+                level == "deny" || level == "forbid" || priority < deny_priority,
                 "[workspace.lints.clippy] group `{name}` is `{level}` at priority \
-                 {priority}, so it lands after every bare `lint = \"deny\"` and \
-                 silences it — including §13.4's `f64::total_cmp` ban, which the \
-                 text scan deliberately cannot enforce. Put the group at a \
-                 negative priority, as the three already here are"
+                 {priority}, and the specific denies sit at {deny_priority}. Cargo \
+                 applies lower priority first, so this group lands *after* them and \
+                 silences them — including §13.4's `f64::total_cmp` ban, which the \
+                 text scan deliberately cannot enforce. A group is only safe at a \
+                 strictly lower priority than the denies it can reach"
             );
         }
     }
@@ -5493,6 +5517,23 @@ mod tests {
              green; if a rustflag is genuinely wanted, this check needs to learn \
              which ones are safe rather than being deleted"
         );
+
+        // **`target.<triple>.rustflags` and `target.<cfg>.rustflags` too**, and
+        // this is the half worth having: the §13.4 matrix pins three targets, so
+        // a target-scoped cap silences the bans on *one leg* and leaves the other
+        // two green. A divergence that appears on one platform and is
+        // unenforced on that platform is precisely the shape the golden matrix
+        // exists to catch and would then misreport.
+        if let Some(targets) = config.get("target").and_then(toml::Value::as_table) {
+            for (selector, spec) in targets {
+                assert!(
+                    spec.get("rustflags").is_none(),
+                    ".cargo/config.toml sets `target.{selector}.rustflags`, which caps \
+                     lints for that target alone — leaving the other legs of the §13.4 \
+                     matrix enforcing a ban this one does not"
+                );
+            }
+        }
     }
 
     /// No ban entry is silenced with `allow-invalid`.
