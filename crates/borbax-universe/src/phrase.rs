@@ -143,8 +143,13 @@ use borbax_rng::{Domain, Stream};
 /// truncates a four-word Philox block to one word, so for a fixed byte it is a
 /// pseudorandom *function*, not a bijection: collisions are improbable, not
 /// impossible. `Stream::sub`'s own doc insists those are different things.
-/// The honest number is P ≈ N²/2⁶⁵ — about **1.4e-8** across a million named
-/// universes.
+/// The honest number is the birthday bound P ≈ N²/2⁶⁵, which is **2.7e-8**
+/// across a million named universes.
+///
+/// (A review lane offered 1.4e-8 and I wrote it down without computing it.
+/// 10¹²/2⁶⁵ = 2.711e-8 — the lane was out by a factor of two, and copying a
+/// reviewer's arithmetic unchecked is the same class of error as copying their
+/// code unchecked.)
 ///
 /// The initial accumulator is `0` and is deliberately not a magic constant:
 /// an unexplained number in a result-affecting path is a thing someone must
