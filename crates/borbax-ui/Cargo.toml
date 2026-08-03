@@ -28,6 +28,15 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# The §13.1 chokepoint, for the camera's trigonometry. **Adds zero packages** —
+# `borbax-universe` already pulls it in, so this line names a dependency the
+# tree resolves either way and makes it callable here.
+#
+# The viewer produces no simulation results, and that is deliberately not why
+# this is here: §13.1 admits no exception, and the camera maths is scheduled to
+# move into `borbax-geometry`, whose bytes are compared across the §13.4 matrix.
+# See the Step 3 design memo, R15.
+borbax-units = { workspace = true }
 borbax-universe = { workspace = true }
 # For the "surprise me" button, and for nothing else. The Global Constraint is
 # that all randomness comes from `borbax_rng::Stream` — never `rand::random`,
