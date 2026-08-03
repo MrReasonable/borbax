@@ -11,6 +11,55 @@
 
 use crate::state::{ViewerState, moment};
 
+/// Make the panel readable by a child sitting next to you.
+///
+/// **Applied here rather than in `main.rs`, so the headless tests see the same
+/// thing.** Styling in the shell would leave `egui_kittest` driving a differently
+/// sized panel from the one that ships — and geometry is exactly what the
+/// reachability test asserts on.
+///
+/// Two defaults are wrong for this audience and both were caught by *looking at
+/// the window*, which is the same way Step 1's opening state and Step 2's cell
+/// spacing were caught:
+///
+/// - `egui`'s dark theme paints normal text at `Color32::from_gray(140)`
+///   (`style.rs:1679`), a grey on near-black that is genuinely hard to read.
+/// - The default text size is tuned for a developer at a laptop, not a child
+///   reading a table of invented elements across a desk.
+///
+/// **This is not a palette and does not touch Step 4's G6 guard.** A palette
+/// encodes an element *property* — affinity, mass, valence — and that is the
+/// thing that could smuggle real-world chemistry in through CPK colouring.
+/// Contrast and text size encode nothing about any element; they are the same
+/// category as the window size. The selection highlight was ruled in on exactly
+/// this argument.
+fn legible(ui: &mut egui::Ui) {
+    let style = ui.style_mut();
+
+    // **Pinned to the dark theme rather than inherited.** `eframe` follows the
+    // system appearance, so the same code produced light buttons on a dark
+    // panel — a machine-dependent look that no headless test can see, in a
+    // program whose whole job is being looked at.
+    style.visuals = egui::Visuals::dark();
+
+    // **Labels only, and NOT `override_text_color`.** That field is a blunt
+    // instrument: it repaints *every* string including button text, which put
+    // near-white symbols on near-white cells and made the table invisible while
+    // all 58 tests stayed green. Caught by looking at the window — twice in one
+    // sitting, since the first attempt at legibility is what caused it.
+    style.visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_gray(235);
+
+    // **A box you type into has to look like one.** The dark theme fills text
+    // fields with `from_gray(10)` against a near-black panel, so the name and
+    // seed boxes read as floating text with no edge — and those two boxes are
+    // the only things on the screen a child is asked to *do* something with.
+    style.visuals.extreme_bg_color = egui::Color32::from_gray(32);
+
+    for font in style.text_styles.values_mut() {
+        font.size *= 1.3;
+    }
+}
+
 /// Draw the whole viewer into `ui`.
 ///
 /// **The statement order here is load-bearing and is pinned by tests.** `egui`
@@ -43,6 +92,8 @@ use crate::state::{ViewerState, moment};
 /// would have caught it getting worse. Both widgets are now asserted through the
 /// accessibility tree.
 pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
+    legible(ui);
+
     // **The name box comes before the seed box, and that is the frame-order
     // rule again rather than a layout preference.** Typing a name writes into
     // `seed_text`, so it has to run before the widget that renders `seed_text`
@@ -225,7 +276,10 @@ fn periodic_table(state: &mut ViewerState, ui: &mut egui::Ui) {
                         // universe by construction. Names are not — measured, 16% of
                         // universes contain a duplicate — and a duplicate label makes
                         // `egui_kittest`'s query API panic outright.
-                        if ui.selectable_label(cell.selected, cell.symbol).clicked() {
+                        if ui
+                            .add(egui::Button::new(cell.symbol).selected(cell.selected))
+                            .clicked()
+                        {
                             clicked = Some(cell.id);
                         }
                     }
