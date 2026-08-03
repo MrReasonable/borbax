@@ -38,6 +38,11 @@ workspace = true
 # See the Step 3 design memo, R15.
 borbax-units = { workspace = true }
 borbax-universe = { workspace = true }
+# The shapes. `canonicalise` and `embed` are what turn a molecule into
+# coordinates and radii the scene can stand spheres at — both per-species work
+# under §8.6, both called exactly once, which `cargo xtask` checks rather than
+# this comment asserting it.
+borbax-molecule = { workspace = true }
 # For the "surprise me" button, and for nothing else. The Global Constraint is
 # that all randomness comes from `borbax_rng::Stream` — never `rand::random`,
 # never `RandomState` — and it is honoured here even though a seed the user is

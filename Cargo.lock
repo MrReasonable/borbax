@@ -1968,6 +1968,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_egui",
+ "borbax-molecule",
  "borbax-rng",
  "borbax-units",
  "borbax-universe",

@@ -122,6 +122,7 @@
 )]
 
 pub mod app;
+pub mod molecule;
 pub mod panel;
 pub mod state;
 
