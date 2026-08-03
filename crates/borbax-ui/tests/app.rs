@@ -24,7 +24,42 @@
 //! been asserting about its own copy of the wiring.
 
 use bevy::prelude::*;
+use bevy::render::renderer::RenderDevice;
 use borbax_ui::app::headless_app;
+
+/// The tests can run where there is no graphics driver.
+///
+/// **Not a preference — the alternative is that none of them run at all.** Bevy
+/// initialises a real GPU adapter as part of building the app, and where it
+/// cannot find one it calls `.expect("Unable to find a GPU! …")` inside
+/// `bevy_render`. So on a runner with no driver every test in this file aborts
+/// in a third-party crate, with a message that reads like a viewer bug.
+///
+/// This branch has never been through CI — the workflow triggers on `main`
+/// pushes and pull requests, and nothing here has been either — so the whole
+/// file has only ever run on a Mac with a working Metal device.
+///
+/// **It widens the gap between this app and the shipped one, and that is worth
+/// saying plainly**, because the narrowness of that gap is what makes these
+/// tests worth anything. It was exactly one plugin (`winit`); it is now one
+/// plugin and the graphics backend. Nothing below asserts about pixels, so
+/// nothing below is weakened by there being no device — what is given up is the
+/// ability to ever add such an assertion here, which was never available on CI
+/// anyway.
+#[test]
+fn the_headless_app_needs_no_gpu_adapter() {
+    let mut app = headless_app();
+    app.finish();
+    app.cleanup();
+    app.update();
+
+    assert!(
+        !app.world().contains_resource::<RenderDevice>(),
+        "the headless app initialised a real graphics device, so on a runner \
+         with no driver `bevy_render` panics with `Unable to find a GPU!` and \
+         every test in this file dies inside a third-party crate"
+    );
+}
 
 /// The app has a camera after startup.
 ///
