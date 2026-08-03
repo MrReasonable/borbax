@@ -721,3 +721,42 @@ fn every_cell_is_on_screen_after_scrolling_at_the_size_the_window_opens_at() {
         size[0]
     );
 }
+
+/// The grid is operable from the keyboard.
+///
+/// **A separate concern from reachability, and the one test here that
+/// legitimately uses `focus()`.** Reachability asks whether a cell can be
+/// brought under the pointer; this asks whether it can be reached at all without
+/// one. `focus()` bypasses geometry, which is exactly why it must not be used
+/// for the other question — and exactly why it is right for this one.
+///
+/// It matters more than politeness at 74 columns: a row that wide is unpleasant
+/// to navigate by mouse, and the accessibility relations this needs are the same
+/// ones every other test in this file addresses widgets through.
+#[test]
+fn the_grid_is_operable_from_the_keyboard() {
+    let mut harness = wide_harness();
+    type_into(&harness, "seed", "7");
+    harness.step();
+
+    let (only, _, _) = three_symbols(7);
+    harness.get_by_role_and_label(Role::Button, &only).focus();
+    harness.step();
+    assert!(
+        harness
+            .get_by_role_and_label(Role::Button, &only)
+            .is_focused(),
+        "a cell cannot take keyboard focus, so the grid is mouse-only"
+    );
+
+    harness.key_combination(&[egui::Key::Enter]);
+    harness.step();
+    assert_eq!(
+        harness
+            .get_by_role_and_label(Role::Button, &only)
+            .accesskit_node()
+            .toggled(),
+        Some(egui::accesskit::Toggled::True),
+        "Enter on a focused cell does not select it"
+    );
+}
