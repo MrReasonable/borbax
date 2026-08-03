@@ -2986,6 +2986,19 @@ fn code_without_prose(src: &str) -> Option<String> {
 /// The one file under `crates/borbax-ui/src` that may open a window.
 const VIEWER_SHELL_FILE: &str = "main.rs";
 
+/// The files that may name the engine.
+///
+/// **`main.rs` alone was the rule and it was the wrong rule**, for a reason
+/// that cost an empty window. A binary crate root cannot be imported, so wiring
+/// kept in `main.rs` is wiring no test can reach — and on 2026-08-03 the app
+/// shipped without the camera `bevy_egui` renders through, with 509 tests green
+/// and nothing on screen. Moving the construction into `app.rs` is what lets
+/// `tests/app.rs` assert about the *same* `App` the binary runs.
+///
+/// So the licence is two files, and the second one is the one under test.
+/// Everything else in the crate still names no engine at all.
+const VIEWER_ENGINE_FILES: &[&str] = &["main.rs", "app.rs"];
+
 /// The files that draw, and may therefore name `egui`.
 ///
 /// **Membership is a licence, not a description.** Being on this list is what
@@ -3064,7 +3077,7 @@ fn banned_idents_given(file: &str, gpu_files: &[&str]) -> Vec<&'static str> {
     // drawing tier is *allowed* `bevy_egui` — that is where `egui` now comes
     // from — and `"bevy_egui".contains("bevy")` is true, so a substring ban
     // would fire on the one import the tier exists to permit.
-    if file != VIEWER_SHELL_FILE {
+    if !VIEWER_ENGINE_FILES.contains(&file) {
         banned.push("bevy");
     }
     banned
@@ -3092,8 +3105,15 @@ fn banned_idents_given(file: &str, gpu_files: &[&str]) -> Vec<&'static str> {
 /// - [`VIEWER_SHELL_FILE`] — the shell that can open a window, so no test
 ///   reaches it and there is nothing to protect.
 fn viewer_banned_imports(file: &str) -> &'static [&'static str] {
-    if file == VIEWER_SHELL_FILE {
-        &[]
+    if VIEWER_ENGINE_FILES.contains(&file) {
+        // **`format!` is still forbidden, and that is not symmetry.** The
+        // engine files may name `bevy` and `egui` because wiring the bridge
+        // needs both; they may not build strings, for the same reason
+        // `panel.rs` may not. A string built where it is painted is a string no
+        // test can assert on without describing a window it has stopped
+        // describing, and that rule is about *where the string is made*, not
+        // about which crate the file is allowed to import.
+        &["format!"]
     } else if VIEWER_DRAWING_FILES.contains(&file) {
         &["format!"]
     } else {
@@ -3205,10 +3225,16 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     // moved from the file level down into the entry, where it is *less* visible.
     // Counting the homes is what makes the invariant independent of the list.
     bevy_homes.sort();
-    if bevy_homes != [VIEWER_SHELL_FILE] {
+    let mut engine_files: Vec<&str> = VIEWER_ENGINE_FILES.to_vec();
+    engine_files.sort_unstable();
+    // `main.rs` is one statement long and names the engine only through
+    // `borbax_ui::app`, so it does not appear here — the count is of files that
+    // name `bevy` *in code*, which is `app.rs` alone.
+    engine_files.retain(|f| *f != VIEWER_SHELL_FILE);
+    if bevy_homes != engine_files {
         failures.push(format!(
             "viewer seam: `bevy` is named in code by {bevy_homes:?} under \
-             {VIEWER}/src, expected exactly [\"{VIEWER_SHELL_FILE}\"]. The engine opens \
+             {VIEWER}/src, expected exactly {engine_files:?}. The engine opens \
              a window and owns the frame loop, so every file that names it is a file \
              no headless test can reach; confining it to one is what keeps the drawing \
              code testable and the decisions in `state.rs` reachable with no app at \
@@ -7755,19 +7781,39 @@ disallowed-types = [ { path = \"right::One\" } ]
         );
     }
 
-    /// Exactly one file is unrestricted, and it is the one no test can reach.
+    /// The engine files trade `bevy` and `egui` for `format!`, and nothing is
+    /// unrestricted.
+    ///
+    /// **The shell used to be exempt from everything and no longer is**, which
+    /// is a tightening rather than a rename. Its old licence was justified by
+    /// "no headless test reaches it, so there is nothing to protect" — and that
+    /// stopped being true the moment the app construction moved into `app.rs`
+    /// so `tests/app.rs` could reach it. A file a test asserts about is a file
+    /// where a `format!` can hide a string the test cannot see.
     #[test]
-    fn only_the_shell_file_may_name_eframe() {
-        assert!(
-            viewer_banned_imports(super::VIEWER_SHELL_FILE).is_empty(),
-            "the shell has nothing to protect — no headless test reaches it"
-        );
-        // The negative arm. Without it this test passes over a
+    fn the_engine_files_are_licensed_and_not_exempt() {
+        for engine in super::VIEWER_ENGINE_FILES {
+            let banned = viewer_banned_imports(engine);
+            assert!(
+                !banned.contains(&"egui"),
+                "{engine} wires the bridge and needs `egui` to build the root `Ui`"
+            );
+            assert!(
+                !viewer_banned_idents(engine).contains(&"bevy"),
+                "{engine} is where the engine lives"
+            );
+            assert!(
+                banned.contains(&"format!"),
+                "{engine} must not build strings — that rule is about where a \
+                 string is made, not about which crates a file may import"
+            );
+        }
+        // The negative arm. Without it this passes over a
         // `viewer_banned_imports` that returns `&[]` for everything.
         assert!(
-            !viewer_banned_imports("state.rs").is_empty(),
-            "every other file is restricted; an empty ban list everywhere is the \
-             vacuous version of this guard"
+            viewer_banned_idents("state.rs").contains(&"bevy"),
+            "every other file is restricted; a licence everywhere is the vacuous \
+             version of this guard"
         );
     }
 
