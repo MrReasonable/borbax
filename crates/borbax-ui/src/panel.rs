@@ -155,8 +155,118 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
         }
     });
 
-    // The only string this file paints, and it is not built here — see the
-    // module note. `status_line` is in `state.rs` so that a test asserting on
-    // it is asserting on what the window shows.
+    // Not built here — see the module note. `status_line` is in `state.rs` so
+    // that a test asserting on it is asserting on what the window shows.
     ui.label(state.status_line());
+
+    ui.separator();
+    periodic_table(state, ui);
+}
+
+/// The grid of elements, and the properties of whichever one is selected.
+///
+/// **The grid is emitted before the properties block, and that is the frame-order
+/// rule again rather than a layout preference.** Clicking a cell changes which
+/// element the block describes, so the block has to be laid out *after* the
+/// click has been seen. With the block first, the frame in which a cell is
+/// clicked paints the newly-highlighted cell beside the **previous** element's
+/// numbers — a plausible set of properties attributed to the wrong element,
+/// which is the class `Outcome` was made an enum to prevent one field along.
+/// `the_selected_elements_properties_appear_in_the_frame_the_cell_is_clicked`
+/// is the guard, and moving `properties` above `grid` is the mutation it exists
+/// to catch.
+fn periodic_table(state: &mut ViewerState, ui: &mut egui::Ui) {
+    // **Deferred apply, and it is required twice over.** `rows()` borrows
+    // `state` immutably for the whole grid loop, so `select` cannot be called
+    // inside it; and knowing whether the selection actually *changed* — which
+    // the discard below is gated on — needs the comparison made after the loop
+    // rather than during it. The two requirements agree, which is the sign the
+    // shape is right rather than a workaround.
+    let mut clicked = None;
+
+    // **Horizontal scrolling, because the table does not fit and must not be
+    // made to.** The widest measured universe is 74 columns with a content
+    // extent of ~3531 px against a 900 px window. Reflowing long rows would
+    // destroy the column alignment that makes group 0, group 1 and group 2 read
+    // as families down the table — measured, and it is the educational payload.
+    // Shrinking to fit puts 74 cells in 900 px, i.e. 12 px each, which cannot
+    // hold a two-character symbol, and would hide the one thing this step exists
+    // to show: that the table's *shape* differs per universe.
+    egui::ScrollArea::horizontal().show(ui, |ui| {
+        // **Tight spacing, and this was caught by looking at the window rather
+        // than by any test.** `Grid`'s default column spacing is sized for
+        // prose, which gave each two-character symbol a ~55 px column: at 900 px
+        // only **eight** of a 58-cell row were on screen, so the one thing this
+        // step exists to show — that the table's *shape* changes with the seed —
+        // was invisible behind a scroll nobody would think to drag. Every test
+        // was green over it, because the accessibility tree carries all 80 cells
+        // whether or not a human can see them.
+        //
+        // This is a layout constant and not a physical quantity, so it is
+        // exempt from the no-arithmetic rule for the same reason the window size
+        // is.
+        egui::Grid::new("periodic")
+            .spacing(egui::vec2(3.0, 2.0))
+            .show(ui, |ui| {
+                for row in state.rows() {
+                    ui.label(&row.shell_label);
+                    for cell in &row.cells {
+                        // **`selectable_label`, not a `label` inside a clickable
+                        // frame.** The second works when a human clicks it and
+                        // carries `Role::Label` with no `Action::Click` and no
+                        // `Toggled` — invisible to a screen reader and to every
+                        // test, which is why
+                        // `clicking_a_cell_marks_that_cell_and_only_that_cell_as_chosen`
+                        // reads the toggle state out of the accessibility tree
+                        // rather than asserting on `ViewerState`.
+                        //
+                        // Labelled by the **symbol**, which is unique within a
+                        // universe by construction. Names are not — measured, 16% of
+                        // universes contain a duplicate — and a duplicate label makes
+                        // `egui_kittest`'s query API panic outright.
+                        if ui.selectable_label(cell.selected, cell.symbol).clicked() {
+                            clicked = Some(cell.id);
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+    });
+
+    if let Some(id) = clicked {
+        let changed = state.selected() != Some(id);
+        state.select(id);
+        // **Gated on the selection actually changing, and the gate is
+        // load-bearing rather than an optimisation.** This is Step 1b's recorded
+        // incident pre-empted: an ungated `request_discard` fires every frame
+        // something is clicked, and because a discarded pass re-paints from
+        // updated state it *self-repairs* the very frame-order defects the
+        // guards above exist to catch. Measured last time: a mutation went from
+        // four failures to one. `selecting_an_element_does_not_cost_a_second_layout_pass`
+        // asserts the pass count so that an ungated discard is a test failure
+        // rather than an invisible weakening of three other tests.
+        if changed {
+            ui.ctx()
+                .request_discard("a cell was selected after the properties block was laid out");
+        }
+    }
+
+    ui.separator();
+    ui.label(state.selection_heading());
+    egui::Grid::new("properties").show(ui, |ui| {
+        for row in state.selection_properties() {
+            ui.label(row.label);
+            // Value and unit as two labels rather than one string, so the unit
+            // word stays a `&'static str` the G4 allow-list can enumerate. On
+            // screen they read as one phrase — `0.920` `spans`.
+            ui.label(row.value);
+            ui.label(row.unit);
+            ui.end_row();
+            if let Some(gloss) = row.gloss {
+                ui.label("");
+                ui.label(gloss);
+                ui.end_row();
+            }
+        }
+    });
 }

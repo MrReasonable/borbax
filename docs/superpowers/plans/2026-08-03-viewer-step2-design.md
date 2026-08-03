@@ -516,3 +516,54 @@ and record the failure count. If it *drops* from Step 1b's four, a
   which point no frame test and no screen reader can address them. Not taken at
   117 widgets; the tie-breaker if anyone wants it is a measurement of egui's
   per-frame layout cost, which nobody has run.
+
+---
+
+## Corrections found during implementation
+
+Recorded here rather than silently applied, because in each case the design was
+wrong and the tree said so.
+
+- **`Na` inside `NaN` is not sodium.** The symbol tier was specified as
+  whole-*segment* matching over `identifier_segments`, which also splits
+  camelCase — so `NaN` becomes `["Na", "N"]`. Six real false positives, all §13.4
+  float comments. Symbols now split on whole words only, and the residual
+  (`"NaCl"` scores nothing) is written down.
+- **`cArBoN` escaped the name tier** for the mirror-image reason: camelCase
+  splitting shatters it into `c|Ar|Bo|N`. Names now match the union of both
+  splittings.
+- **The unit list missed `"\u{c5}"` written as an escape**, which renders as an
+  angstrom sign but contains no such character for a substring match. Both
+  codepoints are now listed in both spellings.
+- **A `#[cfg(test)]` skip was set but never consulted**, so the module body it
+  was meant to skip was recursed into anyway. Nothing on the tree fired — which
+  is exactly the shape of a guard that is wrong and looks right.
+- **`min_col_width(0.0)` would have shipped a real bug.** Tightening the grid let
+  cells overflow their columns and overlap, so a click landed on the *neighbouring*
+  element — silent, plausible, and caught only because three frame tests failed
+  at once. Dropped; the spacing change alone gives the same benefit.
+- **The reachability test asserts geometry, not a click, and that is forced.** A
+  pointer `click()` does not reach widgets inside a *scrollable* `ScrollArea`
+  under `egui_kittest`: measured, it works at 3600×900 (content fits) and fails
+  at 900×600, 900×900 and 1400×600 with an identical widget rect. Not input
+  timing (a hover frame, and one to four warm-up frames, change nothing) and not
+  drag-to-scroll (excluding `ScrollSource::DRAG` changes nothing). The widget is
+  correctly wired — `click_accesskit()` selects it, and a pointer click on
+  "surprise me" outside the scroll area works at the same size. So the app is
+  fine and the harness cannot express that one interaction.
+- **The grid was unreadable and every test was green over it.** `Grid`'s default
+  column spacing is sized for prose, so each two-character symbol got a ~55 px
+  column: at 900 px only **eight** cells of a 58-cell row were on screen, and the
+  one thing this step exists to show — that the shape changes with the seed — was
+  invisible behind a scroll nobody would think to drag. Caught by *looking at the
+  window*, which is the same way Step 1's opening-state defect was caught. With
+  3 px spacing and a 1200 px window: seed 1 shows 16/16, 27/58, 6/6 and seed 7
+  shows 8/8, 26/26, 27/51 — two of three rows complete in both.
+- **`WINDOW_SIZE` is now a `pub const` in `lib.rs`**, read by both `main.rs` and
+  the reachability test, for the reason the design gave: a retyped literal is a
+  number somebody guessed.
+
+**Step 1b's guard count held.** Moving `ui.label(state.status_line())` to the top
+of `draw` still fails exactly **four** frame tests, as it did before this step.
+That was checked because the design predicted the risk: a new `request_discard`
+that is not gated self-repairs those defects and takes the count down.
