@@ -186,10 +186,11 @@ fn periodic_table(state: &mut ViewerState, ui: &mut egui::Ui) {
 
     // **Horizontal scrolling, because the table does not fit and must not be
     // made to.** The widest measured universe is 74 columns with a content
-    // extent of ~3531 px against a 900 px window. Reflowing long rows would
+    // extent of ~3531 points against the window's 1200. Reflowing long rows would
     // destroy the column alignment that makes group 0, group 1 and group 2 read
     // as families down the table — measured, and it is the educational payload.
-    // Shrinking to fit puts 74 cells in 900 px, i.e. 12 px each, which cannot
+    // Shrinking to fit puts 74 cells in the window's 1200 points, i.e. 16 points
+    // each, which cannot
     // hold a two-character symbol, and would hide the one thing this step exists
     // to show: that the table's *shape* differs per universe.
     egui::ScrollArea::horizontal().show(ui, |ui| {
