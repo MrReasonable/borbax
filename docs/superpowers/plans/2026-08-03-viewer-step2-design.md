@@ -302,8 +302,10 @@ scan can see, and a *missing* unit word — a bare number attributed to nothing.
 It must assert on the attained set, never against the declared constant: that is
 a guard whose two sides are the same expression.
 
-Allow-list, exactly: `""`, `units`, `mass units`, `spans`, `quanta per unit`,
-`bonding slots`. Plus two negative assertions — `thermals` and `world-years`
+Allow-list, exactly: `""`, `base units`, `units`, `mass units`, `spans`,
+`quanta per unit`, `bonding slots`. (**Seven, not the six this paragraph first
+said** — the `made of` row carries `base units`, and the drift was caught by the
+test failing on the first run rather than by the doc being re-read.) Plus two negative assertions — `thermals` and `world-years`
 must **not** appear, since no Step 2 property carries a temperature or a time.
 
 ---

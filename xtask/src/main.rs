@@ -2848,11 +2848,20 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
     {
+        // **Relative to `src`, not the bare file name**, and the difference is a
+        // licence. `walk` recurses, so a nested `src/widgets/main.rs` has
+        // `file_name() == "main.rs"` and would be handed the *unrestricted*
+        // tier — the laxest rule applied to a file nobody named, which inverts
+        // the unknown-is-strict rule this whole check is built on. A nested
+        // `panel.rs` claims the drawing licence the same way, and the `eframe`
+        // count is fooled twice over: two files called `main.rs` count as
+        // `["main.rs", "main.rs"]`, and one hidden in a subdirectory passes as a
+        // legitimate `["main.rs"]`.
         let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_owned();
+            .strip_prefix(&viewer_src)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
         let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let Some(code) = code_without_prose(&src) else {
             failures.push(format!(
@@ -3654,10 +3663,24 @@ fn collect_shipped_literals(stream: proc_macro2::TokenStream, out: &mut Vec<Stri
                 } else if is_body && skip_next_body {
                     skip_next_body = false;
                 } else if !is_doc {
+                    // **Cleared here too, and that is the fix for a real
+                    // escape.** `#[cfg(test)]` is legal on an item that opens no
+                    // brace — `#[cfg(test)] use super::*;` or
+                    // `#[cfg(test)] mod tests;` — and with the flag cleared only
+                    // by the next brace, it survived to swallow the next brace in
+                    // the file, which can be *shipped* code. The scan then
+                    // reported nothing about it. `check_no_platform_transcendentals`
+                    // has the same rule for the same reason
+                    // (`a_cfg_test_item_that_opens_no_block_does_not_start_a_region`).
+                    skip_next_body = false;
                     collect_shipped_literals(g.stream(), out);
                 }
             }
             proc_macro2::TokenTree::Literal(lit) => out.push(lit.to_string()),
+            // A `;` ends a braceless `#[cfg(test)] use ...;` — see the note
+            // above. Idents are the item keyword between the attribute and its
+            // body (`mod`, `fn`), so they must NOT clear the flag.
+            proc_macro2::TokenTree::Punct(p) if p.as_char() == ';' => skip_next_body = false,
             proc_macro2::TokenTree::Ident(_) | proc_macro2::TokenTree::Punct(_) => {}
         }
     }
@@ -3687,15 +3710,39 @@ fn whole_words_preserving_case(name: &str) -> Vec<String> {
         .collect()
 }
 
+/// A string literal's content, with its prefix and delimiters removed.
+///
+/// **Positional, because `trim_matches` eats the content.** The first version of
+/// this stripped `"`, `#`, `r` and `b` from both ends with `trim_matches`, which
+/// removes *every* leading and trailing character satisfying the predicate — so
+/// `"Nr"` became `N`, `"Ib"` became `I` and `"bH"` became `H`, and the
+/// one-letter symbol tier reported nitrogen, iodine and hydrogen on literals
+/// containing no symbol at all. That is the same defect
+/// `a_literal_ending_in_r_is_not_a_format` already pins one scan over, and it
+/// was reintroduced here by a reviewer's own recorded failure mode: reaching for
+/// the convenient trim.
+///
+/// Handles `"…"`, `r"…"`, `r#"…"#`, `b"…"`, `br#"…"#` and `c"…"`. The trailing
+/// delimiter is as long as the leading one, so the hash count is measured once
+/// and reused.
+fn literal_content(lit: &str) -> &str {
+    let rest = lit.trim_start_matches(['r', 'b', 'c']);
+    let hashes = rest.len() - rest.trim_start_matches('#').len();
+    let rest = rest.get(hashes..).unwrap_or(rest);
+    let rest = rest.strip_prefix('"').unwrap_or(rest);
+    let end = rest.len().saturating_sub(hashes + 1);
+    rest.get(..end).unwrap_or(rest)
+}
+
 /// The G2/G4 breaches in one string literal's raw token text, with the reason.
 fn fiction_breaches(lit: &str) -> Vec<(String, &'static str)> {
     let mut hits = Vec::new();
-    if !lit.starts_with('"') && !lit.starts_with('r') && !lit.starts_with('b') {
+    if !lit.starts_with(['"', 'r', 'b', 'c']) {
         // Not a string literal — a number or a char. Nothing to say about it.
         return hits;
     }
     let lower = lit.to_ascii_lowercase();
-    let content = lit.trim_matches(|c| c == '"' || c == '#' || c == 'r' || c == 'b');
+    let content = literal_content(lit);
 
     // **The union of both splittings, and `cArBoN` is why.** `identifier_segments`
     // breaks on camelCase, so a mixed-case spelling shatters into `c|Ar|Bo|N` and
@@ -3737,8 +3784,21 @@ fn fiction_breaches(lit: &str) -> Vec<(String, &'static str)> {
             hits.push(((*unit).to_owned(), "a real-world unit (G4)"));
         }
     }
+    // **The union of both splittings, for the same reason the name tier needs
+    // it.** `identifier_segments` breaks on camelCase, so `eV` becomes
+    // `["e", "v"]` and `nM` becomes `["n", "m"]` — and those are the spellings
+    // people actually write for electronvolts and nanometres. Whole words catch
+    // them; camelCase segments still catch a unit glued into an identifier.
+    let unit_forms: Vec<String> = identifier_segments(lit)
+        .into_iter()
+        .chain(
+            whole_words_preserving_case(lit)
+                .iter()
+                .map(|w| w.to_ascii_lowercase()),
+        )
+        .collect();
     for unit in REAL_UNIT_SEGMENTS {
-        if identifier_segments(lit).iter().any(|seg| seg == unit) {
+        if unit_forms.iter().any(|seg| seg == unit) {
             hits.push(((*unit).to_owned(), "a real-world unit (G4)"));
         }
     }
@@ -6997,6 +7057,15 @@ disallowed-types = [ { path = \"right::One\" } ]
         let stream = src
             .parse::<proc_macro2::TokenStream>()
             .unwrap_or_else(|_| proc_macro2::TokenStream::new());
+        // **Asserted, because a fixture that does not lex strips to nothing.**
+        // An empty stream contains no vocabulary entry, so every `is_empty()`
+        // assertion below would pass without scanning anything — the vacuous
+        // shape this repository keeps re-finding. `g5` asserts the same thing
+        // for the same reason.
+        assert!(
+            !src.trim().is_empty() && !stream.is_empty(),
+            "the fixture did not lex, so this assertion would pass over nothing: {src}"
+        );
         let mut lits = Vec::new();
         collect_shipped_literals(stream, &mut lits);
         lits.iter()
@@ -7255,5 +7324,91 @@ u!(
             words, REAL_WORDS_COPY,
             "xtask's word copy has drifted from naming.rs"
         );
+    }
+
+    /// A literal ending in `r` or `b` is not an element symbol.
+    ///
+    /// **The regression test for a real false positive.** `trim_matches` removes
+    /// *every* leading and trailing character matching its predicate, so the
+    /// first version of the content extraction turned `"Nr"` into `N`, `"Ib"`
+    /// into `I` and `"bH"` into `H` — reporting nitrogen, iodine and hydrogen on
+    /// literals containing no symbol. `a_literal_ending_in_r_is_not_a_format`
+    /// pins the identical defect one scan over; this is it arriving again in new
+    /// code, which is why the fixture list here is the same shape.
+    #[test]
+    fn a_literal_ending_in_r_or_b_is_not_an_element_symbol() {
+        for src in [
+            r#"fn f() -> &'static str { "Nr" }"#,
+            r#"fn f() -> &'static str { "Ib" }"#,
+            r#"fn f() -> &'static str { "bH" }"#,
+            r#"fn f() -> &'static str { "rNr" }"#,
+        ] {
+            assert!(
+                fiction_hits(src).is_empty(),
+                "the prefix strip ate a character out of the content: {src}"
+            );
+        }
+        // The positive arm, so this cannot pass by the extraction returning "".
+        assert!(
+            !fiction_hits(r#"fn f() -> &'static str { "N" }"#).is_empty(),
+            "a bare one-letter symbol must still be caught"
+        );
+        // And a raw string's real content is still reached.
+        assert!(
+            !fiction_hits("fn f() -> &'static str { r#\"Carbon\"# }").is_empty(),
+            "a raw string's content must still be scanned"
+        );
+    }
+
+    /// A braceless `#[cfg(test)]` does not blind the next block of shipped code.
+    ///
+    /// `#[cfg(test)]` is legal on an item that opens no brace — `use super::*;`,
+    /// `mod tests;`. With the skip flag cleared only by the next brace group, it
+    /// survived that item and swallowed the *following* block, which can be
+    /// shipped code: the scan then reported nothing about it, silently.
+    #[test]
+    fn a_cfg_test_item_that_opens_no_block_does_not_skip_the_next_one() {
+        let src = r#"
+#[cfg(test)]
+use super::*;
+
+fn shipped() -> &'static str { "Carbon" }
+"#;
+        assert!(
+            !fiction_hits(src).is_empty(),
+            "a braceless #[cfg(test)] swallowed the next block, so shipped code went \
+             unscanned"
+        );
+        // The pairing it is supposed to do still works.
+        let paired = r#"
+#[cfg(test)]
+mod tests {
+    const FIXTURE: &str = "Carbon";
+}
+"#;
+        assert!(
+            fiction_hits(paired).is_empty(),
+            "a real test module must still be skipped, or every fixture fires"
+        );
+    }
+
+    /// `eV` and `nM` are caught, not split into single letters.
+    ///
+    /// `identifier_segments` breaks on camelCase, so `eV` becomes `["e", "v"]`
+    /// and `nM` becomes `["n", "m"]` — and those are the spellings anyone
+    /// actually writes for electronvolts and nanometres, so the lowercase-only
+    /// entries in the vocabulary never matched them.
+    #[test]
+    fn a_camel_cased_unit_is_still_a_unit() {
+        for src in [
+            r#"fn f() -> &'static str { "1 eV" }"#,
+            r#"fn f() -> &'static str { "12 nM" }"#,
+            r#"fn f() -> &'static str { "12 NM" }"#,
+        ] {
+            assert!(
+                !fiction_hits(src).is_empty(),
+                "a real unit escaped by its capitalisation: {src}"
+            );
+        }
     }
 }

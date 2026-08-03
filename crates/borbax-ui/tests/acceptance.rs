@@ -718,6 +718,47 @@ fn the_properties_shown_are_the_selected_elements_and_not_a_neighbours() {
                 Some(element.group.to_string()),
                 "seed {seed}: `outer shell` came from the wrong element"
             );
+            // **All nine rows, not the two that were easy.** `selection_properties`
+            // pairs `property(i, ..)` with `PROPERTY_LABELS[i]` *by position*, so
+            // a reorder of either list silently re-labels every row — and a
+            // mutation sweep found exactly that class already: deleting the
+            // shell label's `+ 1`, and formatting mass through `Debug`, each
+            // failed zero tests. Asserting two of nine left seven undefended.
+            let shells = state.rows().len();
+            assert_eq!(
+                value_of("shell"),
+                Some(format!("{} of {}", element.period + 1, shells)),
+                "seed {seed}: `shell` came from the wrong element"
+            );
+            assert_eq!(
+                value_of("bonding slots"),
+                Some(if element.valence == 0 {
+                    "none \u{2014} a closed shell".to_owned()
+                } else {
+                    element.valence.to_string()
+                }),
+                "seed {seed}: `bonding slots` came from the wrong element"
+            );
+            assert_eq!(
+                value_of("size"),
+                Some(format!("{:.3}", element.radius.get())),
+                "seed {seed}: `size` came from the wrong element"
+            );
+            assert_eq!(
+                value_of("surface"),
+                Some(format!("{:.3}", element.affinity)),
+                "seed {seed}: `surface` came from the wrong element"
+            );
+            assert_eq!(
+                value_of("binding energy"),
+                Some(format!("{:.3}", element.energy_per_unit.get())),
+                "seed {seed}: `binding energy` came from the wrong element"
+            );
+            assert_eq!(
+                value_of("instability"),
+                Some(format!("{:.3}", element.instability)),
+                "seed {seed}: `instability` came from the wrong element"
+            );
         }
     }
 }
