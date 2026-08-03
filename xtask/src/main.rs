@@ -2952,10 +2952,11 @@ fn check_the_viewer_calls_the_chemistry_once(
         let Some(code) = code_without_prose(&src) else {
             continue;
         };
-        let shipped = code
-            .find("#[cfg(test)]")
-            .map_or(code.as_str(), |at| &code[..at]);
-        if shipped.contains(".pattern()") {
+        let Some(hits) = count_outside_tests(&src, &[".", "pattern", "(", ")"]) else {
+            continue;
+        };
+        let _ = &code;
+        if hits > 0 {
             pattern_sites.push(
                 path.strip_prefix(root)
                     .unwrap_or(&path)
@@ -3001,11 +3002,14 @@ fn check_the_viewer_calls_the_chemistry_once(
         // rather than parsed because the alternative is an AST walk for one
         // needle, and being wrong here is fail-*open* only for a call written
         // below a test module, which would be a strange place to hide one.
-        let code = code_only(&src);
-        let shipped = code
-            .find("#[cfg(test)]")
-            .map_or(code.as_str(), |at| &code[..at]);
-        let hits = shipped.matches("Universe::generate").count();
+        let Some(hits) = count_outside_tests(&src, &["Universe", ":", ":", "generate"]) else {
+            failures.push(format!(
+                "viewer seam: {VIEWER}/src/{} could not be lexed, so its \
+                 `Universe::generate` calls were not counted",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            continue;
+        };
         if hits > 0 {
             call_sites.push((path, hits));
         }
@@ -3680,6 +3684,74 @@ fn mentions_test_ident(stream: &proc_macro2::TokenStream) -> bool {
         }
     }
     false
+}
+
+/// Count how many times `needle` — a `::`-joined path or a `.method()` — appears
+/// in `src` **outside** any `#[cfg(test)]` item.
+///
+/// **Attribute-aware, replacing a positional cut that was fail-open.** Both call
+/// counts used to truncate the file at the first `#[cfg(test)]` and scan only
+/// what came before, so anything written *after* a test module was invisible.
+/// That was documented as a residual on the grounds that below a test module is
+/// a strange place to hide a call — true, and still a hole a rename or a
+/// re-ordering could open without anyone choosing to.
+///
+/// It is cheap now only because this PR already built the attribute pairing for
+/// the fiction scan; before that it would have been new machinery. It closes the
+/// *positional* half only. The **alias** half — `use borbax_universe::Universe
+/// as U; U::generate(..)` — needs real symbol resolution and is deliberately
+/// still open, named in the failure message and assigned to Step 7.
+fn count_outside_tests(src: &str, needle: &[&str]) -> Option<usize> {
+    let stream = src.parse::<proc_macro2::TokenStream>().ok()?;
+    let mut flat = Vec::new();
+    collect_shipped_tokens(stream, &mut flat);
+    Some(
+        flat.windows(needle.len())
+            .filter(|w| w.iter().zip(needle).all(|(got, want)| got == want))
+            .count(),
+    )
+}
+
+/// The token *text* of `stream`, skipping `#[cfg(test)]` items and `#[doc]`
+/// attributes, flattened so a path or a method call is a contiguous run.
+fn collect_shipped_tokens(stream: proc_macro2::TokenStream, out: &mut Vec<String>) {
+    let mut skip_next_body = false;
+    for tt in stream {
+        match tt {
+            proc_macro2::TokenTree::Group(g) => {
+                let is_bracket = matches!(g.delimiter(), proc_macro2::Delimiter::Bracket);
+                let is_doc = is_bracket
+                    && g.stream().into_iter().next().is_some_and(
+                        |t| matches!(&t, proc_macro2::TokenTree::Ident(i) if i == "doc"),
+                    );
+                let is_cfg_test = is_bracket && names_cfg_test(&g.stream());
+                let is_body = matches!(g.delimiter(), proc_macro2::Delimiter::Brace);
+                if is_cfg_test {
+                    skip_next_body = true;
+                } else if is_body && skip_next_body {
+                    skip_next_body = false;
+                } else if !is_doc {
+                    // A `()` after an ident is what makes `.pattern()` a call
+                    // rather than a field, so the delimiter is recorded.
+                    if matches!(g.delimiter(), proc_macro2::Delimiter::Parenthesis) {
+                        out.push("(".to_owned());
+                    }
+                    collect_shipped_tokens(g.stream(), out);
+                    if matches!(g.delimiter(), proc_macro2::Delimiter::Parenthesis) {
+                        out.push(")".to_owned());
+                    }
+                }
+            }
+            proc_macro2::TokenTree::Ident(i) => out.push(i.to_string()),
+            proc_macro2::TokenTree::Punct(p) => {
+                if p.as_char() == ';' {
+                    skip_next_body = false;
+                }
+                out.push(p.as_char().to_string());
+            }
+            proc_macro2::TokenTree::Literal(_) => out.push(String::new()),
+        }
+    }
 }
 
 /// Whether a path lives in a crate's integration-test, benchmark or example
@@ -4760,7 +4832,7 @@ mod tests {
         SIGNATURE_SURFACE, SigFacing, SigItem, alias_names, bookkeeping_against,
         check_surface_bookkeeping, compare_signature_surface, scan_signature_surface,
     };
-    use super::{code_without_prose, viewer_banned_imports};
+    use super::{code_without_prose, count_outside_tests, viewer_banned_imports};
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
     use super::{identifier_segments, scan_format_tokens};
 
@@ -7562,6 +7634,75 @@ fn shipped() -> &'static str { "Carbon" }
         assert!(
             fiction_hits("#[cfg(test)]\nmod tests { const F: &str = \"Carbon\"; }").is_empty(),
             "a real test module must still be skipped"
+        );
+    }
+
+    /// A call written *below* the test module is still counted.
+    ///
+    /// **The positional cut this replaced could not see it.** Both call counts
+    /// truncated the file at the first `#[cfg(test)]` and scanned only what came
+    /// before, so a `Universe::generate` or `.pattern()` after the test module
+    /// was invisible — documented as a residual on the grounds that below a test
+    /// module is a strange place to hide a call. True, and still a hole that a
+    /// re-ordering could open without anyone choosing to.
+    ///
+    /// It closes the **positional** half only. The alias half —
+    /// `use borbax_universe::Universe as U; U::generate(..)` — needs symbol
+    /// resolution, is deliberately still open, and says so in the failure
+    /// message.
+    #[test]
+    fn a_call_below_the_test_module_is_still_counted() {
+        let below = r"
+fn shipped() {}
+
+#[cfg(test)]
+mod tests {
+    fn t() { let _ = Universe::generate(1); }
+}
+
+fn sneaked(u: &U) { let _ = Universe::generate(2); let _ = u.table.pattern(); }
+";
+        assert_eq!(
+            count_outside_tests(below, &["Universe", ":", ":", "generate"]),
+            Some(1),
+            "a `Universe::generate` below the test module was not counted, and the one \
+             inside it should not be"
+        );
+        assert_eq!(
+            count_outside_tests(below, &[".", "pattern", "(", ")"]),
+            Some(1),
+            "a `.pattern()` below the test module was not counted"
+        );
+
+        // The legitimate direction: calls inside the test module are exempt, or
+        // every crate's own tests fail the gate.
+        let inside = r"
+#[cfg(test)]
+mod tests {
+    fn t() { let _ = Universe::generate(1); let _ = Universe::generate(2); }
+}
+";
+        assert_eq!(
+            count_outside_tests(inside, &["Universe", ":", ":", "generate"]),
+            Some(0),
+            "a test module's own calls must stay exempt"
+        );
+
+        // `.pattern` as a *field* is not a call — the parentheses are what make
+        // it one, which is why the delimiter is part of the needle.
+        assert_eq!(
+            count_outside_tests(
+                "fn f(x: T) { let _ = x.pattern; }",
+                &[".", "pattern", "(", ")"]
+            ),
+            Some(0),
+            "a field read was counted as a call"
+        );
+
+        // Unlexable input is reported, never silently counted as zero.
+        assert_eq!(
+            count_outside_tests("fn f( {", &["Universe", ":", ":", "generate"]),
+            None
         );
     }
 }
