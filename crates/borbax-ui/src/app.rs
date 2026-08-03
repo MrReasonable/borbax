@@ -29,7 +29,7 @@ use bevy::prelude::*;
 use bevy::render::RenderPlugin;
 use bevy::render::settings::{RenderCreation, WgpuSettings};
 use bevy::window::WindowResolution;
-use bevy_egui::{EguiContexts, EguiPlugin, egui};
+use bevy_egui::{EguiContexts, EguiGlobalSettings, EguiPlugin, egui};
 
 /// The viewer's whole decision-making surface, held as a Bevy resource.
 ///
@@ -37,32 +37,19 @@ use bevy_egui::{EguiContexts, EguiPlugin, egui};
 /// would have to be implemented in `state.rs` — the one file whose identity is
 /// that it names no engine type at all. Keeping the impl here is what lets every
 /// state test run with no Bevy app at all.
-#[derive(Resource)]
-struct Viewer(ViewerState);
-
-/// Spawn the camera `egui` is drawn through.
-///
-/// **Without this the window opens empty and every test stays green**, which is
-/// this repository's recorded failure mode for the third time — Step 1's opening
-/// state, Step 2's invisible cells, and now this. `bevy_egui` paints into a
-/// camera's render graph rather than to the window directly, so with no camera
-/// there is nowhere for the panel to go. Nothing detects it: the frame tests
-/// drive `panel::draw` through an `egui` context of their own and never involve
-/// Bevy's renderer at all, so they describe a panel that is laid out correctly
-/// and never reaches a pixel.
-///
-/// Caught by Ian looking at the window. It is the fourth defect in this project
-/// found that way and the fourth that no test could have found.
-fn spawn_camera(mut commands: Commands<'_, '_>) {
-    commands.spawn(Camera2d);
-}
+#[derive(Resource, Debug)]
+pub struct Viewer(pub ViewerState);
 
 /// Hand the `egui` context to the panel.
 ///
 /// The entire bridge between the engine and the drawing, and deliberately one
 /// statement: `panel::draw` is unchanged from the `eframe` build, so the frame
 /// tests that describe it still describe what ships.
-fn draw_panel(mut contexts: EguiContexts<'_, '_>, mut viewer: ResMut<'_, Viewer>) -> Result {
+fn draw_panel(
+    mut contexts: EguiContexts<'_, '_>,
+    mut viewer: ResMut<'_, Viewer>,
+    mut region: ResMut<'_, crate::scene::SceneRegion>,
+) -> Result {
     let ctx = contexts.ctx_mut()?;
     // **The root `Ui` is built here rather than handed to us**, and that is a
     // real difference from the `eframe` build rather than boilerplate. egui 0.35
@@ -77,7 +64,25 @@ fn draw_panel(mut contexts: EguiContexts<'_, '_>, mut viewer: ResMut<'_, Viewer>
             .layer_id(egui::LayerId::background())
             .max_rect(ctx.viewport_rect()),
     );
-    egui::CentralPanel::default().show(&mut root, |ui| draw(&mut viewer.0, ui));
+    // **A top panel rather than a central one, and the whole scene depends on
+    // it.** `CentralPanel` fills the viewport with an opaque background, so a 3D
+    // scene rendered underneath is painted over completely — with every test
+    // green, because nothing in the suite looks at a pixel. Reserving the panel
+    // at the top leaves a hole, and the hole is what the scene camera is aimed
+    // at.
+    egui::Panel::top("controls").show(&mut root, |ui| {
+        draw(&mut viewer.0, ui);
+        // Outside the viewport, because there is no text inside it. Built in
+        // `state.rs` like every other computed string, so a test asserting on
+        // it is asserting on what the window shows.
+        ui.label(viewer.0.scene_caption());
+    });
+
+    // **Returned rather than agreed by convention.** The camera is aimed at
+    // whatever the panel actually left, so the two cannot drift apart — and a
+    // test can assert on the region without hunting through the widget tree.
+    let left = root.available_rect_before_wrap();
+    region.0 = Some(Rect::new(left.min.x, left.min.y, left.max.x, left.max.y));
     Ok(())
 }
 
@@ -162,7 +167,15 @@ fn build(shell: Shell) -> App {
     // `opening`, not `new`: the window shows a universe from the first frame
     // rather than the words "type a seed".
     .insert_resource(Viewer(ViewerState::opening()))
-    .add_systems(Startup, spawn_camera)
+    // **The engine is not allowed to pick which camera egui draws through.**
+    // Left automatic it attaches to whichever camera is created first, so the
+    // render topology would be decided by spawn order inside a startup system.
+    // `scene::plugin` places it deliberately, on the full-window camera.
+    .insert_resource(EguiGlobalSettings {
+        auto_create_primary_context: false,
+        ..default()
+    })
     .add_systems(bevy_egui::EguiPrimaryContextPass, draw_panel);
+    crate::scene::plugin(&mut app);
     app
 }
