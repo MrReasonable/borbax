@@ -907,3 +907,75 @@ fn no_explanatory_line_borrows_a_word_from_real_chemistry() {
         .count();
     assert_eq!(glossed, 2, "the two explanatory lines are missing");
 }
+
+/// Rows are numbered from one, not from zero.
+///
+/// **Found by mutation probe, not by design: deleting the `+ 1` failed zero
+/// tests.** `Element::period` is 0-based and the label is 1-based, so the
+/// conversion is a display decision with nothing else defending it — and "shell
+/// 0" is the single number a child reads wrong. The doc comment claiming this
+/// was already there; the test was not, which is the difference between a
+/// decision and a decoration.
+#[test]
+fn the_shell_label_counts_from_one_not_zero() {
+    for seed in ["1", "7", "42"] {
+        let state = loaded(seed);
+        let universe = Universe::generate(parse_seed(seed).unwrap_or_default());
+        for row in state.rows() {
+            let period = row
+                .cells
+                .first()
+                .and_then(|c| universe.table.get(c.id))
+                .map(|e| e.period);
+            assert!(period.is_some(), "seed {seed}: an empty row was built");
+            let Some(period) = period else { continue };
+            assert_eq!(
+                row.shell_label,
+                format!("shell {}", u16::from(period) + 1),
+                "seed {seed}: the row label does not count from one"
+            );
+        }
+        // The strongest arm, and the one the `+ 1` mutation fails: the first row
+        // is always period 0 and must never read "shell 0".
+        let first = state.rows().first().map(|r| r.shell_label.clone());
+        assert_eq!(first, Some("shell 1".to_owned()), "seed {seed}");
+    }
+}
+
+/// Mass is shown in mass units, not in raw fixed-point sub-units.
+///
+/// **Found by mutation probe: `format!("{:?}", element.mass)` failed zero
+/// tests.** `Mass` is fixed-point over `i64`, so its `Debug` prints
+/// `Mass(1792)` where the value is `1.750` — wrong by a factor of 1024, and
+/// plausible enough on screen to survive a glance. Three of the other four unit
+/// types `Debug`-print something close enough to the right answer to pass
+/// review, which is exactly why this one needs a test rather than a comment.
+#[test]
+fn mass_is_shown_in_mass_units_not_raw_sub_units() {
+    for seed in ["1", "7", "42"] {
+        let mut state = loaded(seed);
+        let universe = Universe::generate(parse_seed(seed).unwrap_or_default());
+        let ids: Vec<_> = state
+            .rows()
+            .iter()
+            .flat_map(|r| r.cells.iter().map(|c| c.id))
+            .collect();
+        for id in ids {
+            state.select(id);
+            let element = universe.table.get(id);
+            assert!(element.is_some());
+            let Some(element) = element else { continue };
+            let shown = state
+                .selection_properties()
+                .into_iter()
+                .find(|r| r.label == "mass")
+                .map(|r| r.value);
+            assert_eq!(
+                shown,
+                Some(format!("{:.3}", element.mass.to_f64())),
+                "seed {seed}: mass is not the value `to_f64` gives — a `Debug` \
+                 spelling prints sub-units and is wrong by 1024x"
+            );
+        }
+    }
+}
