@@ -209,6 +209,7 @@ name = "borbax-ui"
 version = "0.1.0"
 dependencies = [
  "borbax-rng",
+ "borbax-units",
  "borbax-universe",
  "eframe",
  "egui",
