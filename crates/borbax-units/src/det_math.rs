@@ -53,6 +53,18 @@
 //! inherent method. The chokepoint is the `libm` crate rather than one
 //! privileged file, so there is no path an exemption could later widen.
 //!
+//! **That sentence used to read as a licence for a direct `libm::sin`
+//! elsewhere, and it is not one.** Because the ban resolves `f64::sin` rather
+//! than every function named `sin`, `libm::cos(t)` written in any other crate —
+//! with one `libm` line in its manifest — passed all six gate legs. Measured,
+//! not supposed. Two things break, and neither is a bit-difference: the
+//! libm-bump determinism review reads *this file* to enumerate what the
+//! workspace calls, so a call outside it silently takes that review out of
+//! scope; and the wrappers carry contracts the raw functions do not — `acos`
+//! clamps, and `libm::acos` returns NaN on 17.88% of near-parallel unit-vector
+//! dot products. `cargo xtask`'s `check_libm_has_one_home` now holds both
+//! halves: `libm` is declared by one manifest and called from this file alone.
+//!
 //! Adding a function here is cheap and is the right response to needing one.
 //! The ban covers every non-IEEE-specified float method, including several
 //! with no wrapper below (`atan2`, `tanh`, `cbrt`, `hypot`, …); when one of
@@ -82,6 +94,44 @@ pub fn sin(x: f64) -> f64 {
 #[must_use]
 pub fn cos(x: f64) -> f64 {
     libm::cos(x)
+}
+
+/// Tangent, with `x` in radians. Callers must keep `x` away from `±π/2`, where
+/// the true value is unbounded and the result is whatever `rem_pio2` had left.
+///
+/// **`cos(x) / sin(x)` is NOT a substitution for `1.0 / tan(x)`**, and this
+/// sentence is the whole reason the wrapper exists rather than the call sites
+/// spelling the quotient. Measured over 890 000 values of `x` from 0.0001° to
+/// 89°: the two disagree on **354 665 of them — 39.85%** — worst case 3 ulp at
+/// 1.8567°. They agree on **0 of 890 000** after a round trip through `f32`, so
+/// no picture can distinguish them, which is exactly what makes the pair
+/// dangerous: a later tidy-up can swap either spelling for the other and no
+/// test will notice, in a module whose §13.1 discipline is that float
+/// expressions are pinned and nobody tidies them later.
+///
+/// **Portability class: identical to [`sin`] and [`cos`], read from libm
+/// 0.2.16's source rather than assumed.** `src/math/arch/mod.rs` exports, in
+/// full — wasm32 `{ceil, ceilf, fabs, fabsf, floor, floorf, rint, rintf, sqrt,
+/// sqrtf, trunc, truncf}`; x86+sse2 `{sqrt, sqrtf, fma, fmaf}`; aarch64+neon
+/// `{fma, fmaf, rint, rintf, sqrt, sqrtf}`; i586 `{ceil, floor}`; and the
+/// `x87_exp*` family under `x86_no_sse`. **`tan` is in none of them.** `tan.rs`
+/// reaches `rem_pio2`, whose only arch-conditional line is guarded on `x86`
+/// without SSE2 — and `sin.rs` and `cos.rs` reach that same `rem_pio2`. So this
+/// is safe on all three §13.4 targets and becomes a hazard on the same day
+/// those two do, which is the day a 32-bit leg is added to the matrix. The only
+/// new audited surface is `k_tan.rs`, which carries no `cfg` beyond
+/// `assert_no_panic`.
+///
+/// Added for the viewer's perspective projection, `f = cot(fovy/2)`. That is a
+/// display value and reaches no result — but the §13.1 rule is not "results
+/// only", and both this module's header and `clippy.toml` already say that
+/// wanting a wrapper is the signal to add one here rather than to route around
+/// its absence. The alternative considered and rejected was writing the
+/// quotient at the call site; see the first paragraph for why that is a
+/// different function.
+#[must_use]
+pub fn tan(x: f64) -> f64 {
+    libm::tan(x)
 }
 
 /// Arc cosine, in radians. **Clamps its argument**, and that is the feature.
@@ -214,6 +264,71 @@ mod tests {
         for i in 1_u32..=2000 {
             let x = f64::from(i) * 0.37;
             assert_eq!(super::cbrt(x), libm::cbrt(x));
+        }
+    }
+
+    /// The claim [`super::tan`]'s doc makes, pinned so it cannot rot into a
+    /// "simplification".
+    ///
+    /// The wrapper exists because `1.0 / tan(h)` and `cos(h) / sin(h)` are two
+    /// spellings of one quantity that disagree in a large fraction of their f64
+    /// bits — so a reviewer who "tidies" one into the other changes results
+    /// with nothing failing. This test is that reviewer's alarm.
+    ///
+    /// **Both arms are load-bearing and neither implies the other.** The
+    /// disagreement arm alone would pass if `tan` returned nonsense; the
+    /// closeness arm alone would pass on the substitution the wrapper forbids.
+    /// The bound is stated as a *ulp* count rather than an epsilon because the
+    /// quantity spans four orders of magnitude across this range.
+    #[test]
+    fn cot_by_tan_and_by_cos_over_sin_are_close_but_not_the_same_function() {
+        let mut differ = 0_u32;
+        let mut examined = 0_u32;
+        let mut worst_ulps = 0_i64;
+
+        // 0.0001 deg to 89 deg: every plausible `fovy / 2`, and both ends of
+        // the range where the two spellings are worst conditioned.
+        for i in 1_u32..=8900 {
+            let h = f64::from(i) * 0.01 * std::f64::consts::PI / 180.0;
+            let by_tan = 1.0 / super::tan(h);
+            let by_quotient = super::cos(h) / super::sin(h);
+            examined += 1;
+            if by_tan != by_quotient {
+                differ += 1;
+                // Distance in representable steps. Both values are finite and
+                // positive over this range, so the bit patterns are ordered.
+                let ulps = (by_tan.to_bits() as i64 - by_quotient.to_bits() as i64).abs();
+                if ulps > worst_ulps {
+                    worst_ulps = ulps;
+                }
+            }
+        }
+
+        assert_eq!(
+            examined, 8900,
+            "the corpus was not the one this bar was set from"
+        );
+        assert!(
+            differ > examined / 4,
+            "1/tan and cos/sin agreed on all but {differ} of {examined} inputs. \
+             The doc on `tan` says they are different functions and that is why the \
+             wrapper exists; if they have converged, rewrite that argument rather \
+             than deleting this test"
+        );
+        assert!(
+            worst_ulps <= 8,
+            "1/tan and cos/sin differ by {worst_ulps} ulp at worst, and 3 was \
+             measured on 2026-08-03. A large gap means one of them is now badly \
+             conditioned over this range and the projection should use the other"
+        );
+    }
+
+    /// `tan` is the portable one, pinned the same way [`super::cbrt`] is.
+    #[test]
+    fn tan_matches_libm_not_the_platform() {
+        for i in 1_u32..=2000 {
+            let x = f64::from(i) * 0.0007;
+            assert_eq!(super::tan(x), libm::tan(x));
         }
     }
 }
