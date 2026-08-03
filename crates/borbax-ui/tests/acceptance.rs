@@ -455,6 +455,29 @@ fn loaded(seed: &str) -> ViewerState {
     state
 }
 
+/// Every element id of a loaded state, asserted non-empty.
+///
+/// **The floor is the point.** If `loaded(seed)` ever returned a `Rejected`
+/// outcome — a refused seed, a changed parse — `rows()` gives an empty vector,
+/// the `for id in ids` loop below never runs, and the test passes having
+/// asserted nothing at all. Four tests had that shape. It is the same vacuity
+/// the shape-count floor further up exists for, and the same class this
+/// repository has now found in a guard six times.
+fn all_ids(state: &ViewerState) -> Vec<borbax_universe::ElementId> {
+    let ids: Vec<_> = state
+        .rows()
+        .iter()
+        .flat_map(|r| r.cells.iter().map(|c| c.id))
+        .collect();
+    assert!(
+        ids.len() >= 60,
+        "a loaded universe has 60..=120 elements; {} means the state was not loaded \
+         and every assertion over these ids would pass vacuously",
+        ids.len()
+    );
+    ids
+}
+
 /// The id of a loaded state's first cell.
 ///
 /// Indexing is denied workspace-wide, and a panicking index in a test is still a
@@ -683,12 +706,7 @@ fn the_properties_shown_are_the_selected_elements_and_not_a_neighbours() {
     for seed in ["1", "7", "42"] {
         let mut state = loaded(seed);
         let universe = Universe::generate(parse_seed(seed).unwrap_or_default());
-        let ids: Vec<_> = state
-            .rows()
-            .iter()
-            .flat_map(|r| r.cells.iter().map(|c| c.id))
-            .collect();
-        for id in ids {
+        for id in all_ids(&state) {
             state.select(id);
             let element = universe.table.get(id);
             assert!(element.is_some());
@@ -788,12 +806,7 @@ fn every_unit_word_on_screen_is_one_this_universe_invented() {
     let mut attained = std::collections::BTreeSet::new();
     for seed in 1..40_u64 {
         let mut state = loaded(&seed.to_string());
-        let ids: Vec<_> = state
-            .rows()
-            .iter()
-            .flat_map(|r| r.cells.iter().map(|c| c.id))
-            .collect();
-        for id in ids {
+        for id in all_ids(&state) {
             state.select(id);
             for row in state.selection_properties() {
                 attained.insert(row.unit);
@@ -835,6 +848,12 @@ fn no_element_reaches_the_screen_under_a_real_name_or_symbol() {
             .iter()
             .flat_map(|r| r.cells.iter().map(|c| (c.id, c.symbol.to_owned())))
             .collect();
+        assert!(
+            cells.len() >= 60,
+            "seed {seed}: {} cells means the state was not loaded and every assertion \
+             below would pass vacuously",
+            cells.len()
+        );
         for (id, symbol) in cells {
             state.select(id);
             let heading = state.selection_heading();
@@ -857,12 +876,7 @@ fn no_element_reaches_the_screen_under_a_real_name_or_symbol() {
 fn selecting_an_element_does_not_regenerate_the_universe() {
     let mut state = loaded("7");
     let before = state.regenerations();
-    let ids: Vec<_> = state
-        .rows()
-        .iter()
-        .flat_map(|r| r.cells.iter().map(|c| c.id))
-        .collect();
-    for id in ids {
+    for id in all_ids(&state) {
         state.select(id);
     }
     assert_eq!(
@@ -996,12 +1010,7 @@ fn mass_is_shown_in_mass_units_not_raw_sub_units() {
     for seed in ["1", "7", "42"] {
         let mut state = loaded(seed);
         let universe = Universe::generate(parse_seed(seed).unwrap_or_default());
-        let ids: Vec<_> = state
-            .rows()
-            .iter()
-            .flat_map(|r| r.cells.iter().map(|c| c.id))
-            .collect();
-        for id in ids {
+        for id in all_ids(&state) {
             state.select(id);
             let element = universe.table.get(id);
             assert!(element.is_some());

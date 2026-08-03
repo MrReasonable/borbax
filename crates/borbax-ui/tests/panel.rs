@@ -610,10 +610,26 @@ fn selecting_an_element_does_not_cost_a_second_layout_pass() {
 
     let (only, _, _) = three_symbols(7);
 
-    // Clicking the *already selected* cell must not discard: nothing changed,
-    // so there is nothing stale to repaint.
+    // **The positive arm first, and it was missing.** Asserting only that a
+    // *repeat* click costs one pass leaves the test green over a panel with no
+    // `request_discard` at all — which also costs one. A reviewer caught that;
+    // probed, deleting the call outright failed a *neighbouring* test rather
+    // than this one, so the discard was guarded only by coupling to a test that
+    // does not name it. A selection that genuinely changes must cost the second
+    // pass, or the properties block below the grid paints one frame stale.
     harness.get_by_role_and_label(Role::Button, &only).click();
     harness.step();
+    assert_eq!(
+        harness.output().platform_output.num_completed_passes,
+        2,
+        "a cell selection that changed the state did not discard the pass that had \
+         already painted the old properties block"
+    );
+
+    // Then the gate: clicking the *already selected* cell changes nothing, so
+    // there is nothing stale to repaint and a second pass would be waste — and,
+    // worse, an ungated discard re-paints from updated state and self-repairs
+    // the frame-order defects three other tests exist to catch.
     harness.get_by_role_and_label(Role::Button, &only).click();
     harness.step();
     assert_eq!(
