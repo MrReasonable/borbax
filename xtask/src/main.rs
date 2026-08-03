@@ -507,6 +507,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_the_viewer_stays_a_leaf(root, &mut failures)?;
     check_the_viewer_seam_holds(root, &mut failures)?;
     check_wall_clock_has_one_home(root, &mut failures)?;
+    check_libm_has_one_home(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -3097,6 +3098,256 @@ fn check_wall_clock_has_one_home(root: &Path, failures: &mut Vec<String>) -> Res
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+/// The one manifest that may declare `libm`.
+const LIBM_HOME_MANIFEST: &str = "crates/borbax-units/Cargo.toml";
+
+/// The one source file that may call it.
+const LIBM_HOME_SOURCE: &str = "crates/borbax-units/src/det_math.rs";
+
+/// Strip TOML comments so prose naming `libm` is not mistaken for a dependency.
+///
+/// TOML has no block comments, so this is `#` to end of line — but only when
+/// the `#` is outside a string, because a `reason = "..."` may contain one and
+/// truncating there would hide whatever followed on that line. Both quote
+/// styles and TOML's basic-string escapes are handled; multi-line strings are
+/// not, and cannot matter here because a `libm` dependency cannot be written
+/// inside one.
+fn toml_code_only(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    for line in src.lines() {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for c in line.chars() {
+            match quote {
+                Some(q) => {
+                    out.push(c);
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' && q == '"' {
+                        escaped = true;
+                    } else if c == q {
+                        quote = None;
+                    }
+                }
+                None if c == '#' => break,
+                None => {
+                    out.push(c);
+                    if c == '"' || c == '\'' {
+                        quote = Some(c);
+                    }
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// §13.1 — `libm` is declared by one crate and called from one file.
+///
+/// **This closes a hole that passed all six gate legs, measured rather than
+/// supposed.** `libm::cos(t)` written in `crates/borbax-ui/src/state.rs`, with
+/// one `libm = { workspace = true }` line added to that crate's manifest, gives
+/// "all checks passed" from `cargo xtask` and a clean `cargo clippy`.
+/// [`BANNED_CALLS`] has no `libm::` needle and `clippy.toml` bans the *inherent
+/// method* `f64::sin`, not every function named `sin` — its own header says so,
+/// and `leaves_the_libm_free_functions_alone` pins that pass as deliberate.
+/// So the gap is a designed property of the transcendental scan, not an
+/// oversight in it, and closing it needs a separate guard: a `"libm::"` entry
+/// in [`BANNED_CALLS`] would fire on `det_math.rs` itself and force exactly the
+/// path exemption that scan exists without.
+///
+/// **This is a *scope* guard, not a divergence guard, and calling it the latter
+/// would be overclaiming.** `libm::sin` written in `borbax-molecule` is
+/// bit-identical to `det_math::sin`. Nothing diverges. Three other things break:
+///
+/// - **The libm-bump review loses its scope.** CLAUDE.md commits to Renovate
+///   TIER B delivering libm bumps as `determinism-review` PRs, and that review
+///   reads `det_math.rs` and checks each function's arch-dispatch status
+///   against the new version. That procedure is correct *only* while
+///   `det_math.rs` is the complete list of libm functions this workspace calls.
+///   Today it is — by accident, one manifest line from ending, and nothing in
+///   the diff that ends it would say the review's scope had just become wrong.
+/// - **`libm::acos` is unclamped.** `det_math::acos` clamps, and its doc
+///   records that as load-bearing: 685 of 3600 compositions of
+///   `rotation_matrices()` give `(tr(R) - 1) / 2 > 1` and would return NaN
+///   unclamped. Measured again for the shape a camera actually produces — 500
+///   000 near-parallel unit-vector pairs, each independently normalised and
+///   perturbed by ~1e-9 — **89 403 (17.88%) have `|dot| > 1`**, worst overshoot
+///   4.44e-16. Every one is NaN from `libm::acos` and correct from the wrapper.
+///   That is a correctness hazard rather than a determinism one: a NaN camera
+///   goes black, deterministically. It is named here because an orbit camera
+///   extracting a pitch angle from a dot product is precisely where a direct
+///   `libm::acos` gets written.
+/// - **The next case is result-affecting.** Folding and cavity extraction will
+///   want trig in `borbax-molecule`, which has zero `det_math` call sites
+///   today. One manifest line plus `libm::atan2(..)` there passes clippy,
+///   passes this scan, is genuinely portable — and is a transcendental in a
+///   result path outside the audited surface with no wrapper contract.
+///
+/// **Two halves, because neither covers the other.** The manifest half is
+/// airtight *between* crates and blind *inside* `borbax-units`; the source half
+/// is the reverse. Cross-crate airtightness is not an argument, it is a
+/// compiler property verified by the negative: with the manifest line removed,
+/// the probe gives `error[E0433]: cannot find module or crate 'libm' in this
+/// scope`. A transitive dependency is not nameable, so no crate can call
+/// `libm::` without declaring it.
+///
+/// **`--locked` is a first line of defence and not a substitute**, which the
+/// probes had to be rewritten to see: planting the manifest line alone makes
+/// every `cargo` invocation refuse to build, so the guard never speaks. That is
+/// the *build* failing, not the invariant holding — anyone adding the
+/// dependency runs cargo once without `--locked`, commits the lockfile, and
+/// from then on the tree is quiet. The probes below therefore update the
+/// lockfile first, which is what a real change looks like.
+///
+/// **The obvious template carries a flaw that would be fatal here, and the
+/// polarity is what makes it fatal.** [`check_wall_clock_has_one_home`] only
+/// ever inspects files that are *not* the sanctioned home, so it cannot
+/// distinguish one home from zero. For wall-clock that degenerates harmlessly —
+/// zero clock reads is a fine state. For `libm` the meaning inverts: zero
+/// `libm::` inside `borbax-units` means `det_math` has stopped calling libm,
+/// which is exactly the state this guard exists to make impossible, and a
+/// copied template would be green for it. Hence the positive assertion below,
+/// which is `check_blocklist_present`'s "loud, not `Ok(())`" lesson applied to
+/// a file rather than a constant.
+///
+/// **Why `> 0` and not a tighter floor.** Seven wrapper call sites were
+/// measured on 2026-08-03, eight once `tan` landed — but the state being
+/// defended is "the chokepoint still calls libm at all". A bar of eight would
+/// fire on the deliberate removal of any wrapper, and a check that cries wolf
+/// gets relaxed. The count is reported in the message so a collapse from eight
+/// to one is visible to a reader even though it does not fail.
+///
+/// **Known residual holes, written down rather than fixed**, both dependency
+/// reviews rather than gate business — the same disposition [`BANNED_TYPES`]
+/// gives third-party hashers: a member vendoring libm's source under another
+/// crate name, and `[patch]`/`[replace]` entries redirecting `libm` itself.
+fn check_libm_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    // **Declarations, not uses.** This reads dependency tables; a crate that
+    // reaches libm transitively is invisible to it, which is correct, because
+    // a transitive dependency cannot be named in code.
+    let mut declaring = Vec::new();
+    let mut manifests_examined = 0usize;
+
+    for scan_root in TRANSCENDENTAL_SCAN_ROOTS {
+        let dir = root.join(scan_root);
+        if !dir.exists() {
+            failures.push(format!(
+                "§13.1: scan root {scan_root:?} does not exist, so no manifest under it \
+                 was checked for a `libm` dependency. Reported rather than skipped: a \
+                 fail-open here disables the whole chokepoint check"
+            ));
+            continue;
+        }
+        for path in walk(&dir)?
+            .into_iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == "Cargo.toml"))
+        {
+            manifests_examined += 1;
+            let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            // Matched as a whole token anywhere in the manifest rather than as a
+            // key, so `mathlib = { package = "libm", .. }` is caught — a rename
+            // still has to spell the crate name somewhere.
+            if names_type(&toml_code_only(&src), "libm") {
+                declaring.push(
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+
+    // **The corpus filter, asserted rather than assumed.** If the layout moves
+    // and `walk` returns no manifests, every loop body above is skipped and the
+    // check is silently green. Six members were measured on 2026-08-03; the
+    // floor is stated as a floor because adding a crate must not fail this.
+    if manifests_examined < 6 {
+        failures.push(format!(
+            "§13.1: only {manifests_examined} manifest(s) were examined under \
+             {TRANSCENDENTAL_SCAN_ROOTS:?}, and 6 were measured on 2026-08-03. The \
+             `libm` chokepoint check found almost nothing to check, which means the \
+             workspace layout moved rather than that the invariant holds"
+        ));
+    }
+
+    declaring.sort();
+    if declaring != [LIBM_HOME_MANIFEST] {
+        failures.push(format!(
+            "§13.1: `libm` is declared by {declaring:?}, expected exactly \
+             [\"{LIBM_HOME_MANIFEST}\"]. Transcendentals route through \
+             `borbax_units::det_math` and nowhere else — a second declaration lets a \
+             crate call `libm::acos` directly, which skips the clamp that wrapper \
+             exists for, and silently takes the libm-bump determinism review out of \
+             scope. If `borbax-units` no longer declares it, the chokepoint itself is \
+             gone. Add `borbax-units` as a dependency and call `det_math` instead; if \
+             the function you want has no wrapper, add one there"
+        ));
+    }
+
+    // The source half: inside `borbax-units`, only `det_math.rs` may call libm.
+    let units_src = root.join("crates/borbax-units/src");
+    if !units_src.exists() {
+        failures.push(
+            "§13.1: crates/borbax-units/src does not exist, so the `libm` call-site \
+             half was not checked. If the units crate has moved, move this check with \
+             it"
+            .to_owned(),
+        );
+        return Ok(());
+    }
+
+    let mut home_calls = 0usize;
+    for path in walk(&units_src)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let Some(code) = code_without_prose(&src) else {
+            failures.push(format!(
+                "§13.1: {rel} ended inside a string or comment, so its `libm` call \
+                 sites could not be counted. Reported rather than skipped"
+            ));
+            continue;
+        };
+        let calls = code.matches("libm::").count();
+        if rel == LIBM_HOME_SOURCE {
+            home_calls = calls;
+        } else if calls > 0 {
+            failures.push(format!(
+                "§13.1: {calls} `libm::` call site(s) in {rel} — inside `borbax-units`, \
+                 libm is called from `{LIBM_HOME_SOURCE}` alone. That file is what the \
+                 libm-bump determinism review reads, and a call outside it is a \
+                 transcendental nobody audits. It is also where the wrapper contracts \
+                 live: `acos` clamps, and the raw one returns NaN on 17.88% of \
+                 near-parallel unit-vector dot products"
+            ));
+        }
+    }
+
+    // **The positive assertion the wall-clock template lacks.** Without it, the
+    // whole check passes in the one state it exists to forbid: `det_math`
+    // rewritten to call `x.cos()` directly. The transcendental scan would catch
+    // that too, and both firing is correct — this one names the cause.
+    if home_calls == 0 {
+        failures.push(format!(
+            "§13.1: `{LIBM_HOME_SOURCE}` contains no `libm::` call at all. It is the \
+             workspace's portable-transcendental chokepoint, so either it has been \
+             rewritten to call the platform (which `check_no_platform_transcendentals` \
+             should also be reporting) or it has moved and this check has not"
+        ));
     }
 
     Ok(())
