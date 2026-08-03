@@ -284,7 +284,7 @@ mod tests {
     fn cot_by_tan_and_by_cos_over_sin_are_close_but_not_the_same_function() {
         let mut differ = 0_u32;
         let mut examined = 0_u32;
-        let mut worst_ulps = 0_i64;
+        let mut worst_ulps = 0_u64;
 
         // 0.0001 deg to 89 deg: every plausible `fovy / 2`, and both ends of
         // the range where the two spellings are worst conditioned.
@@ -296,8 +296,11 @@ mod tests {
             if by_tan != by_quotient {
                 differ += 1;
                 // Distance in representable steps. Both values are finite and
-                // positive over this range, so the bit patterns are ordered.
-                let ulps = (by_tan.to_bits() as i64 - by_quotient.to_bits() as i64).abs();
+                // positive over this range, so the bit patterns are ordered and
+                // `abs_diff` on the raw `u64`s is the gap — no cast, which is
+                // also what keeps `clippy::as_conversions` satisfied without an
+                // `#[expect]` standing between a reader and the arithmetic.
+                let ulps = by_tan.to_bits().abs_diff(by_quotient.to_bits());
                 if ulps > worst_ulps {
                     worst_ulps = ulps;
                 }
