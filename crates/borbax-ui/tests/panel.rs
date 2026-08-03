@@ -32,13 +32,6 @@ fn harness<'a>() -> Harness<'a, ViewerState> {
 /// `focus()` before `type_text` is not optional: `type_text` queues an
 /// `egui::Event::Text` addressed to whatever has focus, so without it the text
 /// never lands and the test fails looking *exactly* like the defect it hunts.
-fn name_box(harness: &Harness<'_, ViewerState>) -> String {
-    harness
-        .get_by_role_and_label(Role::TextInput, "name")
-        .value()
-        .unwrap_or_else(|| unreachable!("a TextInput node always carries a value"))
-}
-
 fn type_into(harness: &Harness<'_, ViewerState>, label: &str, text: &str) {
     let field = harness.get_by_role_and_label(Role::TextInput, label);
     field.focus();
@@ -248,23 +241,48 @@ fn an_unchanged_name_box_does_not_rebuild_the_universe() {
     );
 }
 
-/// Typing a seed by hand empties the name box **on screen**.
+/// What the name box currently renders, read from the accessibility tree.
+///
+/// Reads what was *painted*, not `state.phrase_text()` — a state-level read is
+/// true one instruction after the method runs and says nothing about the frame
+/// the user is looking at, which is the whole distinction this file exists for.
+fn name_box(harness: &Harness<'_, ViewerState>) -> String {
+    harness
+        .get_by_role_and_label(Role::TextInput, "name")
+        .value()
+        .unwrap_or_else(|| unreachable!("a TextInput node always carries a value"))
+}
+
+/// Typing a seed by hand empties the name box **in the same presented frame**.
 ///
 /// **The wiring, which nothing tested.** Measured by a review lane: reverting
 /// `panel.rs` to Step 1's `state.reload()` — one identifier's difference from
-/// `state.commit_typed_seed()` — left all 24 tests in this crate green. The
+/// `state.commit_typed_seed()` — left all 32 tests in this crate green. The
 /// acceptance test that looks like it covers this calls `commit_typed_seed`
 /// directly, so it tests the method and never the call.
 ///
-/// **Two `step()`s, and the first one is an assertion rather than a wait.** The
-/// name box is emitted *before* the seed box, so in the frame the seed is typed
-/// the name box has already been painted and still shows the old name. That is
-/// a genuine one-frame lag and it is pinned here rather than hidden: a
-/// `run()`-shaped call would step until quiescent and make it invisible, which
-/// is the vacuity trap this whole file exists to avoid. See `draw`'s doc for
-/// why the lag cannot be removed by reordering.
+/// That mutation is now a **compile error** rather than a test failure, because
+/// `reload` is private: `error[E0624]: method `reload` is private`. This test
+/// still earns its place — it covers the frame, which visibility cannot.
+///
+/// **One `step()`, and an earlier version of this test asserted two.** The name
+/// box is emitted before the seed box, so clearing it mid-pass would leave the
+/// stale name on screen for a frame — and the first version of this test
+/// asserted that stale frame, pinning the defect as though it were a law. A
+/// reviewer showed `Context::request_discard` removes it outright: the pass is
+/// thrown away and re-laid before anything is presented. Asserting the lag
+/// would have made fixing it look like a regression.
+///
+/// **`type_text` appends, so the seed typed here is deliberately a refusal.**
+/// The box already holds the twenty digits `Emily` produced, so `"4"` makes a
+/// twenty-one digit number — `state.rs` records this exact trap as the reason
+/// `ViewerState::opening()` exists separately from `new()`. That is worth
+/// asserting rather than working around: the name must stop claiming the seed
+/// **even when the seed is refused**, because a refusal is precisely when a
+/// stale name would be left sitting over an error message. The valid-seed frame
+/// path is covered by `the_element_count_appears_in_the_frame_the_seed_lands`.
 #[test]
-fn typing_a_seed_by_hand_empties_the_name_box_on_screen() {
+fn typing_a_seed_by_hand_empties_the_name_box_in_the_same_frame() {
     let mut harness = harness();
     type_into(&harness, "name", "Emily");
     harness.step();
@@ -274,17 +292,26 @@ fn typing_a_seed_by_hand_empties_the_name_box_on_screen() {
     harness.step();
     assert_eq!(
         name_box(&harness),
-        "Emily",
-        "the one-frame lag has changed — if the name box now clears in the same \
-         frame, that is an improvement, but `draw`'s doc says it cannot and one \
-         of the two is now wrong"
+        "",
+        "the frame shows a name that did not produce the seed beside it"
     );
 
-    harness.step();
+    // The frame-level analogue of `the_boxes_agree`: whatever the seed box
+    // holds, the line underneath describes *that*, with nothing left over from
+    // the name.
+    let seed_shown = harness
+        .get_by_role_and_label(Role::TextInput, "seed")
+        .value()
+        .unwrap_or_else(|| unreachable!("a TextInput node always carries a value"));
     assert_eq!(
-        name_box(&harness),
-        "",
-        "the name box still shows a name that did not produce the seed beside it"
+        seed_shown, "157094016537299727614",
+        "type_text appends, so this should be Emily's seed with a `4` on the end"
+    );
+    assert!(
+        harness
+            .query_by_label("that is larger than the largest seed, 18446744073709551615")
+            .is_some(),
+        "the refused seed's message is not on screen"
     );
 }
 
@@ -297,10 +324,43 @@ fn a_surprise_seed_empties_the_name_box_on_screen() {
 
     harness.get_by_label("surprise me").click();
     harness.step();
-    harness.step();
     assert_eq!(
         name_box(&harness),
         "",
         "the name box still claims to have produced a seed the button drew"
+    );
+}
+
+/// A long name is not truncated by the box it is typed into.
+///
+/// **The other half of the length-cap hazard, and it lives here rather than in
+/// `borbax-universe`.** That crate's
+/// `no_prefix_of_a_phrase_is_enough_to_decide_the_universe` guards the byte
+/// loop; nothing guarded the widget. `egui::TextEdit` has a `char_limit`
+/// builder, and a reviewer measured `.char_limit(8)` on the name box passing
+/// **all 452 tests in the workspace** while collapsing two different full names
+/// onto one universe — because no test above four characters ever went through
+/// `draw`.
+///
+/// Two harnesses rather than one, because `type_text` appends.
+#[test]
+fn a_long_name_is_not_truncated_by_the_box_it_is_typed_into() {
+    let stem = "elizabeth alexandra ";
+
+    let mut first = harness();
+    type_into(&first, "name", &format!("{stem}mary"));
+    first.step();
+    let mary = first.state().seed_text().to_owned();
+
+    let mut second = harness();
+    type_into(&second, "name", &format!("{stem}rose"));
+    second.step();
+
+    assert_ne!(
+        mary,
+        second.state().seed_text(),
+        "two names sharing a {}-character prefix produced one universe — the \
+         name box has acquired a char_limit",
+        stem.len()
     );
 }

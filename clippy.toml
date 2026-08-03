@@ -136,8 +136,8 @@ disallowed-methods = [
 # a mapping from bytes to a seed is result-affecting, so a hasher that drifts
 # silently reassigns every universe anyone has already named.
 #
-# Both banned types fail it, for two *different* reasons, and naming only one
-# invites someone to wave the other through:
+# They fail it for *different* reasons, and naming only one invites someone to
+# wave the others through:
 #
 #   `DefaultHasher` is deterministic within a process and within a toolchain,
 #   and std documents outright that "the internal algorithm is not specified,

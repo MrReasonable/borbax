@@ -289,40 +289,78 @@ mod tests {
         }
     }
 
-    /// §13.1's hasher ban still resolves — a liveness anchor, not a test of us.
+    /// §13.1's hasher ban still resolves — liveness anchors, not tests of us.
     ///
-    /// **The cross-check in `xtask` compares only the last path segment**, so a
+    /// **The xtask cross-check compares only the last path segment**, so a
     /// wrong *module* prefix in `clippy.toml` leaves clippy resolving nothing
     /// while `the_two_type_ban_lists_cover_the_same_types` stays green. A
-    /// determinism reviewer measured exactly that: changing one entry to
+    /// reviewer measured exactly that: pointing an entry at
     /// `std::collections::hash_map::NotReallyThere::DefaultHasher` and planting
-    /// a real `DefaultHasher` gave **zero** clippy output and exit 0, with the
-    /// cross-check green throughout. Clippy does not report an unresolvable
-    /// `disallowed-types` path, and `-D warnings` cannot promote a diagnostic
-    /// that is never emitted.
+    /// a real `DefaultHasher` left `-D warnings` at exit 0 with the cross-check
+    /// green.
     ///
-    /// The older method list does not have this hole, because its cross-check
-    /// compares the *function* name and so breaks on a typo anywhere after the
-    /// first `::`. The type list duplicates only the leaf — the one part a
-    /// prefix typo leaves intact.
+    /// Clippy *does* warn about the unresolvable path — an earlier version of
+    /// this comment said it emitted nothing, which a second reviewer measured
+    /// false. But the warning is a **config diagnostic with no lint level**, so
+    /// `-D warnings` cannot promote it, and clippy's own help text offers
+    /// `allow-invalid = true` to silence even that. The switch that makes an
+    /// entry genuinely dead is one paste away, which is the reason these
+    /// anchors exist rather than a note in a review.
     ///
-    /// `#[expect]` closes it, and closes more than it: an expectation is
-    /// unfulfilled if the lint fails to fire for **any** reason — an
-    /// unresolvable path, a level dropped from `deny` to `allow`, or the lint
-    /// leaving clippy's default group. It lives inside `#[cfg(test)]` so
-    /// `xtask`'s textual scan skips it, while clippy still lints it under
-    /// `--all-targets`.
+    /// **One `#[expect]` per type, as separate items, and that is measured
+    /// rather than stylistic.** Bundling all three under a single attribute
+    /// does not work: the expectation is fulfilled if *any* covered site fires,
+    /// so two anchors under one `#[expect]` with one path broken gave exit 0. A
+    /// reviewer measured both arrangements.
+    ///
+    /// **What these do NOT cover, stated because the first draft claimed they
+    /// did.** An `#[expect]` is itself a lint-level attribute and overrides the
+    /// outer level inside its scope, so dropping
+    /// `disallowed_types = "deny"` to `"allow"` in the workspace manifest
+    /// leaves every anchor fulfilled and the ban dead. Measured. That third
+    /// state is held by `check_the_lint_levels_are_deny` in `xtask`, which
+    /// reads the manifest — not by anything here.
     #[test]
     #[expect(
         clippy::disallowed_types,
-        reason = "this test exists to make the lint fire; if it stops firing, the \
-                  expectation is unfulfilled and the build fails, which is the point"
+        reason = "liveness anchor: this must fire, and an unfulfilled expectation is the \
+                  build failure that says §13.1's ban stopped resolving"
     )]
-    fn the_hasher_ban_still_resolves() {
+    fn the_default_hasher_ban_still_resolves() {
         // Named in a return type rather than a `let`: the type has to appear in
-        // a resolved path for the lint to fire, and a binding to a `_`-prefixed
-        // variable with no side effect is itself denied here.
+        // a resolved path for the lint to fire, and a binding to a
+        // `_`-prefixed variable with no side effect is itself denied here.
         fn anchor() -> Option<std::collections::hash_map::DefaultHasher> {
+            None
+        }
+        assert!(anchor().is_none());
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_types,
+        reason = "liveness anchor — see `the_default_hasher_ban_still_resolves`; separate \
+                  items because one #[expect] is fulfilled by any single covered site"
+    )]
+    fn the_random_state_ban_still_resolves() {
+        fn anchor() -> Option<std::hash::RandomState> {
+            None
+        }
+        assert!(anchor().is_none());
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_types,
+        reason = "liveness anchor — see `the_default_hasher_ban_still_resolves`"
+    )]
+    #[expect(
+        deprecated,
+        reason = "naming SipHasher is the entire point of this item; it is nameable on \
+                  stable under this attribute, which is why the ban lists it"
+    )]
+    fn the_sip_hasher_ban_still_resolves() {
+        fn anchor() -> Option<std::hash::SipHasher> {
             None
         }
         assert!(anchor().is_none());
@@ -362,8 +400,12 @@ mod tests {
         assert_ne!(seed("emily"), seed("emliy"));
         assert_ne!(seed("emily"), seed("emily!"));
         // Byte-faithful: a NUL is part of the name, not a terminator. This is
-        // what a C-style `strlen` view of the string would lose, and it is why
-        // `Stream::sub` rather than `Stream::new` is the constructor.
+        // what a C-style `strlen` view of the string would lose. It is what
+        // makes the `Stream::new` aliasing hazard *reachable*; the constructor
+        // choice itself is defended by
+        // `absorbing_a_nul_does_not_draw_the_surprise_buttons_stream`, not by
+        // this assertion. An earlier version credited this line with that,
+        // which would have let someone delete the real guard as redundant.
         assert_ne!(seed("a\0b"), seed("ab"));
     }
 
@@ -389,9 +431,13 @@ mod tests {
 
     /// A chained fold, not a sum: no prefix shares a seed with what follows it.
     ///
-    /// The mutations this catches are an accumulator that keeps only the last
-    /// byte, and any commutative combine — under which `"emil"` and `"lime"`
-    /// would collide.
+    /// The mutation this catches is any **commutative** combine — a `+` or `^`
+    /// fold, under which `"emil"` and `"lime"` collide.
+    ///
+    /// It does *not* catch a last-byte-only accumulator, which an earlier
+    /// version of this sentence claimed: a reviewer measured `acc = absorb(0,
+    /// byte)` leaving this test green, because the five prefixes and both
+    /// anagram pairs all end in different bytes. Five other tests fail on it.
     #[test]
     fn no_prefix_and_no_anagram_shares_a_seed() {
         let prefixes = ["e", "em", "emi", "emil", "emily"];
@@ -473,10 +519,13 @@ mod tests {
     /// - the **mean** gets `31.5..=32.5`, which at `SE = 4/sqrt(2590)` = 0.0786
     ///   is ±6.4 standard errors. Measured z = −0.44.
     /// - each **trial** gets `7..=57`, about 6.25 standard deviations: exact
-    ///   `P(outside)` is 9.03e-12 per trial, so 2.3e-8 across all 2590 — a
-    ///   hundredfold safer than the previous `12..=52` at this sample size,
-    ///   while still failing on the first sample for an identity (0 bits moved)
-    ///   or an inverter (64).
+    ///   `P(outside)` is 9.03e-12 per trial, so 2.3e-8 across all 2590 —
+    ///   **11,140 times** safer than the previous `12..=52` at this sample size
+    ///   (1.0059e-7 per trial), while still failing on the first sample for an
+    ///   identity (0 bits moved) or an inverter (64). Three reviewers
+    ///   independently computed that ratio after an earlier draft called it
+    ///   "a hundredfold"; the error was in the safe direction and is corrected
+    ///   here anyway, in a comment whose subject is wrong numbers.
     ///
     /// **Two-sided on purpose.** A floor alone passes for the mixer's opposite:
     /// flipping *every* bit is as broken as flipping none.
@@ -565,13 +614,17 @@ mod tests {
         // Both bars are far below the ~50 and ~49.99 a uniform u64 gives on 50
         // names, and far above what any cap permits: a modulo into six digits
         // makes both counts exactly 0.
-        assert!(
-            over_six_digits >= 45,
-            "only {over_six_digits} of 50 names exceed the viewer's suggestion ceiling"
+        // Exact, not a floor. The mapping is frozen and the corpus is fixed, so
+        // this is a deterministic quantity and a reviewer measured it at 50 and
+        // 50 — `>= 45` carried five counts of unexplained slack, which is the
+        // `assert!(x > N)`-chosen-before-measuring class CLAUDE.md names.
+        assert_eq!(
+            over_six_digits, 50,
+            "{over_six_digits} of 50 names exceed the viewer's suggestion ceiling"
         );
-        assert!(
-            over_32_bits >= 45,
-            "only {over_32_bits} of 50 names exceed 32 bits"
+        assert_eq!(
+            over_32_bits, 50,
+            "{over_32_bits} of 50 names exceed 32 bits"
         );
     }
 
@@ -606,11 +659,20 @@ mod tests {
             stem.len() + 4
         );
 
-        // And at a length nothing plausible would cap: 512 bytes differing only
-        // in the last one.
-        let long_a = "a".repeat(511) + "x";
-        let long_b = "a".repeat(511) + "y";
-        assert_ne!(seed(&long_a), seed(&long_b));
+        // A ladder rather than one length. The first version used a single
+        // 512-byte pair, which discriminates every cap up to 511 and nothing
+        // above — and a reviewer measured `.take(512)`, `.take(4096)` and
+        // `.take(100_000)` all passing the whole 452-test suite. A "do not hash
+        // a ten-megabyte paste" guard, which is the scenario this test's own
+        // doc names, would be written at exactly those numbers.
+        for len in [512_usize, 4096, 65_536] {
+            let stem = "a".repeat(len - 1);
+            assert_ne!(
+                seed(&format!("{stem}x")),
+                seed(&format!("{stem}y")),
+                "a phrase is being truncated at or below {len} bytes"
+            );
+        }
     }
 
     /// The set of characters `split_whitespace` folds is pinned outright.
@@ -789,10 +851,10 @@ mod golden {
         assert_eq!(
             distinct.len(),
             11,
-            "the golden has {} distinct values across {} rows — four of the \
-             rows share a value on purpose (three spellings of `emily`, two of \
-             `emily rose`, and the two spellings of a space); any other \
-             coincidence is a normalisation change",
+            "the golden has {} distinct values across {} rows — seven rows share \
+             a value on purpose, in three groups (three spellings of `emily`, two \
+             of `emily rose`, and two of a space), which is four rows of surplus \
+             and why 15 - 11 = 4; any other coincidence is a normalisation change",
             distinct.len(),
             GOLDEN.len()
         );

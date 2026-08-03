@@ -20,13 +20,16 @@ use crate::state::{ViewerState, moment};
 /// element count for sixteen milliseconds. Nothing in `tests/acceptance.rs` can
 /// see that, because a state-level test commits and reads in one call; the
 /// frame tests in `tests/panel.rs` are the guard, and moving `ui.label` above
-/// `ui.text_edit_singleline` is the mutation they exist to catch. Re-measured
-/// with `--no-fail-fast` at Step 1b: that mutation fails **four** of the five
-/// frame tests and leaves all twenty-seven state-level tests green. (It said
-/// "three of the four" and "twenty" until Step 1b, which added a frame test and
-/// seven state tests without re-running it — the stale-figure class, in the
-/// file whose subject is that the tests must describe the window. If this goes
-/// stale again, drop the fraction and keep the named mutation.)
+/// `ui.text_edit_singleline` is the mutation they exist to catch: it fails
+/// several of them and leaves **every** state-level test green, which is the
+/// asymmetry that justifies the file existing.
+///
+/// **No fraction, deliberately.** It has been written twice and gone stale
+/// twice — "three of the four", then "four of the five" in the very commit that
+/// added three more frame tests, while the denominator was already eight. Both
+/// times the number went stale in the same edit that widened it. The named
+/// mutation and the asymmetry are the durable statement; the ratio is a fact
+/// about how many tests happen to exist this week.
 ///
 /// **The button comes before the box, and that is the same rule again rather
 /// than a layout preference.** "surprise me" writes into `seed_text`, so it has
@@ -49,20 +52,29 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
     // the_name_lands` is the guard, and moving this block below the seed row
     // fails it and nothing else.
     //
-    // **The two directions genuinely conflict, and this comment used to imply
-    // they did not.** The seed box and the button both write into
-    // `phrase_text`, and they run *after* this box has been painted — so in the
-    // frame a seed is typed, the name box still shows the old name for one
-    // frame before `egui`'s requested repaint clears it. Reordering does not
-    // fix that; it swaps which direction is broken, and the direction chosen
-    // here is the one that matters: **§6** makes the seed the shareable thing
-    // and it is what a child writes down, so it must never be stale, whereas a
-    // name lingering for sixteen milliseconds is not a number anyone records.
+    // **The other direction cannot be fixed by ordering, and is fixed by
+    // `request_discard` instead.** The seed box and the button both write into
+    // `phrase_text` and run *after* this box has been painted, so on their own
+    // they would leave the old name on screen for one frame — a universe
+    // labelled with a name that did not produce it, which is exactly what
+    // `Outcome` was made an enum to prevent one field along.
     //
-    // The lag is asserted rather than tolerated silently —
-    // `typing_a_seed_by_hand_empties_the_name_box_on_screen` pins both frames,
-    // so an accidental change in either direction is a failure rather than a
-    // surprise.
+    // Reordering does not help: it swaps which direction is broken. What does
+    // help is telling `egui` that the pass it just laid out is wrong, which is
+    // what `Context::request_discard` is documented for — the frame is
+    // discarded and re-laid before anything is presented, so the user never
+    // sees the stale name at all.
+    //
+    // **Two earlier versions of this comment were wrong about this and the
+    // second was worse.** The first implied ordering resolved all three
+    // widgets. The second said the two directions "genuinely conflict" and the
+    // lag was irreducible — and shipped a test asserting the stale frame, which
+    // would have made removing the defect look like a regression. A reviewer
+    // measured `request_discard` closing it in a single pass.
+    //
+    // It is called only inside `changed()`/`clicked()`, which is the "rare
+    // occasion" the API's own doc asks for — an extra layout pass every frame
+    // would be real CPU cost and `egui` warns about it.
     let name_label = ui.label("name");
     // Hinted rather than pre-filled. A pre-filled name chooses the universe
     // that name produces; an empty box with no hint teaches nothing about what
@@ -93,6 +105,10 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
         // a fixed moment instead of racing a clock.
         if ui.button("surprise me").clicked() {
             state.randomise(moment());
+            // Same reason as the seed box below: this clears the name box after
+            // it has already been laid out for this pass.
+            ui.ctx()
+                .request_discard("the surprise button cleared the name box after it was painted");
         }
 
         let response = ui
@@ -112,6 +128,10 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
         // the substitution failed zero of 24 tests.
         if response.changed() {
             state.commit_typed_seed();
+            // The name box was painted above, before this line cleared it. See
+            // the note at the top of `draw`.
+            ui.ctx()
+                .request_discard("a typed seed cleared the name box after it was painted");
         }
     });
 

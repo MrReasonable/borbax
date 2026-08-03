@@ -274,14 +274,14 @@ impl ViewerState {
     /// The seed box was edited by hand, so nothing is named any more.
     ///
     /// **Clearing the name box is the point of this method existing**, and it
-    /// is why the panel does not simply call [`Self::reload`] on the seed box's
+    /// is why the panel does not simply call `reload` on the seed box's
     /// `changed()` as it did in Step 1. With the name left standing, typing
     /// `42` into the seed box beside a name box reading `Emily` puts a universe
     /// on screen labelled with a name that did not produce it — a plausible
     /// attribution to the wrong thing, which is precisely the state [`Outcome`]
     /// was made an enum to prevent one field along.
     ///
-    /// It cannot live inside [`Self::reload`]: that is also the path
+    /// It cannot live inside `reload`: that is also the path
     /// [`Self::reload_from_phrase`] takes, which would wipe the name a
     /// keystroke after setting it.
     pub fn commit_typed_seed(&mut self) {
@@ -302,12 +302,24 @@ impl ViewerState {
 
     /// Generate the universe the seed box currently names.
     ///
+    /// **Private, and that is a guard rather than tidiness.** It differs from
+    /// [`Self::commit_typed_seed`] by one `phrase_text.clear()`, and calling
+    /// the wrong one leaves a universe on screen labelled with a name that did
+    /// not produce it. While it was public, substituting it in the panel was a
+    /// *test failure*; now it is a compile error — `error[E0624]: method
+    /// `reload` is private` — which catches it at every future call site rather
+    /// than at the three that exist today. A reviewer measured the cost:
+    /// `reload` had no caller outside this file except six lines in
+    /// `tests/acceptance.rs`, all of them `seed_text_mut()` + `reload()` over
+    /// an already-empty phrase box, which is exactly what `commit_typed_seed`
+    /// does.
+    ///
     /// **Called only when the seed text actually changes**, never once per
     /// frame. `Universe::generate` is ~146 µs; at 60 Hz an unconditional call
     /// would spend most of the frame budget regenerating a universe nobody
     /// asked for again, and by Step 2 there are 120 element cells behind it.
     /// [`Self::regenerations`] is what makes that claim testable.
-    pub fn reload(&mut self) {
+    fn reload(&mut self) {
         self.outcome = match parse_seed(&self.seed_text) {
             Ok(seed) => {
                 let universe = Universe::generate(seed);
@@ -337,7 +349,7 @@ impl ViewerState {
     /// test-gated field is invisible to exactly the tests that need it. It is
     /// one `u64` in a crate that cannot affect a simulation result.
     ///
-    /// **What it does and does not catch.** It catches [`Self::reload`]
+    /// **What it does and does not catch.** It catches `reload`
     /// migrating into the per-frame body. It does **not** catch a direct
     /// `Universe::generate` call added to [`crate::panel::draw`], which never
     /// touches `reload` and so never touches this counter — that variant is

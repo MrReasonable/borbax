@@ -1,5 +1,7 @@
-//! The outside-in test for Step 1 of the viewer plan: a seed goes in, that
+//! The outside-in tests for the viewer: a seed or a name goes in, that
 //! universe's element count comes out.
+//!
+//! Step 1 is the seed half; Step 1b added the name half below it.
 //!
 //! These are integration tests, so they compile the library **without**
 //! `cfg(test)` — which is why `ViewerState::regenerations` is a shipped field
@@ -12,7 +14,7 @@ use borbax_universe::{PhysicsVersion, Universe};
 fn status_after(seed: &str) -> String {
     let mut state = ViewerState::new();
     seed.clone_into(state.seed_text_mut());
-    state.reload();
+    state.commit_typed_seed();
     state.status_line()
 }
 
@@ -197,11 +199,11 @@ fn a_refused_seed_leaves_no_number_claiming_to_be_its_universe() {
 
     let mut state = ViewerState::new();
     "7".clone_into(state.seed_text_mut());
-    state.reload();
+    state.commit_typed_seed();
     assert_eq!(state.status_line(), good);
 
     "nonsense".clone_into(state.seed_text_mut());
-    state.reload();
+    state.commit_typed_seed();
     let refused = state.status_line();
     assert!(
         matches!(state.outcome(), Outcome::Rejected(_)),
@@ -214,7 +216,7 @@ fn a_refused_seed_leaves_no_number_claiming_to_be_its_universe() {
 
     // And the good seed comes back exactly — no accumulated state.
     "7".clone_into(state.seed_text_mut());
-    state.reload();
+    state.commit_typed_seed();
     assert_eq!(state.status_line(), good);
 }
 
@@ -238,10 +240,10 @@ fn the_same_seed_gives_the_same_line_however_the_viewer_got_there() {
         "11",
     ] {
         seed.clone_into(travelled.seed_text_mut());
-        travelled.reload();
+        travelled.commit_typed_seed();
     }
     "7".clone_into(travelled.seed_text_mut());
-    travelled.reload();
+    travelled.commit_typed_seed();
 
     assert_eq!(travelled.status_line(), fresh);
 }
