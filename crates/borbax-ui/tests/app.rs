@@ -61,6 +61,49 @@ fn the_headless_app_needs_no_gpu_adapter() {
     );
 }
 
+/// The app asks the platform for no audio device.
+///
+/// **This is the guard for a crash no machine here can reproduce.** On
+/// 2026-08-04 `test (windows-latest)` died with `STATUS_ACCESS_VIOLATION`
+/// (`0xc0000005`) after two of the fourteen tests in this file had passed — a
+/// segfault in the test process, with no assertion failing and no backtrace,
+/// which reads like a defect in the engine rather than in this crate.
+///
+/// The one thing that separated the failing run from the passing one was
+/// `bevy_audio`. Counted across both logs of the same commit: `No audio device
+/// found` appears **twice on Windows and not once on macOS**, while every other
+/// marker — the duplicate global-logger error, the `RenderApp` warnings, the
+/// missing `winit` window — appears on both, and macOS built **28** apps to
+/// Windows' 4 without complaint. Windows Server runs no audio service, so
+/// WASAPI enumerates nothing; each app then tears that failure down while the
+/// next is building it, on a platform where that initialisation is
+/// thread-affine.
+///
+/// **The viewer plays no sound**, so nothing is given up. The plugin is dropped
+/// for the window shell too, not merely this one: if probing a device-less
+/// machine can fault, it can fault for a person whose PC has no sound card, and
+/// a test-only fix would leave that standing while hiding it from CI. It also
+/// *narrows* the gap between the shipped app and this one rather than widening
+/// it, which the note on [`borbax_ui::app::headless_app`] cares about.
+///
+/// This asserts on the plugin rather than on the warning text, because the
+/// string belongs to a third-party crate and a quieter release of it would
+/// leave this green over the crash it exists to stop. Dropping the dependency
+/// outright is issue #28 and would make this test redundant — until then the
+/// crate is still compiled and linked, and only this keeps it from running.
+#[test]
+fn the_viewer_asks_the_platform_for_no_audio_device() {
+    let app = headless_app();
+
+    assert!(
+        !app.is_plugin_added::<bevy::audio::AudioPlugin>(),
+        "the app builds `bevy_audio`, which probes for an output device while \
+         the app is being constructed. On a machine with no audio service — \
+         every Windows CI runner — that faulted the whole test process with \
+         STATUS_ACCESS_VIOLATION and no failing assertion to point at it"
+    );
+}
+
 /// The app has a camera after startup.
 ///
 /// **The exact defect that shipped.** `bevy_egui` renders through a camera; no

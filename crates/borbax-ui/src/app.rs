@@ -126,17 +126,41 @@ enum Shell {
 
 fn build(shell: Shell) -> App {
     let mut app = App::new();
-    let plugins = DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: WINDOW_TITLE.to_owned(),
-            // Read from the constant rather than typed here, so the frame test
-            // asserting every cell is reachable is asserting about *this*
-            // window and not one it guessed.
-            resolution: WindowResolution::new(u32::from(WINDOW_SIZE[0]), u32::from(WINDOW_SIZE[1])),
+    let plugins = DefaultPlugins
+        .set(WindowPlugin {
+            primary_window: Some(Window {
+                title: WINDOW_TITLE.to_owned(),
+                // Read from the constant rather than typed here, so the frame test
+                // asserting every cell is reachable is asserting about *this*
+                // window and not one it guessed.
+                resolution: WindowResolution::new(
+                    u32::from(WINDOW_SIZE[0]),
+                    u32::from(WINDOW_SIZE[1]),
+                ),
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    });
+        })
+        .build()
+        // **The viewer plays no sound, and asking anyway crashed Windows.**
+        // `test (windows-latest)` died with `STATUS_ACCESS_VIOLATION` on
+        // 2026-08-04 — a segfault with no failing assertion — and the only
+        // marker separating that log from the passing macOS one was
+        // `bevy_audio`'s `No audio device found`, twice against never. Windows
+        // Server runs no audio service, so each app tears down a failed device
+        // probe while the next is starting one.
+        //
+        // **Disabled here rather than in the headless shell**, deliberately: a
+        // fault while probing a device-less machine is a fault for a person
+        // whose PC has no sound card too, and hiding it behind the test shell
+        // would leave that standing while making CI green. Doing it once, above
+        // the `match`, is what stops the two shells disagreeing about it.
+        //
+        // This still compiles and links `bevy_audio` — only issue #28's
+        // `default-features = false` removes it from the graph, and that also
+        // takes `libasound2-dev` out of CI. Until then this is what keeps it
+        // from running.
+        .disable::<bevy::audio::AudioPlugin>();
     match shell {
         Shell::Window => app.add_plugins(plugins),
         // `backends: None` rather than dropping `RenderPlugin`: the render
@@ -146,7 +170,6 @@ fn build(shell: Shell) -> App {
         // that and skips only the device.
         Shell::Headless => app.add_plugins(
             plugins
-                .build()
                 .disable::<bevy::winit::WinitPlugin>()
                 .set(RenderPlugin {
                     render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
