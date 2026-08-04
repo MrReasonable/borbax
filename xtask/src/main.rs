@@ -2666,8 +2666,8 @@ fn check_every_member_inherits_the_lints(
 /// The seam checks below are about **imports and calls**, not about prose, and
 /// the two are easy to confuse because the prose necessarily quotes the thing it
 /// forbids: `panel.rs`'s module doc says "there is no `format!` in this file",
-/// and `lib.rs`'s doc names `eframe` while explaining that only `main.rs` may.
-/// A raw `grep` therefore reports three files naming `eframe` and one `format!`
+/// and `lib.rs`'s doc names the engine while explaining which files may.
+/// A raw `grep` therefore reports more files naming it, and one `format!`,
 /// in `panel.rs` — which is why an earlier version of CLAUDE.md's "check it by
 /// grep" instruction was false as literally written.
 fn code_only(src: &str) -> String {
@@ -2687,13 +2687,13 @@ fn code_only(src: &str) -> String {
 /// **Leaf-ness licenses everything else the crate is allowed to do.** `f32`,
 /// `HashMap`, a wall-clock read and unordered iteration are all permitted in
 /// there *because* it is a pure consumer that no result can flow out of. The day
-/// something depends on it, `eframe`'s ~350-package tree becomes reachable from
+/// something depends on it, the engine's ~500-package tree becomes reachable from
 /// a result path and every one of those relaxations turns into a §13.1 breach —
 /// with no diff line saying so.
 ///
 /// **The seam is what makes the crate testable at all.** `egui` lays out on the
 /// CPU and cannot open a window, so `egui_kittest` can drive `panel::draw`
-/// headlessly; `eframe` is the shell that can, so it is confined to the one file
+/// headlessly; the engine is the shell that can, so it is confined to the files
 /// no test reaches. And `status_line` lives in `state.rs` so that a test
 /// asserting on a string is asserting on what the window paints — a `format!`
 /// migrating into `panel.rs` leaves every such test green over a window they
@@ -2729,10 +2729,11 @@ const ENGINE_CRATES: &[&str] = &[
 /// `egui_kittest` and `wgpu-hal` are all caught by their base entry, and as a
 /// whole token at the start so `bevyish` is not a false positive.
 ///
-/// **This is the negative half only.** The positive half — that the viewer
-/// *does* name an engine, so the guard cannot pass by there being no engine
-/// anywhere — lands with the dependency itself. Until then it would fail on a
-/// correct tree, and a guard that fires on correct code gets deleted.
+/// **Both halves are here.** The negative one refuses an engine anywhere but
+/// the viewer; the positive one refuses a tree with *no* engine at all, so the
+/// guard cannot pass by the dependency having been deleted. An earlier version
+/// of this paragraph said the positive half was still to come — it landed with
+/// the dependency, and this doc was not updated alongside it.
 fn check_the_engine_stays_in_the_viewer(
     root: &Path,
     failures: &mut Vec<String>,
@@ -2995,7 +2996,13 @@ const VIEWER_SHELL_FILE: &str = "main.rs";
 /// and nothing on screen. Moving the construction into `app.rs` is what lets
 /// `tests/app.rs` assert about the *same* `App` the binary runs.
 ///
-/// So the licence is three files, and the middle one is the one under test.
+/// So the licence is two files, and `main.rs` is not one of them — **measured,
+/// not assumed**. It held the licence until a review removed it and found the
+/// whole gate still green: the file is one statement and names no engine, and
+/// the count twelve lines below already removed it before comparing. A licence
+/// nobody uses is permission for the next person to put a decision back into
+/// the one file no test can import, which is the defect this branch exists
+/// downstream of.
 /// Everything else in the crate still names no engine at all.
 ///
 /// **`scene.rs` was added deliberately at Step 3, which is the only way a file
@@ -3007,7 +3014,7 @@ const VIEWER_SHELL_FILE: &str = "main.rs";
 /// is the arithmetic behind it: the molecule is built in `molecule.rs` and the
 /// camera's angles live in `orbit.rs`, both in the strictest tier and both
 /// testable with no app at all.
-const VIEWER_ENGINE_FILES: &[&str] = &["main.rs", "app.rs", "scene.rs"];
+const VIEWER_ENGINE_FILES: &[&str] = &["app.rs", "scene.rs"];
 
 /// The files that draw, and may therefore name `egui`.
 ///
@@ -3029,7 +3036,7 @@ const VIEWER_DRAWING_FILES: &[&str] = &["panel.rs"];
 ///
 /// It governs [`check_the_viewer_seam_holds`]'s `wgpu` count as well as its ban,
 /// so it binds [`VIEWER_SHELL_FILE`] too even though the shell's ban list is
-/// empty — exactly as `eframe` is pinned to one file whose own ban list is
+/// empty — exactly as the engine is pinned to the files whose own ban list is
 /// empty.
 const VIEWER_GPU_FILES: &[&str] = &[];
 
@@ -3060,7 +3067,7 @@ const VIEWER_GPU_FILES: &[&str] = &[];
 /// **These bind [`VIEWER_SHELL_FILE`] as well**, which is the one place this
 /// function deliberately disagrees with [`viewer_banned_imports`]. The shell's
 /// empty ban list is justified by "no headless test reaches it, so there is
-/// nothing to protect" — true of `eframe`, and the licence for `wgpu` is a
+/// nothing to protect" — true of the engine, and the licence for `wgpu` is a
 /// different question: it is which files were *chosen* to hold GPU code. The
 /// shell may well want `wgpu` for the render state; when it does it joins
 /// [`VIEWER_GPU_FILES`] like any other file.
@@ -3098,7 +3105,7 @@ fn banned_idents_given(file: &str, gpu_files: &[&str]) -> Vec<&'static str> {
 /// **The default is the strictest tier, and that inversion is the whole
 /// design.** The shipped version of this rule was a two-entry table, so a new
 /// `.rs` file — which is exactly what Step 2 wanted to add — was checked for
-/// *nothing*: it could name `eframe`, or build strings while calling itself a
+/// *nothing*: it could name the engine, or build strings while calling itself a
 /// drawing file. Enumerating the files instead moves the hand-kept-list failure
 /// mode down into the entry, where `("periodic.rs", &[])` is one word wide and
 /// builds green. Defaulting to strict means the way to get a licence is to ask
@@ -3143,14 +3150,14 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     // this function returned `Ok(())` here. That is the same fail-open shape as
     // the `crates/` rename that blinded `check_every_member_inherits_the_lints`
     // while eight other guards fired: rename or move `crates/borbax-ui` and the
-    // *entire* seam check — every tier, the `eframe` count and the
+    // *entire* seam check — every tier, the engine count and the
     // `Universe::generate` count — passes silently, with nothing in the output
     // saying it checked nothing.
     if !viewer_src.exists() {
         failures.push(format!(
             "viewer seam: {VIEWER}/src does not exist, so the seam was not checked. \
              If the viewer has moved, move this check with it; a silent pass here \
-             disables the per-file seam, the `eframe` count and the \
+             disables the per-file seam, the engine count and the \
              `Universe::generate` count at once"
         ));
         return Ok(());
@@ -3169,7 +3176,7 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
         // `file_name() == "main.rs"` and would be handed the *unrestricted*
         // tier — the laxest rule applied to a file nobody named, which inverts
         // the unknown-is-strict rule this whole check is built on. A nested
-        // `panel.rs` claims the drawing licence the same way, and the `eframe`
+        // `panel.rs` claims the drawing licence the same way, and the engine
         // count is fooled twice over: two files called `main.rs` count as
         // `["main.rs", "main.rs"]`, and one hidden in a subdirectory passes as a
         // legitimate `["main.rs"]`.
@@ -3193,8 +3200,8 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
                 failures.push(format!(
                     "viewer seam: {VIEWER}/src/{name} contains `{needle}` in code. \
                      Files name no UI type by default, named drawing files may name \
-                     `egui` but build no strings, and only `{VIEWER_SHELL_FILE}` may \
-                     name `eframe` — that split is what lets `egui_kittest` drive the \
+                     `egui` but build no strings, and the engine files may name \
+                     both and build none — that split is what lets `egui_kittest` drive the \
                      real drawing code with no window, and what keeps every string \
                      assertion pointed at what the window actually paints. If this is \
                      a new drawing file, add it to `VIEWER_DRAWING_FILES` and say why \
@@ -3225,10 +3232,10 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
         }
     }
 
-    // **`eframe` lives in exactly one file, and that file is `main.rs`.**
+    // **The engine is named in code by exactly the licensed files.**
     //
     // This is the half a per-file ban list cannot enforce, and before this it
-    // was enforced by *nobody*: "only `main.rs` names `eframe`" held only
+    // was enforced by *nobody*: "only one file names the engine" held only
     // because there happened to be three files and two of them banned the
     // string. A fourth file added with a lax entry — `("periodic.rs", &[])` —
     // reopens it with a green build, which is the hand-kept-list failure mode
@@ -3258,9 +3265,9 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     //
     // The ban list is keyed on a tier, and being in a tier is a licence for
     // *that tier's* needles: a file added to `VIEWER_DRAWING_FILES` gets
-    // `["eframe", "format!"]` and — before this — nothing about `wgpu` at all.
+    // `["egui", "format!"]` and — before this — nothing about `wgpu` at all.
     // So the ban alone lets a lax entry reopen the rule with a green build,
-    // which is precisely why `eframe_homes` exists two lines up. Counting makes
+    // which is precisely why `wgpu_homes` exists two lines up. Counting makes
     // the invariant independent of the tier table.
     //
     // **The equality is against the licence list, so it fails in both
@@ -3282,6 +3289,8 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     }
 
     check_the_viewer_calls_the_chemistry_once(root, &viewer_src, failures)?;
+    check_the_chemistry_has_one_door(root, &viewer_src, failures)?;
+    check_the_viewer_narrows_in_one_place(&viewer_src, failures)?;
     Ok(())
 }
 
@@ -3402,11 +3411,16 @@ fn check_the_viewer_calls_the_chemistry_once(
 ///
 /// Returns the total and a human-readable site list for the failure message.
 ///
-/// **A file that cannot be lexed is a failure, never a zero**, and unifying the
-/// three callers on this is what closed a live hole: the `.pattern()` count used
-/// to `continue` silently on an unlexable file, so a syntax error anywhere under
-/// `src` made that half of the guard pass by scanning nothing. The
-/// `Universe::generate` half already failed loudly; now all of them do.
+/// **A file that cannot be lexed is a failure, never a zero.** The `.pattern()`
+/// count used to `continue` silently where the `Universe::generate` half failed
+/// loudly; unifying them makes all three loud.
+///
+/// **That is defence in depth, not a closed live hole**, and the difference was
+/// measured rather than reasoned: an unlexable file under `src` aborts the whole
+/// `xtask` run at an earlier `syn::parse_file`, so the seam counting is never
+/// reached and the silent `continue` was unreachable. It is worth keeping
+/// because that ordering is not a property anyone declared — it changes the day
+/// a check moves or narrows.
 ///
 /// **Shipped code only.** A `#[cfg(test)]` module that legitimately calls one of
 /// these would otherwise fire the guard on correct code, and a guard that fires
@@ -3444,6 +3458,141 @@ fn call_sites_under(
         .collect::<Vec<_>>()
         .join(", ");
     Ok((total, where_))
+}
+
+/// The chemistry is reached from exactly one file in the viewer.
+///
+/// **This is the §8.6 guard, and it replaces an enumeration that covered two of
+/// six operations.** The previous form counted call sites of `embed` and
+/// `canonicalise` by name. §8.6 names six per-species operations —
+/// canonicalisation, embedding, signature construction, folding, cavity
+/// extraction and per-bond decay — and two of the four uncounted ones,
+/// `signature` and `affinity`, are reachable *today*, because `borbax-molecule`
+/// is a dependency of the viewer. Folding and cavity extraction arrive later
+/// into the same crate and would have arrived unguarded.
+///
+/// Worse, the enumeration had a hole its own message disclosed and a review
+/// then demonstrated: an aliased `embed`, called from a system that runs **every
+/// frame**, passed the whole gate with `re_embeds` flat. All three §8.6 guards
+/// were blind at once.
+///
+/// **So the default is inverted, the way the seam tiers already do it**: instead
+/// of naming the functions that are forbidden, name the files that are allowed
+/// to reach the chemistry crate at all. An alias still has to name the crate to
+/// import from it, so the hole closes; operations that do not exist yet are
+/// covered the day they are written; and the rule is one line rather than a list
+/// that has to be kept in step with a spec section.
+///
+/// Measured when written: `borbax_molecule` appears in exactly one file under
+/// `crates/borbax-ui/src`, so this needs no exemption list.
+fn check_the_chemistry_has_one_door(
+    root: &Path,
+    viewer_src: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    const CHEMISTRY_DOOR: &str = "molecule.rs";
+    /// The crate every per-species operation lives in, as one token.
+    const CHEMISTRY_CRATE: &[&str] = &["borbax_molecule"];
+    let mut doors = Vec::new();
+    for path in walk(viewer_src)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        // **Counted as a token, not as text.** `identifier_segments` splits on
+        // underscores, so it never sees the crate's name whole — the first
+        // version of this check found zero doors in a tree that has one.
+        let Some(hits) = count_outside_tests(&src, CHEMISTRY_CRATE) else {
+            failures.push(format!(
+                "viewer seam: crates/borbax-ui/src/{} could not be lexed, so its \
+                 chemistry imports were not counted",
+                path.strip_prefix(viewer_src).unwrap_or(&path).display()
+            ));
+            continue;
+        };
+        if hits > 0 {
+            doors.push(
+                path.strip_prefix(viewer_src)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    doors.sort();
+    if doors != vec![CHEMISTRY_DOOR.to_owned()] {
+        failures.push(format!(
+            "viewer seam: `borbax_molecule` is named in code by {doors:?} under \
+             crates/borbax-ui/src, expected exactly [\"{CHEMISTRY_DOOR}\"]. Every \
+             per-species operation the chemistry owns — canonicalisation, \
+             embedding, signatures, folding, cavities, decay rates — is work that \
+             must happen once per species and never inside a frame, and confining \
+             the *import* is what covers the ones that do not exist yet. The \
+             counter on `ViewerState` cannot help: a call written straight into a \
+             frame system never goes through it. If a second file genuinely needs \
+             the chemistry, add it here and say what it computes and when"
+        ));
+    }
+    let _ = root;
+    Ok(())
+}
+
+/// The viewer narrows `f64` to `f32` in exactly one place.
+///
+/// **`scene.rs`'s own doc claimed this check existed before it did.** A second
+/// `const fn shrink2` beside the first passed the entire gate; what was actually
+/// enforcing anything was `clippy::as_conversions`, which demands an `#[expect]`
+/// per site and says nothing about how many sites there are.
+///
+/// The invariant is worth holding: the narrowing is a display requirement, and a
+/// display requirement spreading through code that handles chemistry values is
+/// how a rounding choice reaches a number that came out of the solver.
+///
+/// The whole-pixel narrowing for the viewport is a *different* cast (`f32` to
+/// `u32`, forced by the engine's viewport API) and is deliberately not counted
+/// here.
+fn check_the_viewer_narrows_in_one_place(
+    viewer_src: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    const NARROW_CAST: &[&str] = &["x", "as", "f32"];
+    let mut sites = Vec::new();
+    for path in walk(viewer_src)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let Some(hits) = count_outside_tests(&src, NARROW_CAST) else {
+            failures.push(format!(
+                "viewer seam: crates/borbax-ui/src/{} could not be lexed, so its \
+                 `as f32` casts were not counted",
+                path.strip_prefix(viewer_src).unwrap_or(&path).display()
+            ));
+            continue;
+        };
+        if hits > 0 {
+            sites.push((
+                path.strip_prefix(viewer_src)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string(),
+                hits,
+            ));
+        }
+    }
+    let total: usize = sites.iter().map(|(_, n)| n).sum();
+    if total != 1 {
+        failures.push(format!(
+            "viewer seam: the viewer narrows `f64` to `f32` at {total} site(s) \
+             ({sites:?}), expected exactly 1 (in scene.rs, `narrow`). Every \
+             coordinate, radius and camera position crosses that one function, \
+             which is what keeps a display-driven rounding from spreading into \
+             code that handles a value the solver produced. Note the needle \
+             matches the binding `x as f32` specifically, so it is the declared \
+             boundary being counted and not every cast in the crate"
+        ));
+    }
+    Ok(())
 }
 
 /// Wall-clock is readable in exactly one file under [`DATA_FREE_ROOTS`].
@@ -7800,7 +7949,7 @@ disallowed-types = [ { path = \"right::One\" } ]
     ///
     /// This is the whole inversion. The shipped check was a two-entry table, so
     /// a new `.rs` file under `crates/borbax-ui/src` was checked for *nothing* —
-    /// it could name `eframe`, or build strings while calling itself a drawing
+    /// it could name the engine, or build strings while calling itself a drawing
     /// file. Step 2 is the first step that wanted to add a file, which is why
     /// this is the moment it was worth fixing.
     #[test]
@@ -7890,7 +8039,7 @@ disallowed-types = [ { path = \"right::One\" } ]
     /// `wgpu` and `epaint` are refused by default, exactly as `egui` is.
     ///
     /// **Both were holes on `main`, found by reading the tier table rather than
-    /// by a test.** `viewer_banned_imports` returns `["egui", "eframe"]` for the
+    /// by a test.** `viewer_banned_imports` returns `["egui"]` for the
     /// strictest tier, and raw `wgpu` matches neither — so `state.rs`, the file
     /// whose whole identity is "a test can reach it without a window", could
     /// write `use wgpu::Device;` and pass. `egui_wgpu` *was* caught, by the

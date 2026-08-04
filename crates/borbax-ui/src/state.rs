@@ -356,6 +356,7 @@ pub struct ViewerState {
     outcome: Outcome,
     regenerations: u64,
     re_embeds: u64,
+    reloads: u64,
 }
 
 impl Default for ViewerState {
@@ -374,6 +375,7 @@ impl ViewerState {
             outcome: Outcome::Rejected(SeedError::Empty),
             regenerations: 0,
             re_embeds: 0,
+            reloads: 0,
         }
     }
 
@@ -659,25 +661,35 @@ impl ViewerState {
     }
 
     fn reload(&mut self) {
+        // **At the entry, deliberately, and this is the one counter here that
+        // should be.** Its job is to tell the scene that what it is drawing is
+        // out of date, and a *refused* seed makes it out of date just as surely
+        // as a loaded one: the previous universe's molecule must come off the
+        // screen beside the refusal, which is `Outcome`'s whole argument carried
+        // one layer down into the entity cache.
+        //
+        // Gating the scene on `re_embeds` instead left the old atoms on screen
+        // under the refusal message, with 532 tests green — exactly what the
+        // Step 3 memo's manual checklist item 8 says must not happen.
+        self.reloads = self.reloads.saturating_add(1);
         self.outcome = match parse_seed(&self.seed_text) {
             Ok(seed) => {
                 let universe = Universe::generate(seed);
-                // **Adjacent to the call it counts**, like `regenerations` one
-                // line below and for the same reason: an increment at function
-                // entry counts *commits*, a different quantity that agrees today
-                // and would stop agreeing the moment building and loading split.
-                //
-                // It counts layouts, not `canonicalise` attempts. Those happen
-                // together today and will not always — `canonicalise` returns a
-                // `Result` — and a counter over the pair would report
-                // "molecules laid out" while measuring "molecules tried".
                 // **Boxed**, for the reason `universe` beside it is: an
                 // `Embedding` carries fixed-size arrays for the largest
                 // molecule the graph type allows, so an unboxed one would make
                 // every `Outcome` anywhere carry that footprint to hold a
                 // four-byte refusal.
                 let scene = crate::molecule::build(&universe).map(Box::new);
-                self.re_embeds = self.re_embeds.saturating_add(1);
+                // **Inside the `is_some`, and the previous version was not.**
+                // `build` returns `None` without ever calling `embed`, so an
+                // unconditional increment counted *attempts* while three
+                // comments — including the one that used to sit here, warning
+                // against this exact conflation — claimed it counted layouts.
+                // Five review lanes found it independently.
+                if scene.is_some() {
+                    self.re_embeds = self.re_embeds.saturating_add(1);
+                }
                 // Incremented **here**, adjacent to the call it counts, and not
                 // at the top of this function. An increment at the entry counts
                 // *commits*, which is a different quantity that happens to
@@ -726,10 +738,15 @@ impl ViewerState {
 
     /// How many molecules have been laid out since this state was created.
     ///
-    /// **The §8.6 guard, and it counts layouts rather than attempts.** `embed`
-    /// runs 240 fixed solver iterations and `canonicalise` searches for a
-    /// labelling; both are per-species work that must never reach a frame. This
-    /// rises exactly once per universe loaded.
+    /// **The §8.6 guard, and it now counts layouts rather than attempts.** It
+    /// rises only when `build` returned a molecule, so it is `embed`'s own
+    /// count: `embed` runs 240 fixed solver iterations and `canonicalise`
+    /// searches for a labelling, and both are per-species work that must never
+    /// reach a frame.
+    ///
+    /// **This is not the scene's change token** — [`Self::reloads`] is. The two
+    /// were the same field until a review found that gating the scene on this
+    /// one left the previous universe's molecule on screen under a refusal.
     ///
     /// **What it cannot see, stated so nobody reads it as covering more than it
     /// does.** It does not see an `embed` written straight into a paint body or
@@ -741,6 +758,19 @@ impl ViewerState {
     #[must_use]
     pub const fn re_embeds(&self) -> u64 {
         self.re_embeds
+    }
+
+    /// How many times a seed has been committed, loaded or refused.
+    ///
+    /// **The scene's change token, and it counts commits on purpose.** Every
+    /// other counter here is adjacent to the call it counts, because counting
+    /// commits would measure the wrong quantity. This one wants commits: the
+    /// question it answers is "is what the scene is drawing still the right
+    /// thing", and a refused seed changes that answer without laying anything
+    /// out.
+    #[must_use]
+    pub const fn reloads(&self) -> u64 {
+        self.reloads
     }
 
     /// The molecule to draw, if this universe has one.

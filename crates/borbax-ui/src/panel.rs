@@ -1,6 +1,6 @@
 //! The drawing, and nothing that decides anything.
 //!
-//! **This file imports `egui` and never `eframe`.** `egui` lays widgets out on
+//! **This file imports `egui` and names no engine.** `egui` lays widgets out on
 //! the CPU and cannot open a window, which is what lets `egui_kittest` drive
 //! [`draw`] through the accessibility tree in CI with no window and no GPU.
 //!
@@ -38,10 +38,13 @@ use crate::state::{ViewerState, moment};
 fn legible(ui: &mut egui::Ui) {
     let style = ui.style_mut();
 
-    // **Pinned to the dark theme rather than inherited.** `eframe` follows the
-    // system appearance, so the same code produced light buttons on a dark
-    // panel — a machine-dependent look that no headless test can see, in a
-    // program whose whole job is being looked at.
+    // **Pinned to the dark theme rather than inherited.** Under the previous
+    // shell this followed the system appearance, so the same code produced light
+    // buttons on a dark panel — a machine-dependent look no headless test can
+    // see, in a program whose whole job is being looked at. Whether the current
+    // bridge would inherit it is unverified, which is exactly why the pin stays
+    // and why the manual checklist still has an item for running it in a light
+    // theme.
     style.visuals = egui::Visuals::dark();
 
     // **Labels only, and NOT `override_text_color`.** That field is a blunt
@@ -214,6 +217,17 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
 
     ui.separator();
     periodic_table(state, ui);
+
+    // **The scene's caption, and it is emitted here rather than beside the
+    // scene for the reason this whole file exists.** It was painted from the
+    // engine file at first, which is outside every frame test — so the label
+    // naming the entire new feature could have returned an empty string, or the
+    // wrong elements, with all 532 tests green. That is this file's own seam
+    // rule defeated by a different door: the string moved to `state.rs` as the
+    // rule asks, and then the widget went somewhere no test looks.
+    //
+    // It sits outside the 3D region, because there is no text inside it.
+    ui.label(state.scene_caption());
 }
 
 /// The grid of elements, and the properties of whichever one is selected.

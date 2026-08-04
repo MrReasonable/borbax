@@ -47,15 +47,24 @@
 //!
 //! | File | May name in code | Holds |
 //! |---|---|---|
-//! | [`state`] | no engine or UI type at all | every decision, and every test that can reach one |
+//! | [`state`], [`molecule`], [`orbit`] | no engine or UI type at all | every decision, the chemistry it asks for, the camera's arithmetic — and every test that can reach them with no app at all |
 //! | [`panel`] | `egui` (via `bevy_egui`) | the drawing, and no `format!` |
-//! | `main.rs` | `bevy` | the window, and nothing else |
+//! | [`app`], [`scene`] | `bevy` and `egui` | the window, the entities and the frame loop — and no `format!` either |
+//! | `main.rs` | nothing | one statement |
+//!
+//! **`main.rs` is on that table with an empty licence, and that is the point.**
+//! It held the engine licence until a review removed it and measured the gate
+//! still green. A licence nobody uses is permission for the next person to put a
+//! decision back into the one file no test can import, which is how an empty
+//! window shipped with 509 tests passing.
 //!
 //! **"In code" is load-bearing and a plain `grep` will not tell you this.** The
 //! prose necessarily quotes what it forbids — this paragraph names `bevy`, and
 //! [`panel`]'s module doc says "there is no `format!` in this file" — so a raw
-//! `grep -rl bevy src/` reports three files and a `grep format! panel.rs`
-//! reports one, both correctly and both uselessly. `cargo xtask` strips
+//! `grep -rl bevy src/` reports **four** files against the two that name it in
+//! code, and a `grep format! panel.rs` reports one, all correctly and all
+//! uselessly. (The count is deliberately stated: an earlier version said three,
+//! which was the number before this file's own table grew a row.) `cargo xtask` strips
 //! whole-line comments before matching, which is the check that means anything.
 //!
 //! **`bevy` is matched as a whole identifier and `egui` as a substring**, and
@@ -166,7 +175,7 @@ pub const OPENING_SEED: u64 = 1;
 
 /// The size the window **requests** at startup, in logical points (§14.0).
 ///
-/// Requested, not guaranteed: `eframe` hands this to the platform, which may
+/// Requested, not guaranteed: the engine hands this to the platform, which may
 /// scale it or clamp it to the monitor. So the frame test that reads this
 /// constant is asserting about the geometry the program *asks for*, which is the
 /// thing this repository controls — not about a physical window it cannot

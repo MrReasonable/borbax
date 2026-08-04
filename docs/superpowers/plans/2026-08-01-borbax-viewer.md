@@ -30,8 +30,16 @@ shrinks to the golden-testable subset once the viewer owns presentation.
 
 ## What it is
 
-A native desktop application. `eframe`/`egui` for the interface, `wgpu` for the
-3D scene, Rust throughout.
+A native desktop application. **Bevy** for the window, the 3D scene and input,
+with `egui` (through `bevy_egui`) for the interface, Rust throughout.
+
+**This paragraph said `eframe`/`egui` + hand-rolled `wgpu` until 2026-08-04.**
+Ian's ruling on 2026-08-03 moved the viewer to a game engine — "the last thing I
+want to have to focus on is the rendering, collisions etc" — under the standing
+constraint that Bevy is for **displaying and interacting only**: the physics, the
+chemistry and the generation stay ours. Everything below that still says
+`eframe`, `wgpu` or `camera.rs` is history and is marked as such where it
+matters.
 
 **Native, per spec §14.0**, whose reasons still hold — the geometry is 3D so a
 browser needs WebGL regardless and gains nothing, and a web build adds a second
@@ -184,10 +192,13 @@ what a child finds in a folder and `-ui` names a fact about the repository.
 
 ```text
 src/
-  main.rs        eframe entry and the window — the ONLY file that names eframe
+  main.rs        one statement, and no licence to name anything
+  app.rs         the engine, the plugins, the cameras — names bevy and egui
+  scene.rs       the 3D entities and the input — names bevy and egui
   state.rs       every decision, and no UI import at all
+  molecule.rs    the demo molecule, and the crate's only door to the chemistry
+  orbit.rs       the camera's arithmetic — no engine type, testable with no app
   panel.rs       the drawing — imports egui, contains no `format!`
-  periodic.rs    the element table panel
   builder.rs     assembling a molecule from elements and bonds
   scene/
     camera.rs    orbit camera — the only place with its own maths
@@ -200,23 +211,27 @@ src/
 against `state.rs` read "what is selected; nothing computed here", and Step 1
 found that exactly backwards: `state.rs` is where *everything* is computed,
 because it is the half a test can reach without a window. The rule that actually
-holds is about imports — `state.rs` names no UI type, `panel.rs` names `egui`
-(a CPU layout library that cannot open a window, so `egui_kittest` can drive it
-headlessly in CI), and only `main.rs` names `eframe`. Formatting lives in
-`state.rs` and `panel.rs` has no `format!`, so a test asserting on a string is
-asserting on what the window paints.
+holds is about imports — `state.rs`, `molecule.rs` and `orbit.rs` name no UI or
+engine type; `panel.rs` names `egui` (a CPU layout library that cannot open a
+window, so `egui_kittest` can drive it headlessly in CI); `app.rs` and `scene.rs`
+may name the engine and may build no strings; `main.rs` names nothing at all.
+Formatting lives in `state.rs`, so a test asserting on a string is asserting on
+what the window paints.
 
-**A `camera.rs` writing `.cos()` will fail the gate, and Step 3 should not be
-where that is discovered.** `clippy.toml`'s §13.1 ban resolves for every
-workspace member, and `xtask`'s textual scan has **no path exemption by
-design** — so a clippy `#[expect]` silences only half of it. The viewer produces
-no results, so routing camera trig through `det_math` is cost with no benefit;
-the likely answer is a per-site `#[expect]` plus an `xtask` ruling. Settle it
-before Step 3 rather than during it.
+**Settled at Step 3, and it went the other way.** This paragraph predicted that
+routing the camera's trig through `det_math` would be "cost with no benefit" and
+that the answer was "a per-site `#[expect]` plus an `xtask` ruling". It is not:
+an `#[expect]` silences clippy and leaves `xtask`'s textual scan firing, so the
+proposed exception would not have worked — and compliance turned out to cost one
+import. The camera's trig goes through `det_math`, no exception was granted, and
+`check_libm_has_one_home` landed with it.
 
-**Dependencies.** `eframe` (bundles `egui` and `wgpu`) is the only substantial
-addition. It is a **binary-only, non-result-affecting** dependency, so §18's bar
-is the low one — it cannot touch simulation output.
+**Dependencies.** Bevy plus `bevy_egui` are the substantial addition — about 530
+packages against `eframe`'s 164, which is a real cost in CI time on three
+platforms. They are **binary-only, non-result-affecting**, so §18's bar is the
+low one: verified rather than asserted at Step 3's review, by checking that the
+feature union on `libm` is unchanged, which is the way a leaf consumer *could*
+have reached a lower crate.
 
 **Its cost is new and wholly the viewer's, and an earlier version of this plan
 said otherwise twice.** It claimed `wgpu` "is already in the dependency tree for
@@ -453,8 +468,17 @@ this paragraph exists.
       exists rather than adding physics.*
 
       He asked for sub-atomic particles, for elements with distinct characters
-      the way real ones have, and for something answering to "noble gases". Three
-      of those are already computed and simply never drawn:
+      the way real ones have, and for something answering to the inert elements
+      of the real table. Three of those are already computed and simply never
+      drawn.
+
+      **A warning about vocabulary, because the first draft of this step failed
+      it.** Explaining the analogy to Ian in conversation is fine and necessary.
+      Writing a real-world family name into the *plan* is how it becomes a label
+      in the UI, and a label mapping an invented element onto a real chemical
+      family is exactly the Borbax-to-real mapping §5 forbids. The step must name
+      what the generator computes — a closed outer shell with no bonding contact
+      left — and let the child discover the resemblance rather than assert it.
 
       - **The sub-atomic layer is the base unit.** An element *is* a cluster of
         `units` base units, and `period`/`group` are how they stack. Drawing the
@@ -462,10 +486,11 @@ this paragraph exists.
         incomplete — shows the actual thing the generator computes. It is
         structurally the nucleus-and-shells picture without importing a single
         real-world particle.
-      - **The noble gases are already there**: `valence == 0` is a closed outer
-        shell with no contact left to make, so those elements bond with nothing.
-        The properties block already prints "none — a closed shell". They need
-        marking in the table, not inventing.
+      - **The inert elements are already there**: `valence == 0` is a closed
+        outer shell with no contact left to make, so those elements bond with
+        nothing. The properties block already prints "none — a closed shell".
+        They need *marking in the table*, not inventing — and the mark must be
+        drawn from that fact, never from a real family's name.
       - **Families should FALL OUT of the generation, never be declared.** Real
         families exist because of how the outer shell fills, and Borbax generates
         that same quantity — so the groupings are to be *found* and named, not

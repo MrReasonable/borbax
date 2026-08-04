@@ -44,8 +44,8 @@ use crate::orbit::{FOV_Y, NEAR, Orbit};
 mod systems {
     use super::{
         AccumulatedMouseMotion, AccumulatedMouseScroll, Atom, AtomLook, DrawnAt, EguiWantsInput,
-        FOV_Y, MouseScrollUnit, NEAR, Orbit, OrbitState, SceneCamera, SceneRegion, Viewer,
-        Viewport, WORLD_UP, pixels, point, shrink,
+        FOV_Y, LARGEST_VIEWPORT, MouseScrollUnit, NEAR, Orbit, OrbitState, SceneCamera,
+        SceneRegion, Viewer, Viewport, WORLD_UP, narrow, pixels, place,
     };
     use bevy::prelude::*;
 
@@ -65,8 +65,8 @@ mod systems {
                 ..default()
             },
             Projection::Perspective(PerspectiveProjection {
-                fov: shrink(FOV_Y),
-                near: shrink(NEAR),
+                fov: narrow(FOV_Y),
+                near: narrow(NEAR),
                 ..default()
             }),
             Transform::from_xyz(0.0, 0.0, 1.0).looking_at(Vec3::ZERO, WORLD_UP),
@@ -105,10 +105,17 @@ mod systems {
             Transform::from_xyz(4.0, 8.0, 6.0).looking_at(Vec3::ZERO, WORLD_UP),
         ));
 
-        // **One mesh and one material, shared by every atom.** The material
-        // being a single handle is what makes "no colour encodes any property"
-        // checkable in one assertion rather than by reading. Atoms are told
-        // apart by radius, which is a generated quantity drawn faithfully.
+        // **One mesh and one material, shared by every atom**, and both halves
+        // are guarded. A single material handle is what makes "no colour encodes
+        // any property" checkable in one assertion rather than by reading — and
+        // a single *mesh* handle closes the same door one channel along, because
+        // a per-atom mesh keyed on valence (a subdivision count, a different
+        // primitive) is a property map reaching the screen through geometry.
+        // Measured during review: giving every atom its own mesh handle failed
+        // only the material assertion.
+        //
+        // Atoms are told apart by radius, which is a generated quantity drawn
+        // faithfully.
         commands.insert_resource(AtomLook {
             mesh: meshes.add(Mesh::from(Sphere::new(1.0))),
             material: materials.add(StandardMaterial {
@@ -121,11 +128,24 @@ mod systems {
 
     /// Replace the atoms when a different molecule has been laid out.
     ///
-    /// **Gated on the layout counter, not on the resource being "changed".**
-    /// `ResMut<Viewer>` marks the resource changed on every frame the panel
-    /// draws, so `resource_changed` here would tear down and rebuild the whole
-    /// scene at the display's refresh rate — silently, and with exactly the
-    /// entity churn that shuffles query order.
+    /// **Gated on the reload token, not on the resource being "changed".** Two
+    /// separate reasons, and the second is the better one:
+    ///
+    /// - `ResMut<Viewer>` marks the resource changed on every frame the panel
+    ///   draws — measured, 40 frames out of 40 — so `resource_changed` would
+    ///   tear down and rebuild the whole scene at the refresh rate, silently,
+    ///   with exactly the entity churn that shuffles query order.
+    /// - Even with that fixed, `resource_changed` would still be wrong: the
+    ///   viewer's state also changes on a keystroke that does not parse, on a
+    ///   name-box edit and on a cell selection, none of which change the
+    ///   molecule. `reloads` is the right *quantity*, not a workaround for a
+    ///   framework wart — which matters, because someone who "fixes" the
+    ///   `ResMut` would otherwise believe they had removed a hack.
+    ///
+    /// **`reloads`, not `re_embeds`.** A refused seed lays nothing out, so
+    /// `re_embeds` does not move — and gating on it left the previous
+    /// universe's molecule on screen underneath the refusal message, with the
+    /// whole suite green.
     pub(super) fn respawn_atoms(
         mut commands: Commands<'_, '_>,
         viewer: Res<'_, Viewer>,
@@ -134,11 +154,11 @@ mod systems {
         mut orbit: ResMut<'_, OrbitState>,
         existing: Query<'_, '_, Entity, With<Atom>>,
     ) {
-        let laid_out = viewer.0.re_embeds();
-        if drawn.0 == laid_out {
+        let generation = viewer.0.reloads();
+        if drawn.0 == generation {
             return;
         }
-        drawn.0 = laid_out;
+        drawn.0 = generation;
 
         for entity in existing.iter() {
             commands.entity(entity).despawn();
@@ -154,8 +174,8 @@ mod systems {
                 // The sphere mesh has unit radius, so scaling by the atom's own
                 // radius is the whole transform. No fudge, no clamp, no
                 // per-atom adjustment: the picture is the chemistry.
-                Transform::from_translation(point(*position))
-                    .with_scale(Vec3::splat(shrink(radius.get()))),
+                Transform::from_translation(place(*position))
+                    .with_scale(Vec3::splat(narrow(radius.get()))),
                 Atom,
             ));
         }
@@ -214,8 +234,8 @@ mod systems {
         // every orientation — which is what lets the molecule tumble freely
         // without the image ever flipping, and means `looking_at` never has to
         // fall back to an arbitrary axis.
-        *transform = Transform::from_translation(point(orbit.0.eye()))
-            .looking_at(Vec3::ZERO, point(orbit.0.up()));
+        *transform = Transform::from_translation(place(orbit.0.eye()))
+            .looking_at(Vec3::ZERO, place(orbit.0.up()));
 
         let Some(rect) = region.0 else { return };
         // egui works in logical points and a viewport is in physical pixels.
@@ -227,7 +247,20 @@ mod systems {
         let size = rect.size() * scale;
         // A zero-sized viewport is invalid, so a window dragged too small drops
         // the viewport rather than clamping it to a degenerate one.
-        if size.x < 1.0 || size.y < 1.0 {
+        //
+        // **Written as `!(a && b)` rather than `a || b`, and that is the fix
+        // rather than a style choice.** The `<` form is *false* for NaN, so a
+        // non-finite rect skipped the very branch that exists to reject a
+        // degenerate viewport and went on to build a zero-sized one — the guard
+        // shaped to catch the bad case was the one comparison the bad case
+        // passed through. The upper bound is here for the other end the
+        // saturating cast leaves open: a very large extent would otherwise
+        // become `u32::MAX`.
+        let sane = size.x >= 1.0
+            && size.y >= 1.0
+            && size.x <= LARGEST_VIEWPORT
+            && size.y <= LARGEST_VIEWPORT;
+        if !sane {
             camera.viewport = None;
             return;
         }
@@ -241,6 +274,12 @@ mod systems {
 
 /// Which way is up, before the camera has an opinion.
 const WORLD_UP: Vec3 = Vec3::Y;
+
+/// The largest viewport edge, in physical pixels, that is worth believing.
+///
+/// Nothing plausible reaches it; it exists so a non-finite or absurd layout rect
+/// is refused before the saturating cast turns it into `u32::MAX`.
+const LARGEST_VIEWPORT: f32 = 65_536.0;
 
 /// Marks the camera the molecule is drawn through.
 #[derive(Component, Debug)]
@@ -258,7 +297,7 @@ pub struct OrbitState(pub Orbit);
 #[derive(Resource, Default, Debug)]
 pub struct SceneRegion(pub Option<Rect>);
 
-/// Which layout the atoms currently on screen were built from.
+/// Which reload the atoms currently on screen were built from.
 #[derive(Resource, Default, Debug)]
 pub struct DrawnAt(pub u64);
 
@@ -279,7 +318,13 @@ pub use crate::app::Viewer;
 ///
 /// Every coordinate, radius and camera position crosses here and nowhere else,
 /// which is what keeps a display-driven narrowing from spreading into a
-/// chemistry value. `xtask` counts the spelling.
+/// chemistry value.
+///
+/// **`xtask` counts the spelling — and did not when this sentence was first
+/// written.** The claim shipped as prose describing a check nobody had written;
+/// a second `const fn shrink2` beside this one passed the whole gate. What was
+/// actually enforcing anything was `clippy::as_conversions`, which requires an
+/// `#[expect]` per site but does not care how many sites there are.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::as_conversions,
@@ -287,28 +332,37 @@ pub use crate::app::Viewer;
               declared boundary between them, and the values crossing it are \
               positions and radii of order 1"
 )]
-const fn shrink(x: f64) -> f32 {
+pub const fn narrow(x: f64) -> f32 {
     x as f32
 }
 
 /// A chemistry-space point, as the engine wants it.
-const fn point(v: [f64; 3]) -> Vec3 {
-    Vec3::new(shrink(v[0]), shrink(v[1]), shrink(v[2]))
+pub const fn place(v: [f64; 3]) -> Vec3 {
+    Vec3::new(narrow(v[0]), narrow(v[1]), narrow(v[2]))
 }
 
 /// A logical-point coordinate as a whole physical pixel.
 ///
-/// **A second, different narrowing from [`shrink`], and it is named separately
+/// **A second, different narrowing from [`narrow`], and it is named separately
 /// rather than folded in.** A viewport is expressed in whole pixels and there is
 /// no floating-point spelling of one, so this cast is forced by the engine's API
-/// rather than by the GPU's number format. Negatives are floored to zero instead
-/// of wrapping to four billion: an egui rect can start above the window's origin
-/// for a frame during a resize.
+/// rather than by the GPU's number format.
+///
+/// **The guard is for legibility, not for safety, and the first version of this
+/// doc claimed otherwise.** It said negatives are floored "instead of wrapping to
+/// four billion" — Rust's float-to-integer casts have saturated since 1.45, so a
+/// negative already gives 0 and NaN already gives 0 without any help. What the
+/// explicit branch buys is a reader who can see the intent and an `#[expect]`
+/// that reads as deliberate. The end that is *not* handled here is the top: a
+/// very large extent saturates to `u32::MAX`, which the caller rejects before
+/// building a viewport out of it.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::as_conversions,
-    reason = "a viewport is whole pixels and the engine offers no float form;               the negative case is handled above the cast rather than by it"
+    reason = "a viewport is whole pixels and the engine offers no float form, \
+              and the explicit branch states an intent the saturating cast \
+              would leave implicit"
 )]
 fn pixels(x: f32) -> u32 {
     if x > 0.0 { x as u32 } else { 0 }
@@ -320,10 +374,24 @@ pub fn plugin(app: &mut App) {
         .init_resource::<SceneRegion>()
         .init_resource::<DrawnAt>()
         .add_systems(Startup, systems::spawn_scene)
-        .add_systems(Update, systems::respawn_atoms)
+        // **All three after the panel has drawn, and `respawn_atoms` was in
+        // `Update` until a review measured what that costs.** The panel runs in
+        // `EguiPrimaryContextPass`, which the bridge schedules *inside*
+        // `PostUpdate` — so a seed typed in one frame was not seen by a system
+        // in `Update` until the next one, and the caption changed a frame before
+        // the molecule did. Sixteen milliseconds, invisible, and exactly the
+        // frame-ordering class the panel spent five review rounds on.
+        //
+        // Chained, because the order among the three is load-bearing:
+        // `respawn_atoms` resets the orbit to frame a new molecule, and
+        // `aim_camera` must see that reset in the same frame it happens.
         .add_systems(
             PostUpdate,
-            (systems::drive_camera, systems::aim_camera)
+            (
+                systems::respawn_atoms,
+                systems::drive_camera,
+                systems::aim_camera,
+            )
                 .chain()
                 .after(bevy_egui::EguiPostUpdateSet::ProcessOutput),
         );

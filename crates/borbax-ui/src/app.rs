@@ -70,13 +70,7 @@ fn draw_panel(
     // green, because nothing in the suite looks at a pixel. Reserving the panel
     // at the top leaves a hole, and the hole is what the scene camera is aimed
     // at.
-    egui::Panel::top("controls").show(&mut root, |ui| {
-        draw(&mut viewer.0, ui);
-        // Outside the viewport, because there is no text inside it. Built in
-        // `state.rs` like every other computed string, so a test asserting on
-        // it is asserting on what the window shows.
-        ui.label(viewer.0.scene_caption());
-    });
+    egui::Panel::top("controls").show(&mut root, |ui| draw(&mut viewer.0, ui));
 
     // **Returned rather than agreed by convention.** The camera is aimed at
     // whatever the panel actually left, so the two cannot drift apart — and a

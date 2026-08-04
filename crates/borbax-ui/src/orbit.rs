@@ -74,11 +74,21 @@ const RADIANS_PER_POINT: f64 = 0.01;
 /// `bounding_radius / sin(FOV_Y / 2)` = `2.613 * bounding_radius`. Measured
 /// across 500 universes, `bounding / gyration` runs **1.6491 .. 1.7697**, so
 /// touching the edges is **4.3092 .. 4.6243** gyration radii. At 5.4 the
-/// molecule spans about 80-86% of the view's height, leaving a margin to turn
-/// into without any orientation pushing an atom off screen.
+/// molecule's silhouette spans **77-84%** of the view's height — measured as
+/// `tan(asin(bounding/distance)) / tan(FOV_Y/2)`, which is the linear span on
+/// screen. An earlier version of this line said "80-86%", which is the ratio of
+/// distances rather than a span, and attributed the margin to "room to turn
+/// into". **There is no room to turn into.** The bounding sphere is centred on
+/// the origin and the camera orbits the origin at a fixed distance, so the
+/// silhouette is *identical at every orientation* — which is exactly why the
+/// fit test can check one pose and cover them all. The margin buys visual
+/// headroom, which is a good reason and is now the stated one.
 ///
-/// Vertical is the binding direction because the scene region is wider than it
-/// is tall. If that stops being true, this constant is measuring the wrong axis.
+/// Vertical is the binding direction **while** the scene region is wider than it
+/// is tall — asserted here, not enforced. The engine keeps `fov` vertical and
+/// derives the horizontal half-angle from the viewport's aspect, so a window
+/// dragged narrower than it is tall puts atoms off the left and right edges. The
+/// region is whatever the panel leaves, so that is reachable by resizing.
 const FRAMING: f64 = 5.4;
 
 /// How far in and out of the framing distance the wheel may go.
@@ -102,11 +112,22 @@ const MIN_GYRATION: f64 = 1e-6;
 
 /// A rotation, as a unit quaternion.
 ///
-/// **Hand-rolled, and the reason is the seam rather than novelty.** This file is
-/// in the strictest tier — it may name no engine type — and the engine's own
-/// quaternion is `f32` anyway. Sixty lines of arithmetic keeps the camera
-/// testable with no app at all and keeps the transcendentals routed through
-/// `det_math`.
+/// **Hand-rolled, and the first two reasons written here were both false.** That
+/// version said this file "may name no engine type" and that "the engine's own
+/// quaternion is `f32` anyway". Neither survived review: `glam` is already in the
+/// lockfile via the engine and ships `DQuat` in **f64**, and `glam` is on no ban
+/// list — planting `use glam::DQuat;` here and running `cargo xtask` passes.
+///
+/// The reason that does hold is the one the workspace already gives for its
+/// three-component vector maths: sixty lines using none of what a linear-algebra
+/// crate sells, with total control over operation order. That matters because
+/// this arithmetic is scheduled to move into `borbax-geometry`, whose bytes are
+/// compared across the portability matrix — at which point a linear-algebra crate
+/// becomes a runtime dependency in a result-affecting path, which is the
+/// expensive half of the dependency doctrine.
+///
+/// A false argument is worth correcting even when the conclusion is right: this
+/// one would have been cited later to reject a dependency that was fine.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Rotation {
     w: f64,
@@ -155,14 +176,30 @@ impl Rotation {
 
     /// Scale back to unit length.
     ///
-    /// **Called after every turn, and it is not optional.** Composing rotations
-    /// accumulates error in the norm, and a quaternion that has drifted off the
-    /// unit sphere scales the scene as well as turning it — the molecule would
-    /// slowly grow or shrink as it was played with, which is the kind of defect
-    /// that takes a long session to notice and no test to hide.
+    /// **Called after every turn, and the reason first written here was wrong by
+    /// seven orders of magnitude.** That version said the molecule "would slowly
+    /// grow or shrink as it was played with". Measured, with this call deleted:
+    /// after **ten million** drags — 46 hours of continuous dragging at 60 Hz —
+    /// the quaternion's norm is 0.999999999821, so the molecule has shrunk by
+    /// 1.8e-8 percent. No person will ever see it, and no test here can fail on
+    /// it: the suite's three 1e-9 bars pass with four orders to spare after the
+    /// 1000 steps they run.
+    ///
+    /// It stays because [`Self::apply`] is only a rotation for a **unit**
+    /// quaternion — off the unit sphere it scales as well as turning, so the
+    /// call is what makes the formula below correct rather than what keeps a
+    /// drift small. It costs 25 ns per dragged frame, measured, which is
+    /// 0.00015% of a frame.
     fn unit(self) -> Self {
         let len = (self.w * self.w + self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
-        if len <= 0.0 {
+        // **The `is_finite` clause is the whole guard.** `len <= 0.0` alone is
+        // *false* for NaN, so the check shaped to catch a degenerate rotation was
+        // the one state it could not catch — and NaN is the only degeneracy
+        // composition can actually reach, since an all-zero quaternion is
+        // unreachable from unit inputs. Spelled with a method call rather than a
+        // negated comparison because `!(len > 0.0)` says the same thing and reads
+        // as a puzzle.
+        if !len.is_finite() || len <= 0.0 {
             return Self::IDENTITY;
         }
         Self {
@@ -264,13 +301,58 @@ impl Orbit {
             .unit();
     }
 
-    /// Turn by a drag of `dx`, `dy` **logical points**.
+    /// Turn by a drag of `dx`, `dy` **screen deltas**.
     ///
-    /// Dragging right brings the molecule's left side toward you and dragging up
-    /// tips its top toward you — the camera moves against the hand, which is what
-    /// makes the object feel grabbed rather than the viewpoint shoved.
+    /// **`dy` grows downward**, because that is what the engine reports — the
+    /// motion this is fed comes from the platform's pointer delta, where `+y` is
+    /// down the screen. Stating it here matters: this file is deliberately
+    /// readable with no engine in sight, so the convention has to arrive with
+    /// the parameter or it can only be inferred from the caller.
+    ///
+    /// Both axes are negated together, so the eye moves **exactly antiparallel**
+    /// to the hand in the screen plane: drag right and the molecule's left side
+    /// comes toward you, drag up and its underside does. That is what makes it
+    /// feel grabbed rather than the viewpoint shoved.
+    ///
+    /// **One rotation about the drag's perpendicular, not two successive turns
+    /// about the screen axes**, and the difference is visible rather than
+    /// theoretical. Two single-axis turns do not compose additively, so the same
+    /// straight diagonal gesture landed differently depending on how many frames
+    /// it arrived in — measured, a `(200, 60)` gesture gave 10.0 degrees of eye
+    /// movement delivered in two frames against 20.3 degrees in sixty. The same
+    /// hand movement on a 60 Hz and a 144 Hz machine ended up somewhere
+    /// different, which reads as "the camera is slippery" rather than as a bug.
+    ///
+    /// A single rotation whose axis is fixed in the camera frame composes
+    /// additively, so `drag(d)` once and `drag(d/n)` n times agree exactly.
     pub fn drag(&mut self, dx: f64, dy: f64) {
-        self.turn(-dx * RADIANS_PER_POINT, -dy * RADIANS_PER_POINT);
+        // **`sqrt` of the sum, not `hypot`, and clippy asks for `hypot` here.**
+        // Declined deliberately: `hypot` is not correctly rounded by IEEE-754,
+        // and this file's header says it contains no platform transcendental.
+        // The sum-and-`sqrt` form uses only exactly-specified operations, so it
+        // is the *more* portable spelling as well as the one the header
+        // promises. Accuracy is not at stake — the value is a drag length of
+        // order a hundred, nowhere near where `hypot`'s overflow-avoidance
+        // earns anything.
+        #[expect(
+            clippy::imprecise_flops,
+            reason = "`hypot` is not correctly rounded; `+`, `*` and `sqrt` are, \
+                      and this file promises no platform transcendentals"
+        )]
+        let len = (dx * dx + dy * dy).sqrt();
+        // NaN fails the positive test and takes this branch; an equality against
+        // zero would let it through and poison the orientation permanently.
+        if !len.is_finite() || len <= 0.0 {
+            return;
+        }
+        // Perpendicular to the drag, in the plane of the screen. The two
+        // components are negated for the same reason `turn`'s callers were:
+        // the camera moves against the hand.
+        let axis = [-dy / len, -dx / len, 0.0];
+        self.orientation = self
+            .orientation
+            .then_locally(Rotation::about(axis, len * RADIANS_PER_POINT))
+            .unit();
     }
 
     /// Move `notches` of wheel closer, clamped either side of the framing
@@ -280,6 +362,12 @@ impl Orbit {
     /// Additive zoom crawls when far away and jumps through the molecule when
     /// near.
     pub fn zoom(&mut self, notches: f64) {
+        // A non-finite notch count would make `distance` NaN, and `clamp`
+        // propagates NaN rather than clamping it — so one bad wheel event would
+        // pin the camera at NaN for the rest of the session with no way back.
+        if !notches.is_finite() {
+            return;
+        }
         let scaled = self.distance * det_math::powf(ZOOM_PER_NOTCH, notches);
         self.distance = scaled.clamp(
             self.framed_at * ZOOM_IN_LIMIT,
@@ -411,9 +499,19 @@ mod tests {
     ///
     /// Two cameras built and driven separately are two different computations,
     /// so this is not the vacuous shape where both sides read the same
-    /// expression. Every caller asserts finiteness first, because `NaN` bits
-    /// compare equal to `NaN` bits.
+    /// expression.
+    ///
+    /// **The finiteness check is here rather than left to callers.** The doc
+    /// used to say "every caller asserts finiteness first" — one of the two did
+    /// not, and its three arms would all have passed on a dead camera, since
+    /// `NaN` bits compare equal to `NaN` bits. Making the claim true by
+    /// construction is cheaper than making it true by convention.
     fn bits(p: [f64; 3]) -> [u64; 3] {
+        assert!(
+            p.iter().all(|c| c.is_finite()),
+            "a camera position went non-finite: {p:?} — comparing its bits to \
+             another non-finite camera's would call them equal"
+        );
         [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()]
     }
 
@@ -668,6 +766,122 @@ mod tests {
                 bounding < fits,
                 "seed {seed}: the molecule reaches {bounding:.4} against a view that \
                  holds {fits:.4} at the opening distance, so part of it is off screen"
+            );
+        }
+    }
+
+    /// A fixed turn sweeps the same chord at every orientation.
+    ///
+    /// **The only test here that can tell a local turn from a world-axis one,
+    /// and the world-axis one puts the pole back.** `then_locally` right-
+    /// multiplies, which turns the camera about the axes currently facing the
+    /// screen; swapping its two operands left-multiplies, which is a turntable,
+    /// which has a pole. Measured during review: with the operands swapped, a
+    /// sideways drag from a pose looking straight down moves the eye by
+    /// **exactly 0.000000**, and by a fifty-seventh of the correct amount at 89
+    /// degrees — while every other assertion in this file stays green.
+    ///
+    /// The chord is the right invariant because it is the *definition* of a
+    /// local turn: a rotation of angle `t` about any axis through the origin
+    /// moves a point at radius `d` by `2*d*sin(t/2)`, whatever the orientation.
+    #[test]
+    fn a_turn_sweeps_the_same_chord_at_every_orientation() {
+        let step = 0.4_f64;
+        let chord = |cam: &mut Orbit| {
+            let before = cam.eye();
+            cam.turn(step, 0.0);
+            let after = cam.eye();
+            norm([
+                after[0] - before[0],
+                after[1] - before[1],
+                after[2] - before[2],
+            ])
+        };
+        let reference = chord(&mut Orbit::framing(1.0));
+        let mut checked = 0u32;
+        for pose in 0..36 {
+            let mut cam = Orbit::framing(1.0);
+            cam.turn(0.0, f64::from(pose) * std::f64::consts::TAU / 36.0);
+            let moved = chord(&mut cam);
+            assert!(
+                (moved - reference).abs() < 1e-9,
+                "at pose {pose}/36 a sideways drag moved the eye {moved:.6} against \
+                 {reference:.6} at the identity — the turn is about a world axis \
+                 rather than the camera's own, so there is a pose where dragging \
+                 sideways does nothing at all"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 36, "the sweep did not run");
+    }
+
+    /// The same gesture lands in the same place however many frames it takes.
+    ///
+    /// **A real defect, measured rather than reasoned.** Turning about the two
+    /// screen axes in succession does not compose additively, so a straight
+    /// diagonal drag delivered as one big step and as sixty small ones ended up
+    /// somewhere different — a `(200, 60)` gesture gave 10.0 degrees of eye
+    /// movement in two frames against 20.3 in sixty. The pointer delta arrives
+    /// per frame, so the same hand movement behaved differently on a 60 Hz and a
+    /// 144 Hz machine, and differently again whenever a frame hitched. It reads
+    /// as "the camera is slippery", which is why nobody would file it as a bug.
+    ///
+    /// One rotation about the drag's perpendicular has a fixed axis in the
+    /// camera frame, and rotations about a shared axis add.
+    #[test]
+    fn a_gesture_does_not_depend_on_how_many_frames_it_arrives_in() {
+        for (dx, dy) in [(100.0, 100.0), (200.0, 60.0), (-140.0, 35.0), (0.0, 90.0)] {
+            let mut whole = Orbit::framing(1.0);
+            whole.drag(dx, dy);
+            for pieces in [2, 4, 10, 60] {
+                let mut split = Orbit::framing(1.0);
+                let n = f64::from(pieces);
+                for _ in 0..pieces {
+                    split.drag(dx / n, dy / n);
+                }
+                let (a, b) = (whole.eye(), split.eye());
+                let apart = norm([a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
+                assert!(
+                    apart < 1e-9,
+                    "a ({dx}, {dy}) drag split into {pieces} frames left the eye \
+                     {apart:.6} from where one frame put it — the gesture depends \
+                     on the frame rate"
+                );
+            }
+        }
+    }
+
+    /// One non-finite input does not kill the camera.
+    ///
+    /// **Every guard that looked like it covered this failed open**, because
+    /// each was written in the comparison form NaN passes through: `len <= 0.0`
+    /// is *false* for NaN, and `clamp` propagates NaN rather than clamping it.
+    /// So a single bad delta poisoned the orientation permanently and no clean
+    /// drag afterwards recovered it — a dead window with no way back short of
+    /// restarting.
+    ///
+    /// Whether the platform ever emits one is unproven; the guards should take
+    /// the safe branch either way, and doing so costs three characters.
+    #[test]
+    fn a_non_finite_input_cannot_kill_the_camera() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (dx, dy) in [(bad, 0.0), (0.0, bad), (bad, bad)] {
+                let mut cam = Orbit::framing(1.0);
+                cam.drag(dx, dy);
+                cam.drag(10.0, 5.0);
+                assert!(
+                    cam.eye().iter().all(|c| c.is_finite()),
+                    "a drag of ({dx}, {dy}) left the eye at {:?} and a clean drag \
+                     afterwards did not recover it",
+                    cam.eye()
+                );
+            }
+            let mut cam = Orbit::framing(1.0);
+            cam.zoom(bad);
+            assert!(
+                cam.distance().is_finite(),
+                "a wheel delta of {bad} left the distance at {}",
+                cam.distance()
             );
         }
     }

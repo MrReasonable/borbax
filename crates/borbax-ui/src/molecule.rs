@@ -10,9 +10,18 @@
 //! Element ids mean nothing across universes — slot 40 of one seed and slot 40
 //! of another are different elements — so a molecule written as a list of
 //! [`ElementId`]s is a molecule that exists in one universe by luck. Measured
-//! over 5000 seeds: `ElementId::from_index(0)` has **valence 0 in every one of
-//! them**, so the obvious "chain the first few elements" spelling is refused by
+//! over 5000 seeds and reproduced over 500 here:
+//! `ElementId::from_index(0)` has **valence 0 in every one of them**, so the
+//! obvious "chain the first few elements" spelling is refused by
 //! [`Mol12::add_bond`] on its first bond, 100% of the time.
+//!
+//! **Three corpus sizes appear in this file and they are three different
+//! measurements, not one quoted inconsistently.** The shipped tests run over
+//! **500** seeds, which is the number every bar here was set from. The **5000**
+//! figures come from an independent run during design and are quoted where they
+//! are the stronger evidence. The **2000** figures come from the Step 3 design
+//! memo's own survey of `embed`'s output and are about shapes this file does not
+//! build.
 //!
 //! # Why a centre and four leaves, and why the valences differ
 //!
@@ -56,7 +65,10 @@ const CENTRE_VALENCE: u8 = 4;
 const LEAF_VALENCE: u8 = 1;
 
 /// How many leaves hang off the centre.
-const LEAVES: usize = 4;
+///
+/// **`u8`, so the assertion below needs no cast.** It indexes nothing; the two
+/// places that want a length widen it losslessly.
+const LEAVES: u8 = 4;
 
 // **The floors must differ, and this is a compile-time check rather than a test
 // because the comparison is between two constants.** A uniform floor is the
@@ -69,6 +81,18 @@ const _: () = assert!(
     LEAF_VALENCE < CENTRE_VALENCE,
     "the valence floors are equal, so every atom is drawn from one band of the \
      table and the molecule has nothing to look at"
+);
+
+// **The relation that actually empties the window**, and it had only a prose
+// comment while the weaker, aesthetic one above got the compile-time check.
+// Raise `LEAVES` past the centre's bonding slots and `add_bond` refuses the last
+// bond in *every* universe — not some, every — so the molecule fails to build
+// everywhere and the scene is blank. A review found the asymmetry: the
+// load-bearing constant relation was guarded by a sentence.
+const _: () = assert!(
+    LEAVES <= CENTRE_VALENCE,
+    "the centre has fewer bonding slots than it has leaves, so `add_bond` refuses \
+     the last bond in every universe and the window opens empty"
 );
 
 /// A laid-out demo molecule, and which elements it was built from.
@@ -90,8 +114,9 @@ pub struct Demo {
 ///
 /// `None` means the universe has no element that could be a centre, or too few
 /// that could be leaves, or the canonical search hit its cap. Measured over 5000
-/// seeds, **none of those happened**: 5000 built, 0 without a centre, 0 short of
-/// leaves, 0 bonds refused, 0 capped. The branch is kept as data rather than
+/// seeds during design and 500 in the shipped tests, **none of those happened**:
+/// every seed built, none lacked a centre, none was short of leaves, no bond was
+/// refused and nothing was capped. The branch is kept as data rather than
 /// removed because "measured never" is not "cannot", and an [`Option`] costs a
 /// caption line where a `panic!` would cost the window.
 ///
@@ -100,7 +125,7 @@ pub struct Demo {
 /// Both are per-species work under §8.6 and must never reach a frame.
 #[must_use]
 pub fn build(universe: &Universe) -> Option<Demo> {
-    let mut elements: Vec<ElementId> = Vec::with_capacity(LEAVES + 1);
+    let mut elements: Vec<ElementId> = Vec::with_capacity(usize::from(LEAVES) + 1);
     let centre_element = lowest_unused(universe, CENTRE_VALENCE, &elements)?;
     elements.push(centre_element);
 
@@ -172,7 +197,7 @@ mod measure {
             let mut set = demo.elements.clone();
             set.sort_unstable();
             set.dedup();
-            if set.len() == LEAVES + 1 {
+            if set.len() == usize::from(LEAVES) + 1 {
                 distinct_ok += 1;
             }
             let radii: Vec<f64> = demo.embedding.radii().iter().map(|s| s.get()).collect();
@@ -253,10 +278,14 @@ mod tests {
     fn the_molecule_is_a_centre_and_four_leaves() {
         let demo = build(&Universe::generate(1))
             .unwrap_or_else(|| unreachable!("seed 1 builds — the test above says so over 500"));
-        assert_eq!(demo.elements.len(), LEAVES + 1, "wrong number of elements");
+        assert_eq!(
+            demo.elements.len(),
+            usize::from(LEAVES) + 1,
+            "wrong number of elements"
+        );
         assert_eq!(
             demo.embedding.len(),
-            LEAVES + 1,
+            usize::from(LEAVES) + 1,
             "the embedding does not hold one point per atom"
         );
     }
@@ -265,7 +294,7 @@ mod tests {
     ///
     /// **This is the test that pins the *mixed* valence floor**, and it is the
     /// whole reason the molecule reads as one object rather than five. Measured
-    /// over {SEEDS} universes the largest-to-smallest radius ratio runs
+    /// over 500 universes the largest-to-smallest radius ratio runs
     /// **2.0609 .. 2.8523**. Setting `LEAF_VALENCE` equal to `CENTRE_VALENCE` —
     /// a *uniform* floor, which is the obvious simplification — draws every atom
     /// from one narrow band of the table and collapses that ratio to about 1.04:
@@ -329,7 +358,7 @@ mod tests {
             ids.dedup();
             assert_eq!(
                 ids.len(),
-                LEAVES + 1,
+                usize::from(LEAVES) + 1,
                 "seed {seed} reused an element, so its leaves are indistinguishable"
             );
             checked += 1;
@@ -344,7 +373,7 @@ mod tests {
     ///
     /// Guards the degenerate case the framing constant divides no attention to:
     /// a gyration radius of zero puts the camera at the origin, inside the
-    /// scene. Measured range across {SEEDS} universes: **0.8047 .. 1.5764**.
+    /// scene. Measured range across 500 universes: **0.8047 .. 1.5764**.
     #[test]
     fn the_molecule_has_a_positive_extent() {
         for seed in 0..SEEDS {
