@@ -415,10 +415,71 @@ this paragraph exists.
       lone unit for a shell that is not there. **Issue #25**, sequenced after
       Step 3, to land with the `N^(2/3)` and Task 15 items it shares a golden
       regeneration with.
-- [ ] **3. The 3D scene.** `wgpu` pipeline, orbit camera, instanced spheres. Render
-      one hard-coded molecule from `embed`'s coordinates.
+- [x] **3. The 3D scene.** Orbit camera, one sphere per atom at `embed`'s own
+      coordinates, sized by `Embedding::radii()`.
+
+      *The `wgpu` pipeline in this line is history* — Bevy owns the renderer, so
+      the step is entities, a light and two cameras. The design record is
+      `docs/superpowers/plans/2026-08-03-viewer-step3-design.md`, whose
+      architecture sections predate the engine change; the molecule, the §8.6
+      rules and the manual checklist all still bind.
+
+      **The demo molecule is chosen by valence, never by `ElementId`** — a
+      `valence >= 4` centre with four `valence >= 1` leaves, lowest-indexed
+      first, no element reused. Slot 0 has valence 0 in every universe measured,
+      so the plan's original "chain the first N elements" is refused on its first
+      bond 100% of the time. The *mixed* floor is what makes it worth looking at:
+      a uniform one gives five same-sized balls that do not touch.
+
+      **Two defects were found by Ian using the window, both with 532 tests
+      green.** The drag gate asked egui the narrow question, so the molecule
+      turned when dragged anywhere on the interface; and the camera was a
+      turntable with a pitch clamp, so it stopped dead when dragged upward. The
+      clamp is gone — the camera stores an orientation and turns about its own
+      axes, which deletes the pole rather than guarding it.
+
+      **Nothing catches "the molecule is too far away".** Measured and stated
+      rather than papered over: the field-of-view test catches too *close* only.
+      That gap belongs to the manual checklist.
 - [ ] **4. Bonds, and colour by generated property.** Cylinders between bonded
       atoms; palettes driven by affinity, mass and valence.
+
+      *Ian asked for both directly, 2026-08-04: "I like the sticks idea, it makes
+      it easy to visualise" and "it would be nice if atoms had unique colours".*
+      The G6 guard lands with the palette — a colour may encode a **generated**
+      property and must never reproduce a real-world element colour scheme.
+- [ ] **4b. Open the atoms up, and name what the generation already separates.**
+      *New, from Ian on 2026-08-04, and it is mostly making visible what already
+      exists rather than adding physics.*
+
+      He asked for sub-atomic particles, for elements with distinct characters
+      the way real ones have, and for something answering to "noble gases". Three
+      of those are already computed and simply never drawn:
+
+      - **The sub-atomic layer is the base unit.** An element *is* a cluster of
+        `units` base units, and `period`/`group` are how they stack. Drawing the
+        cluster — the units inside an atom, layer by layer, with the outer layer
+        incomplete — shows the actual thing the generator computes. It is
+        structurally the nucleus-and-shells picture without importing a single
+        real-world particle.
+      - **The noble gases are already there**: `valence == 0` is a closed outer
+        shell with no contact left to make, so those elements bond with nothing.
+        The properties block already prints "none — a closed shell". They need
+        marking in the table, not inventing.
+      - **Families should FALL OUT of the generation, never be declared.** Real
+        families exist because of how the outer shell fills, and Borbax generates
+        that same quantity — so the groupings are to be *found* and named, not
+        imposed. A hard-coded family list would be the viewer drawing the answer
+        on, which is the failure this project's whole design is against. Measure
+        first; if nothing separates, say so rather than inventing a split.
+
+      **Context worth keeping, because it changes how to read the fiction
+      guarantee.** Ian's goal is showing his daughter how the world works. He
+      chose an invented universe because another model refused to help him build
+      real chemistry — not because fiction was the aim. The guarantee still holds
+      for *this* project and is still enforced; but a separate, real-chemistry
+      viewer is explicitly on the table as its own thing, and "we cannot build
+      real chemistry" is **not** a true statement of the constraint.
 - [ ] **5. The molecule builder.** Add atoms, add bonds, re-embed live. Invalid
       bonds refused with the reason from `BondError`.
 - [ ] **6. The signature overlay.** The 42 sampled directions drawn as surface
