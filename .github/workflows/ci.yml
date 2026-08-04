@@ -210,6 +210,7 @@ jobs:
       # pins drift. If a non-Rust tool is ever added to .prototools, CI needs a
       # proto setup step back — nothing here would notice on its own, because
       # this project is Rust-only by construction (spec §14.0).
+      #
       # **Bevy's Linux build needs system headers this runner does not ship**,
       # and nothing local can see it: the viewer builds fine on macOS, where
       # these are part of the platform. The first push of the Bevy branch failed
@@ -229,6 +230,71 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+
+      # **This job builds the whole dependency graph twice and the Linux runner
+      # does not have the disk for it.** Measured, not guessed: run 30933427373
+      # logged `Free space left: 0 MB` and then `rust-lld` died linking
+      # `borbax-ui` with `ld terminated with signal 7 [Bus error], core dumped`
+      # — SIGBUS, which is what a linker writing through a full-disk mmap gets
+      # instead of a clean ENOSPC. The macOS leg of the same run passed, so
+      # nothing about the code is at fault and no local gate can see this.
+      #
+      # The cost is structural rather than incidental, which is why this is a
+      # step and not a retry. `xtask`, `clippy --all-targets` and `test` all
+      # populate `target/debug`, against a tree Bevy took from 13 `Cargo.lock`
+      # entries to 366.
+      #
+      # **Which build died matters, because it rules out the obvious fix.**
+      # Step 8 (`Test`, debug) failed and step 9 (`Test --release`) was
+      # *skipped* — the release leg never started. So freeing the debug tree
+      # before the release leg, which is the first thing anyone reaches for,
+      # fires at a point this job never reaches.
+      #
+      # That lever was first rejected here for a reason that is simply wrong,
+      # and the correction is kept because the wrong version would be reused.
+      # It said cleaning between the legs "trades disk for a full rebuild". It
+      # does not: `target/debug` and `target/release` are disjoint artifact
+      # trees, so deleting the first costs the second nothing — the release leg
+      # compiles from scratch either way. That claim is true of the
+      # *clippy -> test* boundary, which does share artifacts, and it had been
+      # applied to the wrong boundary.
+      #
+      # Its real cost is the **cache**: `Swatinem/rust-cache` saves `target/`
+      # in post-job, so deleting `target/debug` first means debug dependencies
+      # are never cached and every later run rebuilds them — ~50 minutes here,
+      # uncached. It stays available as the next lever if headroom is still
+      # tight, with that cost understood.
+      #
+      # Deleting preinstalled toolchains this workspace cannot use is therefore
+      # the cheapest fix: it changes nothing about the build — no profile
+      # change, no feature change, no effect on codegen, so goldens are
+      # untouched — and it keeps both caches. Trimming Bevy's default features
+      # cuts the tree further and is filed as issue #28.
+      #
+      # Only named subdirectories are removed, never `/opt/hostedtoolcache`
+      # wholesale as the usual recipe does; on some runner images that is where
+      # the toolchain lives.
+      #
+      # `df -h /` brackets the deletion deliberately. When this fails again the
+      # log should say how much headroom there was, not merely that there was
+      # none — this failure had to be diagnosed from a linker stack dump.
+      # `|| true` because the runner image's contents are not a contract, and a
+      # path disappearing upstream must not turn into a red build.
+      #
+      # Linux only: macOS passed this run, and the Windows image does not carry
+      # these directories.
+      - name: Free disk space for the two-profile build
+        if: runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost || true
+          df -h /
 
       - name: Show toolchain
         run: rustup show active-toolchain
