@@ -175,15 +175,20 @@ mod systems {
     ) {
         orbit.0.point(
             buttons.pressed(MouseButton::Left),
-            // The *narrow* question. `wants_any_pointer_input` also answers yes
-            // on a bare hover, and gating on that freezes the molecule the
-            // instant a drag crosses onto the panel.
-            wants.wants_pointer_input(),
+            // **The wide question, and the latch is what makes it the right
+            // one.** `wants_pointer_input` is the narrow one — "is egui
+            // *using* the pointer" — and it is false over a panel's own
+            // background, so gating on it let the molecule turn when dragged
+            // anywhere on the interface. The wide question is also true on a
+            // bare hover, which would freeze a drag crossing onto the panel if
+            // it were asked every frame; `Orbit::point` only asks it on the
+            // press edge, so that cannot happen.
+            wants.wants_any_pointer_input(),
             f64::from(motion.delta.x),
             f64::from(motion.delta.y),
         );
 
-        if wheel.delta.y != 0.0 && !wants.wants_pointer_input() {
+        if wheel.delta.y != 0.0 && !wants.wants_any_pointer_input() {
             // **A line of wheel and a pixel of trackpad are not the same
             // quantity.** Left unnormalised, a trackpad zooms about a hundred
             // times per notch of a mouse.
@@ -204,8 +209,13 @@ mod systems {
         camera: Single<'_, '_, (&mut Transform, &mut Camera), With<SceneCamera>>,
     ) {
         let (mut transform, mut camera) = camera.into_inner();
-        *transform =
-            Transform::from_translation(point(orbit.0.eye())).looking_at(Vec3::ZERO, WORLD_UP);
+        // **The camera's own up, not the world's.** The orbit carries its up
+        // vector through the rotation, so it is perpendicular to the view at
+        // every orientation — which is what lets the molecule tumble freely
+        // without the image ever flipping, and means `looking_at` never has to
+        // fall back to an arbitrary axis.
+        *transform = Transform::from_translation(point(orbit.0.eye()))
+            .looking_at(Vec3::ZERO, point(orbit.0.up()));
 
         let Some(rect) = region.0 else { return };
         // egui works in logical points and a viewport is in physical pixels.
