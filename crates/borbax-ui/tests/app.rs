@@ -23,6 +23,7 @@
 //! precisely because a test cannot import one, so any test would otherwise have
 //! been asserting about its own copy of the wiring.
 
+use bevy::input::mouse::{MouseButtonInput, MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::renderer::RenderDevice;
 use borbax_ui::app::headless_app;
@@ -203,6 +204,216 @@ fn started() -> App {
     app.update();
     app.update();
     app
+}
+
+/// Put the pointer somewhere and drag it, driving the app's real input path.
+///
+/// The press and the motion arrive as they do from a device: `ButtonInput` is
+/// pressed on this frame's edge, and `AccumulatedMouseMotion` carries the
+/// delta. Both are written directly because there is no `winit` here to
+/// synthesise them, which is the same reason the cursor is placed by hand.
+fn drag_from(app: &mut App, cursor: Vec2, delta: Vec2) -> ([f64; 3], [f64; 3]) {
+    let window = place_cursor(app, cursor);
+
+    // Release first, so the next frame carries a genuine press *edge* — the
+    // latch only consults the gate there, and a test arriving mid-drag would be
+    // testing nothing.
+    app.world_mut().write_message(MouseButtonInput {
+        button: MouseButton::Left,
+        state: bevy::input::ButtonState::Released,
+        window,
+    });
+    app.update();
+
+    let before = eye(app);
+    // **Written as messages, not as the resources themselves.** Bevy rebuilds
+    // `AccumulatedMouseMotion` from `MouseMotion` in `PreUpdate` every frame, so
+    // a test that sets the resource directly has it zeroed before
+    // `drive_camera` runs — and then *both* arms of this pair pass, the panel
+    // one vacuously. Measured: that is exactly what the first version did.
+    app.world_mut().write_message(MouseButtonInput {
+        button: MouseButton::Left,
+        state: bevy::input::ButtonState::Pressed,
+        window,
+    });
+    app.world_mut().write_message(MouseMotion { delta });
+    app.update();
+    (before, eye(app))
+}
+
+/// Put the pointer at a logical position and return the window it is in.
+fn place_cursor(app: &mut App, cursor: Vec2) -> Entity {
+    let world = app.world_mut();
+    let mut windows = world.query::<(Entity, &mut Window)>();
+    let (entity, mut window) = windows
+        .iter_mut(world)
+        .next()
+        .unwrap_or_else(|| unreachable!("the app always configures a primary window"));
+    let scale = f64::from(window.scale_factor());
+    window.set_physical_cursor_position(Some(bevy::math::DVec2::new(
+        f64::from(cursor.x) * scale,
+        f64::from(cursor.y) * scale,
+    )));
+    entity
+}
+
+/// Where the eye is, in the orbit's own `f64` — **never narrowed to the
+/// engine's `f32`**. The scene narrows once, deliberately, in `place`; a test
+/// that narrowed as well would be comparing a quantity the camera never used.
+fn eye(app: &App) -> [f64; 3] {
+    app.world()
+        .resource::<borbax_ui::scene::OrbitState>()
+        .0
+        .eye()
+}
+
+/// How far the eye moved between two frames.
+///
+/// A magnitude rather than `assert_eq!` on the components: exact float
+/// comparison is denied workspace-wide, and `1e-9` is the bar the orbit's own
+/// tests already use.
+fn moved(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    // Only the five operations §13.1 permits natively: `+ - * /` and `sqrt`,
+    // all exactly specified by IEEE-754. Nothing here needs `det_math`.
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
+/// The region the panel leaves, as the app itself computed it this frame.
+fn scene_region(app: &App) -> Rect {
+    app.world()
+        .resource::<borbax_ui::scene::SceneRegion>()
+        .0
+        .unwrap_or_else(|| unreachable!("the panel has run, so it left a region"))
+}
+
+/// A drag that starts on the panel does not turn the molecule.
+///
+/// **Ian found this by using the viewer, twice.** The first report was answered
+/// by swapping which question the gate asks `egui` — `wants_pointer_input` for
+/// `wants_any_pointer_input` — and the molecule still turned when dragged
+/// anywhere on the interface, because *both* answers are `false` here and no
+/// test could see it.
+///
+/// The reason is one line in `app.rs`: the root `Ui` is built on
+/// `LayerId::background()` and the panel is shown inside it, so the panel never
+/// gets a layer of its own. Measured directly against that construction, with
+/// the pointer at `(20, 20)` — squarely on the panel — `is_pointer_over_egui()`
+/// is `false`, `egui_wants_pointer_input()` is `false`, and `layer_id_at` gives
+/// the background layer. Asking `egui` a different question could not have
+/// worked; it had no answer to give.
+///
+/// So the gate asks the geometry instead, and takes it from
+/// [`borbax_ui::scene::SceneRegion`] — the rectangle the panel actually left,
+/// which the scene camera's viewport is *already* aimed at. The gate and the
+/// picture therefore cannot disagree about where the scene is, which is the
+/// same reason that region is returned rather than agreed by convention.
+///
+/// Asserted on the eye position rather than on a `dragging` flag: the flag is
+/// the mechanism, and a gate that set it correctly while still turning the
+/// camera would pass.
+#[test]
+fn a_drag_beginning_on_the_panel_does_not_turn_the_molecule() {
+    let mut app = started();
+    let region = scene_region(&app);
+    // Above the region's top edge is the panel, by construction.
+    let on_the_panel = Vec2::new(region.min.x + 20.0, region.min.y / 2.0);
+
+    let (before, after) = drag_from(&mut app, on_the_panel, Vec2::new(40.0, 25.0));
+
+    assert!(
+        moved(before, after) < 1e-9,
+        "a drag beginning at {on_the_panel:?} — on the panel, above the scene \
+         region {region:?} — turned the camera by {}. Every control in the \
+         viewer is up there, so the molecule spins whenever a child reaches \
+         for one",
+        moved(before, after)
+    );
+}
+
+/// A drag that starts in the scene still turns the molecule.
+///
+/// **The other half, and it is what stops the fix being "never turn".** A gate
+/// that refused every drag would pass the test above and take the feature with
+/// it.
+#[test]
+fn a_drag_beginning_in_the_scene_still_turns_the_molecule() {
+    let mut app = started();
+    let region = scene_region(&app);
+    let in_the_scene = region.center();
+
+    let (before, after) = drag_from(&mut app, in_the_scene, Vec2::new(40.0, 25.0));
+
+    assert!(
+        moved(before, after) > 1e-9,
+        "a drag beginning at {in_the_scene:?} — the middle of the scene region \
+         {region:?} — did not turn the camera, so the viewer cannot be turned \
+         at all"
+    );
+}
+
+/// The wheel over the panel does not zoom the molecule.
+///
+/// **A separate route through the same gate, and the one without a latch.** The
+/// drag consults `over_ui` only on the press edge; the wheel consults it every
+/// frame, on the line below. So a change that fixed the drag and left the wheel
+/// alone would pass both tests above while the molecule still zoomed as a child
+/// scrolled the periodic table.
+#[test]
+fn the_wheel_over_the_panel_does_not_zoom_the_molecule() {
+    let mut app = started();
+    let region = scene_region(&app);
+    let window = place_cursor(&mut app, Vec2::new(region.min.x + 20.0, region.min.y / 2.0));
+    app.update();
+
+    let before = distance(&app);
+    app.world_mut().write_message(MouseWheel {
+        unit: bevy::input::mouse::MouseScrollUnit::Line,
+        x: 0.0,
+        y: 3.0,
+        window,
+        phase: bevy::input::touch::TouchPhase::Moved,
+    });
+    app.update();
+
+    assert!(
+        (before - distance(&app)).abs() < 1e-9,
+        "the wheel zoomed the molecule while the pointer was on the panel"
+    );
+}
+
+/// The wheel over the scene still zooms.
+///
+/// The arm that stops the fix above being "never zoom".
+#[test]
+fn the_wheel_over_the_scene_still_zooms_the_molecule() {
+    let mut app = started();
+    let region = scene_region(&app);
+    let window = place_cursor(&mut app, region.center());
+    app.update();
+
+    let before = distance(&app);
+    app.world_mut().write_message(MouseWheel {
+        unit: bevy::input::mouse::MouseScrollUnit::Line,
+        x: 0.0,
+        y: 3.0,
+        window,
+        phase: bevy::input::touch::TouchPhase::Moved,
+    });
+    app.update();
+
+    assert!(
+        (before - distance(&app)).abs() > 1e-9,
+        "the wheel did not zoom with the pointer in the middle of the scene, so \
+         the viewer cannot be zoomed at all"
+    );
+}
+
+fn distance(app: &App) -> f64 {
+    app.world()
+        .resource::<borbax_ui::scene::OrbitState>()
+        .0
+        .distance()
 }
 
 /// There are exactly two cameras, and the panel is drawn through the one that
