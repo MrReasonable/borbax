@@ -1,22 +1,36 @@
-//! The orbit camera: two angles and a distance, about the origin.
+//! The camera: an orientation and a distance, about the origin.
 //!
 //! **No engine type and no UI type**, which is what lets every test here run as
 //! plain arithmetic with no window and no device.
 //!
+//! # It tumbles freely, and that replaced a camera that did not
+//!
+//! The first version of this file was a *turntable*: a yaw about a fixed world
+//! up, a pitch above the horizon, and a clamp stopping the pitch just short of
+//! the poles. The clamp was there for a real reason — a turntable that passes
+//! over the top turns the whole image upside down between one frame and the next
+//! — but the behaviour it bought was a camera that **stops** when you drag
+//! upward, which is not what something you are turning over in your hands does.
+//! Found by using it, within a minute, having survived every test.
+//!
+//! So the fixed up is gone. The camera stores an orientation and turns it about
+//! its **own** axes: dragging moves the molecule the way your hand went whichever
+//! way up it currently is, rotation never stops in any direction, and the pole is
+//! not a special case that has been guarded — it does not exist. The `up` the
+//! engine needs comes out of the orientation, so it is perpendicular to the view
+//! direction by construction rather than by a clamp.
+//!
+//! What that costs, stated because it is a real loss: turning by an angle and
+//! back is no longer *exactly* the identity, because a rotation composed and
+//! renormalised drifts in the last bits where adding and subtracting a stored
+//! angle did not. Identical input still gives bit-identical output, which is the
+//! claim the purity test actually needs; the round trip is now a tolerance.
+//!
 //! # What this owns, and what it deliberately does not
 //!
-//! It owns `(yaw, pitch, distance) -> eye position`. Everything after that —
-//! the view basis, the projection matrix, the perspective divide, the depth
-//! range — belongs to the engine, and re-deriving any of it here would be
-//! duplicating a dependency in `f32`. `Transform::look_to` builds the same basis
-//! the predecessor of this file built by hand, in the same order and with the
-//! same handedness.
-//!
-//! # Why angles rather than a direction
-//!
-//! Yaw and pitch **accumulate**; an orientation is never read back out of a
-//! transform to be modified. Accumulating into the matrix drifts, and worse, it
-//! stops the camera being a pure function of anything a test can state.
+//! It owns `orientation -> (eye, up)`. The view matrix, the projection, the
+//! perspective divide and the depth range are the engine's, and re-deriving any
+//! of them here would be duplicating a dependency in `f32`.
 //!
 //! # The target is the origin, and that is a fact rather than a choice
 //!
@@ -27,10 +41,7 @@
 //!
 //! # §13.1
 //!
-//! Every transcendental goes through [`borbax_units::det_math`]. The viewer
-//! produces no simulation results, and that is deliberately **not** why this is
-//! allowed to be sloppy — it is not allowed to be. The rule is about which
-//! function is called, and the workspace has exactly one place to call it from.
+//! Every transcendental goes through [`borbax_units::det_math`].
 
 use borbax_units::det_math;
 
@@ -46,30 +57,7 @@ pub type Vec3 = [f64; 3];
 pub const FOV_Y: f64 = std::f64::consts::FRAC_PI_4;
 
 /// Near clipping distance, in the same units as the embedding.
-///
-/// Same argument as [`FOV_Y`]: pinned here so the no-clipping test is about a
-/// number this crate chose.
 pub const NEAR: f64 = 0.1;
-
-/// How near the pole the pitch may get, radians.
-///
-/// **The reason recorded for this constant's predecessor was wrong, and the
-/// correction matters because it changes what the test has to look at.** That
-/// version said the pole makes the up-vector cross product `0/0` — "a NaN
-/// camera, which renders black". Measured against the engine actually in use:
-/// at exactly `±pi/2` the basis comes back finite and orthonormal, because the
-/// normalisation falls back to an arbitrary orthogonal vector rather than
-/// dividing by zero.
-///
-/// What actually happens past the pole is that **screen-right flips through
-/// 180 degrees** and the whole image turns over between one frame and the next.
-/// Measured per `5e-4` rad step of pitch: `6.7e-8` inside the clamp against
-/// `1.999999762` across the pole — seven orders of magnitude, which is what the
-/// continuity test discriminates on.
-///
-/// The margin is `1e-3` rad, about 0.057 degrees: far below what a drag can
-/// resolve on screen, and far above where `cos(pitch)` starts losing precision.
-const PITCH_LIMIT: f64 = std::f64::consts::FRAC_PI_2 - 1e-3;
 
 /// Radians of rotation per logical point of drag.
 const RADIANS_PER_POINT: f64 = 0.01;
@@ -77,26 +65,29 @@ const RADIANS_PER_POINT: f64 = 0.01;
 /// Multiples of the radius of gyration the camera stands back by.
 ///
 /// **Scaled from a shipped measurement rather than from a bounding radius the
-/// viewer would have to compute**, and then *chosen by measurement* rather than
-/// by the derivation looking right — which matters, because the derivation on
-/// its own would have been wrong by a factor of two.
+/// viewer would have to compute**, and chosen by measurement rather than by the
+/// derivation looking right — the derivation alone was wrong by a factor of two
+/// on the first attempt, and the second attempt was still too far away when it
+/// was looked at.
 ///
 /// The molecule exactly fills the vertical field at
-/// `bounding_radius / sin(FOV_Y / 2)`, which is `2.613 * bounding_radius`.
-/// Measured across 500 universes, `bounding / gyration` runs **1.6491 ..
-/// 1.7697**, so "just touching the edges" is **4.3092 .. 4.6243** gyration
-/// radii. This constant is 6.5, which leaves the molecule spanning about
-/// **66-71%** of the view's height in every universe measured: filling it edge
-/// to edge leaves no room to orbit into, and the first value written here — 9.0,
-/// a guess — put it twice as far away as it needed to be.
+/// `bounding_radius / sin(FOV_Y / 2)` = `2.613 * bounding_radius`. Measured
+/// across 500 universes, `bounding / gyration` runs **1.6491 .. 1.7697**, so
+/// touching the edges is **4.3092 .. 4.6243** gyration radii. At 5.4 the
+/// molecule spans about 80-86% of the view's height, leaving a margin to turn
+/// into without any orientation pushing an atom off screen.
 ///
 /// Vertical is the binding direction because the scene region is wider than it
-/// is tall. If that ever stops being true, this constant is measuring the wrong
-/// axis.
-const FRAMING: f64 = 6.5;
+/// is tall. If that stops being true, this constant is measuring the wrong axis.
+const FRAMING: f64 = 5.4;
 
 /// How far in and out of the framing distance the wheel may go.
-const ZOOM_IN_LIMIT: f64 = 0.35;
+///
+/// **The inner limit is a measured floor, not a preference.** It has to keep the
+/// nearest surface in front of the near plane in every universe, which
+/// `zooming_all_the_way_in_never_crosses_the_near_plane` checks across 500 of
+/// them.
+const ZOOM_IN_LIMIT: f64 = 0.42;
 /// See [`ZOOM_IN_LIMIT`].
 const ZOOM_OUT_LIMIT: f64 = 4.0;
 /// Distance multiplier per notch of wheel.
@@ -109,13 +100,116 @@ const ZOOM_PER_NOTCH: f64 = 0.88;
 /// out as zero and put the camera inside the scene.
 const MIN_GYRATION: f64 = 1e-6;
 
-/// Two angles and a distance, plus whether a drag currently owns the pointer.
+/// A rotation, as a unit quaternion.
+///
+/// **Hand-rolled, and the reason is the seam rather than novelty.** This file is
+/// in the strictest tier — it may name no engine type — and the engine's own
+/// quaternion is `f32` anyway. Sixty lines of arithmetic keeps the camera
+/// testable with no app at all and keeps the transcendentals routed through
+/// `det_math`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rotation {
+    w: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+impl Rotation {
+    /// The rotation that does nothing.
+    const IDENTITY: Self = Self {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+
+    /// A turn of `angle` radians about a **unit** axis.
+    ///
+    /// Only ever called with a coordinate axis, so there is no normalisation
+    /// here to forget: both callers pass a literal.
+    fn about(axis: Vec3, angle: f64) -> Self {
+        let half = angle * 0.5;
+        let s = det_math::sin(half);
+        Self {
+            w: det_math::cos(half),
+            x: axis[0] * s,
+            y: axis[1] * s,
+            z: axis[2] * s,
+        }
+    }
+
+    /// `self`, then `next` **in `self`'s own frame**.
+    ///
+    /// Right multiplication, which is what makes a drag turn the molecule about
+    /// the axes currently facing the screen rather than about the world's. Left
+    /// multiplication is a turntable, and a turntable is what this replaced.
+    fn then_locally(self, next: Self) -> Self {
+        Self {
+            w: self.w * next.w - self.x * next.x - self.y * next.y - self.z * next.z,
+            x: self.w * next.x + self.x * next.w + self.y * next.z - self.z * next.y,
+            y: self.w * next.y - self.x * next.z + self.y * next.w + self.z * next.x,
+            z: self.w * next.z + self.x * next.y - self.y * next.x + self.z * next.w,
+        }
+    }
+
+    /// Scale back to unit length.
+    ///
+    /// **Called after every turn, and it is not optional.** Composing rotations
+    /// accumulates error in the norm, and a quaternion that has drifted off the
+    /// unit sphere scales the scene as well as turning it — the molecule would
+    /// slowly grow or shrink as it was played with, which is the kind of defect
+    /// that takes a long session to notice and no test to hide.
+    fn unit(self) -> Self {
+        let len = (self.w * self.w + self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
+        if len <= 0.0 {
+            return Self::IDENTITY;
+        }
+        Self {
+            w: self.w / len,
+            x: self.x / len,
+            y: self.y / len,
+            z: self.z / len,
+        }
+    }
+
+    /// Turn `v` by this rotation.
+    ///
+    /// The `v + 2w(q x v) + 2(q x (q x v))` form, so there is no inverse and no
+    /// division. Correct only for a unit quaternion, which [`Self::unit`] keeps
+    /// true.
+    fn apply(self, v: Vec3) -> Vec3 {
+        let q = [self.x, self.y, self.z];
+        let t = scale(cross(q, v), 2.0);
+        add(add(v, scale(t, self.w)), cross(q, t))
+    }
+}
+
+/// `a x b`.
+fn cross(a: Vec3, b: Vec3) -> Vec3 {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// `a + b`, componentwise.
+fn add(a: Vec3, b: Vec3) -> Vec3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+/// `a * k`, componentwise.
+fn scale(a: Vec3, k: f64) -> Vec3 {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+
+/// An orientation and a distance, plus whether a drag currently owns the
+/// pointer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Orbit {
-    /// Rotation about world-up, radians. Unbounded and deliberately unwrapped.
-    yaw: f64,
-    /// Elevation, radians, clamped to [`PITCH_LIMIT`].
-    pitch: f64,
+    /// Camera-space to world-space. Kept unit by every mutator.
+    orientation: Rotation,
     /// Distance from the origin to the eye. Always positive.
     distance: f64,
     /// The distance this camera was framed at, which the zoom limits scale.
@@ -138,7 +232,7 @@ impl Default for Orbit {
 
 impl Orbit {
     /// A camera standing back far enough to see a molecule of this gyration
-    /// radius, level with it.
+    /// radius.
     #[must_use]
     pub fn framing(gyration: f64) -> Self {
         let size = if gyration > MIN_GYRATION {
@@ -148,8 +242,7 @@ impl Orbit {
         };
         let distance = FRAMING * size;
         Self {
-            yaw: 0.0,
-            pitch: 0.0,
+            orientation: Rotation::IDENTITY,
             distance,
             framed_at: distance,
             dragging: false,
@@ -157,30 +250,27 @@ impl Orbit {
         }
     }
 
-    /// Turn by `dyaw` and `dpitch` **radians**, clamping pitch short of the
-    /// poles.
+    /// Turn by `across` and `up` **radians**, about the camera's own axes.
     ///
-    /// **Yaw accumulates unwrapped.** Reducing it modulo `2*pi` is free to write
-    /// and would put a discontinuity in the middle of the parameter a test
-    /// states its case in; `sin` and `cos` are periodic, so there is nothing to
-    /// gain.
-    pub fn turn(&mut self, dyaw: f64, dpitch: f64) {
-        self.yaw += dyaw;
-        // `clamp`, not `min`/`max`. §13.1 bans the latter two for being free to
-        // return either zero on a `+0.0`/`-0.0` tie; `clamp` is specified as a
-        // chain of comparisons and propagates NaN. It can panic on `min > max`
-        // or a NaN bound, and both bounds here are one positive compile-time
-        // constant and its negation.
-        self.pitch = (self.pitch + dpitch).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    /// **There is no clamp and no special case at any orientation.** Turning
+    /// about the axes currently facing the screen has no pole: the up vector is
+    /// carried along by the rotation rather than re-derived from a fixed world
+    /// axis, so there is no orientation at which it becomes ambiguous.
+    pub fn turn(&mut self, across: f64, up: f64) {
+        self.orientation = self
+            .orientation
+            .then_locally(Rotation::about([0.0, 1.0, 0.0], across))
+            .then_locally(Rotation::about([1.0, 0.0, 0.0], up))
+            .unit();
     }
 
     /// Turn by a drag of `dx`, `dy` **logical points**.
     ///
     /// Dragging right brings the molecule's left side toward you and dragging up
-    /// tips its top toward you — the camera moves against the hand, which is
-    /// what makes the object feel grabbed rather than the viewpoint shoved.
+    /// tips its top toward you — the camera moves against the hand, which is what
+    /// makes the object feel grabbed rather than the viewpoint shoved.
     pub fn drag(&mut self, dx: f64, dy: f64) {
-        self.turn(-dx * RADIANS_PER_POINT, dy * RADIANS_PER_POINT);
+        self.turn(-dx * RADIANS_PER_POINT, -dy * RADIANS_PER_POINT);
     }
 
     /// Move `notches` of wheel closer, clamped either side of the framing
@@ -197,19 +287,22 @@ impl Orbit {
         );
     }
 
-    /// Feed one frame of pointer state in, and orbit if this drag is ours.
+    /// Feed one frame of pointer state in, and turn if this drag is ours.
     ///
-    /// **The latch is the whole point of this function.** A drag belongs to the
-    /// scene if the *press* landed on the scene; once it has, it keeps the
-    /// pointer until release, however far outside the cursor wanders. Deciding
-    /// per frame instead — orbit whenever the cursor is not over the panel —
-    /// makes the molecule freeze the instant a drag crosses onto the periodic
-    /// table, which is the failure a design written from memory ships.
+    /// **The latch is the whole point of this function**, and it is what makes
+    /// the *wide* question below safe to ask. A drag belongs to the scene if the
+    /// **press** landed outside the panel; once it has, it keeps the pointer
+    /// until release, however far outside the cursor wanders.
     ///
-    /// `ui_wants_pointer` is asked only on the press edge for that reason.
-    pub fn point(&mut self, pressed: bool, ui_wants_pointer: bool, dx: f64, dy: f64) {
+    /// `over_ui` must therefore be the wide question — "is the pointer over the
+    /// panel at all". The first shipped version asked the narrow one, "is the
+    /// panel *using* the pointer", which is false over a panel's own background,
+    /// so **the molecule turned when dragged anywhere on the interface**. Found
+    /// by using it. The narrow question is only correct for a per-frame gate,
+    /// which this deliberately is not.
+    pub fn point(&mut self, pressed: bool, over_ui: bool, dx: f64, dy: f64) {
         if pressed && !self.was_pressed {
-            self.dragging = !ui_wants_pointer;
+            self.dragging = !over_ui;
         }
         if !pressed {
             self.dragging = false;
@@ -222,24 +315,22 @@ impl Orbit {
 
     /// Where the eye is.
     ///
-    /// At `yaw = 0, pitch = 0` this is `[0, 0, distance]` — on `+Z`, looking
+    /// At the identity orientation this is `[0, 0, distance]` — on `+Z`, looking
     /// toward `-Z`.
-    ///
-    /// **The accumulation order is pinned** (§13.1): each component is
-    /// `distance * (trig * trig)`, the two transcendentals multiplied before the
-    /// distance scales them. `mul_add` is not an option — whether it fuses
-    /// depends on target features, which is why it is on the ban list.
     #[must_use]
     pub fn eye(&self) -> Vec3 {
-        let cos_pitch = det_math::cos(self.pitch);
-        let sin_pitch = det_math::sin(self.pitch);
-        let sin_yaw = det_math::sin(self.yaw);
-        let cos_yaw = det_math::cos(self.yaw);
-        [
-            self.distance * (cos_pitch * sin_yaw),
-            self.distance * sin_pitch,
-            self.distance * (cos_pitch * cos_yaw),
-        ]
+        self.orientation.apply([0.0, 0.0, self.distance])
+    }
+
+    /// Which way is up for the camera, in scene space.
+    ///
+    /// **Carried by the orientation rather than fixed at world `+Y`**, which is
+    /// what removes the pole: it is perpendicular to the view direction at every
+    /// orientation by construction, so the engine never falls back to an
+    /// arbitrary axis and the image never flips.
+    #[must_use]
+    pub fn up(&self) -> Vec3 {
+        self.orientation.apply([0.0, 1.0, 0.0])
     }
 
     /// How far the eye is from the origin.
@@ -267,7 +358,6 @@ mod measure {
     fn bounding_against_gyration() {
         let mut ratio_lo = f64::INFINITY;
         let mut ratio_hi = 0.0f64;
-        let mut bound_hi = 0.0f64;
         let seeds = 500u64;
         for seed in 0..seeds {
             let u = Universe::generate(seed);
@@ -287,14 +377,13 @@ mod measure {
             if ratio > ratio_hi {
                 ratio_hi = ratio;
             }
-            if bounding > bound_hi {
-                bound_hi = bounding;
-            }
         }
         println!("bounding/gyration: {ratio_lo:.4} .. {ratio_hi:.4}");
-        println!("max bounding radius: {bound_hi:.4}");
-        println!("needed framing (gyration units) = 2.613 * bounding/gyration");
-        println!("  => {:.4} .. {:.4}", 2.613 * ratio_lo, 2.613 * ratio_hi);
+        println!(
+            "just-fits framing = {:.4} .. {:.4}",
+            2.613 * ratio_lo,
+            2.613 * ratio_hi
+        );
     }
 }
 
@@ -312,14 +401,18 @@ mod tests {
         (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
     }
 
+    /// `a . b`.
+    fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
     /// A position as raw bits, for the places where the claim really is
     /// *identical* rather than *close*.
     ///
     /// Two cameras built and driven separately are two different computations,
-    /// so this is not the vacuous shape where both sides of an equality read the
-    /// same expression. Every caller also asserts finiteness first, because
-    /// `NaN` bits compare equal to `NaN` bits and would make the comparison pass
-    /// over a broken camera.
+    /// so this is not the vacuous shape where both sides read the same
+    /// expression. Every caller asserts finiteness first, because `NaN` bits
+    /// compare equal to `NaN` bits.
     fn bits(p: [f64; 3]) -> [u64; 3] {
         [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()]
     }
@@ -330,8 +423,8 @@ mod tests {
     /// the start" passes on a camera that ignores the angle entirely. "A quarter
     /// turn moves it" passes on degrees-vs-radians, which moves it by the wrong
     /// amount. Together they pin the unit: a quarter turn of a camera at
-    /// distance `d` moves the eye by the chord `d * sqrt(2)`, and 0.25 *degrees*
-    /// would move it by 0.0044 `d`.
+    /// distance `d` moves the eye by the chord `d * sqrt(2)`, where a quarter
+    /// *degree* would move it by 0.0044 `d`.
     #[test]
     fn a_quarter_turn_is_not_a_full_turn() {
         let mut cam = Orbit::framing(1.0);
@@ -360,78 +453,71 @@ mod tests {
         );
     }
 
-    /// Pitch stops short of the pole, however far the drag goes.
+    /// Turning upward never stops, and never degenerates.
     ///
-    /// **Two earlier versions of this test could not fail, in different ways,
-    /// and the second is the instructive one.**
+    /// **This is the test for the defect that replaced the previous camera.**
+    /// That one clamped its pitch just short of the poles, so dragging upward
+    /// stopped dead — correct against the failure it was written for, and wrong
+    /// as a thing to use. Ian found it in under a minute.
     ///
-    /// The first asserted on the *up* vector. That cannot fail: the engine
-    /// re-derives up from the view direction, so it comes back positive on both
-    /// sides of the pole. This project shipped that version once.
-    ///
-    /// The second asserted that the eye's *horizontal reach* never gets small.
-    /// That reads as obviously right — at the pole the eye stands directly over
-    /// the molecule and the reach really is zero — and it still cannot catch the
-    /// defect, because **past** the pole the reach grows again. A limit widened
-    /// to `pi/2 + 0.5` leaves the eye 0.479 of a radius out from the axis, which
-    /// clears any floor comfortably while the image is upside down. It also
-    /// stepped pitch by 0.5 rad, so the sweep jumped over the pole without ever
-    /// sampling near it. Both faults found by running the mutation, not by
-    /// reading it.
-    ///
-    /// What is claimed here is the **sign**. Yaw stays at zero, so the eye sits
-    /// on `+Z` and `cos(pitch)` is what holds it there; crossing the pole makes
-    /// that negative, which is precisely when screen-right flips through 180
-    /// degrees and the image turns over between frames. The floor beneath it is
-    /// a separate claim — that the basis never becomes degenerate — and steps
-    /// are 0.05 rad so the sweep converges onto the clamp instead of stepping
-    /// across it.
+    /// Three claims, and the first is the one that fails on a clamp coming back:
+    /// a sustained upward drag takes the eye all the way round, so it must spend
+    /// time *behind* the molecule (`z < 0`). The others are what the old clamp
+    /// existed to protect and which the free rotation gives for nothing: the up
+    /// vector stays unit and stays perpendicular to the view, at every
+    /// orientation, so there is no pose where the engine has to invent an axis.
     #[test]
-    fn the_camera_never_reaches_the_pole() {
-        for direction in [1.0, -1.0] {
+    fn turning_never_stops_and_never_degenerates() {
+        for (across, up) in [(0.0, 5.0), (0.0, -5.0), (5.0, 0.0), (3.0, 4.0)] {
             let mut cam = Orbit::framing(1.0);
-            let floor = cam.distance() * 5e-4;
-            let mut samples = 0u32;
-            for _ in 0..4000 {
-                cam.drag(0.0, direction * 5.0);
+            let mut went_behind = false;
+            let mut steps = 0u32;
+            for _ in 0..1000 {
+                cam.drag(across, up);
                 let eye = cam.eye();
-                // Yaw stays at zero through this sweep, so the eye's `z` is
-                // `distance * cos(pitch)` and its **sign** is the whole claim.
+                let up_vector = cam.up();
                 assert!(
-                    eye[2] > 0.0,
-                    "the eye crossed the pole — at yaw 0 it is now at z = {:.6}, so \
-                     screen-right has flipped and the image is upside down",
-                    eye[2]
+                    (norm(up_vector) - 1.0).abs() < 1e-9,
+                    "the up vector stopped being a unit vector: {up_vector:?}"
                 );
                 assert!(
-                    eye[2] > floor,
-                    "the eye came within {:.3e} of standing directly over the \
-                     molecule, so the view basis is degenerate",
-                    eye[2]
+                    dot(up_vector, eye).abs() < 1e-9 * cam.distance(),
+                    "up stopped being perpendicular to the view direction, so the \
+                     basis is degenerate at this orientation"
                 );
-                samples += 1;
+                assert!(
+                    (norm(eye) - cam.distance()).abs() < 1e-9,
+                    "the eye drifted off the sphere it orbits on, so the rotation \
+                     is scaling as well as turning"
+                );
+                if eye[2] < 0.0 {
+                    went_behind = true;
+                }
+                steps += 1;
             }
-            assert_eq!(samples, 4000, "the sweep did not run");
+            assert_eq!(steps, 1000, "the sweep did not run");
+            assert!(
+                went_behind,
+                "dragging ({across}, {up}) for 1000 steps never took the camera \
+                 round the far side, so something is stopping the rotation"
+            );
         }
     }
 
     /// The camera is a pure function of the drags applied to it.
     ///
-    /// **The obvious spelling of this test was wrong and passed**, which is the
-    /// worse of the two ways to be wrong. It compared one whole drag against two
-    /// half drags — that is an assertion that floating-point addition is
-    /// *associative*, which it is not. It happened to hold for the constants in
-    /// front of me, and would have broken later for a reason nobody could read
-    /// off the test.
+    /// **The obvious spelling of this was wrong and passed**, which is worse than
+    /// failing: it compared one whole drag against two half drags, an assertion
+    /// that floating-point addition is *associative*. It held for the constants
+    /// in front of me and would have broken later for a reason unreadable from
+    /// the test.
     ///
-    /// What is claimed instead is two things that are actually true of a camera
-    /// that accumulates into its angles:
-    ///
-    /// - the same sequence of drags gives the same camera, **bit for bit**;
-    /// - turning by an exactly-representable angle and back returns **exactly**
-    ///   to the start. This is the arm that fails on accumulating into a
-    ///   rotation matrix instead — `R * R⁻¹` is not the identity in floating
-    ///   point, and the drift is invisible in any single frame.
+    /// What is claimed instead: the same sequence of drags gives the same camera
+    /// **bit for bit**, and turning by an angle and back returns to the start
+    /// within a tolerance. The round trip is no longer exact — composing and
+    /// renormalising a rotation drifts where adding and subtracting a stored
+    /// angle did not — and that is a real cost of the free rotation, stated
+    /// rather than hidden.
     #[test]
     fn the_camera_is_a_pure_function_of_its_parameters() {
         let steps = [(37.0, 11.0), (-91.0, 4.0), (13.0, -55.0), (220.0, 3.0)];
@@ -454,19 +540,27 @@ mod tests {
             "two cameras given the same drags disagreed"
         );
 
-        // 0.5 and 0.25 are exact in binary, so `+x` then `-x` returns the angle
-        // to exactly its starting value — for a camera that stores the angle.
+        // **One axis at a time, in matched pairs.** The first draft of this
+        // arranged three mixed turns whose angles *summed* to zero and expected
+        // the start back. That is only a round trip if rotations commute, and
+        // they do not — which is precisely the property that lets this camera
+        // tumble freely, so the test was contradicting the feature it sits
+        // beside. Turns about a single axis do commute with each other, so
+        // these pairs really are inverses.
         let mut there_and_back = Orbit::framing(1.2);
-        let start = bits(there_and_back.eye());
-        for _ in 0..64 {
-            there_and_back.turn(0.5, 0.25);
-            there_and_back.turn(-0.5, -0.25);
+        let start = there_and_back.eye();
+        for (across, up) in [(0.5, 0.0), (0.0, 0.25)] {
+            for _ in 0..64 {
+                there_and_back.turn(across, up);
+            }
+            for _ in 0..64 {
+                there_and_back.turn(-across, -up);
+            }
         }
-        assert_eq!(
-            bits(there_and_back.eye()),
-            start,
-            "turning back and forth drifted, so the orientation is being \
-             accumulated somewhere other than the angle"
+        let end = there_and_back.eye();
+        assert!(
+            norm([end[0] - start[0], end[1] - start[1], end[2] - start[2]]) < 1e-9,
+            "turning back and forth drifted by more than rounding explains"
         );
     }
 
@@ -488,8 +582,7 @@ mod tests {
         assert!(up.eye()[1] > 0.0, "dragging up did not raise the eye");
     }
 
-    /// The wheel stops, and it stops at the limit rather than wherever it
-    /// happens to be.
+    /// The wheel stops at both ends.
     #[test]
     fn zooming_stops_at_both_ends() {
         let mut cam = Orbit::framing(1.0);
@@ -515,13 +608,10 @@ mod tests {
     ///
     /// **This is the claim the framing constant is not allowed to make by
     /// argument.** Fails on an unclamped zoom, on a framing distance tuned to
-    /// one seed, and on a near plane raised without re-checking the zoom limit —
-    /// each of which shows up as the molecule vanishing, turning inside out, or
-    /// swallowing the camera.
+    /// one seed, and on a near plane raised without re-checking the zoom limit.
     #[test]
     fn zooming_all_the_way_in_never_crosses_the_near_plane() {
         let mut checked = 0u64;
-        let mut worst = f64::INFINITY;
         for seed in 0..SEEDS {
             let universe = Universe::generate(seed);
             let demo =
@@ -538,9 +628,6 @@ mod tests {
                 cam.zoom(1.0);
             }
             let clearance = cam.distance() - bounding;
-            if clearance < worst {
-                worst = clearance;
-            }
             assert!(
                 clearance > NEAR,
                 "seed {seed}: fully zoomed in, the nearest surface is {clearance:.4} \
@@ -552,22 +639,18 @@ mod tests {
             checked, SEEDS,
             "the corpus is not the one this claim was measured over"
         );
-        assert!(
-            worst.is_finite(),
-            "no clearance was measured, so this test asserted nothing"
-        );
     }
 
-    /// The whole molecule is inside the field of view at the opening camera.
+    /// The whole molecule is inside the field of view at the opening camera, in
+    /// every universe and at every orientation.
     ///
     /// **Fails on a framing distance tuned to one seed**, which is the shape the
-    /// first value of `FRAMING` had. Checks the half-angle directly rather than
-    /// through a projection matrix, so it is about the constant this crate owns
-    /// and not about the engine's arithmetic.
+    /// first value of `FRAMING` had. Because the camera orbits at a fixed
+    /// distance about a centred embedding, checking the bounding sphere covers
+    /// every orientation at once.
     #[test]
     fn every_atom_is_within_the_field_of_view_at_the_opening_camera() {
-        let half = FOV_Y / 2.0;
-        let sin_half = borbax_units::det_math::sin(half);
+        let sin_half = borbax_units::det_math::sin(FOV_Y / 2.0);
         for seed in 0..SEEDS {
             let universe = Universe::generate(seed);
             let demo =
@@ -580,8 +663,6 @@ mod tests {
                 }
             }
             let cam = Orbit::framing(demo.embedding.radius_of_gyration().get());
-            // The molecule fits when the bounding sphere subtends less than the
-            // half-angle: bounding <= distance * sin(fov/2).
             let fits = cam.distance() * sin_half;
             assert!(
                 bounding < fits,
@@ -591,13 +672,13 @@ mod tests {
         }
     }
 
-    /// A drag that began on the panel never orbits, and one that began on the
-    /// scene keeps the pointer wherever it wanders.
+    /// A drag that began on the panel never turns the molecule, and one that
+    /// began on the scene keeps the pointer wherever it wanders.
     ///
-    /// **The latch is the discriminator.** Deciding per frame — orbit whenever
-    /// the pointer is not over the panel — freezes the molecule the instant a
-    /// drag crosses onto the periodic table, which is a bug that only shows up
-    /// with a mouse in your hand.
+    /// **The latch is the discriminator, and it is what lets the caller ask the
+    /// *wide* question about egui.** Deciding per frame — turn whenever the
+    /// pointer is not over the panel — freezes the molecule the instant a drag
+    /// crosses onto the periodic table.
     #[test]
     fn a_drag_belongs_to_wherever_it_started() {
         let mut began_on_panel = Orbit::framing(1.0);
