@@ -44,8 +44,8 @@ use crate::orbit::{FOV_Y, NEAR, Orbit};
 mod systems {
     use super::{
         AccumulatedMouseMotion, AccumulatedMouseScroll, Atom, AtomLook, DrawnAt, FOV_Y,
-        LARGEST_VIEWPORT, MouseScrollUnit, NEAR, Orbit, OrbitState, PrimaryWindow, SceneCamera,
-        SceneRegion, Viewer, Viewport, WORLD_UP, narrow, pixels, place,
+        MouseScrollUnit, NEAR, Orbit, OrbitState, PrimaryWindow, SceneCamera, SceneRegion, Viewer,
+        WORLD_UP, narrow, place, viewport_within,
     };
     use bevy::prelude::*;
 
@@ -281,38 +281,86 @@ mod systems {
             .looking_at(Vec3::ZERO, place(orbit.0.up()));
 
         let Some(rect) = region.0 else { return };
-        // egui works in logical points and a viewport is in physical pixels.
-        // Missing this puts the scene in the wrong quarter of the window on any
-        // display with a scale factor, and never on a headless test, where the
-        // factor is 1.
-        let scale = window.scale_factor();
-        let min = rect.min * scale;
-        let size = rect.size() * scale;
-        // A zero-sized viewport is invalid, so a window dragged too small drops
-        // the viewport rather than clamping it to a degenerate one.
-        //
-        // **Written as `!(a && b)` rather than `a || b`, and that is the fix
-        // rather than a style choice.** The `<` form is *false* for NaN, so a
-        // non-finite rect skipped the very branch that exists to reject a
-        // degenerate viewport and went on to build a zero-sized one — the guard
-        // shaped to catch the bad case was the one comparison the bad case
-        // passed through. The upper bound is here for the other end the
-        // saturating cast leaves open: a very large extent would otherwise
-        // become `u32::MAX`.
-        let sane = size.x >= 1.0
-            && size.y >= 1.0
-            && size.x <= LARGEST_VIEWPORT
-            && size.y <= LARGEST_VIEWPORT;
-        if !sane {
-            camera.viewport = None;
-            return;
-        }
-        camera.viewport = Some(Viewport {
-            physical_position: UVec2::new(pixels(min.x), pixels(min.y)),
-            physical_size: UVec2::new(pixels(size.x), pixels(size.y)),
-            ..default()
-        });
+        // **The window is this camera's render target**, and the target is what
+        // the viewport has to fit inside. Taken from the window rather than from
+        // `Camera::physical_target_size` because that is derived state which is
+        // itself `None` before the first render, and this camera has no custom
+        // `RenderTarget`.
+        let target = UVec2::new(window.physical_width(), window.physical_height());
+        camera.viewport = viewport_within(rect, window.scale_factor(), target);
     }
+}
+
+/// The scene camera's viewport for a region, confined to the render target.
+///
+/// **A resize crashed the viewer, and this is why it needs confining rather
+/// than merely sanity-checking.** Reported 2026-08-04, dragging the window
+/// narrower:
+///
+/// ```text
+/// Scissor Rect { x: 0, y: 917, w: 3456, h: 989 } is not contained in
+/// the render target (2944, 1906, 1)
+/// ```
+///
+/// and `bevy_render`'s error handler treats a validation error as fatal, so the
+/// application quit. The asymmetry names the cause exactly: `917 + 989 = 1906`
+/// fits the target height precisely, while the width `3456` overflows `2944` —
+/// a window narrowed with its height untouched. The next log line was
+/// `Resized(width: 2226, height: 1906)`, still shrinking.
+///
+/// The two numbers come from different places and cannot be assumed to agree.
+/// The region is egui's leftover rectangle in logical points, published by
+/// `draw_panel`; the target is the swapchain. During a resize egui's is a frame
+/// or more behind — `3456` is a 1728-point window at scale 2, against a target
+/// that had already reached 1472. Confining is not papering over that: a
+/// viewport outside its target is invalid whatever produced it, and next frame
+/// the region is right again. What must not happen is one stale frame killing
+/// the app.
+///
+/// `None` where there is no viewport worth setting, which the caller applies as
+/// "draw through the whole target".
+fn viewport_within(rect: Rect, scale: f32, target: UVec2) -> Option<Viewport> {
+    // egui works in logical points and a viewport is in physical pixels.
+    // Missing this puts the scene in the wrong quarter of the window on any
+    // display with a scale factor, and never on a headless test, where the
+    // factor is 1.
+    let min = rect.min * scale;
+    let size = rect.size() * scale;
+    // A zero-sized viewport is invalid, so a window dragged too small drops the
+    // viewport rather than clamping it to a degenerate one.
+    //
+    // **Written as `!(a && b)` rather than `a || b`, and that is the fix rather
+    // than a style choice.** The `<` form is *false* for NaN, so a non-finite
+    // rect skipped the very branch that exists to reject a degenerate viewport
+    // and went on to build a zero-sized one — the guard shaped to catch the bad
+    // case was the one comparison the bad case passed through. The upper bound
+    // is here for the other end the saturating cast leaves open: a very large
+    // extent would otherwise become `u32::MAX`.
+    let sane =
+        size.x >= 1.0 && size.y >= 1.0 && size.x <= LARGEST_VIEWPORT && size.y <= LARGEST_VIEWPORT;
+    if !sane {
+        return None;
+    }
+    let position = UVec2::new(pixels(min.x), pixels(min.y));
+    // A region starting outside the target has no visible part at all. Handled
+    // before the subtraction rather than by saturating it to zero, so the
+    // degenerate case leaves by the same door as every other one.
+    let available = UVec2::new(
+        target.x.saturating_sub(position.x),
+        target.y.saturating_sub(position.y),
+    );
+    let size = UVec2::new(
+        pixels(size.x).min(available.x),
+        pixels(size.y).min(available.y),
+    );
+    if size.x == 0 || size.y == 0 {
+        return None;
+    }
+    Some(Viewport {
+        physical_position: position,
+        physical_size: size,
+        ..default()
+    })
 }
 
 /// Which way is up, before the camera has an opinion.
@@ -438,4 +486,99 @@ pub fn plugin(app: &mut App) {
                 .chain()
                 .after(bevy_egui::EguiPostUpdateSet::ProcessOutput),
         );
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "a fixture that fails to produce a viewport should fail the test \
+              loudly, and `unwrap` names that precondition where it is checked"
+)]
+mod tests {
+    use super::{LARGEST_VIEWPORT, Rect, UVec2, Vec2, viewport_within};
+
+    /// The window Ian was resizing when the viewer quit.
+    const TARGET: UVec2 = UVec2::new(2944, 1906);
+
+    /// A viewport never leaves its render target, at any region and any scale.
+    ///
+    /// **This is the invariant the GPU actually enforces**, and the one nothing
+    /// checked: `wgpu` rejects a scissor rect outside the target, and
+    /// `bevy_render` treats that validation error as fatal, so the application
+    /// quits rather than dropping a frame.
+    ///
+    /// Swept rather than sampled, because the failing case was not the obvious
+    /// one — the region overflowed in **width only**, with its height fitting
+    /// the target exactly.
+    #[test]
+    fn a_viewport_never_leaves_the_render_target() {
+        let mut checked = 0_u32;
+        for w in [1.0_f32, 100.0, 1471.0, 1472.0, 1473.0, 1728.0, 9000.0] {
+            for h in [1.0_f32, 100.0, 952.0, 953.0, 954.0, 1200.0] {
+                for top in [0.0_f32, 1.0, 458.5, 900.0, 1600.0] {
+                    for scale in [1.0_f32, 1.5, 2.0] {
+                        let rect = Rect::from_corners(Vec2::new(0.0, top), Vec2::new(w, top + h));
+                        if let Some(v) = viewport_within(rect, scale, TARGET) {
+                            let far = v.physical_position + v.physical_size;
+                            assert!(
+                                far.x <= TARGET.x && far.y <= TARGET.y,
+                                "viewport {:?}+{:?} leaves the target {TARGET:?} \
+                                 for rect {rect:?} at scale {scale}",
+                                v.physical_position,
+                                v.physical_size
+                            );
+                            assert!(
+                                v.physical_size.x > 0 && v.physical_size.y > 0,
+                                "a zero-sized viewport is invalid and must be \
+                                 `None` instead"
+                            );
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        // The bar is the size of the sweep, so a loop that stopped selecting
+        // anything is visible rather than silently green.
+        assert_eq!(checked, 7 * 6 * 5 * 3, "the sweep did not run in full");
+    }
+
+    /// The exact rectangle from the crash report is confined rather than fatal.
+    ///
+    /// Reported 2026-08-04: `Scissor Rect { x: 0, y: 917, w: 3456, h: 989 } is
+    /// not contained in the render target (2944, 1906, 1)`. At scale 2 that is
+    /// a logical rect of `(0, 458.5)` to `(1728, 953)` — a 1728-point-wide
+    /// window whose target had already narrowed to 1472.
+    #[test]
+    fn the_reported_crash_rectangle_is_confined() {
+        let rect = Rect::from_corners(Vec2::new(0.0, 458.5), Vec2::new(1728.0, 953.0));
+        let v = viewport_within(rect, 2.0, TARGET).unwrap();
+
+        assert_eq!(
+            v.physical_size.x, 2944,
+            "the width was not confined to the target, which is the crash"
+        );
+        let far = v.physical_position + v.physical_size;
+        assert!(far.x <= TARGET.x && far.y <= TARGET.y);
+    }
+
+    /// A region starting beyond the target has no viewport at all.
+    #[test]
+    fn a_region_outside_the_target_gives_no_viewport() {
+        let rect = Rect::from_corners(Vec2::new(3000.0, 2000.0), Vec2::new(3200.0, 2200.0));
+        assert!(viewport_within(rect, 1.0, TARGET).is_none());
+    }
+
+    /// The degenerate and absurd cases still refuse, as they did before.
+    #[test]
+    fn degenerate_regions_still_refuse() {
+        let zero = Rect::from_corners(Vec2::ZERO, Vec2::ZERO);
+        assert!(viewport_within(zero, 1.0, TARGET).is_none(), "zero-sized");
+
+        let huge = Rect::from_corners(Vec2::ZERO, Vec2::splat(LARGEST_VIEWPORT + 1.0));
+        assert!(viewport_within(huge, 1.0, TARGET).is_none(), "absurd");
+
+        let nan = Rect::from_corners(Vec2::ZERO, Vec2::splat(f32::NAN));
+        assert!(viewport_within(nan, 1.0, TARGET).is_none(), "non-finite");
+    }
 }
