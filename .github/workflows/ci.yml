@@ -36,6 +36,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # **Bevy's Linux build needs system headers this runner does not ship**,
+      # and nothing local can see it: the viewer builds fine on macOS, where
+      # these are part of the platform. The first push of the Bevy branch failed
+      # here with `alsa-sys` panicking in its build script — "Package 'alsa' was
+      # not found in the pkg-config search path" — before a single test ran.
+      #
+      # `libasound2-dev` is ALSA, pulled by Bevy's audio; `libudev-dev` is what
+      # `winit` uses to enumerate input devices. **The viewer plays no sound**,
+      # so the better fix is to stop pulling `bevy_audio` at all — that means
+      # `default-features = false` plus an explicit feature list, which is real
+      # work with its own review surface rather than a line in a workflow. This
+      # unblocks CI; the trim is filed as its own task.
+      #
+      # Skipped on macOS and Windows, where the equivalents are part of the SDK.
+      - name: Linux system libraries for the engine
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+
       - name: Show toolchain
         run: rustup show active-toolchain
 
@@ -190,6 +210,26 @@ jobs:
       # pins drift. If a non-Rust tool is ever added to .prototools, CI needs a
       # proto setup step back — nothing here would notice on its own, because
       # this project is Rust-only by construction (spec §14.0).
+      # **Bevy's Linux build needs system headers this runner does not ship**,
+      # and nothing local can see it: the viewer builds fine on macOS, where
+      # these are part of the platform. The first push of the Bevy branch failed
+      # here with `alsa-sys` panicking in its build script — "Package 'alsa' was
+      # not found in the pkg-config search path" — before a single test ran.
+      #
+      # `libasound2-dev` is ALSA, pulled by Bevy's audio; `libudev-dev` is what
+      # `winit` uses to enumerate input devices. **The viewer plays no sound**,
+      # so the better fix is to stop pulling `bevy_audio` at all — that means
+      # `default-features = false` plus an explicit feature list, which is real
+      # work with its own review surface rather than a line in a workflow. This
+      # unblocks CI; the trim is filed as its own task.
+      #
+      # Skipped on macOS and Windows, where the equivalents are part of the SDK.
+      - name: Linux system libraries for the engine
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+
       - name: Show toolchain
         run: rustup show active-toolchain
 
