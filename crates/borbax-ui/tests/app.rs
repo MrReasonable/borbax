@@ -137,14 +137,17 @@ fn the_app_opens_on_a_universe() {
     app.cleanup();
     app.update();
 
-    // The status line is built in `state.rs`, which is what makes asserting on
-    // it an assertion about what the window paints.
-    let opening = borbax_ui::state::ViewerState::opening();
+    // **Read out of the app, not constructed beside it.** This assertion used
+    // to build its own `ViewerState::opening()` and check that — which is a
+    // test of `opening()`, not of the app, and would have passed unchanged if
+    // the app had inserted `ViewerState::new()`. That is precisely the defect
+    // the test is named for, and precisely the shape this file exists to stop.
+    let state = &app.world().resource::<borbax_ui::app::Viewer>().0;
     assert!(
-        opening.status_line().contains("elements"),
-        "the opening state does not describe a universe, so the window's first \
-         frame shows no chemistry: {:?}",
-        opening.status_line()
+        state.status_line().contains("elements"),
+        "the app's opening state does not describe a universe, so the window's \
+         first frame shows no chemistry: {:?}",
+        state.status_line()
     );
 }
 
@@ -324,9 +327,201 @@ fn an_idle_scene_keeps_the_atoms_it_already_has() {
         let mut atoms = world.query_filtered::<Entity, With<borbax_ui::scene::Atom>>();
         atoms.iter(world).collect()
     };
+    // **Compared as sets.** `assert_eq!` on two `Vec`s compares order, and the
+    // scene's own header records that query iteration is not spawn order after
+    // entity churn — so the sequence form would be a test that fails
+    // intermittently with a message naming the wrong cause.
+    let before: std::collections::BTreeSet<Entity> = before.into_iter().collect();
+    let after: std::collections::BTreeSet<Entity> = after.into_iter().collect();
     assert_eq!(
         before, after,
         "the atom entities were replaced while nothing changed, so the scene is \
          being rebuilt every frame"
+    );
+}
+
+/// A refused seed takes the molecule off the screen.
+///
+/// **A real defect, found by review and green over 532 tests.** The scene used
+/// to be gated on the layout counter, which does not move when a seed is
+/// refused — so typing nonsense left the *previous* universe's molecule sitting
+/// under the refusal message. The Step 3 design memo's manual checklist says in
+/// as many words that this must not happen: it is `Outcome`'s whole argument —
+/// a shape attributed to a universe that did not produce it — carried one layer
+/// down into the entity cache, where the enum could not reach it.
+#[test]
+fn a_refused_seed_takes_the_molecule_off_the_screen() {
+    let mut app = started();
+
+    let before = {
+        let world = app.world_mut();
+        let mut atoms = world.query_filtered::<Entity, With<borbax_ui::scene::Atom>>();
+        atoms.iter(world).count()
+    };
+    assert!(
+        before > 0,
+        "no molecule to begin with, so this asserts nothing"
+    );
+
+    {
+        let mut viewer = app.world_mut().resource_mut::<borbax_ui::app::Viewer>();
+        viewer.0.seed_text_mut().clear();
+        viewer.0.seed_text_mut().push_str("not a seed");
+        viewer.0.commit_typed_seed();
+    }
+    app.update();
+
+    let world = app.world_mut();
+    let mut atoms = world.query_filtered::<Entity, With<borbax_ui::scene::Atom>>();
+    let after = atoms.iter(world).count();
+    assert_eq!(
+        after, 0,
+        "the refusal left {after} atoms on screen — a molecule from a universe \
+         that is no longer loaded, beside a message saying the seed was refused"
+    );
+}
+
+/// Every atom is drawn exactly where the solver put it, at the size it said.
+///
+/// **This is the test that says the picture is the chemistry, and its absence
+/// was the review's most damning measurement.** With no such test, atoms were
+/// moved to `[x*3, y, z+9]` and scaled into ellipsoids `(1.7r, 0.4r, 1.0r)` —
+/// fabricated positions, squashed spheres — and all 81 tests passed, against a
+/// comment in the scene reading "No fudge, no clamp, no per-atom adjustment".
+/// The guard set was aimed at the *colour* channel, which carries nothing;
+/// position and radius, which carry everything, were unverified.
+///
+/// **Compared as a set, not a sequence.** Bevy reuses entity slots, so query
+/// order after a despawn/respawn cycle is not spawn order — zipping against the
+/// coordinate list would be a test that passes or fails depending on churn.
+///
+/// **Bit-exact, deliberately.** Both sides run the same `f64 -> f32` narrowing
+/// on the same values in the same order, so any difference is a transform this
+/// crate applied rather than a rounding question.
+#[test]
+fn every_atom_is_drawn_where_the_embedding_put_it() {
+    use std::collections::BTreeSet;
+
+    let want: BTreeSet<[u32; 6]> = {
+        let state = borbax_ui::state::ViewerState::opening();
+        let demo = state
+            .demo()
+            .unwrap_or_else(|| unreachable!("the opening universe builds a molecule"));
+        demo.embedding
+            .coords()
+            .iter()
+            .zip(demo.embedding.radii())
+            .map(|(p, r)| {
+                let scale = borbax_ui::scene::narrow(r.get());
+                let at = borbax_ui::scene::place(*p);
+                [
+                    at.x.to_bits(),
+                    at.y.to_bits(),
+                    at.z.to_bits(),
+                    scale.to_bits(),
+                    scale.to_bits(),
+                    scale.to_bits(),
+                ]
+            })
+            .collect()
+    };
+
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms = world.query_filtered::<&Transform, With<borbax_ui::scene::Atom>>();
+    let got: BTreeSet<[u32; 6]> = atoms
+        .iter(world)
+        .map(|t| {
+            [
+                t.translation.x.to_bits(),
+                t.translation.y.to_bits(),
+                t.translation.z.to_bits(),
+                t.scale.x.to_bits(),
+                t.scale.y.to_bits(),
+                t.scale.z.to_bits(),
+            ]
+        })
+        .collect();
+
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "the scene holds {} distinct atom transforms against {} atoms in the \
+         embedding",
+        got.len(),
+        want.len()
+    );
+    assert_eq!(
+        got, want,
+        "an atom is not where the solver put it, or is not the size it said — \
+         the picture has stopped being the chemistry"
+    );
+}
+
+/// The sphere the atoms are drawn with has unit radius.
+///
+/// **The transform test above cannot see this**, which is why it is separate: a
+/// mesh of radius 0.5 with every scale correct draws every atom at half size and
+/// leaves both sets identical. Scale is only a radius if the thing being scaled
+/// is a unit sphere.
+#[test]
+fn the_atom_mesh_is_a_unit_sphere() {
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms = world.query_filtered::<&Mesh3d, With<borbax_ui::scene::Atom>>();
+    let handle = atoms
+        .iter(world)
+        .next()
+        .map_or_else(|| unreachable!("the scene holds atoms"), |m| m.0.clone());
+    let meshes = world.resource::<Assets<Mesh>>();
+    let mesh = meshes
+        .get(&handle)
+        .unwrap_or_else(|| unreachable!("the atom mesh handle resolves"));
+    let positions = mesh
+        .attribute(Mesh::ATTRIBUTE_POSITION)
+        .and_then(|values| values.as_float3())
+        .unwrap_or_else(|| unreachable!("a sphere mesh has float3 positions"));
+    assert!(!positions.is_empty(), "the atom mesh has no vertices");
+    let mut reach = 0.0f32;
+    for p in positions {
+        let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        if r > reach {
+            reach = r;
+        }
+    }
+    assert!(
+        (reach - 1.0).abs() < 1e-3,
+        "the atom mesh reaches {reach} from its centre, not 1.0 — so scaling it \
+         by an atom's radius does not draw that radius, and the transform test \
+         cannot see it because every scale would still match"
+    );
+}
+
+/// Every atom shares one mesh handle, as well as one material.
+///
+/// The colour channel is guarded; this is the same door one channel along. A
+/// per-atom mesh keyed on a generated property — subdivision count, a different
+/// primitive — is a property map arriving through geometry, and the material
+/// assertion cannot see it. Measured during review: giving every atom its own
+/// mesh handle failed only the material test.
+#[test]
+fn every_atom_is_drawn_with_the_same_mesh() {
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms = world.query_filtered::<&Mesh3d, With<borbax_ui::scene::Atom>>();
+    let handles: Vec<_> = atoms.iter(world).map(|m| m.0.id()).collect();
+    assert!(!handles.is_empty(), "no atoms, so this asserted nothing");
+    let first = handles
+        .first()
+        .copied()
+        .unwrap_or_else(|| unreachable!("checked non-empty above"));
+    assert!(
+        handles.iter().all(|h| *h == first),
+        "the atoms hold {} distinct meshes — geometry that varies per atom is a \
+         property map, and Step 4 owns those with their own guard",
+        handles
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
     );
 }

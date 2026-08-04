@@ -679,7 +679,7 @@ fn two_cells_never_answer_to_the_same_label() {
 /// literal — because the defect it hunts is a function of the real window.
 ///
 /// Precisely: it asserts about the size the program **requests**, since
-/// `eframe` may have that scaled or clamped by the platform. That is the
+/// the platform may have that scaled or clamped. That is the
 /// geometry this repository controls, and the only one observable headlessly. The
 /// widest measured table is ~3531 points of content against a window's 1200 points, so
 /// most universes do not fit and a grid that does not scroll leaves the tail
@@ -835,4 +835,62 @@ fn the_grid_is_operable_from_the_keyboard() {
         Some(egui::accesskit::Toggled::True),
         "Enter on a focused cell does not select it"
     );
+}
+
+/// The window says what molecule it is showing.
+///
+/// **The caption had no test at all until a review found it**, and it is the
+/// label for the entire 3D scene. It was painted from the engine file, which no
+/// frame test reaches, so it could have returned an empty string or named the
+/// wrong elements with the whole suite green.
+///
+/// Its content matters as much as its presence: a scene sitting beside a
+/// clicked element reads as "the element you clicked, in 3D", which is false —
+/// the molecule is built from whichever elements fit the shape and has nothing
+/// to do with the selection. Asserting the *symbols* is what makes that
+/// checkable.
+#[test]
+fn the_window_names_the_molecule_it_is_showing() {
+    let state = borbax_ui::state::ViewerState::opening();
+    let demo = state
+        .demo()
+        .unwrap_or_else(|| unreachable!("the opening universe builds a molecule"));
+    let universe = borbax_universe::Universe::generate(borbax_ui::OPENING_SEED);
+    let symbols: Vec<&str> = demo
+        .elements
+        .iter()
+        .filter_map(|id| universe.table.get(*id))
+        .map(|e| e.symbol.as_str())
+        .collect();
+    assert_eq!(
+        symbols.len(),
+        demo.elements.len(),
+        "an element in the molecule is not in its own universe's table"
+    );
+
+    // **A harness in the *opening* state, not the shared one.** The shared
+    // helper starts from `ViewerState::new()` — an empty seed box, deliberately,
+    // because `type_text` appends — which means no universe and so no caption.
+    // This test is about a window showing a molecule, so it has to start from
+    // one.
+    let mut harness = Harness::new_ui_state(|ui, state| draw(state, ui), ViewerState::opening());
+    harness.run();
+
+    // The exact string `state.rs` built, found in the tree the window painted.
+    // Asserting on the whole caption rather than on its parts is what ties the
+    // two together: a panel that painted some *other* sentence containing the
+    // same symbols would pass a looser check.
+    let caption = state.scene_caption();
+    assert!(
+        harness.query_by_label(&caption).is_some(),
+        "the window paints no label equal to the caption `state.rs` built \
+         ({caption:?}), so nothing on screen says what molecule is being shown"
+    );
+    for symbol in &symbols {
+        assert!(
+            caption.contains(symbol),
+            "the caption {caption:?} does not name {symbol}, which is an element \
+             of the molecule on screen"
+        );
+    }
 }

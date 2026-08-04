@@ -103,7 +103,7 @@ pub fn cos(x: f64) -> f64 {
 /// sentence is the whole reason the wrapper exists rather than the call sites
 /// spelling the quotient. Measured over 890 000 values of `x` from 0.0001° to
 /// 89°: the two disagree on **354 665 of them — 39.85%** — worst case 3 ulp at
-/// 1.8567°. They agree on **0 of 890 000** after a round trip through `f32`, so
+/// 1.8567°. They differ in **0 of 890 000** after a round trip through `f32`, so
 /// no picture can distinguish them, which is exactly what makes the pair
 /// dangerous: a later tidy-up can swap either spelling for the other and no
 /// test will notice, in a module whose §13.1 discipline is that float
@@ -122,7 +122,13 @@ pub fn cos(x: f64) -> f64 {
 /// new audited surface is `k_tan.rs`, which carries no `cfg` beyond
 /// `assert_no_panic`.
 ///
-/// Added for the viewer's perspective projection, `f = cot(fovy/2)`. That is a
+/// **Added for a caller that no longer exists, and kept deliberately.** It was
+/// written for a perspective projection this workspace was going to build; the
+/// engine builds its own, so grepping the tree finds no call outside this file's
+/// own tests. It stays because the projection work is scheduled to move into
+/// `borbax-geometry`, and because this module's rule is that a missing wrapper
+/// is *added* rather than routed around. Recorded rather than left as a
+/// present-tense claim about a consumer that is not there. That is a
 /// display value and reaches no result — but the §13.1 rule is not "results
 /// only", and both this module's header and `clippy.toml` already say that
 /// wanting a wrapper is the signal to add one here rather than to route around

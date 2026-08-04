@@ -125,7 +125,7 @@ the review *body*, where they never become review threads — a thread query
 returns clean while a finding sits unaddressed. Sweep both: the thread list, and
 every review body for `Nitpick comments (n)` / `Actionable comments posted: n`.
 
-Next action if starting fresh: **viewer Step 2**, the periodic table panel. See
+Next action if starting fresh: **viewer Step 4**, sticks between bonded atoms and colour from generated properties. See
 `docs/superpowers/plans/2026-08-01-borbax-viewer.md`. Task 10 merged as PR #19
 on 2026-08-01, bringing V0 Tasks 1-10 in; viewer Step 1 followed it and created
 `crates/borbax-ui`; **Step 1b landed a name instead of a number** — typing
@@ -157,11 +157,13 @@ proves the geometry is identical across platforms, which a screenshot cannot
 do. The plan file says all of this; read it before re-sequencing anything back.
 
 **The viewer's seam is per-file and `cargo xtask` checks it — but a plain grep
-will lie to you.** `crates/borbax-ui/src/state.rs` names no UI type, `panel.rs`
-names `egui` and contains no `format!`, and only `main.rs` names `eframe` —
-**in code**. The prose necessarily quotes what it forbids, so `grep -rl eframe`
-returns three files and `grep format! panel.rs` returns one, both correctly and
-both uselessly; the guard strips whole-line comments first. That is
+will lie to you.** `state.rs`, `molecule.rs` and `orbit.rs` name no engine or UI
+type at all; `panel.rs` names `egui` and contains no `format!`; `app.rs` and
+`scene.rs` may name `bevy` and `egui` and may build no strings; and `main.rs` is
+one statement with no licence at all — **in code**. The prose necessarily quotes
+what it forbids, so a raw `grep -rl bevy src/` returns four files against the two
+that name it in code, and `grep format! panel.rs` returns one, all correctly and
+all uselessly; the guard strips whole-line comments first. That is
 what lets `egui_kittest` drive the real drawing code headlessly in CI — `egui`
 lays out on the CPU and cannot open a window. It also means the **computed
 status string** comes from `state.rs`, so a test asserting on it is asserting on
@@ -170,17 +172,19 @@ over a window they have stopped describing. (Fixed labels like `ui.label("seed")
 are painted in `panel.rs` and are not that string — the rule is about strings
 built from state, which is what a test can be wrong about.)
 
-**Step 3 has a hazard, and it is an OPEN decision — do not read a conclusion
-into it.** An orbit camera needs `sin` and `cos`; `clippy.toml`'s §13.1 ban
-resolves for every workspace member; and `xtask`'s textual scan has **no path
-exemption by design**, so a clippy `#[expect]` silences only half of it. The
-argument that will be offered is that the viewer produces no results and so
-routing camera trig through `det_math` buys nothing — **that argument is not
-pre-approved here.** §13.1 applies to every `.rs` file in the workspace, and an
-exception to a hard invariant is a policy change: it lands with the guard that
-implements it, in one reviewed task, with the determinism auditor. Until then
-the rule is the rule. An earlier version of this paragraph stated the exception
-as settled, which is not something a status note gets to do.
+**Step 3's §13.1 question is CLOSED, and it was closed in the direction the rule
+required.** The camera's trig routes through `det_math`; no exception was
+granted and no path exemption was added. The cost of compliance turned out to be
+one import and the spelling `det_math::cos(t)`, against a policy change to a
+hard invariant — and the exception would not even have worked, since an
+`#[expect]` silences clippy and leaves `xtask`'s textual scan firing.
+`check_libm_has_one_home` landed with it, closing a hole where a bare `libm::`
+call passed all six gate legs.
+
+The argument that the viewer produces no results and so buys nothing by
+complying is **still not pre-approved** for anything else. It was not the reason
+this went the way it did: the reason is that the guard refuses the alternative,
+which is a verdict a tool issues rather than a judgement.
 
 **Task 5b is scaffolding, not a V0 task.** It respecifies `abundance` as a
 fusion/fission process and is fully written up, but it gates nothing, the shipped
