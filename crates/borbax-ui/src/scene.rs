@@ -27,8 +27,8 @@
 use bevy::camera::Viewport;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 use bevy_egui::PrimaryEguiContext;
-use bevy_egui::input::EguiWantsInput;
 
 use crate::orbit::{FOV_Y, NEAR, Orbit};
 
@@ -43,8 +43,8 @@ use crate::orbit::{FOV_Y, NEAR, Orbit};
 )]
 mod systems {
     use super::{
-        AccumulatedMouseMotion, AccumulatedMouseScroll, Atom, AtomLook, DrawnAt, EguiWantsInput,
-        FOV_Y, LARGEST_VIEWPORT, MouseScrollUnit, NEAR, Orbit, OrbitState, SceneCamera,
+        AccumulatedMouseMotion, AccumulatedMouseScroll, Atom, AtomLook, DrawnAt, FOV_Y,
+        LARGEST_VIEWPORT, MouseScrollUnit, NEAR, Orbit, OrbitState, PrimaryWindow, SceneCamera,
         SceneRegion, Viewer, Viewport, WORLD_UP, narrow, pixels, place,
     };
     use bevy::prelude::*;
@@ -182,6 +182,25 @@ mod systems {
         orbit.0 = Orbit::framing(demo.embedding.radius_of_gyration().get());
     }
 
+    /// Is the pointer in the region the panel left for the scene?
+    ///
+    /// **Refuses when it does not know**, in both arms: `SceneRegion` is `None`
+    /// until the panel has drawn once, and `cursor_position` is `None` when the
+    /// pointer is outside the window. A molecule that does not turn is a smaller
+    /// defect than one that turns while a child is reaching for a control, so
+    /// the unknown case declines rather than allows.
+    fn pointer_is_in_the_scene(region: Option<Rect>, window: Option<&Window>) -> bool {
+        let (Some(rect), Some(window)) = (region, window) else {
+            return false;
+        };
+        // Logical points on both sides: `SceneRegion` is documented as logical,
+        // and `cursor_position` divides the physical position by the scale
+        // factor. Comparing a physical cursor against a logical rectangle would
+        // put the boundary in the wrong place on every non-unity display, which
+        // is most of them.
+        window.cursor_position().is_some_and(|at| rect.contains(at))
+    }
+
     /// Turn the camera with the mouse, and zoom it with the wheel.
     ///
     /// Runs after egui has decided whether it wants the pointer this frame; a
@@ -190,25 +209,49 @@ mod systems {
         buttons: Res<'_, ButtonInput<MouseButton>>,
         motion: Res<'_, AccumulatedMouseMotion>,
         wheel: Res<'_, AccumulatedMouseScroll>,
-        wants: Res<'_, EguiWantsInput>,
+        region: Res<'_, SceneRegion>,
+        // **`With<PrimaryWindow>`, not the first row of a bare `&Window`
+        // query.** There is one window today, so both pick the same one — but
+        // "whichever the query yields first" is precisely the thing this module
+        // header says is never read for anything that matters, and a gate that
+        // silently followed spawn order would be the same class of defect as
+        // the one it replaces.
+        window: Query<'_, '_, &Window, With<PrimaryWindow>>,
         mut orbit: ResMut<'_, OrbitState>,
     ) {
+        // **Ask the geometry, because `egui` has no answer to give here.** Two
+        // versions of this gate asked `egui` whether it wanted the pointer —
+        // first the narrow question (`wants_pointer_input`), then the wide one
+        // (`wants_any_pointer_input`) — and Ian reported the molecule turning
+        // when dragged anywhere on the interface after *both*.
+        //
+        // The reason is in `app.rs`: the root `Ui` is built on
+        // `LayerId::background()` and the panel is shown inside it, so the panel
+        // never gets a layer of its own and `egui`'s "is the pointer over me"
+        // machinery has nothing to report. Measured against that exact
+        // construction with the pointer at `(20, 20)`, squarely on the panel:
+        // `is_pointer_over_egui()` false, `egui_wants_pointer_input()` false,
+        // `layer_id_at` the background layer. Both answers were false
+        // everywhere, which is why swapping one for the other changed nothing.
+        //
+        // `SceneRegion` is the rectangle the panel actually left, and
+        // `aim_camera` already sets the scene camera's viewport from it. Gating
+        // on the same value is what stops the gate and the picture disagreeing
+        // about where the scene is — the same reason the region is returned by
+        // `draw_panel` rather than agreed by convention.
+        //
+        // The latch still does the rest: `Orbit::point` consults this only on
+        // the press edge, so a drag that starts in the scene keeps turning when
+        // it crosses onto the panel, which is what a person expects.
+        let over_ui = !pointer_is_in_the_scene(region.0, window.iter().next());
         orbit.0.point(
             buttons.pressed(MouseButton::Left),
-            // **The wide question, and the latch is what makes it the right
-            // one.** `wants_pointer_input` is the narrow one — "is egui
-            // *using* the pointer" — and it is false over a panel's own
-            // background, so gating on it let the molecule turn when dragged
-            // anywhere on the interface. The wide question is also true on a
-            // bare hover, which would freeze a drag crossing onto the panel if
-            // it were asked every frame; `Orbit::point` only asks it on the
-            // press edge, so that cannot happen.
-            wants.wants_any_pointer_input(),
+            over_ui,
             f64::from(motion.delta.x),
             f64::from(motion.delta.y),
         );
 
-        if wheel.delta.y != 0.0 && !wants.wants_any_pointer_input() {
+        if wheel.delta.y != 0.0 && !over_ui {
             // **A line of wheel and a pixel of trackpad are not the same
             // quantity.** Left unnormalised, a trackpad zooms about a hundred
             // times per notch of a mouse.
