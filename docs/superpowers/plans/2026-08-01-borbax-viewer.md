@@ -7,7 +7,7 @@ Task 19 — static pictures, headless, golden-tested, near the end. That is the
 right tool for proving the geometry is correct and the wrong tool for the
 project's actual purpose. Ian, 2026-08-01, on what Borbax is for:
 
-> a realistic simulation of an imaginary universe that I can show my child in 3D
+> a realistic simulation of an imaginary universe that I can show a child in 3D
 > — how atoms fuse to make elements, how elements bond to form molecules, how
 > molecules grow and fold and create self-replicating molecules, how abiogenesis
 > *could* have happened and, later, how entire cells work, replicate and apply
@@ -525,7 +525,7 @@ this paragraph exists.
         first; if nothing separates, say so rather than inventing a split.
 
       **Context worth keeping, because it changes how to read the fiction
-      guarantee.** Ian's goal is showing his daughter how the world works. He
+      guarantee.** Ian's goal is showing a child how the world works. He
       chose an invented universe because another model refused to help him build
       real chemistry — not because fiction was the aim. The guarantee still holds
       for *this* project and is still enforced; but a separate, real-chemistry
@@ -570,7 +570,7 @@ step cannot be demonstrated by looking at it, it is the wrong step.
 ## What "done" means for the first version
 
 Ian can double-click it, type a seed, see a periodic table nobody has ever seen,
-click through to a molecule, and spin it around in 3D — with his daughter, on a
-laptop, without a terminal.
+click through to a molecule, and spin it around in 3D — with a child beside him,
+on a laptop, without a terminal.
 
 Everything after that is the chemistry arriving in a window that already works.

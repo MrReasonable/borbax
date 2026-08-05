@@ -151,7 +151,7 @@ the spec.
 the spec's sequencing rather than an oversight.** §14.5 puts static headless SVG
 in V0 (Task 19) and the interactive viewer in V1. Ian's instruction on
 2026-08-01 was to bring the visuals forward, because a project whose point is
-showing his daughter how chemistry works had ten more tasks to run with nothing
+showing a child how chemistry works had ten more tasks to run with nothing
 to look at. Task 19's SVG goldens are **not** replaced — they are how §13.6
 proves the geometry is identical across platforms, which a screenshot cannot
 do. The plan file says all of this; read it before re-sequencing anything back.
