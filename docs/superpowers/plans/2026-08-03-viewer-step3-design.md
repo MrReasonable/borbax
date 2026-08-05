@@ -145,6 +145,24 @@ check, which is exactly what makes a string assertion describe the window.
 
 ### Architecture
 
+> **HISTORY — this section predates the Bevy ruling of 2026-08-03 and is not
+> what shipped.** `docs/superpowers/plans/2026-08-01-borbax-viewer.md` directs
+> readers here as the authority on the panel, so the supersession has to be
+> stated *here* rather than only there. What changed:
+>
+> - **R5** specifies offscreen rendering into our own texture with our own depth
+>   attachment, refuses `egui_wgpu::CallbackTrait`, and defines `scene/draw.rs`
+>   as a `wgpu` function. Bevy owns the render graph now; none of that exists.
+>   The measurement R5 rests on is still true of `egui_wgpu` and is why the
+>   `eframe` route was hard, which is part of why the engine changed.
+> - **R8** locates the single `f64 -> f32` cast in the `wgpu` layer. It shipped
+>   in `scene.rs` as `narrow`, and `xtask`'s
+>   `check_the_viewer_narrows_in_one_place` is what holds it there.
+>
+> The *requirements* in this section — one narrowing site, no engine maths in
+> our code, the depth-buffer hazard — all survived the change. Only the
+> mechanism named for each is history.
+
 **R5. Render offscreen into our own texture with our own depth attachment, and
 paint it with `ui.image`. Do NOT use `egui_wgpu::CallbackTrait`.** This is the
 session's largest deviation from the plan and it is forced by a measurement:
@@ -154,7 +172,7 @@ the real window gets a depth buffer only from `NativeOptions.depth_buffer` — a
 `CallbackTrait` is therefore correct in the window and **untestable**, proven
 by the validation error it raises under `egui_kittest`:
 
-```
+```text
 Incompatible depth-stencil attachment format: the RenderPass uses a texture
 with format None but the RenderPipeline uses an attachment with format
 Some(Depth32Float)

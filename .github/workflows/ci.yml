@@ -295,6 +295,24 @@ jobs:
             /opt/hostedtoolcache/CodeQL \
             /usr/local/share/boost || true
           df -h /
+          # **A named failure at second 12 instead of a linker SIGBUS forty
+          # minutes later.** Printing `df` fixed the diagnosis problem; it does
+          # not fix the *reporting* problem, because a run that reclaims too
+          # little still fails as `rust-lld` dying with a signal and an LLVM
+          # stack dump.
+          #
+          # The floor is a reported number rather than a tuned one. Run
+          # 30933427373 died at 0 MB having started with 15 GB; run 30943848944
+          # passed with 36 GB. 20 GB therefore sits above the size known to be
+          # insufficient and below the size known to be sufficient — it is not a
+          # claim about what the build needs, which nothing here has measured.
+          free_mb=$(df --output=avail -m / | tail -1 | tr -d ' ')
+          echo "free after cleanup: ${free_mb} MB"
+          if [ "$free_mb" -lt 20000 ]; then
+            echo "::error::only ${free_mb} MB free after cleanup; the two-profile \
+          build needs more, and without this it would fail as a linker crash"
+            exit 1
+          fi
 
       - name: Show toolchain
         run: rustup show active-toolchain

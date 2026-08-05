@@ -2763,12 +2763,16 @@ fn check_the_engine_stays_in_the_viewer(
                 continue;
             }
             let src = std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
-            for dep in manifest_dependency_names(&code_only(&src)) {
-                let Some(engine) = ENGINE_CRATES.iter().find(|e| {
-                    dep == **e
-                        || dep.starts_with(&format!("{e}_"))
-                        || dep.starts_with(&format!("{e}-"))
-                }) else {
+            let Some(deps) = manifest_dependency_names(&src) else {
+                failures.push(format!(
+                    "§13.4: {} could not be parsed as TOML, so its dependencies were \
+                     not read and the engine check passed over it without looking",
+                    manifest.strip_prefix(root).unwrap_or(&manifest).display()
+                ));
+                continue;
+            };
+            for dep in deps {
+                let Some(engine) = engine_entry_for(&dep) else {
                     continue;
                 };
                 failures.push(format!(
@@ -2793,12 +2797,22 @@ fn check_the_engine_stays_in_the_viewer(
     // not `Ok(())`" lesson, and the degeneration `check_wall_clock_has_one_home`
     // is documented as unable to see.
     let viewer_src = std::fs::read_to_string(&viewer_manifest).map_err(|e| e.to_string())?;
-    let viewer_deps = manifest_dependency_names(&code_only(&viewer_src));
-    if !viewer_deps.iter().any(|d| {
-        ENGINE_CRATES
-            .iter()
-            .any(|e| d == *e || d.starts_with(&format!("{e}_")))
-    }) {
+    let Some(viewer_deps) = manifest_dependency_names(&viewer_src) else {
+        failures.push(format!(
+            "§13.4: {} could not be parsed as TOML, so whether the viewer still names \
+             an engine is unknown rather than confirmed",
+            viewer_manifest
+                .strip_prefix(root)
+                .unwrap_or(&viewer_manifest)
+                .display()
+        ));
+        return Ok(());
+    };
+    // **The same predicate as the negative half.** This arm matched `{e}_` only,
+    // so a hyphenated engine dependency — `wgpu-hal` — satisfied no entry and
+    // the guard reported "names no engine" over a tree that names one. The two
+    // halves now cannot drift, because there is only one spelling of the rule.
+    if !viewer_deps.iter().any(|d| engine_entry_for(d).is_some()) {
         failures.push(format!(
             "§13.4: {} names no engine, so this check passed by there being nothing to \
              confine rather than by the confinement holding. If the viewer has stopped \
@@ -2830,82 +2844,93 @@ fn check_the_engine_stays_in_the_viewer(
 /// `renderer = { package = "bevy" }` declares `bevy` under a name no scan of
 /// the keys would see — so the `package = "..."` value is read in preference to
 /// the key whenever one is present.
-fn manifest_dependency_names(manifest: &str) -> Vec<String> {
-    /// What the current `[header]` puts us inside.
-    enum Section {
-        /// `[dependencies]` and friends: every `key = ..` line is a crate.
-        Table,
-        /// `[dependencies.foo]`: the header names one crate, and the lines
-        /// inside are *its fields* — only `package` renames it.
-        Entry(usize),
-        Other,
-    }
-
-    let mut out: Vec<String> = Vec::new();
-    let mut section = Section::Other;
-
-    for line in manifest.lines() {
-        let trimmed = line.trim();
-
-        if let Some(header) = trimmed.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
-            // `dev-dependencies` and `build-dependencies` count too: an engine
-            // in a chemistry crate's test binaries is an engine a result could
-            // be minted next to.
-            section = match header.trim().rsplit_once('.') {
-                // `[target.'cfg(..)'.dependencies]` -> a table.
-                Some((_, last)) if last.ends_with("dependencies") => Section::Table,
-                // `[dependencies.foo]`, `[target...dev-dependencies.foo]`.
-                Some((prefix, name)) if prefix.ends_with("dependencies") => {
-                    out.push(name.trim_matches('"').to_owned());
-                    Section::Entry(out.len() - 1)
-                }
-                _ if header.trim().ends_with("dependencies") => Section::Table,
-                _ => Section::Other,
-            };
-            continue;
-        }
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-
-        match section {
-            Section::Table => {
-                // A `package = "..."` inline renames the crate, so the key is
-                // not the crate. Prefer the rename.
-                out.push(inline_package(value).unwrap_or_else(|| key.trim_matches('"').to_owned()));
-            }
-            Section::Entry(at) => {
-                if key == "package"
-                    && let Some(real) = quoted(value)
-                    && let Some(slot) = out.get_mut(at)
-                {
-                    *slot = real;
-                }
-            }
-            Section::Other => {}
-        }
-    }
-    out
+/// The [`ENGINE_CRATES`] entry `dep` belongs to, if any.
+///
+/// Matched as a whole name or as a prefix followed by `_` or `-`, so `bevy_egui`
+/// and `wgpu-hal` are engine crates and `bevyish` is not.
+///
+/// **Extracted because the two halves of the engine check had drifted.** The
+/// negative half matched both separators; the positive half matched `_` only,
+/// so it could report "names no engine" over a manifest naming `wgpu-hal`.
+fn engine_entry_for(dep: &str) -> Option<&'static str> {
+    ENGINE_CRATES
+        .iter()
+        .find(|e| {
+            dep == **e || dep.starts_with(&format!("{e}_")) || dep.starts_with(&format!("{e}-"))
+        })
+        .copied()
 }
 
-/// The `package = "x"` inside an inline table such as
-/// `renderer = { package = "bevy", version = "0.19" }`.
-fn inline_package(value: &str) -> Option<String> {
-    let at = value.find("package")?;
-    quoted(value.get(at..)?)
+fn manifest_dependency_names(manifest: &str) -> Option<Vec<String>> {
+    // **Parsed with `toml`, not walked line by line.** The line walk recorded
+    // the *key* whenever it could not find `package` on the same line, so a
+    // dependency written as a multi-line inline table defeated it entirely:
+    //
+    // ```toml
+    // renderer = {
+    //   package = "bevy",
+    //   version = "0.19",
+    // }
+    // ```
+    //
+    // `renderer = {` yields no `package`, so `renderer` is recorded; the next
+    // line records `package`; and `bevy` is never seen at all. A guard whose
+    // whole job is "does any chemistry crate name an engine" answered "no" over
+    // a manifest that named one.
+    //
+    // This is the same class `clippy_paths_in` already records — a line-based
+    // TOML reader mis-reading three of seven shapes — and the remedy there is
+    // the remedy here. `toml` is already a dependency of this crate.
+    //
+    // `None` on a manifest that does not parse, so the caller reports it. The
+    // old reader could not fail, which meant a malformed manifest silently
+    // contributed no dependencies and every engine check passed over it.
+    // **The raw manifest, never `code_only`.** That helper strips Rust `//`
+    // comments, which truncates `repository = "https://github.com/..."` into an
+    // unterminated string and makes the file unparseable — measured, it failed
+    // every manifest in the workspace. A TOML parser handles TOML comments
+    // itself, so pre-stripping was always the wrong shape and only looked
+    // harmless while the reader was a line walk.
+    // `toml::Table`, matching the parse already proven in this file rather than
+    // `toml::Value`, whose `FromStr` this crate's feature set does not provide.
+    let table: toml::Table = manifest.parse().ok()?;
+    let mut out = Vec::new();
+    collect_dependency_table(&table, &mut out);
+    Some(out)
 }
 
-/// The first double-quoted run in `s`.
-fn quoted(s: &str) -> Option<String> {
-    let open = s.find('"')?;
-    let rest = s.get(open + 1..)?;
-    let close = rest.find('"')?;
-    Some(rest.get(..close)?.to_owned())
+/// Every crate named by any `*dependencies` table reachable from `value`.
+///
+/// Recursive because the tables are not all at the top level:
+/// `[target.'cfg(unix)'.dev-dependencies]` and `[workspace.dependencies]` both
+/// nest, and an engine declared under either is an engine in the tree.
+///
+/// `[dependencies.foo]` needs no special case here — `toml` presents it as the
+/// same nested table an inline `foo = { .. }` produces, which is exactly the
+/// distinction the hand-written reader had to carry a `Section::Entry` state
+/// for.
+fn collect_dependency_table(table: &toml::Table, out: &mut Vec<String>) {
+    for (key, val) in table {
+        // `dev-dependencies` and `build-dependencies` count too: an engine in a
+        // chemistry crate's test binaries is an engine a result could be minted
+        // next to.
+        if key.ends_with("dependencies") {
+            let Some(deps) = val.as_table() else { continue };
+            for (name, spec) in deps {
+                // A `package = "..."` renames the crate, so the key is not the
+                // crate name. Prefer the rename — a rename still has to spell
+                // the real name somewhere.
+                let renamed = spec
+                    .as_table()
+                    .and_then(|t| t.get("package"))
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_owned);
+                out.push(renamed.unwrap_or_else(|| name.clone()));
+            }
+        } else if let Some(nested) = val.as_table() {
+            collect_dependency_table(nested, out);
+        }
+    }
 }
 
 fn check_the_viewer_stays_a_leaf(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
@@ -3555,7 +3580,18 @@ fn check_the_viewer_narrows_in_one_place(
     viewer_src: &Path,
     failures: &mut Vec<String>,
 ) -> Result<(), String> {
-    const NARROW_CAST: &[&str] = &["x", "as", "f32"];
+    // **`as f32`, not `x as f32`.** The needle was the three tokens
+    // `["x", "as", "f32"]`, which requires the operand to be the identifier
+    // `x` — so a second narrowing written `v as f32`, `coord as f32` or
+    // `radius as f32` matched nothing, `total` stayed at 1, and the check
+    // reported success over the defect it exists to find. The doc above and
+    // the message below both state the invariant as "exactly one place"; what
+    // was measured was "exactly one cast whose operand is spelled `x`".
+    //
+    // `f32 -> u32` for the viewport is `as u32` and is still not counted, as
+    // the doc says. Verified after the change: the count is still 1, and it is
+    // now 1 for the stated reason.
+    const NARROW_CAST: &[&str] = &["as", "f32"];
     let mut sites = Vec::new();
     for path in walk(viewer_src)?
         .into_iter()
@@ -3587,9 +3623,9 @@ fn check_the_viewer_narrows_in_one_place(
              ({sites:?}), expected exactly 1 (in scene.rs, `narrow`). Every \
              coordinate, radius and camera position crosses that one function, \
              which is what keeps a display-driven rounding from spreading into \
-             code that handles a value the solver produced. Note the needle \
-             matches the binding `x as f32` specifically, so it is the declared \
-             boundary being counted and not every cast in the crate"
+             code that handles a value the solver produced. The needle is \
+             `as f32`, so every narrowing is counted whatever its operand is \
+             called"
         ));
     }
     Ok(())
@@ -3679,45 +3715,6 @@ const LIBM_HOME_MANIFEST: &str = "crates/borbax-units/Cargo.toml";
 /// The one source file that may call it.
 const LIBM_HOME_SOURCE: &str = "crates/borbax-units/src/det_math.rs";
 
-/// Strip TOML comments so prose naming `libm` is not mistaken for a dependency.
-///
-/// TOML has no block comments, so this is `#` to end of line — but only when
-/// the `#` is outside a string, because a `reason = "..."` may contain one and
-/// truncating there would hide whatever followed on that line. Both quote
-/// styles and TOML's basic-string escapes are handled; multi-line strings are
-/// not, and cannot matter here because a `libm` dependency cannot be written
-/// inside one.
-fn toml_code_only(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    for line in src.lines() {
-        let mut quote: Option<char> = None;
-        let mut escaped = false;
-        for c in line.chars() {
-            match quote {
-                Some(q) => {
-                    out.push(c);
-                    if escaped {
-                        escaped = false;
-                    } else if c == '\\' && q == '"' {
-                        escaped = true;
-                    } else if c == q {
-                        quote = None;
-                    }
-                }
-                None if c == '#' => break,
-                None => {
-                    out.push(c);
-                    if c == '"' || c == '\'' {
-                        quote = Some(c);
-                    }
-                }
-            }
-        }
-        out.push('\n');
-    }
-    out
-}
-
 /// §13.1 — `libm` is declared by one crate and called from one file.
 ///
 /// **This closes a hole that passed all six gate legs, measured rather than
@@ -3798,10 +3795,12 @@ fn toml_code_only(src: &str) -> String {
 /// reviews rather than gate business — the same disposition [`BANNED_TYPES`]
 /// gives third-party hashers: a member vendoring libm's source under another
 /// crate name, and `[patch]`/`[replace]` entries redirecting `libm` itself.
-fn check_libm_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
-    // **Declarations, not uses.** This reads dependency tables; a crate that
-    // reaches libm transitively is invisible to it, which is correct, because
-    // a transitive dependency cannot be named in code.
+/// Every manifest under [`TRANSCENDENTAL_SCAN_ROOTS`] that declares `libm`,
+/// with the number examined so the caller can assert the corpus was not empty.
+fn libm_declaring_manifests(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(Vec<String>, usize), String> {
     let mut declaring = Vec::new();
     let mut manifests_examined = 0usize;
 
@@ -3821,10 +3820,32 @@ fn check_libm_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<()
         {
             manifests_examined += 1;
             let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            // Matched as a whole token anywhere in the manifest rather than as a
-            // key, so `mathlib = { package = "libm", .. }` is caught — a rename
-            // still has to spell the crate name somewhere.
-            if names_type(&toml_code_only(&src), "libm") {
+            // **Scoped to dependency tables, not matched anywhere in the file.**
+            // The previous form asked `names_type(toml_code_only(src), "libm")`,
+            // and `toml_code_only` strips comments only — string *values*
+            // survive. So a manifest carrying
+            //
+            // ```toml
+            // description = "portable libm-backed deterministic maths"
+            // ```
+            //
+            // was recorded as declaring `libm`, and the check then told its
+            // author that a crate declares a dependency it does not have. A
+            // guard that fails on correct code gets disabled.
+            //
+            // `manifest_dependency_names` resolves renames, so the case the old
+            // comment existed for — `mathlib = { package = "libm", .. }` — is
+            // still caught, and now for a structural reason rather than because
+            // the crate name happened to appear somewhere in the bytes.
+            let Some(deps) = manifest_dependency_names(&src) else {
+                failures.push(format!(
+                    "§13.1: {} could not be parsed as TOML, so whether it declares \
+                     `libm` is unknown rather than confirmed",
+                    path.strip_prefix(root).unwrap_or(&path).display()
+                ));
+                continue;
+            };
+            if deps.iter().any(|d| d == "libm") {
                 declaring.push(
                     path.strip_prefix(root)
                         .unwrap_or(&path)
@@ -3835,6 +3856,20 @@ fn check_libm_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<()
         }
     }
 
+    declaring.sort();
+    Ok((declaring, manifests_examined))
+}
+
+fn check_libm_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    // **Declarations, not uses.** This reads dependency tables; a crate that
+    // reaches libm transitively is invisible to it, which is correct, because
+    // a transitive dependency cannot be named in code.
+    //
+    // Split out because the manifest half outgrew the line limit when it stopped
+    // matching `libm` anywhere in the file and started reading dependency
+    // tables properly. The halves are independent — one reads manifests, one
+    // reads sources — so the seam is where it already was conceptually.
+    let (declaring, manifests_examined) = libm_declaring_manifests(root, failures)?;
     // **The corpus filter, asserted rather than assumed.** If the layout moves
     // and `walk` returns no manifests, every loop body above is skipped and the
     // check is silently green. Six members were measured on 2026-08-03; the
@@ -3848,7 +3883,6 @@ fn check_libm_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<()
         ));
     }
 
-    declaring.sort();
     if declaring != [LIBM_HOME_MANIFEST] {
         failures.push(format!(
             "§13.1: `libm` is declared by {declaring:?}, expected exactly \
@@ -8146,6 +8180,14 @@ version = \"0.1.0\"
 thiserror = { workspace = true }
 renderer = { package = \"bevy\", version = \"0.19\" }
 plain = \"1.0\"
+# The shape that defeated the line walk: an inline table split across lines.
+# `spread = {` carried no `package` on its own line, so the key was recorded and
+# `bevy_render` was never seen. Added with the parser rewrite so it cannot
+# return.
+spread = {
+  package = \"bevy_render\",
+  version = \"0.19\",
+}
 
 [dependencies.eframe]
 version = \"0.35\"
@@ -8161,8 +8203,17 @@ winit = \"0.30\"
 [profile.dev]
 opt-level = 1
 ";
-        let found = super::manifest_dependency_names(manifest);
-        for want in ["thiserror", "bevy", "plain", "eframe", "bevy_egui", "winit"] {
+        let found = super::manifest_dependency_names(manifest)
+            .unwrap_or_else(|| unreachable!("the fixture is valid TOML"));
+        for want in [
+            "thiserror",
+            "bevy",
+            "plain",
+            "eframe",
+            "bevy_egui",
+            "winit",
+            "bevy_render",
+        ] {
             assert!(
                 found.iter().any(|d| d == want),
                 "{want} was not found in {found:?}"
@@ -8179,8 +8230,37 @@ opt-level = 1
             "the long-form rename key survived: {found:?}"
         );
         assert!(
+            !found.iter().any(|d| d == "spread" || d == "package"),
+            "the multi-line inline table was read as a key rather than as the \
+             crate it names: {found:?}"
+        );
+        assert!(
             !found.iter().any(|d| d == "opt-level" || d == "name"),
             "a non-dependency table was read as dependencies: {found:?}"
+        );
+    }
+
+    /// The two scan-root lists are equal, and nothing else keeps them so.
+    ///
+    /// **A root added to one and not the other blinds a guard silently.**
+    /// `check_the_engine_stays_in_the_viewer` iterates [`DATA_FREE_ROOTS`];
+    /// `check_libm_has_one_home` iterates [`TRANSCENDENTAL_SCAN_ROOTS`]. Both
+    /// already assert a manifest-count floor, so a root *removed* from either is
+    /// caught — the floor finds almost nothing to check and says so. A root
+    /// *added* to only one is not: the other guard never looks at that subtree
+    /// and reports success.
+    ///
+    /// The design note that observed this called the equality a coincidence. It
+    /// is now an assertion, which is the cheapest thing that stops it being one.
+    #[test]
+    fn the_two_scan_root_lists_stay_equal() {
+        assert_eq!(
+            super::DATA_FREE_ROOTS,
+            super::TRANSCENDENTAL_SCAN_ROOTS,
+            "the fiction-guarantee roots and the transcendental roots have \
+             diverged. Each guard iterates its own list, so a subtree present in \
+             only one is scanned by only one of them — and the other reports \
+             success having never looked at it"
         );
     }
 

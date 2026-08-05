@@ -510,25 +510,6 @@ impl ViewerState {
         &self.seed_text
     }
 
-    /// Generate the universe the seed box currently names.
-    ///
-    /// **Private, and that is a guard rather than tidiness.** It differs from
-    /// [`Self::commit_typed_seed`] by one `phrase_text.clear()`, and calling
-    /// the wrong one leaves a universe on screen labelled with a name that did
-    /// not produce it. While it was public, substituting it in the panel was a
-    /// *test failure*; now it is a compile error — `error[E0624]: method
-    /// `reload` is private` — which catches it at every future call site rather
-    /// than at the three that exist today. A reviewer measured the cost:
-    /// `reload` had no caller outside this file except six lines in
-    /// `tests/acceptance.rs`, all of them `seed_text_mut()` + `reload()` over
-    /// an already-empty phrase box, which is exactly what `commit_typed_seed`
-    /// does.
-    ///
-    /// **Called only when the seed text actually changes**, never once per
-    /// frame. `Universe::generate` is ~146 µs; at 60 Hz an unconditional call
-    /// would spend most of the frame budget regenerating a universe nobody
-    /// asked for again, and by Step 2 there are 120 element cells behind it.
-    /// [`Self::regenerations`] is what makes that claim testable.
     /// Select the element with this id, if this universe has such a slot.
     ///
     /// **Refused rather than clamped**, and [`borbax_universe::PeriodicTable::get`]'s
@@ -660,6 +641,25 @@ impl ViewerState {
         }
     }
 
+    /// Generate the universe the seed box currently names.
+    ///
+    /// **Private, and that is a guard rather than tidiness.** It differs from
+    /// [`Self::commit_typed_seed`] by one `phrase_text.clear()`, and calling
+    /// the wrong one leaves a universe on screen labelled with a name that did
+    /// not produce it. While it was public, substituting it in the panel was a
+    /// *test failure*; now it is a compile error — `error[E0624]: method
+    /// `reload` is private` — which catches it at every future call site rather
+    /// than at the three that exist today. A reviewer measured the cost:
+    /// `reload` had no caller outside this file except six lines in
+    /// `tests/acceptance.rs`, all of them `seed_text_mut()` + `reload()` over
+    /// an already-empty phrase box, which is exactly what `commit_typed_seed`
+    /// does.
+    ///
+    /// **Called only when the seed text actually changes**, never once per
+    /// frame. `Universe::generate` is ~146 µs; at 60 Hz an unconditional call
+    /// would spend most of the frame budget regenerating a universe nobody
+    /// asked for again, and by Step 2 there are 120 element cells behind it.
+    /// [`Self::regenerations`] is what makes that claim testable.
     fn reload(&mut self) {
         // **At the entry, deliberately, and this is the one counter here that
         // should be.** Its job is to tell the scene that what it is drawing is

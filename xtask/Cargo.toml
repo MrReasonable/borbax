@@ -42,13 +42,20 @@ quote = "1"
 # `span-locations` so a failure names a line an editor can open.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 
-[dev-dependencies]
-# Reading `clippy.toml` in the cross-check tests that hold the two §13.1 ban
-# lists in step. A **dev**-dependency of a build tool: two tiers below anything
-# that could reach a simulation result.
+# Reading `clippy.toml` in the cross-check tests, and reading every `Cargo.toml`
+# in `manifest_dependency_names`. A dependency of a **build tool**: two tiers
+# below anything that could reach a simulation result, so the doctrine's bar is
+# the low one.
 #
 # Free, on the same argument this manifest already makes for `syn`: `toml` is
 # already in `Cargo.lock` via `egui_kittest`, so this adds zero crates.
+#
+# **Moved out of `[dev-dependencies]` on 2026-08-05**, because the production
+# reader had failed in exactly the way recorded below. `manifest_dependency_names`
+# walked lines, so a dependency written as a multi-line inline table
+# (`renderer = {` then `package = "bevy",`) recorded the key `renderer` and never
+# saw `bevy` at all — and the guard that asks "does any chemistry crate name an
+# engine" answered no over a manifest that named one.
 #
 # Hand-rolled first, and it failed the way this manifest already records
 # hand-rolled matchers failing. The line-based version read a **commented-out**
