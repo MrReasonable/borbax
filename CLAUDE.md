@@ -163,7 +163,11 @@ type at all; `panel.rs` names `egui` and contains no `format!`; `app.rs` and
 one statement with no licence at all — **in code**. The prose necessarily quotes
 what it forbids, so a raw `grep -rl bevy src/` returns four files against the two
 that name it in code, and `grep format! panel.rs` returns one, all correctly and
-all uselessly; the guard strips whole-line comments first. That is
+all uselessly; the guard strips comments **and the contents of string
+literals**, and refuses a file that ends inside either rather than scanning a
+half-lexed one. The stronger strip is not fussiness: the weaker `code_only`
+read an `#![expect(..., reason = "…eframe…")]` as an import and failed the seam
+on correct code, which `xtask/src/main.rs` records at the fixture for it. That is
 what lets `egui_kittest` drive the real drawing code headlessly in CI — `egui`
 lays out on the CPU and cannot open a window. It also means the **computed
 status string** comes from `state.rs`, so a test asserting on it is asserting on

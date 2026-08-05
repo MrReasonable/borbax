@@ -36,9 +36,14 @@ use borbax_ui::app::headless_app;
 /// `bevy_render`. So on a runner with no driver every test in this file aborts
 /// in a third-party crate, with a message that reads like a viewer bug.
 ///
-/// This branch has never been through CI — the workflow triggers on `main`
-/// pushes and pull requests, and nothing here has been either — so the whole
-/// file has only ever run on a Mac with a working Metal device.
+/// **This file now runs on CI, and the correction matters more than the fact.**
+/// An earlier version of this paragraph said the branch had never been through
+/// CI and that the file had only ever run on a Mac with a Metal device. Both
+/// stopped being true on 2026-08-04: the run went green on macOS, Windows and
+/// Linux, and `the_viewer_asks_the_platform_for_no_audio_device` below was
+/// written *from* a `test (windows-latest)` failure. In a file whose stated
+/// purpose is that a claim must be measured rather than believed, a stale
+/// provenance note is exactly the sentence the next reader acts on.
 ///
 /// **It widens the gap between this app and the shipped one, and that is worth
 /// saying plainly**, because the narrowness of that gap is what makes these

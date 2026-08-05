@@ -675,9 +675,19 @@ mod tests {
             "dragging right did not swing the eye left"
         );
 
-        let mut up = Orbit::framing(1.0);
-        up.drag(0.0, 50.0);
-        assert!(up.eye()[1] > 0.0, "dragging up did not raise the eye");
+        // **A downward drag**: `dy` grows downward, as `drag`'s own doc states,
+        // so `+50` is the hand moving down the screen. The binding was called
+        // `up` and the message said "dragging up", which told a future reader
+        // debugging a sign flip the opposite of what the test drives. The
+        // assertion was always right — antiparallel means a downward drag
+        // raises the eye.
+        let mut down = Orbit::framing(1.0);
+        down.drag(0.0, 50.0);
+        assert!(
+            down.eye()[1] > 0.0,
+            "dragging down did not raise the eye, so the vertical axis is no \
+             longer antiparallel to the hand"
+        );
     }
 
     /// The wheel stops at both ends.

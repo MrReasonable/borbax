@@ -376,6 +376,7 @@ mod tests {
     /// scene. Measured range across 500 universes: **0.8047 .. 1.5764**.
     #[test]
     fn the_molecule_has_a_positive_extent() {
+        let mut checked = 0_u64;
         for seed in 0..SEEDS {
             let demo = build(&Universe::generate(seed))
                 .unwrap_or_else(|| unreachable!("every seed builds"));
@@ -385,6 +386,14 @@ mod tests {
                 "seed {seed} has gyration radius {gyration:.4}, against a measured \
                  minimum of 0.8047 — a camera framed on that stands too close"
             );
+            checked += 1;
         }
+        // The equality this file requires of every count: a `> 0` bar passes on
+        // a corpus that silently generated one seed. This was the one test here
+        // not carrying it.
+        assert_eq!(
+            checked, SEEDS,
+            "the corpus is not the one this bar was measured on"
+        );
     }
 }

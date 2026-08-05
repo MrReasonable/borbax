@@ -268,7 +268,13 @@ mod systems {
     pub(super) fn aim_camera(
         orbit: Res<'_, OrbitState>,
         region: Res<'_, SceneRegion>,
-        window: Single<'_, '_, &Window>,
+        // **`With<PrimaryWindow>`, matching `drive_camera`.** The two systems
+        // consume the same `SceneRegion`, so identifying the window by different
+        // rules is a divergence waiting to happen. A bare `Single<&Window>` also
+        // stops matching the moment a second window exists, and Bevy then skips
+        // the whole system — leaving the camera on the previous frame's viewport
+        // rather than failing.
+        window: Single<'_, '_, &Window, With<PrimaryWindow>>,
         camera: Single<'_, '_, (&mut Transform, &mut Camera), With<SceneCamera>>,
     ) {
         let (mut transform, mut camera) = camera.into_inner();

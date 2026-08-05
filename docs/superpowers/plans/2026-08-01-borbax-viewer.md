@@ -199,6 +199,8 @@ src/
   molecule.rs    the demo molecule, and the crate's only door to the chemistry
   orbit.rs       the camera's arithmetic — no engine type, testable with no app
   panel.rs       the drawing — imports egui, contains no `format!`
+
+  -- HISTORY, superseded by the engine change; see the note below --
   builder.rs     assembling a molecule from elements and bonds
   scene/
     camera.rs    orbit camera — the only place with its own maths
@@ -206,6 +208,20 @@ src/
     draw.rs      wgpu pipeline
   palette.rs     generated-property colour maps (never real-chemistry ones)
 ```
+
+**The five entries below the marker are intent, not layout**, and line 41's
+promise that anything still naming `wgpu` or `camera.rs` "is history and is
+marked as such where it matters" is what this marker discharges. Specifically:
+
+- `scene/camera.rs` and `orbit.rs` both claimed the camera. `orbit.rs` is what
+  shipped; the 2026-08-03 design memo records that `scene/camera.rs`'s claim to
+  be "the only place with its own maths" was false, and R18 collapses the trig
+  surface to the camera basis.
+- `scene/draw.rs` is the hand-rolled `wgpu` pipeline the Bevy ruling deleted.
+  `xtask`'s `VIEWER_GPU_FILES` still names it as an entry a future commit adds,
+  so guard and plan agree it is intent rather than layout.
+- `palette.rs` is Step 4 work and deliberately not created yet: an empty file in
+  the strictest seam tier is a file the guard has nothing to say about.
 
 **The seam is per-file and greppable, which is the point.** The original note
 against `state.rs` read "what is selected; nothing computed here", and Step 1
@@ -226,8 +242,8 @@ proposed exception would not have worked — and compliance turned out to cost o
 import. The camera's trig goes through `det_math`, no exception was granted, and
 `check_libm_has_one_home` landed with it.
 
-**Dependencies.** Bevy plus `bevy_egui` are the substantial addition — about 530
-packages against `eframe`'s 164, which is a real cost in CI time on three
+**Dependencies.** Bevy plus `bevy_egui` are the substantial addition — a
+*projected* ~530 packages against `eframe`'s 164, which is a real cost in CI time on three
 platforms. They are **binary-only, non-result-affecting**, so §18's bar is the
 low one: verified rather than asserted at Step 3's review, by checking that the
 feature union on `libm` is unchanged, which is the way a leaf consumer *could*
@@ -247,8 +263,18 @@ The correction matters beyond tidiness, for the reason CLAUDE.md already records
 about the `glam`/`nalgebra` episode: a false justification gets reused later to
 wave through a dependency that has not earned it.
 
-What it actually costs, measured on the tree as shipped: **366 packages in
-`Cargo.lock`**, against 13 before. `default-features = false` is what makes that
+What it actually costs. **Every figure here names the tree it was measured on,
+because two of them did not and a reader could not tell which was current.**
+
+- **13** — before the viewer existed.
+- **366** — the `eframe` tree, measured when Step 1 shipped. This is the number
+  the `default-features = false` note below is about.
+- **~530** — the projection for Bevy, above.
+- **590** — the Bevy tree as shipped, counted on 2026-08-05 from `Cargo.lock`.
+  This is the current number; issue #28 (trimming Bevy's default features) is
+  the lever on it and has not been pulled.
+
+On the `eframe` tree: **366 packages in `Cargo.lock`**, against 13 before. `default-features = false` is what makes that
 number not 428 — it drops `accesskit → atspi → zbus` and `sctk-adwaita →
 tiny-skia`, taking the resolved Linux graph from 261 to 189 and macOS from 167
 to 164. ~888 s of new cold-build CPU, and a build-cache archive going from 30 MB

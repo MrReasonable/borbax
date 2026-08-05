@@ -292,8 +292,12 @@ mod tests {
         let mut examined = 0_u32;
         let mut worst_ulps = 0_u64;
 
-        // 0.0001 deg to 89 deg: every plausible `fovy / 2`, and both ends of
-        // the range where the two spellings are worst conditioned.
+        // 0.01 deg to 89 deg in 0.01 deg steps: every plausible `fovy / 2`, and
+        // both ends of the range where the two spellings are worst conditioned.
+        // The loop starts at `i = 1`, so the first angle is 0.01 deg — an
+        // earlier version of this line said 0.0001 deg, naming a range the
+        // corpus does not cover, in a file where the measured numbers are
+        // load-bearing.
         for i in 1_u32..=8900 {
             let h = f64::from(i) * 0.01 * std::f64::consts::PI / 180.0;
             let by_tan = 1.0 / super::tan(h);
