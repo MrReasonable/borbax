@@ -286,14 +286,49 @@ route to a libcall on aarch64 — it inlines it as `x - trunc(x*0.5)*2`, **fused
 second `fmod` libcall instead, so one expression compiles to structurally
 different arithmetic on the two matrix legs.
 
-It reaches no result — nothing depends on `borbax-ui` — and the two lowerings
-are value-identical. They are **not** bit-identical: over 20M random finite
-inputs they differ in 23.7% of cases and **every difference is the sign of
-zero**, none in value. On the domain `hsl_to_rgb` reaches (`sector` in `[0,6)`,
-because LLVM proves `hue >= 0` from `group: u8`) all three lowerings agree in
-20,000,000 of 20,000,000. So the branch is safe *because LLVM proved a range*,
-not because the source is portable — widen that argument's type and `-0.0`
-becomes reachable, where `to_bits()` and any ordering see it.
+It reaches no result — nothing depends on `borbax-ui` — and **the two lowerings
+are bit-identical over the whole finite domain**, not merely value-identical.
+Built for `aarch64-apple-darwin` and `x86_64-apple-darwin` and both run, the
+hash over 20M random finite `f64` bit patterns is `d22129714af37cf9` on each.
+The reason is visible in the assembly: the aarch64 expansion ends
+`movi.2d`/`fneg.2d`/`bit.16b`, which takes the magnitude from the computed
+remainder and the **sign bit from the dividend** — reproducing `fmod`'s
+sign-of-zero rule exactly.
+
+**An earlier version of this paragraph said the legs differ in 23.7% of cases,
+and that figure measures something else.** It is the *naive* model
+`x - trunc(x*0.5)*2`, without the sign fixup, against the real lowering:
+4,746,398 of 20,000,000, every one a sign of zero and none a value — which is
+exactly the count of negative zeros in the output. Naive-model versus reality,
+not leg versus leg. The same version claimed the branch was safe "because LLVM
+proved a range" and that widening the argument type would make `-0.0`
+reachable. Both are wrong: `-0.0` is reachable **today** (`hue = -0.0` and
+`hue = -360.0` both give `sector` bits `8000000000000000`), and it does not
+matter, because the next operation is `(t - 1.0)` and `-0.0 - 1.0` and
+`+0.0 - 1.0` are both `bff0000000000000`. The sign of zero is erased one
+operation later, before `.abs()` and before any `to_bits()`. It is *not*
+before the six `sector < n` comparisons, which an earlier version of this
+sentence claimed — those see `-0.0`, and agree with `+0.0` on every one.
+
+The correct and reusable statement is the one `clippy.toml` already applies:
+**`fmod` is exactly specified, and LLVM's inline expansion carries the same
+sign-of-dividend fixup** — verified bit-identical over 20M inputs on both
+targets rather than argued. The wrong version mattered for the reason the next
+paragraph gives about libm: it would invite a future reviewer either to reject a
+legitimate `rem_euclid` in result-affecting code, or to wave through a genuinely
+inexact operation on the grounds that we already ship one that "differs 23.7% of
+the time". The residual worth naming is different again — the `360.0` call is a
+`frem` by a **non**-power-of-two, so it is a platform `fmod` libcall on every
+leg and rests entirely on that exactness.
+
+*What was and was not exercised, because the first version of this caveat named
+the wrong gap.* `x86_64-apple-darwin` defaults to `target-cpu=penryn` and
+**inlines** the power-of-two `frem` too, so both hashed binaries ran the inline
+expansion and neither took a libm `fmod` for it. Forcing
+`-C target-cpu=x86-64` emits `callq _fmod` and gives the same hash, so
+inline-aarch64, inline-x86 and Apple-libm-`fmod` all agree over the same 20M
+inputs. glibc was still not exercised; the exactness argument does not depend on
+the implementation, but that is reasoning rather than measurement.*
 
 That is safe, and the correct statement of why: **libm dispatches only on
 operations IEEE-754 specifies exactly**, which is the same criterion

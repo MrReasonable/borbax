@@ -521,11 +521,27 @@ this paragraph exists.
       way to a frame.
 
       **The palette is keyed on `group`, stepped by the golden angle, and the
-      reason is a measurement that killed the obvious design.** An affinity ramp
-      gives the five demo atoms a minimum pairwise separation of **0.0239** —
-      four leaves collapsed into one colour — because the leaves land at
-      *consecutive* groups **1, 2, 3, 4** (the centre at 11-13) in every universe
-      measured. Golden-angle stepping on `group` gives **0.1932** across the
+      reason is a measurement that killed the obvious design.** There are **two
+      separate counterfactuals** here and an earlier draft of this paragraph ran
+      them together, which is most of why nobody could reproduce its number.
+      They are:
+
+      1. a **smooth ramp on `group`** collapses the four leaves because they
+         land at *consecutive* groups **1, 2, 3, 4** (the centre at 11-13) in
+         every universe measured — consecutive keys, adjacent colours;
+      2. a **hue ramp keyed on `affinity`** collapses them too, at a minimum
+         pairwise separation across the five demo atoms of under **0.05**. This
+         one never reads `group` at all, so consecutive groups cannot be its
+         cause; the cause is that the leaves' affinities are close.
+
+      The order of magnitude of (2) is the claim and the digits are not: three
+      reviewers reproduced the two golden-angle figures below to four digits and
+      each got a different number for the ramp (0.041, 0.045, 0.046), because
+      the counterfactual's construction was never written down. An earlier draft
+      said **0.0239**, which implied a precision nothing here can reproduce;
+      `palette.rs`'s header retracts it by name and is the source of truth for
+      all four numbers.
+      Golden-angle stepping on `group` gives **0.1932** across the
       five and **0.6748** among the leaves, and it is the coordinate that makes
       families visible, which §7.1 calls the payload. Saturation carries
       `affinity` (radius order equals mass order in 500/500, so a mass hue would
