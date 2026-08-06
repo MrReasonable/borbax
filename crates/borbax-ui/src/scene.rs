@@ -199,6 +199,12 @@ mod systems {
         if drawn.0 == generation {
             return;
         }
+        // **Which half of the token moved, decided here so the two readings of
+        // it stay adjacent.** A view flip and a reload both need the respawn;
+        // only a reload needs the camera reframed. Deriving this at the point
+        // of comparison is what stops the second decision drifting away from
+        // the first — see the reframe at the end of this function.
+        let reloaded = drawn.0.0 != generation.0;
         drawn.0 = generation;
 
         for entity in existing.iter() {
@@ -251,7 +257,20 @@ mod systems {
             spawn_sticks(&mut commands, &look, demo);
         }
 
-        orbit.0 = Orbit::framing(demo.embedding.radius_of_gyration().get());
+        // **Reframed on a reload only.** `Orbit::framing` returns the opening
+        // shot — `Rotation::IDENTITY` and a fresh distance — so running it on
+        // every respawn throws away the orientation and zoom the person set by
+        // dragging and scrolling. That was right while the respawn fired only
+        // on a new universe, and adding the view to the token above made it
+        // fire on a pure display toggle as well: turn the molecule, click
+        // `solid`, and it snapped back.
+        //
+        // The molecule is what the framing is a function of, and a view flip
+        // does not move it — `ViewerState::flip_view` commits no seed and
+        // generates no universe.
+        if reloaded {
+            orbit.0 = Orbit::framing(demo.embedding.radius_of_gyration().get());
+        }
     }
 
     /// One cylinder along each bond.

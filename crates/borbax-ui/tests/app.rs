@@ -262,6 +262,19 @@ fn place_cursor(app: &mut App, cursor: Vec2) -> Entity {
     entity
 }
 
+/// The gyration of the molecule currently on screen, which is the one argument
+/// `Orbit::framing` takes.
+fn gyration(app: &App) -> f64 {
+    app.world()
+        .resource::<borbax_ui::app::Viewer>()
+        .0
+        .demo()
+        .map_or_else(
+            || unreachable!("the fixture commits a seed before this is read"),
+            |demo| demo.embedding.radius_of_gyration().get(),
+        )
+}
+
 /// Where the eye is, in the orbit's own `f64` — **never narrowed to the
 /// engine's `f32`**. The scene narrows once, deliberately, in `place`; a test
 /// that narrowed as well would be comparing a quantity the camera never used.
@@ -1124,6 +1137,168 @@ fn flipping_the_view_redraws_the_molecule() {
         before, after,
         "the atoms are the same size after flipping the view, so the scene did \
          not notice the flip and is still drawing the previous picture"
+    );
+}
+
+/// Flipping the view leaves the camera where the person put it.
+///
+/// **The cost of the token above, and it points the other way.** Adding the
+/// view to the respawn token was correct — without it the flip left the old
+/// picture on screen — but the respawn ends by reframing the orbit, which is
+/// right for a *new molecule* and wrong for a redraw of the same one. Turn the
+/// molecule, click `solid`, and it snapped back to the opening shot.
+///
+/// `ViewerState::flip_view`'s own doc states the case the assertion rests on:
+/// no seed was committed and no universe was generated, so the molecule is
+/// unchanged and only the way it is drawn has moved. The camera is a property
+/// of the person's hands, not of the drawing mode.
+///
+/// The sibling above and every other view test read transforms and entity
+/// counts, so all of them stay green over this. `OrbitState` is what carries
+/// it, and `eye` is asserted as well as `distance` because `Orbit::framing`
+/// resets orientation *and* distance — checking only the distance would pass a
+/// reframe that kept the zoom and threw away the turn.
+#[test]
+fn flipping_the_view_does_not_reset_the_camera() {
+    let mut app = started();
+
+    // **Move the camera first, or this test is vacuous.** It is the
+    // discriminating half, not scaffolding: `radius_of_gyration` reads
+    // `coords()` only, so it is view-independent, and `Orbit::framing` of an
+    // unmoved camera returns bit-identical state. With the defect restored and
+    // this block deleted, the test passes. A later "simplify the setup" would
+    // gut it silently.
+    {
+        let mut orbit = app
+            .world_mut()
+            .resource_mut::<borbax_ui::scene::OrbitState>();
+        orbit.0.turn(0.7, 0.3);
+        orbit.0.zoom(2.0);
+    }
+    app.update();
+    let before_distance = distance(&app);
+    let before_eye = eye(&app);
+
+    {
+        let mut viewer = app.world_mut().resource_mut::<borbax_ui::app::Viewer>();
+        viewer.0.flip_view();
+    }
+    app.update();
+
+    assert_eq!(
+        distance(&app).to_bits(),
+        before_distance.to_bits(),
+        "the view flip reframed the camera, so a molecule the person had zoomed \
+         snaps back to the opening distance"
+    );
+    assert_eq!(
+        eye(&app).map(f64::to_bits),
+        before_eye.map(f64::to_bits),
+        "the view flip reset the camera's orientation, so a molecule the person \
+         had turned snaps back to the opening shot"
+    );
+}
+
+/// A new universe frames the camera on the molecule it just drew.
+///
+/// **The other side of the guard, and without it the reframe can be deleted
+/// outright with the whole suite green.** Measured: replacing the reframe's
+/// condition with one that never fires leaves 131 of 131 passing. The sibling
+/// above pins only that a *flip* must not reframe, which a fix that never
+/// reframes at all satisfies perfectly.
+///
+/// What that would look like in the window is not a crash. Gyration spans
+/// 0.8047 to 1.5764 across 500 universes — a factor of 1.96, measured in
+/// `molecule.rs` — so typing a new seed would leave the camera
+/// at the previous molecule's distance — the next molecule clipped at the edges
+/// or shrunk to a dot — and the symptom reads as a chemistry oddity rather than
+/// a camera bug.
+///
+/// The camera is moved first for the same reason as the sibling: framing an
+/// unmoved camera is a bit-exact no-op, so without it this passes over a
+/// reframe that never happened.
+#[test]
+fn a_new_universe_frames_the_camera_on_it() {
+    let mut app = started();
+
+    {
+        let mut orbit = app
+            .world_mut()
+            .resource_mut::<borbax_ui::scene::OrbitState>();
+        orbit.0.turn(0.7, 0.3);
+        orbit.0.zoom(2.0);
+    }
+    app.update();
+
+    {
+        let mut viewer = app.world_mut().resource_mut::<borbax_ui::app::Viewer>();
+        "4242".clone_into(viewer.0.seed_text_mut());
+        viewer.0.commit_typed_seed();
+    }
+    app.update();
+
+    let want = borbax_ui::orbit::Orbit::framing(gyration(&app));
+    assert_eq!(
+        distance(&app).to_bits(),
+        want.distance().to_bits(),
+        "a new universe did not reframe the camera, so the molecule is drawn at \
+         the previous molecule's distance"
+    );
+    assert_eq!(
+        eye(&app).map(f64::to_bits),
+        want.eye().map(f64::to_bits),
+        "a new universe did not reset the camera's orientation, so it opens at \
+         whatever angle the previous molecule was left at"
+    );
+}
+
+/// A reload arriving in the same frame as a view flip still frames.
+///
+/// **This is what pins the *choice* of predicate, and the plausible alternative
+/// is wrong in two ways.** `drawn.0.1 == generation.1` — "the view did not
+/// move" — reads as an equally obvious spelling of the same idea and passes the
+/// entire suite without this test.
+///
+/// It fails here because `panel::draw` handles the seed box and the view switch
+/// in one pass, so both halves of the token can move together: the view moved,
+/// so the alternative calls it *not* a reload and draws the new molecule at the
+/// old molecule's camera.
+///
+/// The sharper reason is the opening frame. `state.rs` documents that the
+/// opening view is stated in two places and warns that moving one would shift
+/// `DrawnAt`'s initial token without moving the window; under the alternative
+/// that divergence leaves the opening camera at `Orbit::default()` — the
+/// placeholder framing of 1.0 — so the first molecule the child ever sees is
+/// never framed at all.
+#[test]
+fn a_reload_that_arrives_with_a_view_flip_still_frames() {
+    let mut app = started();
+
+    {
+        let mut orbit = app
+            .world_mut()
+            .resource_mut::<borbax_ui::scene::OrbitState>();
+        orbit.0.turn(0.7, 0.3);
+        orbit.0.zoom(2.0);
+    }
+    app.update();
+
+    // Both halves of the token move before the scene next runs, which is what
+    // the panel does when a seed lands on the same pass as a view switch.
+    {
+        let mut viewer = app.world_mut().resource_mut::<borbax_ui::app::Viewer>();
+        viewer.0.flip_view();
+        "4242".clone_into(viewer.0.seed_text_mut());
+        viewer.0.commit_typed_seed();
+    }
+    app.update();
+
+    let want = borbax_ui::orbit::Orbit::framing(gyration(&app));
+    assert_eq!(
+        distance(&app).to_bits(),
+        want.distance().to_bits(),
+        "a reload sharing its frame with a view flip was read as a mere flip, so \
+         the new molecule is drawn at the old one's camera"
     );
 }
 
