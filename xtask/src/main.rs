@@ -509,6 +509,7 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_the_viewer_seam_holds(root, &mut failures)?;
     check_wall_clock_has_one_home(root, &mut failures)?;
     check_libm_has_one_home(root, &mut failures)?;
+    check_the_palette_reads_only_generated_properties(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -3664,6 +3665,146 @@ fn check_the_viewer_narrows_in_one_place(
 /// protects results and a seed the user is shown and can retype is an input.
 /// What must never happen is a *second* read appearing somewhere that does
 /// produce results, on the precedent of this one.
+/// The file the palette lives in, relative to the repository root.
+const PALETTE_FILE: &str = "crates/borbax-ui/src/palette.rs";
+
+/// The one function that decides what colour an atom is drawn.
+const PALETTE_FN: &str = "colour";
+
+/// The types [`PALETTE_FN`] may take.
+///
+/// **An allow-list, so the default is refusal.** That inversion is the whole
+/// design: a deny-list would have to enumerate the spellings by which an
+/// element's identity could arrive — `ElementId`, `&Element`, `&str`, `usize`,
+/// a tuple, a newtype — and enumeration of the spellings in front of you is the
+/// failure mode this repository has recorded at three different levels. An
+/// allow-list of *scalars* refuses everything nobody has argued for.
+const ALLOWED_PALETTE_INPUTS: &[&str] = &["f64", "u8"];
+
+/// The palette reads generated properties and cannot recognise an element (§5,
+/// G5; §5, G3).
+///
+/// **The guarantee, stated as the thing this actually enforces.** Every
+/// real-world element colour scheme is by definition keyed on element
+/// *identity*. So the check is not "is this colour the real colour of some
+/// element" — that question needs a symbol-to-colour table, which **is** G5's
+/// forbidden "mapping table between Borbax entities and real-world entities"
+/// and would ship the very artefact a future implementer could read from. The
+/// check is instead that identity is **unreachable**: the palette takes bare
+/// scalars, so there is nothing to write a `match` over.
+///
+/// `group` is a scalar and is deliberately allowed. It names a *family* — many
+/// elements share one — so it cannot identify an element. An identity argument
+/// would be injective.
+///
+/// **Not G6, and the plan said G6.** §5's G6 is about results not transferring
+/// and names the documentation as its enforcement, so it forbids no artefact
+/// and gives a reviewer nothing to check a diff against. G5 names the object in
+/// five words. The plan line was amended rather than inherited.
+///
+/// **A signature pin rather than a behavioural test, because the behavioural
+/// test cannot fail.** With only scalars in scope, a test asserting "the colour
+/// ignores the symbol" has no symbol to vary — it would read as coverage of the
+/// exact hazard while being incapable of failing, which is a shape this
+/// repository has shipped twice.
+///
+/// What no guard here can see is a ramp *anchored* so the picture happens to
+/// read like a real scheme: no forbidden word is written down and the breach
+/// lives entirely in the justification. `palette.rs`'s header carries that
+/// review obligation, in the same form `molecule.rs` carries it for its
+/// hard-coded topology.
+fn check_the_palette_reads_only_generated_properties(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let path = root.join(PALETTE_FILE);
+    // **A missing file is a failure, not a skip.** Rename or move the palette
+    // and a `return Ok(())` here would disable the whole check silently — the
+    // same fail-open shape the viewer seam records at its own missing-directory
+    // branch.
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        failures.push(format!(
+            "palette: {PALETTE_FILE} does not exist, so the G5 signature pin \
+             checked nothing. If the palette has moved, move this check with it; a \
+             silent pass here lets an element's identity reach the colour"
+        ));
+        return Ok(());
+    };
+    for failure in scan_palette(PALETTE_FILE, &text)? {
+        failures.push(failure);
+    }
+    Ok(())
+}
+
+/// The palette scan, over text rather than over a path.
+///
+/// **Split out for the reason `scan_for_derived_streams` was**: a check that can
+/// only be run against the real file can only be exercised against a tree that
+/// by construction produces no failures, and therefore tests nothing.
+fn scan_palette(rel: &str, text: &str) -> Result<Vec<String>, String> {
+    let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
+    let mut failures = Vec::new();
+
+    // **Nothing may be imported.** This is the structural half of the
+    // guarantee: with no `use`, no type from any other crate is nameable here,
+    // so an element cannot arrive under an alias the signature check would have
+    // to recognise.
+    for item in &file.items {
+        if let syn::Item::Use(u) = item {
+            let span = quote::ToTokens::to_token_stream(u).to_string();
+            failures.push(format!(
+                "palette: {rel} imports `{span}`. It must import nothing — that is \
+                 what makes an element's identity unnameable here, and it is what \
+                 keeps the file in the seam's strictest tier"
+            ));
+        }
+    }
+
+    let mut found = false;
+    for item in &file.items {
+        let syn::Item::Fn(f) = item else { continue };
+        if f.sig.ident != PALETTE_FN {
+            continue;
+        }
+        found = true;
+
+        for arg in &f.sig.inputs {
+            let syn::FnArg::Typed(pat) = arg else {
+                failures.push(format!(
+                    "palette: {rel}'s `{PALETTE_FN}` takes a receiver, so it is a                      method on something that may know which element this is"
+                ));
+                continue;
+            };
+            let spelling = quote::ToTokens::to_token_stream(&pat.ty).to_string();
+            if !ALLOWED_PALETTE_INPUTS.contains(&spelling.as_str()) {
+                let name = quote::ToTokens::to_token_stream(&pat.pat).to_string();
+                failures.push(format!(
+                    "palette: {rel}'s `{PALETTE_FN}` takes `{name}: {spelling}`, \
+                     which is not one of {ALLOWED_PALETTE_INPUTS:?}. §5's G5 forbids a \
+                     mapping table between Borbax entities and real-world ones, and \
+                     every real element colour scheme is keyed on element identity — \
+                     so the palette may read generated properties and may not be able \
+                     to tell which element it is looking at. If this argument really \
+                     is a property rather than an identity, add its type here and say \
+                     why in the commit"
+                ));
+            }
+        }
+    }
+
+    // **Unknown means fail**, which is the design rule `check_signature_surface_is_pinned`
+    // established: a rename must break this check rather than silence it.
+    if !found {
+        failures.push(format!(
+            "palette: {rel} has no `pub fn {PALETTE_FN}`, so the G5 signature \
+             pin matched nothing and checked nothing. Renaming the palette entry \
+             point must fail this check, not disable it"
+        ));
+    }
+
+    Ok(failures)
+}
+
 fn check_wall_clock_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
     const VIEWER: &str = "crates/borbax-ui";
     const CLOCK_READS: &[&str] = &["SystemTime::now", "Instant::now"];
@@ -8886,6 +9027,104 @@ mod tests {
         assert!(
             !fiction_hits(r#"fn f() -> &'static str { "made of Carbon" }"#).is_empty(),
             "the name tier must still match by word"
+        );
+    }
+
+    /// The shipped palette passes its own signature pin.
+    ///
+    /// The positive arm. Without it the four refusals below would pass over a
+    /// scan that rejects everything, including correct code.
+    #[test]
+    fn the_shipped_palette_reads_only_scalars() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap_or_else(|| unreachable!("xtask has a parent directory"))
+                .join(super::PALETTE_FILE),
+        )
+        .unwrap_or_else(|e| unreachable!("the shipped palette is readable: {e}"));
+        let found = super::scan_palette(super::PALETTE_FILE, &text)
+            .unwrap_or_else(|e| unreachable!("the shipped palette parses: {e}"));
+        assert!(
+            found.is_empty(),
+            "the shipped palette fails its own check: {found:?}"
+        );
+    }
+
+    /// An argument naming which element this is, is refused.
+    ///
+    /// **The mutation the guard exists to stop.** `ElementId` is the shortest
+    /// path to a CPK table: with it in scope the palette can `match` on the
+    /// element and return a conventional colour, which is §5 G5's forbidden
+    /// mapping between a Borbax entity and a real-world one.
+    #[test]
+    fn an_identity_argument_is_refused() {
+        for spelling in [
+            "id: ElementId",
+            "element: &Element",
+            "symbol: &str",
+            "name: String",
+            "index: usize",
+        ] {
+            let src = format!("pub fn colour({spelling}, affinity: f64) -> [f64; 3] {{ todo }}");
+            let found = super::scan_palette("probe.rs", &src)
+                .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+            assert!(
+                found.iter().any(|f| f.contains("which is not one of")),
+                "`{spelling}` was accepted by the palette signature pin, so an \
+                 element's identity can reach the colour: {found:?}"
+            );
+        }
+    }
+
+    /// Renaming the palette entry point fails rather than disabling the check.
+    ///
+    /// **Unknown means fail**, the design rule `check_signature_surface_is_pinned`
+    /// established. A guard that matches nothing and says nothing is the shape
+    /// this repository keeps re-finding.
+    #[test]
+    fn a_renamed_palette_entry_point_fails_the_check() {
+        let src = "pub fn shade(affinity: f64) -> [f64; 3] { todo }";
+        let found = super::scan_palette("probe.rs", src)
+            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+        assert!(
+            found.iter().any(|f| f.contains("matched nothing")),
+            "renaming the palette entry point left the check silent: {found:?}"
+        );
+    }
+
+    /// The palette may import nothing.
+    ///
+    /// The structural half: with no `use`, no type from elsewhere is nameable,
+    /// so an element cannot arrive under an alias the type check would have to
+    /// recognise.
+    #[test]
+    fn an_import_into_the_palette_is_refused() {
+        let src =
+            "use borbax_universe::Element;\npub fn colour(affinity: f64) -> [f64; 3] { todo }";
+        let found = super::scan_palette("probe.rs", src)
+            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+        assert!(
+            found.iter().any(|f| f.contains("imports")),
+            "an import into the palette was accepted: {found:?}"
+        );
+    }
+
+    /// A type alias cannot smuggle an identity past the allow-list.
+    ///
+    /// `syn` performs no name resolution, so a deny-list of type *spellings*
+    /// would be defeated by `type Id = ElementId;`. The allow-list is not:
+    /// the alias is still not `f64` or `u8`, so it is refused on sight. This is
+    /// the measured difference between the two designs, and the reason the
+    /// default is refusal.
+    #[test]
+    fn an_aliased_identity_is_still_refused() {
+        let src = "type Whatever = u8;\npub fn colour(x: Whatever) -> [f64; 3] { todo }";
+        let found = super::scan_palette("probe.rs", src)
+            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+        assert!(
+            found.iter().any(|f| f.contains("which is not one of")),
+            "an aliased type was accepted by name rather than by spelling: {found:?}"
         );
     }
 }
