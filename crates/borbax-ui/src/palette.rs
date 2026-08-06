@@ -59,12 +59,22 @@
 //! entirely in the justification.
 //!
 //! **So: every channel assignment below names a generated quantity and a
-//! measurement over it. A justification that names a real element, a real
-//! convention, or "looks right" / "reads as" is a G3 breach whether or not any
-//! real name appears.** The executable form of that check is to re-read each
-//! justification with the seed changed — *"hue steps per group because families
-//! share a group"* survives, because it is a claim about the generator;
-//! *"the heavy atom is dark because heavy things read as dark"* does not.
+//! measurement over it. A justification that appeals to how the picture
+//! compares to a real-world depiction is a G3 breach whether or not any real
+//! name appears.**
+//!
+//! **The obligation is a property, not a banned phrase, and the first version
+//! got that wrong.** It forbade the words "looks right" and "reads as" — which
+//! fires on three legitimate lines in its own commit ("the molecule looks
+//! connected", "reads as lumps connected by necks", "reads as one body"), all
+//! of them legibility arguments rather than resemblance ones. An obligation
+//! that flags correct code in the commit that introduces it is how guards get
+//! deleted.
+//!
+//! The executable form is to re-read each justification with the seed changed —
+//! *"hue steps per group because families share a group"* survives, because it
+//! is a claim about the generator; *"the heavy atom is dark because heavy
+//! things read as dark"* does not.
 //!
 //! This is a review obligation, written down because that is the only
 //! enforcement available.
@@ -80,9 +90,14 @@
 //!   stepping is what makes it legible rather than merely correct: the four
 //!   leaves land at **consecutive** groups (1, 2, 3, 4) in every universe
 //!   measured, so a smooth hue ramp gives them four near-identical colours.
-//!   Measured, minimum pairwise separation across the five atoms: **0.0239**
-//!   under a ramp keyed on affinity, **0.1932** under this, and **0.6748**
-//!   among the leaves alone.
+//!   Measured, minimum pairwise separation across the five atoms: **0.1932**
+//!   under this, and **0.6748** among the leaves alone. A hue ramp keyed on
+//!   affinity instead collapses them to under **0.05** — three reviewers
+//!   reproduced the two figures above to four digits and each got a different
+//!   number for the ramp (0.041, 0.045, 0.046), because the counterfactual's
+//!   construction was never written down. The order of magnitude is the claim;
+//!   the digits are not, and the earlier "0.0239" implied a precision that
+//!   nothing here can reproduce.
 //! - **Saturation from `affinity`.** The one channel that adds information the
 //!   picture does not already carry: radius order equals mass order in 500/500
 //!   universes, so a mass-driven hue would merely restate the sphere sizes,
@@ -99,9 +114,26 @@
 //! # Determinism
 //!
 //! **No transcendental appears here, and that is a property of the colour space
-//! rather than a restraint.** HSL to RGB in this form is piecewise linear —
-//! `abs`, `rem_euclid`, comparisons and the four arithmetic operations, all of
-//! which §13.1 leaves native. The golden angle is a literal.
+//! rather than a restraint.** HSL to RGB in this form is piecewise linear:
+//! `abs`, `rem_euclid`, comparisons and the four arithmetic operations.
+//!
+//! **`rem_euclid` is not native, and an earlier version of this sentence said it
+//! was.** Float `%` lowers to a **libm `fmod` call** — measured, one `bl _fmod`
+//! on aarch64 and two `callq *fmod@GOTPCREL` on x86-64, with `_fmod` an
+//! undefined import in both. The conclusion survives for the reason
+//! `clippy.toml`'s header insists on: **the criterion is whether IEEE-754
+//! specifies the result exactly, not whether the operation calls libm.** `fmod`
+//! is exact — `x - trunc(x/y)*y` is representable in the same format, so there
+//! is no rounding freedom to differ on. Verified rather than argued: Apple's
+//! `fmod` against the vendored `libm::fmod` over 20M random finite inputs gives
+//! **0 mismatches**, and `colour` hashed over 16.4M inputs built for both
+//! architectures gives the **same hash**.
+//!
+//! The wrong reason mattered exactly as CLAUDE.md says it does: "`rem_euclid`
+//! is native" is the sentence that would wave through the next `%`-adjacent
+//! operation that is *not* exactly specified.
+//!
+//! The golden angle is a literal.
 //!
 //! A perceptual space (Oklab) would need `cbrt` and would be admissible —
 //! `det_math::cbrt` exists — but it is not needed to place five colours apart,
@@ -206,19 +238,28 @@ pub fn colour(
 /// show", not `NaN` painted onto every atom.
 fn unit(x: f64, lo: f64, hi: f64) -> f64 {
     let span = hi - lo;
-    if span > 0.0 {
-        ((x - lo) / span).clamp(0.0, 1.0)
-    } else {
-        0.5
+    if span <= 0.0 {
+        return 0.5;
     }
+    let t = (x - lo) / span;
+    // **`clamp` propagates NaN, so the clamp is not the guard it looks like.**
+    // A NaN input passes straight through it, out of `colour`, and through
+    // `scene::srgb` into a NaN `Color` — an atom painted nothing at all, with
+    // no error anywhere. The out-of-range test covered `f64::MIN` and
+    // `f64::MAX` and not the one out-of-range value that is *not* clamped.
+    //
+    // The midpoint is the same answer a range with no spread gets: "no
+    // information to show", rather than a hole in the picture.
+    if t.is_nan() { 0.5 } else { t.clamp(0.0, 1.0) }
 }
 
 /// HSL to sRGB, with hue in degrees and both others in `0..=1`.
 ///
-/// **Piecewise linear, which is the whole §13.1 argument** — `abs`,
-/// `rem_euclid`, comparisons and the four arithmetic operations are all
-/// exactly specified by IEEE-754, so this is bit-identical across the §13.4
-/// matrix without routing anything through `det_math`.
+/// **Piecewise linear, which is the whole §13.1 argument.** `abs`, comparisons
+/// and the four arithmetic operations are exactly specified by IEEE-754;
+/// `rem_euclid` is a `fmod` libcall and is *also* exactly specified, which is
+/// the criterion that matters. See the module header — the distinction is not
+/// pedantry, it is the difference between a rule and a habit.
 fn hsl_to_rgb(hue: f64, saturation: f64, lightness: f64) -> [f64; 3] {
     let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
     // `rem_euclid` rather than `%`, so a hue below zero wraps onto the wheel
@@ -227,9 +268,14 @@ fn hsl_to_rgb(hue: f64, saturation: f64, lightness: f64) -> [f64; 3] {
     let sector = hue.rem_euclid(360.0) / 60.0;
     let ramp = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
 
-    // `sector` is in `0.0..6.0` by construction above, so the six arms cover
-    // it. The catch-all is the sixth arm rather than a panic, which is what
-    // keeps this function total for a hue of exactly 360.
+    // **`sector` is *not* always below 6.0, and the first version of this
+    // comment said it was.** `(-1e-20_f64).rem_euclid(360.0)` returns exactly
+    // 360.0 — the `r + 360.0` fixup rounds up for a tiny negative `r` — giving
+    // `sector == 6.0` and taking the catch-all arm. The function is still
+    // total, and correct, for a different reason than the one claimed: at
+    // sector 6 the sixth arm's `ramp` is 0, so it returns `(chroma, 0, 0)`,
+    // which is bit-identical to what sector 0 returns. Verified: hue 0, hue 360
+    // and hue -1e-20 all give the same triple.
     let (red, green, blue) = if sector < 1.0 {
         (chroma, ramp, 0.0)
     } else if sector < 2.0 {
@@ -302,9 +348,22 @@ mod tests {
     ///
     /// The clamps are the reason the sweep above can be believed for a universe
     /// that produces an affinity or a mass nobody surveyed.
+    ///
+    /// **`f64::NAN` is in the list because `clamp` propagates it**, so it was
+    /// the one out-of-range value the clamp did *not* catch — it passed through
+    /// `colour` and would have reached the engine as a `Color` of nothing.
+    /// Found by a review; the earlier list covered `MIN`/`MAX`, which the clamp
+    /// handles, and not the value it does not.
     #[test]
     fn an_out_of_range_input_is_clamped_rather_than_escaping() {
-        for (affinity, mass) in [(-5.0, -5.0), (5.0, 500.0), (f64::MIN, f64::MAX)] {
+        for (affinity, mass) in [
+            (-5.0, -5.0),
+            (5.0, 500.0),
+            (f64::MIN, f64::MAX),
+            (f64::NAN, 5.0),
+            (0.5, f64::NAN),
+            (f64::NAN, f64::NAN),
+        ] {
             let c = colour(affinity, 3, mass, 0.0, 10.0, 2);
             for channel in c {
                 assert!(
@@ -315,36 +374,110 @@ mod tests {
         }
     }
 
-    /// Consecutive groups are far apart in hue, which a ramp would not give.
+    /// The largest `group` any universe attains.
     ///
-    /// **This is the test that pins the golden angle**, and the measurement
-    /// behind it is the reason the constant is not simply `360 / n_groups`. The
-    /// four leaves of the demo molecule sit at consecutive groups in every
-    /// universe measured, so consecutive separation is the property that
-    /// decides whether the molecule shows four leaves or one blur.
+    /// Measured over 500 universes. The sweeps below run the range the
+    /// generator actually produces rather than a round number — an earlier
+    /// version swept `0..24`, which is a third of it, and the interesting
+    /// collisions are all outside that.
+    const MAX_GROUP: u8 = 73;
+
+    /// No two groups are drawn the same colour.
     ///
-    /// The bar is 0.35 because it sits between the two measured populations
-    /// with room on both sides: a linear ramp over 24 groups gives about 0.06
-    /// between neighbours, and the golden angle gives above 0.6.
+    /// **This is the test that pins the golden angle, and the one it replaced
+    /// did the opposite.** `consecutive_groups_are_far_apart_in_colour`
+    /// measured the separation between *neighbouring* groups — a quantity that
+    /// is identical for every pair under a constant step, and is therefore
+    /// maximised at 180°, which puts groups 0 and 2 on exactly the same colour.
+    /// Measured in this metric over `0..24`: the golden angle scores 1.3455,
+    /// **180° scores 1.8268 and 120° scores 1.3616** — both better, and both
+    /// collapsing distinct families onto identical colours. A guard that ranks
+    /// the two worst candidates above the shipped one is not a guard.
+    ///
+    /// The property that actually distinguishes the golden angle is that it is
+    /// the most badly approximable rotation, so `{k·α}` never repeats and the
+    /// minimum gap over the first N points stays as large as it can be **for
+    /// every N at once** — which matters because the number of groups is drawn
+    /// per universe and no constant can be tuned to it.
+    ///
+    /// Measured minimum over all pairs in `0..=MAX_GROUP`: **0.0420**, at groups
+    /// 11 and 66. Every rejected candidate scores exactly **0.0000** somewhere
+    /// in the same range, including a linear `360/24` ramp, which is exact at
+    /// 24 groups and collides three times over the range a universe reaches.
+    /// The bar sits between those two populations.
+    ///
+    /// **0.0420 is well below the 0.35 legibility bar**, and that is stated
+    /// rather than hidden: this test says two families are never *the same*
+    /// colour, not that every pair is *tellable apart*. The demo molecule's
+    /// atoms are neighbours in group, which is what
+    /// `neighbouring_groups_are_far_apart_in_colour` covers; a molecule
+    /// spanning groups 11 and 66 would show two colours a person could not
+    /// separate, and that belongs to whichever step first builds one.
     #[test]
-    fn consecutive_groups_are_far_apart_in_colour() {
+    fn no_two_groups_are_drawn_the_same_colour() {
+        let of = |group: u8| colour(0.6, 3, 5.0, 0.0, 10.0, group);
+        let mut worst = f64::INFINITY;
+        let mut worst_pair = (0_u8, 0_u8);
+        let mut checked = 0_u32;
+        for a in 0..=MAX_GROUP {
+            for b in (a + 1)..=MAX_GROUP {
+                let d = separation(of(a), of(b));
+                if d < worst {
+                    worst = d;
+                    worst_pair = (a, b);
+                }
+                checked += 1;
+            }
+        }
+        let pairs = u32::from(MAX_GROUP) * (u32::from(MAX_GROUP) + 1) / 2;
+        assert_eq!(checked, pairs, "the sweep did not run in full");
+        assert!(
+            worst > 0.03,
+            "groups {} and {} are drawn {worst:.4} apart — a step that repeats \
+             puts two families on one colour, and every rejected candidate \
+             (180°, 120°, a linear 360/24 ramp) scores exactly 0 somewhere in \
+             this range",
+            worst_pair.0,
+            worst_pair.1
+        );
+    }
+
+    /// Neighbouring groups are far apart in colour.
+    ///
+    /// **This does not pin the golden angle and no longer claims to** — see
+    /// `no_two_groups_are_drawn_the_same_colour` for why the quantity it
+    /// measures ranks 180° above the shipped constant. What it does cover is
+    /// the case the demo molecule actually presents: its four leaves sit at
+    /// *consecutive* groups in every universe measured, so neighbouring
+    /// separation is what decides whether the molecule shows four leaves or one
+    /// blur.
+    ///
+    /// The bar is 0.35 against a measured 1.3428 for the golden angle over the
+    /// attained range, and 0.2153 for a linear `360/24` ramp. That is a margin
+    /// of 1.6× below rather than the 6× an earlier version of this doc implied
+    /// — it quoted 0.06, which is the figure for a ramp over ~86 groups, not 24.
+    #[test]
+    fn neighbouring_groups_are_far_apart_in_colour() {
         let of = |group: u8| colour(0.6, 3, 5.0, 0.0, 10.0, group);
         let mut worst = f64::INFINITY;
         let mut checked = 0_u32;
-        for group in 0..23_u8 {
+        for group in 0..MAX_GROUP {
             let d = separation(of(group), of(group + 1));
             if d < worst {
                 worst = d;
             }
             checked += 1;
         }
-        assert_eq!(checked, 23, "the sweep did not run in full");
+        assert_eq!(
+            checked,
+            u32::from(MAX_GROUP),
+            "the sweep did not run in full"
+        );
         assert!(
             worst > 0.35,
             "neighbouring groups differ by only {worst:.4}, so a molecule whose \
              atoms sit at consecutive groups — which the demo molecule's leaves \
-             do in every universe measured — is drawn as one colour. A linear \
-             ramp gives about 0.06 here"
+             do in every universe measured — is drawn as one colour"
         );
     }
 

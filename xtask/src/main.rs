@@ -3665,6 +3665,43 @@ fn check_the_viewer_narrows_in_one_place(
 /// protects results and a seed the user is shown and can retype is an input.
 /// What must never happen is a *second* read appearing somewhere that does
 /// produce results, on the precedent of this one.
+fn check_wall_clock_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    const VIEWER: &str = "crates/borbax-ui";
+    const CLOCK_READS: &[&str] = &["SystemTime::now", "Instant::now"];
+    let clock_home = root.join(VIEWER).join("src").join("state.rs");
+
+    for scan_root in DATA_FREE_ROOTS {
+        let dir = root.join(scan_root);
+        if !dir.exists() {
+            failures.push(format!(
+                "§13.1: scan root {scan_root:?} does not exist, so no source under it was \
+                 checked for a wall-clock read"
+            ));
+            continue;
+        }
+        for path in walk(&dir)?
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+            .filter(|p| *p != clock_home)
+        {
+            let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let code = code_only(&src);
+            for needle in CLOCK_READS {
+                if code.contains(needle) {
+                    failures.push(format!(
+                        "§13.1: `{needle}` in {} — wall-clock is readable in exactly one \
+                         file, `{VIEWER}/src/state.rs`, where it seeds a button and \
+                         reaches no result. A second read is how it gets into one",
+                        path.strip_prefix(root).unwrap_or(&path).display()
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// The file the palette lives in, relative to the repository root.
 const PALETTE_FILE: &str = "crates/borbax-ui/src/palette.rs";
 
@@ -3680,6 +3717,27 @@ const PALETTE_FN: &str = "colour";
 /// failure mode this repository has recorded at three different levels. An
 /// allow-list of *scalars* refuses everything nobody has argued for.
 const ALLOWED_PALETTE_INPUTS: &[&str] = &["f64", "u8"];
+
+/// Argument names that identify an element rather than describe one.
+///
+/// **Seed-independence is the criterion, not injectivity**, and the first
+/// version of this guard used the wrong one. Measured over 500 universes,
+/// `group == units - 1` holds in 500 of 500 for the first period — so `group`
+/// is a *stable* handle onto the same element in every universe, which is
+/// exactly what a mapping to a real-world element needs. `units` is stronger
+/// still: §7.1 says the element *is* that number.
+///
+/// `group` is not on this list because the shipped palette reads it as a
+/// family coordinate through a closed-form formula, which
+/// [`branch_failures`] is what enforces. `units` is, because nothing has
+/// argued for it.
+const BANNED_PALETTE_KEYS: &[&str] = &["units", "id", "index", "number"];
+
+/// Arguments the palette may branch on.
+///
+/// `valence == 0` marks a closed outer shell — one boolean, which cannot encode
+/// a colour scheme. Every other argument spans enough values to hold one.
+const BRANCH_EXEMPT_PALETTE_ARGS: &[&str] = &["valence"];
 
 /// The palette reads generated properties and cannot recognise an element (§5,
 /// G5; §5, G3).
@@ -3745,11 +3803,19 @@ fn scan_palette(rel: &str, text: &str) -> Result<Vec<String>, String> {
     let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
     let mut failures = Vec::new();
 
+    // **Flattened first, because the top level is not the file.** The first
+    // version of this walked `file.items` only, so a nested
+    // `mod inner { use borbax_universe::Element; pub fn colour(e: &Element) .. }`
+    // escaped the import ban and the signature pin at once — a guard passing
+    // while the artefact it forbids sat in the file it was reading. Three other
+    // checks in this binary already recurse into `Item::Mod`; this one did not.
+    let items = flatten_items(&file.items);
+
     // **Nothing may be imported.** This is the structural half of the
     // guarantee: with no `use`, no type from any other crate is nameable here,
     // so an element cannot arrive under an alias the signature check would have
     // to recognise.
-    for item in &file.items {
+    for item in &items {
         if let syn::Item::Use(u) = item {
             let span = quote::ToTokens::to_token_stream(u).to_string();
             failures.push(format!(
@@ -3761,23 +3827,25 @@ fn scan_palette(rel: &str, text: &str) -> Result<Vec<String>, String> {
     }
 
     let mut found = false;
-    for item in &file.items {
+    for item in &items {
         let syn::Item::Fn(f) = item else { continue };
         if f.sig.ident != PALETTE_FN {
             continue;
         }
         found = true;
 
+        let mut names = Vec::new();
         for arg in &f.sig.inputs {
             let syn::FnArg::Typed(pat) = arg else {
                 failures.push(format!(
-                    "palette: {rel}'s `{PALETTE_FN}` takes a receiver, so it is a                      method on something that may know which element this is"
+                    "palette: {rel}'s `{PALETTE_FN}` takes a receiver, so it is a \
+                     method on something that may know which element this is"
                 ));
                 continue;
             };
             let spelling = quote::ToTokens::to_token_stream(&pat.ty).to_string();
+            let name = quote::ToTokens::to_token_stream(&pat.pat).to_string();
             if !ALLOWED_PALETTE_INPUTS.contains(&spelling.as_str()) {
-                let name = quote::ToTokens::to_token_stream(&pat.pat).to_string();
                 failures.push(format!(
                     "palette: {rel}'s `{PALETTE_FN}` takes `{name}: {spelling}`, \
                      which is not one of {ALLOWED_PALETTE_INPUTS:?}. §5's G5 forbids a \
@@ -3789,6 +3857,40 @@ fn scan_palette(rel: &str, text: &str) -> Result<Vec<String>, String> {
                      why in the commit"
                 ));
             }
+            if BANNED_PALETTE_KEYS.contains(&name.as_str()) {
+                failures.push(format!(
+                    "palette: {rel}'s `{PALETTE_FN}` takes `{name}`, which is a \
+                     seed-independent handle on an element rather than a property of \
+                     one. Measured over 500 universes, `group == units - 1` holds in \
+                     500 of 500 for the first period — so a value keyed on it is the \
+                     same value for the same element in every universe, which is a \
+                     mapping between a Borbax entity and a real-world one (§5, G5)"
+                ));
+            }
+            names.push(name);
+        }
+
+        // **The branch ban, and it is the half that actually holds the
+        // guarantee.** A review demonstrated the signature pin alone is not
+        // enough: replacing the hue line with
+        // `match group { 6 => 240.0, 7 => 0.0, .. }` keeps every argument a
+        // permitted scalar, imports nothing, adds no data file, and passes all
+        // nine palette tests *and* this check. The forbidden artefact was
+        // representable with the guard in place.
+        //
+        // What actually protects the shipped code is that the hue is a
+        // **closed-form formula with no free per-group parameter** — a
+        // conventional colour cannot be assigned to any element without
+        // introducing a lookup, and a lookup needs a branch or a table. So both
+        // are refused: no `match` anywhere in the file, and no `if` whose
+        // condition names one of `colour`'s own arguments.
+        //
+        // The single legitimate branch is `valence == 0` (a closed shell bonds
+        // with nothing, drawn grey), which is why `valence` is exempt: one
+        // boolean cannot encode a scheme, where a branch over `group`'s 74
+        // attained values can.
+        for failure in branch_failures(rel, f, &names) {
+            failures.push(failure);
         }
     }
 
@@ -3796,8 +3898,8 @@ fn scan_palette(rel: &str, text: &str) -> Result<Vec<String>, String> {
     // established: a rename must break this check rather than silence it.
     if !found {
         failures.push(format!(
-            "palette: {rel} has no `pub fn {PALETTE_FN}`, so the G5 signature \
-             pin matched nothing and checked nothing. Renaming the palette entry \
+            "palette: {rel} has no `fn {PALETTE_FN}`, so the G5 signature pin \
+             matched nothing and checked nothing. Renaming the palette entry \
              point must fail this check, not disable it"
         ));
     }
@@ -3805,41 +3907,78 @@ fn scan_palette(rel: &str, text: &str) -> Result<Vec<String>, String> {
     Ok(failures)
 }
 
-fn check_wall_clock_has_one_home(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
-    const VIEWER: &str = "crates/borbax-ui";
-    const CLOCK_READS: &[&str] = &["SystemTime::now", "Instant::now"];
-    let clock_home = root.join(VIEWER).join("src").join("state.rs");
+/// Every shipped item in the file, including those nested inside inline
+/// modules, and excluding anything behind `#[cfg(test)]`.
+///
+/// `syn` gives a tree; every check here wants the whole file. A nested module
+/// is not a smaller file, it is the same file with more indentation.
+///
+/// **`#[cfg(test)]` is skipped, and the positive arm is what found that it had
+/// to be.** `palette.rs`'s own test module does `use super::{..}` — a
+/// legitimate self-import that the first version of the recursion reported as a
+/// G5 breach, i.e. the check rejecting the correct file. Test code is not
+/// compiled into the binary and cannot reach the screen, so it cannot carry a
+/// colour scheme to a user; the shipped items are the whole surface.
+fn flatten_items(items: &[syn::Item]) -> Vec<&syn::Item> {
+    let mut out = Vec::new();
+    for item in items {
+        out.push(item);
+        if let syn::Item::Mod(m) = item
+            && let Some((_, inner)) = &m.content
+            && !is_cfg_test(&m.attrs)
+        {
+            out.extend(flatten_items(inner));
+        }
+    }
+    out
+}
 
-    for scan_root in DATA_FREE_ROOTS {
-        let dir = root.join(scan_root);
-        if !dir.exists() {
-            failures.push(format!(
-                "§13.1: scan root {scan_root:?} does not exist, so no source under it was \
-                 checked for a wall-clock read"
-            ));
+/// Is this item behind `#[cfg(test)]`?
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        a.path().is_ident("cfg")
+            && quote::ToTokens::to_token_stream(a)
+                .to_string()
+                .contains("test")
+    })
+}
+
+/// Branches inside the palette that could hold a lookup table.
+///
+/// Returns one failure per offending construct. See the block comment at the
+/// call site for why a branch, rather than an argument type, is what a real
+/// colour scheme actually needs.
+fn branch_failures(rel: &str, f: &syn::ItemFn, names: &[String]) -> Vec<String> {
+    let body = quote::ToTokens::to_token_stream(&f.block).to_string();
+    let mut failures = Vec::new();
+
+    if body.contains("match ") {
+        failures.push(format!(
+            "palette: {rel}'s `{PALETTE_FN}` contains a `match`. A real element \
+             colour scheme is a lookup, and a lookup needs a branch — the hue must \
+             stay a closed-form formula with no free per-element parameter (§5, G5)"
+        ));
+    }
+
+    for name in names {
+        if BRANCH_EXEMPT_PALETTE_ARGS.contains(&name.as_str()) {
             continue;
         }
-        for path in walk(&dir)?
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-            .filter(|p| *p != clock_home)
-        {
-            let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let code = code_only(&src);
-            for needle in CLOCK_READS {
-                if code.contains(needle) {
-                    failures.push(format!(
-                        "§13.1: `{needle}` in {} — wall-clock is readable in exactly one \
-                         file, `{VIEWER}/src/state.rs`, where it seeds a button and \
-                         reaches no result. A second read is how it gets into one",
-                        path.strip_prefix(root).unwrap_or(&path).display()
-                    ));
-                }
+        // A condition naming an argument is the shape a per-element lookup
+        // takes once `match` is unavailable.
+        for form in [format!("if {name} "), format!("if {name}==")] {
+            if body.replace("  ", " ").contains(&form) {
+                failures.push(format!(
+                    "palette: {rel}'s `{PALETTE_FN}` branches on `{name}`. That is \
+                     the shape of a per-element lookup table, which §5's G5 forbids; \
+                     the hue must be a closed-form formula. Only `valence == 0` — a \
+                     closed shell, one boolean, which cannot encode a scheme — is \
+                     exempt"
+                ));
             }
         }
     }
-
-    Ok(())
+    failures
 }
 
 /// The token run that spells a call into the `libm` crate.
@@ -9107,6 +9246,101 @@ mod tests {
         assert!(
             found.iter().any(|f| f.contains("imports")),
             "an import into the palette was accepted: {found:?}"
+        );
+    }
+
+    /// A per-group colour lookup is refused.
+    ///
+    /// **This is the mutant a review actually ran, and the guard passed it.**
+    /// Copying `palette.rs` verbatim and replacing the hue line with
+    /// `match group { 6 => 240.0, 7 => 0.0, .. }` keeps every argument a
+    /// permitted scalar, imports nothing, adds no data file, and left all nine
+    /// palette tests *and* this check green. The forbidden artefact — a mapping
+    /// between a Borbax element and a real-world one, §5's G5 in five words —
+    /// was representable with the guard in place.
+    ///
+    /// The signature pin was never going to catch it: the attack needs no new
+    /// argument. What the shipped palette actually relies on is that the hue is
+    /// a **closed-form formula with no free per-element parameter**, and a
+    /// lookup needs a branch. So the branch is what is refused.
+    #[test]
+    fn a_per_group_colour_lookup_is_refused() {
+        let src = "pub fn colour(group: u8, affinity: f64) -> [f64; 3] { \
+                   let hue = match group { 6 => 240.0, 7 => 0.0, _ => 1.0 }; [hue, 0.0, 0.0] }";
+        let found = super::scan_palette("probe.rs", src)
+            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+        assert!(
+            found.iter().any(|f| f.contains("contains a `match`")),
+            "a per-group colour lookup was accepted: {found:?}"
+        );
+    }
+
+    /// The same lookup written as an `if` chain is refused too.
+    ///
+    /// Removing `match` is the first thing anyone would try.
+    #[test]
+    fn a_per_group_if_chain_is_refused() {
+        let src = "pub fn colour(group: u8) -> [f64; 3] { \
+                   if group == 6 { [0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0] } }";
+        let found = super::scan_palette("probe.rs", src)
+            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+        assert!(
+            found.iter().any(|f| f.contains("branches on `group`")),
+            "an if-chain keyed on group was accepted: {found:?}"
+        );
+    }
+
+    /// `valence == 0` is the one permitted branch.
+    ///
+    /// The positive arm for the branch ban. A closed outer shell drawn grey is
+    /// one boolean, which cannot encode a scheme — and without this arm the ban
+    /// would be a check that rejects the shipped file.
+    #[test]
+    fn the_closed_shell_branch_is_permitted() {
+        let src = "pub fn colour(valence: u8, affinity: f64) -> [f64; 3] { \
+                   let s = if valence == 0 { 0.0 } else { affinity }; [s, s, s] }";
+        let found = super::scan_palette("probe.rs", src)
+            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+        assert!(
+            found.is_empty(),
+            "the closed-shell branch was refused, so the ban rejects correct code: {found:?}"
+        );
+    }
+
+    /// A nested module does not escape either check.
+    ///
+    /// The first version walked top-level items only, so
+    /// `mod inner { use ..; pub fn colour(..) }` escaped the import ban and the
+    /// signature pin at once.
+    #[test]
+    fn a_nested_module_does_not_escape_the_palette_scan() {
+        let src = "mod inner { use borbax_universe::Element; \
+                   pub fn colour(e: Element) -> [f64; 3] { [0.0, 0.0, 0.0] } }";
+        let found = super::scan_palette("probe.rs", src)
+            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+        assert!(
+            found.iter().any(|f| f.contains("imports")),
+            "a nested import escaped: {found:?}"
+        );
+        assert!(
+            found.iter().any(|f| f.contains("which is not one of")),
+            "a nested identity argument escaped: {found:?}"
+        );
+    }
+
+    /// An argument that is a stable handle on an element is refused.
+    ///
+    /// `units` is the strongest one: §7.1 says the element *is* that number, so
+    /// it names the same element in every universe. The allow-list is by type
+    /// and `units: u8` passes it, which is why the name is checked separately.
+    #[test]
+    fn a_seed_independent_handle_is_refused() {
+        let src = "pub fn colour(units: u8, affinity: f64) -> [f64; 3] { [0.0, 0.0, 0.0] }";
+        let found = super::scan_palette("probe.rs", src)
+            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
+        assert!(
+            found.iter().any(|f| f.contains("seed-independent handle")),
+            "`units` was accepted as a palette input: {found:?}"
         );
     }
 

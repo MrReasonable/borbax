@@ -672,7 +672,7 @@ fn every_atom_is_drawn_where_the_embedding_put_it() {
         // the scale is written into the expectation rather than the expectation
         // being dropped. `every_atom_is_shrunk_by_the_same_amount` in
         // `molecule.rs` is what stops the scale becoming per-atom;
-        // `the_solid_view_draws_every_atom_at_its_true_size` is what keeps the
+        // `the_solid_view_draws_every_atom_at_its_true_size_and_no_sticks` is
         // unscaled picture honest.
         assert!(
             state.view().draws_sticks(),
@@ -846,11 +846,25 @@ fn there_is_one_stick_entity_per_bond() {
 /// reconstruction residue, not a number chosen to make this pass.
 #[test]
 fn every_stick_spans_the_two_atoms_it_bonds() {
-    /// The largest endpoint error the reconstruction actually produces.
+    /// A bound on the endpoint error, comfortably above the measured residue.
     ///
-    /// Measured over the shipped molecule rather than assumed: the failure this
-    /// must still catch is a stick nudged or stretched, which moves an endpoint
-    /// by order 0.05 span — three orders above this.
+    /// **It is a bound, not the measured residue, and an earlier version of
+    /// this doc claimed the second.** Measured: **1.23e-7** on the opening
+    /// universe and **2.98e-7** worst over 500 — so this sits ~340x above what
+    /// the reconstruction actually produces. The defect it must catch moves an
+    /// endpoint by order 0.05 span, which is 500x above this, so the bar sits
+    /// between two populations three orders apart in each direction.
+    ///
+    /// **It is not safe in the other direction, and that is worth knowing
+    /// before it fires.** `glam` documents `from_rotation_arc` as accurate only
+    /// to about 1e-3 for near-singular inputs, and a review measured an
+    /// endpoint residue of **9.3e-4** for a bond within 6e-4 radians of the Y
+    /// axis — 9x this tolerance, on a completely correct implementation. That
+    /// is unreachable today: the largest `|dot(bond direction, Y)|` over 500
+    /// universes is **0.9543**. If a later molecule reaches the axis, this
+    /// fires with a message blaming a stick that is none of the things it
+    /// names, and the fix then is to compare length and midpoint tightly (they
+    /// involve no rotation) and the direction against glam's documented 1e-3.
     const TOLERANCE: f32 = 1e-4;
 
     let want: Vec<(Vec3, Vec3)> = {
@@ -899,6 +913,7 @@ fn every_stick_spans_the_two_atoms_it_bonds() {
     );
 
     let mut worst = 0.0_f32;
+    let mut matched = 0_usize;
     for (from, to) in &want {
         // Each wanted bond must be matched by some drawn stick, in either
         // endpoint order.
@@ -928,17 +943,32 @@ fn every_stick_spans_the_two_atoms_it_bonds() {
         if best > worst {
             worst = best;
         }
+        matched += 1;
     }
+    // **A count, not a finiteness check, and the difference is the whole
+    // point.** This assertion read `worst.is_finite()` — with `worst`
+    // initialised to `0.0`, which is finite, so it passed on precisely the
+    // empty corpus it exists to catch. Four independent reviewers found it. A
+    // self-check that cannot fire is the shape CLAUDE.md's "probe the guard's
+    // bookkeeping" section names, and it was written in the same commit as
+    // three counters that get this right.
+    assert_eq!(
+        matched,
+        want.len(),
+        "{matched} of {} bonds were matched, so this test did not describe the \
+         whole molecule",
+        want.len()
+    );
     assert!(
-        worst.is_finite(),
-        "no bond was matched, so this test asserted nothing"
+        matched > 0,
+        "the molecule has no bonds, so this test asserted nothing at all"
     );
 }
 
 /// No entity is both an atom and a bond.
 ///
 /// **Not independently discriminating, and saying so is the point.** Spawning
-/// sticks with the `Atom` marker also fails three other tests. Its value is
+/// sticks with the `Atom` marker was measured to fail **eight** other tests. Its value is
 /// that those three would report the symptom in the wrong vocabulary — a wrong
 /// atom count, a wrong transform set — while this names the cause. It is also
 /// what keeps `every_atom_is_drawn_with_the_same_mesh` describing atoms now

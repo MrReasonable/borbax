@@ -524,7 +524,7 @@ this paragraph exists.
       reason is a measurement that killed the obvious design.** An affinity ramp
       gives the five demo atoms a minimum pairwise separation of **0.0239** —
       four leaves collapsed into one colour — because the leaves land at
-      *consecutive* groups `(0,1), (0,2), (0,3), (0,4)` in every universe
+      *consecutive* groups **1, 2, 3, 4** (the centre at 11-13) in every universe
       measured. Golden-angle stepping on `group` gives **0.1932** across the
       five and **0.6748** among the leaves, and it is the coordinate that makes
       families visible, which §7.1 calls the payload. Saturation carries
@@ -536,13 +536,13 @@ this paragraph exists.
       and disagrees with canonical order in **500 of 500** universes, in the
       permutation that paints the centre's colour onto a leaf. The demo molecule
       **cannot discriminate a bond lookup at all** — its bond set is one
-      constant across the corpus, and six wrong implementations agree with the
+      constant across the corpus, and four wrong implementations agree with the
       right one — so `mod shapes` builds a path, a ring, a tree and a two-hub
       graph inside the test. And `every_atom_is_drawn_where_the_embedding_put_it`
       was **rewritten, not deleted**, when the display scale made it fail.
 
-      583 tests. `every_atom_is_painted_with_the_same_material` was retired
-      deliberately, with its five replacements recorded at the deletion site;
+      `every_atom_is_painted_with_the_same_material` was retired deliberately,
+      with its four replacements recorded at the deletion site;
       `every_atom_is_drawn_with_the_same_mesh` is kept, and is now the only
       closed channel.
 
@@ -552,7 +552,72 @@ this paragraph exists.
       distinguishable colours on a screen, or to a colour-blind child. A
       distance bar would have to be measured against the shipped palette before
       it meant anything, which is a Step 4b job.
+- [ ] **4c. Symbols on the atoms, and the table coloured to match.**
+      *Ian, 2026-08-06: "It would be nice if the atoms had their chemical symbol
+      written on them and if the periodic table had matching colours per
+      symbol."*
+
+      **The table half is nearly free and the atom half is not.** `palette::colour`
+      already exists and the panel already draws a cell per element, so colouring
+      the grid is one call — and it is the payoff of keying hue on the column,
+      because whole columns come out sharing a hue, which is §7.1's
+      *"everything in this column makes rings"* moment made visible.
+
+      **Two things must be solved before the table is coloured, both measured.**
+      A review found the minimum separation over *all* group pairs in the
+      attained range (`0..=73`) is **0.0420, at groups 11 and 66** — two columns
+      a person cannot tell apart. That never shows on the molecule, whose atoms
+      are always neighbouring groups, and it shows immediately on a full table.
+      And `no_two_groups_are_drawn_the_same_colour` bars only *identity*, not
+      legibility; a table needs the stronger property.
+
+      **Symbols on atoms need a mechanism that does not exist.** There is no text
+      in the 3D scene at all — the scene caption sits outside the viewport
+      deliberately, because "there is no text inside it". The clean route is
+      `Camera::world_to_viewport` (which the headless app keeps, so it is
+      testable) writing screen positions into a resource that `panel.rs` draws
+      labels from. That crosses the seam in a new place: positions come from the
+      engine, symbols must come from `state.rs`, and `panel.rs` may build no
+      strings. Design it before writing it.
+
 - [ ] **4b. Open the atoms up, and name what the generation already separates.**
+
+      **ROUTED FROM STEP 4's REVIEW (2026-08-06). Four measured findings bind
+      this step.**
+
+      **R4b-a. The shipped picture is nearly the same in every universe, and the
+      palette is not the cause.** Cross-seed colour movement at each canonical
+      slot over 500 universes, against the palette's own 0.35 legibility bar:
+      leaves **0.033, 0.049, 0.072, 0.092** — one distinguishable colour each —
+      and the centre 1.58. So **four of the five atoms are the same colour in
+      every universe**, and the molecule takes at most five distinguishable
+      forms across 500 seeds. The cause is `lowest_unused`, which is correct for
+      its own purpose ("lowest is a rule, not a search") and has the consequence
+      that the viewer always shows the least-varying corner of every table. No
+      shipped test can see it: every colour test compares palette output against
+      palette output *within* one universe. **The discriminating test is one that
+      varies the seed and requires the same structural slot to move by more than
+      the legibility bar.**
+
+      **R4b-b. `valence == 0` and `group == 0` are the same set**, measured
+      500/500 (1520 closed-shell elements, zero disagreements). So the palette's
+      "read off the generated valence, never from a family name" distinction is
+      currently a distinction with no difference. The branch is right; the
+      sentence defending it is not doing work. Marking inert elements in the
+      table can read either, and should say which and why.
+
+      **R4b-c. `ViewMode::draws_sticks() -> bool` defeats the enum's
+      exhaustiveness, and this step is when it bites.** Adding a third variant
+      compiles everywhere except `ViewMode::other()`; the panel then highlights
+      "solid" while the third view is showing and its button is dead, with the
+      suite green. Every consumer should `match`, so a new variant is a compile
+      error at each site that cares.
+
+      **R4b-d. The stick scale is a property of the molecule and should be a
+      property of the scene.** `stick_geometry` derives it from *this* molecule's
+      bonded pairs, which is right for one molecule and wrong for two: the moment
+      two are on screen they are drawn at different scales and their relative
+      sizes stop meaning anything. Nothing to do until a second molecule exists.
       *New, from Ian on 2026-08-04, and it is mostly making visible what already
       exists rather than adding physics.*
 

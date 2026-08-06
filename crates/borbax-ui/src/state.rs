@@ -425,9 +425,15 @@ impl ViewerState {
             phrase_text: String::new(),
             seed_text: String::new(),
             outcome: Outcome::Rejected(SeedError::Empty),
-            // `ViewMode::Sticks`, spelled through `Default` so the opening view
-            // is stated in one place — beside the reason — rather than here and
-            // in `opening` and in the panel.
+            // **The variant written out, not `ViewMode::default()`, because
+            // this is a `const fn`** and `Default::default` cannot be called in
+            // one. An earlier comment claimed it was "spelled through
+            // `Default`", which it is not and could not be — so the opening
+            // view really is stated in two places, `#[default]` on the enum and
+            // here, and flipping one would silently move `DrawnAt`'s initial
+            // token without moving the window. The two assertions in
+            // `tests/app.rs` that read `state.view().draws_sticks()` are what
+            // keep them in step.
             view: ViewMode::Sticks,
             regenerations: 0,
             re_embeds: 0,

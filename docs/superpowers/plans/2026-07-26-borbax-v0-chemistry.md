@@ -3435,6 +3435,44 @@ measured flat-scan/tree crossover in the message (perf review benchmark 2).
 
 ### Task 19: Geometry and SVG rendering
 
+**ROUTED FROM VIEWER STEP 4 (2026-08-06), and it binds `borbax-geometry`
+directly.** Two requirements, both measured, both invisible on one machine.
+
+**R19-a. The viewer's stick geometry must NOT migrate into `borbax-geometry` as
+written.** `crates/borbax-ui/src/scene.rs::spawn_sticks` derives a bond's
+midpoint, length and orientation in **engine-space `f32`**, which is correct
+there (nothing depends on `borbax-ui`, so nothing reaches a golden) and would be
+a §13.4 failure here, where `borbax-render`'s SVG goldens are compared
+byte-for-byte across the matrix. Measured on `glam` 0.32.1 by building real
+binaries for both architectures and running them over 2,000,000 bond
+directions:
+
+- `Quat::from_rotation_arc` gives **different bit patterns on 61.8%** of inputs
+  (worst component delta 1.79e-7, about one f32 ulp). Two independent causes:
+  `Vec4::normalize` is `_mm_div_ps(v, _mm_sqrt_ps(dot))` on sse2 against
+  `v * length_recip()` on neon, and `dot4` associates as `(x²+z²)+(y²+w²)`
+  against `(x²+y²)+(z²+w²)`.
+- `Vec3::midpoint` is **identical** on both — it is `(a+b)*0.5`, arch-independent
+  and an exact halving. The hazard is the quaternion specifically.
+
+So a bond's *orientation* must be derived in `f64` here, or from the geodesic
+tables, and narrowed once — not taken from the engine's f32 quaternion.
+
+**R19-b. `glam` is not on `xtask`'s `ENGINE_CRATES` list, and adding it to a
+result-affecting crate would pass all six gate legs.** No crate names `glam`
+directly today (it arrives through bevy), so `borbax-geometry` could take
+`glam = "0.32"` and bring `Quat`, `Vec3A`, `Vec4` and `Mat4` into a golden path
+silently. **Do not simply add it to `ENGINE_CRATES`** — CLAUDE.md records that a
+false determinism argument gets reused to reject a dependency that is correct,
+and glam's **f64** module has no arch dispatch and documents cross-platform
+bit-identity. The hazard is the f32 SIMD types. The probe, if a guard is wanted:
+add `glam = "0.32"` to `crates/borbax-geometry/Cargo.toml` and run
+`cargo xtask` — it passes today and must fail after.
+
+Secondary: `from_rotation_arc`'s 180° branch calls `f32::sin_cos`, a
+`clippy.toml` `disallowed-methods` entry reached transitively where clippy
+cannot see it.
+
 **Files:** Create `crates/borbax-geometry/{Cargo.toml,src/{lib,project,net,palette}.rs}` and
 `crates/borbax-render/{Cargo.toml,src/{lib,svg,molecule,geodesic_net,fold,binding}.rs}`; test both.
 
