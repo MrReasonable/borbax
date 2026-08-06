@@ -228,6 +228,36 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
     //
     // It sits outside the 3D region, because there is no text inside it.
     ui.label(state.scene_caption());
+
+    view_switch(state, ui);
+}
+
+/// The two ways of looking at the molecule.
+///
+/// **Two fixed labels rather than one button whose text changes.** A button
+/// reading "show sticks" has to say what you will get, while a highlighted
+/// choice says what you have — and the second is the one a child can read
+/// without pressing it to find out. It also keeps this file free of `format!`,
+/// which the seam requires: a string built where it is painted is a string no
+/// test can assert on without describing a window it has stopped describing.
+///
+/// `selectable_label` rather than a radio, because the choice is between two
+/// pictures rather than between two settings, and the highlight is the whole
+/// message.
+fn view_switch(state: &mut ViewerState, ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.label("show");
+        let view = state.view();
+        // Clicking the one already showing does nothing — `flip_view` takes no
+        // argument precisely so the state cannot be asked to become what it
+        // already is, which would move the scene's change token for no reason.
+        if ui.selectable_label(!view.draws_sticks(), "solid").clicked() && view.draws_sticks() {
+            state.flip_view();
+        }
+        if ui.selectable_label(view.draws_sticks(), "sticks").clicked() && !view.draws_sticks() {
+            state.flip_view();
+        }
+    });
 }
 
 /// The grid of elements, and the properties of whichever one is selected.
