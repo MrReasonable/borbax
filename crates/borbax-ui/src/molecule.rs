@@ -51,7 +51,7 @@
 //! data files, and a molecule built in code is invisible to it. It is a review
 //! obligation, written down because that is the only enforcement available.
 
-use borbax_molecule::{Embedding, Mol12, canonicalise, embed};
+use borbax_molecule::{CanonMol, Embedding, Mol12, canonicalise, embed};
 use borbax_universe::{BondOrder, ElementId, Universe};
 
 /// The centre needs somewhere to put four bonds.
@@ -107,7 +107,41 @@ pub struct Demo {
     /// index `i` here and index `i` there are different atoms. This list is for
     /// naming what is on screen; anything positional must come off the
     /// embedding, which carries its own radii for exactly this reason.
+    ///
+    /// **Measured, so the hazard is a number rather than a caution:** build
+    /// order and canonical order disagree in **500 of 500** universes, and the
+    /// permutation is exactly the one that matters — canonical order runs
+    /// `[leaf, leaf, leaf, leaf, centre]` against this list's
+    /// `[centre, leaf, leaf, leaf, leaf]`. So zipping this against [`bonds`] or
+    /// [`colours`] paints the centre's colour onto a leaf, in every universe.
+    ///
+    /// [`bonds`]: Self::bonds
+    /// [`colours`]: Self::colours
     pub elements: Vec<ElementId>,
+    /// Which pairs of atoms are bonded, as **canonical** indices.
+    ///
+    /// Each pair is ordered `[low, high]` and the list is ascending, so two
+    /// runs produce the same list and a test may compare it as a sequence.
+    ///
+    /// **Taken from the molecule's own bond list, never inferred from how close
+    /// two atoms ended up.** Proximity is not adjacency: the embedding places
+    /// atoms to satisfy hop distances, so a non-bonded pair in a ring can sit
+    /// closer than a bonded pair elsewhere, and a renderer that guessed would
+    /// draw a bond the chemistry does not have.
+    ///
+    /// **No bond order travels with it, deliberately.** Every bond this file
+    /// builds is [`BondOrder::SINGLE`], so an order field would be a value no
+    /// consumer could tell apart from a constant — the shape this crate's
+    /// guards exist to refuse. It arrives with the builder, when it can vary.
+    pub bonds: Vec<[u8; 2]>,
+    /// The colour each atom is drawn, in **canonical** order, aligned with
+    /// [`Embedding::coords`].
+    ///
+    /// Computed here rather than at paint time because this is where the
+    /// `&Universe` is already in hand, and because it makes the invalidation
+    /// question answer itself: a colour can only change when the molecule does,
+    /// which is the event the scene already rebuilds on.
+    pub colours: Vec<[f64; 3]>,
 }
 
 /// Lay out this universe's demo molecule, or say there is none.
@@ -146,8 +180,82 @@ pub fn build(universe: &Universe) -> Option<Demo> {
     let (species, _search) = canonicalise(&mol).ok()?;
     Some(Demo {
         embedding: embed(&species, universe),
+        bonds: bonds_of(&species)?,
+        colours: colours_of(&species, universe)?,
         elements,
     })
+}
+
+/// Which pairs of atoms are bonded, as canonical indices.
+///
+/// Ordered `[low, high]` within each pair and ascending overall, so the list is
+/// a function of the species rather than of the traversal.
+///
+/// `None` if the species holds more atoms than an index can name, which
+/// [`Mol12`] makes unreachable — kept as data rather than a cast, because the
+/// cast is what `clippy::as_conversions` denies and the fallible conversion is
+/// what says why.
+fn bonds_of(species: &CanonMol) -> Option<Vec<[u8; 2]>> {
+    let n = u8::try_from(species.len()).ok()?;
+    let mut bonds = Vec::new();
+    for a in 0..n {
+        for b in (a + 1)..n {
+            // **`bond_order`, not a distance test.** See [`Demo::bonds`].
+            if species.mol().bond_order(a, b).is_some() {
+                bonds.push([a, b]);
+            }
+        }
+    }
+    Some(bonds)
+}
+
+/// The colour of each atom, in canonical order.
+///
+/// The mass range is the universe's own attained spread, so lightness uses the
+/// contrast that universe actually has rather than one borrowed from another.
+///
+/// `None` if a canonical index names no atom or an atom names no element,
+/// neither of which [`canonicalise`] can produce — the [`Option`] costs a
+/// caption line where a `panic!` would cost the window.
+fn colours_of(species: &CanonMol, universe: &Universe) -> Option<Vec<[f64; 3]>> {
+    let (mass_lo, mass_hi) = mass_range(universe);
+    let n = u8::try_from(species.len()).ok()?;
+    let mut colours = Vec::with_capacity(usize::from(n));
+    for i in 0..n {
+        let id = species.mol().element(i)?;
+        let element = universe.table.get(id)?;
+        colours.push(crate::palette::colour(
+            element.affinity,
+            element.valence,
+            element.mass.to_f64(),
+            mass_lo,
+            mass_hi,
+            element.group,
+        ));
+    }
+    Some(colours)
+}
+
+/// The lightest and heaviest masses this universe's table attains.
+///
+/// **Folded with explicit comparisons rather than `f64::min`/`f64::max`**,
+/// which §13.1 disallows for disagreeing about NaN between platforms.
+///
+/// A table with no elements gives a degenerate range, which the palette reads
+/// as "no spread to show" rather than dividing by zero.
+fn mass_range(universe: &Universe) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for (_, element) in universe.table.iter() {
+        let mass = element.mass.to_f64();
+        if mass < lo {
+            lo = mass;
+        }
+        if mass > hi {
+            hi = mass;
+        }
+    }
+    (lo, hi)
 }
 
 /// The lowest-indexed element with at least `floor` bonding slots that `used`
@@ -231,6 +339,259 @@ mod measure {
         println!("gyration: {gyr_lo:.4} .. {gyr_hi:.4}");
         println!("centre element indices ({}): {centres:?}", centres.len());
         println!("centre valence floor = {CENTRE_VALENCE}");
+    }
+}
+
+#[cfg(test)]
+mod shapes {
+    //! Bond extraction, tested on molecules the demo molecule cannot stand in
+    //! for.
+    //!
+    //! **The demo molecule discriminates nothing here, and that is measured
+    //! rather than suspected.** Its bond set is the *same constant* in 500 of
+    //! 500 universes — `[(0,4), (1,4), (2,4), (3,4)]` — so the correct answer
+    //! agrees with "every pair containing the last canonical index", "every
+    //! pair containing the highest-degree atom", "every pair containing the
+    //! heaviest atom", and a hard-coded literal, in every universe there is. No
+    //! seed separates them.
+    //!
+    //! So these fixtures are built here: a path, a ring, a two-level tree and a
+    //! graph with two hubs. Each is checked against an oracle that does not
+    //! restate the implementation — the degree sequence and the profile of
+    //! degree-pairs over edges, both invariant under the relabelling
+    //! `canonicalise` performs — and each additionally asserts its own answer
+    //! *differs* from the star rule's, so a fixture that quietly degenerated
+    //! into a star could not leave this test passing vacuously.
+
+    use super::{bonds_of, lowest_unused};
+    use borbax_molecule::{CanonMol, Mol12, canonicalise};
+    use borbax_universe::{BondOrder, ElementId, Universe};
+
+    /// Build a molecule with `n` atoms and these edges, picking elements with
+    /// enough bonding slots for the degree each atom needs.
+    ///
+    /// Returns `None` if the universe cannot supply them, which the caller
+    /// treats as a failed fixture rather than a passing test.
+    fn shape(universe: &Universe, n: u8, edges: &[[u8; 2]]) -> Option<CanonMol> {
+        let mut used: Vec<ElementId> = Vec::new();
+        let mut mol = Mol12::new();
+        let mut atoms = Vec::new();
+        for atom in 0..n {
+            // Enough bonding slots for the degree this atom is about to need.
+            let element = lowest_unused(universe, degree_of(atom, edges), &used)?;
+            used.push(element);
+            atoms.push(mol.add_atom(element)?);
+        }
+        for [a, b] in edges {
+            // `get`, not `[]` — `clippy::indexing_slicing` is denied across the
+            // workspace and reaches inside `#[cfg(test)]`. A fixture naming an
+            // atom it never built should fail as a `None` here, not as a panic
+            // with no fixture name in it.
+            let from = atoms.get(usize::from(*a)).copied()?;
+            let to = atoms.get(usize::from(*b)).copied()?;
+            mol.add_bond(from, to, BondOrder::SINGLE, &universe.table)
+                .ok()?;
+        }
+        canonicalise(&mol).ok().map(|(species, _)| species)
+    }
+
+    /// How many edges touch this atom.
+    ///
+    /// Counted by scanning rather than by accumulating into an indexed table,
+    /// which is what keeps these helpers free of slice indexing.
+    fn degree_of(atom: u8, edges: &[[u8; 2]]) -> u8 {
+        let touching = edges
+            .iter()
+            .filter(|[a, b]| *a == atom || *b == atom)
+            .count();
+        u8::try_from(touching).unwrap_or(u8::MAX)
+    }
+
+    /// The degree of each atom, ascending — invariant under relabelling.
+    fn degree_profile(n: u8, bonds: &[[u8; 2]]) -> Vec<u8> {
+        let mut degrees: Vec<u8> = (0..n).map(|atom| degree_of(atom, bonds)).collect();
+        degrees.sort_unstable();
+        degrees
+    }
+
+    /// The `(lower degree, higher degree)` of each edge's endpoints, ascending.
+    ///
+    /// **Strictly stronger than the degree sequence alone**, which two
+    /// non-isomorphic graphs can share. This separates shapes the degree
+    /// sequence cannot.
+    fn edge_profile(bonds: &[[u8; 2]]) -> Vec<(u8, u8)> {
+        let mut profile: Vec<(u8, u8)> = bonds
+            .iter()
+            .map(|[a, b]| {
+                let (x, y) = (degree_of(*a, bonds), degree_of(*b, bonds));
+                if x <= y { (x, y) } else { (y, x) }
+            })
+            .collect();
+        profile.sort_unstable();
+        profile
+    }
+
+    /// What "every pair containing the highest canonical index" would return.
+    ///
+    /// The wrong implementation the demo molecule cannot rule out. Each fixture
+    /// asserts the real answer differs from this one, which is what makes the
+    /// fixture's own discriminating power visible rather than assumed.
+    fn star_rule(n: u8) -> Vec<[u8; 2]> {
+        (0..n.saturating_sub(1)).map(|a| [a, n - 1]).collect()
+    }
+
+    /// The bond list is the molecule's own bonds, on shapes that can tell.
+    ///
+    /// **Discriminator:** replacing `bonds_of`'s body with [`star_rule`] must
+    /// fail here. It passes on the demo molecule in every universe, so no other
+    /// test in this crate would notice.
+    #[test]
+    fn the_bond_list_is_the_molecules_own_bonds() {
+        let universe = Universe::generate(1);
+
+        let mut checked = 0_u32;
+        for fixture in FIXTURES {
+            let Fixture {
+                name,
+                atoms,
+                edges,
+                degrees,
+            } = fixture;
+            let species = shape(&universe, *atoms, edges)
+                .unwrap_or_else(|| unreachable!("seed 1 supplies the {name} fixture"));
+            let bonds =
+                bonds_of(&species).unwrap_or_else(|| unreachable!("a fixture fits in a u8 index"));
+
+            assert_eq!(
+                bonds.len(),
+                edges.len(),
+                "the {name} fixture has {} bonds against {} built",
+                bonds.len(),
+                edges.len()
+            );
+            assert_eq!(
+                degree_profile(*atoms, &bonds),
+                *degrees,
+                "the {name} fixture's degree sequence is not the one it was built with"
+            );
+            assert_eq!(
+                edge_profile(&bonds),
+                edge_profile(edges),
+                "the {name} fixture's edges do not join the same kinds of atom"
+            );
+
+            // The corpus-filter check: a fixture that degenerated into a star
+            // would satisfy every assertion above while proving nothing.
+            assert_ne!(
+                bonds,
+                star_rule(*atoms),
+                "the {name} fixture *is* the star rule's answer, so it cannot \
+                 discriminate a real bond lookup from that mutation"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked,
+            u32::try_from(FIXTURES.len()).unwrap_or(u32::MAX),
+            "not every shape was checked"
+        );
+    }
+
+    /// One shape to build and what it should come back as.
+    ///
+    /// A named struct rather than a tuple, because
+    /// `clippy::type_complexity` denies the four-field slice type and — more
+    /// usefully — `degrees` and `atoms` are both integers that would otherwise
+    /// be told apart only by position.
+    struct Fixture {
+        /// What to call it when the assertion fails.
+        name: &'static str,
+        /// How many atoms to build.
+        atoms: u8,
+        /// Which pairs to bond, as build indices.
+        edges: &'static [[u8; 2]],
+        /// The ascending degree sequence the result must have.
+        degrees: &'static [u8],
+    }
+
+    /// Shapes the demo molecule cannot stand in for.
+    ///
+    /// Each has a degree sequence unlike a star's `[1, 1, 1, 3]`, which is what
+    /// gives it the power to fail under the star-rule mutation.
+    const FIXTURES: &[Fixture] = &[
+        Fixture {
+            name: "path",
+            atoms: 4,
+            edges: &[[0, 1], [1, 2], [2, 3]],
+            degrees: &[1, 1, 2, 2],
+        },
+        Fixture {
+            name: "ring",
+            atoms: 4,
+            edges: &[[0, 1], [1, 2], [2, 3], [3, 0]],
+            degrees: &[2, 2, 2, 2],
+        },
+        Fixture {
+            name: "two-level tree",
+            atoms: 6,
+            edges: &[[0, 1], [0, 2], [1, 3], [1, 4], [2, 5]],
+            degrees: &[1, 1, 1, 2, 2, 3],
+        },
+        Fixture {
+            name: "two hubs",
+            atoms: 6,
+            edges: &[[0, 1], [0, 2], [0, 3], [1, 4], [1, 5]],
+            degrees: &[1, 1, 1, 1, 3, 3],
+        },
+    ];
+
+    /// A bond list is ascending and each pair is ordered.
+    ///
+    /// Not cosmetic: the scene compares stick endpoints as a set keyed on these
+    /// pairs, and an unordered pair would make `[a, b]` and `[b, a]` two
+    /// different bonds.
+    #[test]
+    fn the_bond_list_is_ordered() {
+        let universe = Universe::generate(1);
+        let species = shape(&universe, 4, &[[2, 3], [0, 1], [1, 2]])
+            .unwrap_or_else(|| unreachable!("seed 1 supplies a path"));
+        let bonds =
+            bonds_of(&species).unwrap_or_else(|| unreachable!("a fixture fits in a u8 index"));
+        for [a, b] in &bonds {
+            assert!(a < b, "the pair [{a}, {b}] is not ordered");
+        }
+        let mut sorted = bonds.clone();
+        sorted.sort_unstable();
+        assert_eq!(bonds, sorted, "the bond list is not ascending");
+    }
+
+    /// Bonds come from the graph, not from how close two atoms ended up.
+    ///
+    /// **A ring is the shape that separates them.** In a 4-ring every atom is
+    /// bonded to two others and *not* bonded to the one across the diagonal —
+    /// so a proximity rule with any threshold either misses a real bond or
+    /// invents the diagonal. Asserting the diagonal is absent is what says the
+    /// list is adjacency rather than nearness.
+    #[test]
+    fn a_bond_is_adjacency_and_not_nearness() {
+        let universe = Universe::generate(1);
+        let species = shape(&universe, 4, &[[0, 1], [1, 2], [2, 3], [3, 0]])
+            .unwrap_or_else(|| unreachable!("seed 1 supplies a ring"));
+        let bonds =
+            bonds_of(&species).unwrap_or_else(|| unreachable!("a fixture fits in a u8 index"));
+        assert_eq!(
+            bonds.len(),
+            4,
+            "a 4-ring has four bonds, not {}",
+            bonds.len()
+        );
+        // Every atom has exactly two neighbours; a diagonal would give one three.
+        assert_eq!(
+            degree_profile(4, &bonds),
+            vec![2, 2, 2, 2],
+            "a ring atom has two neighbours — a diagonal drawn from proximity \
+             would give some atom three"
+        );
     }
 }
 
@@ -366,6 +727,141 @@ mod tests {
         assert_eq!(
             checked, SEEDS,
             "the corpus is not the one this claim was made over"
+        );
+    }
+
+    /// Every atom is coloured from the element that atom actually is.
+    ///
+    /// **This is the test for the defect the canonical relabelling guarantees.**
+    /// `Demo::elements` is build order and the embedding is canonical order, and
+    /// they disagree in 500 of 500 universes — canonical runs
+    /// `[leaf, leaf, leaf, leaf, centre]` against build's
+    /// `[centre, leaf, leaf, leaf, leaf]`. So the obvious implementation, zipping
+    /// `elements` against `coords`, paints the centre's colour onto a leaf and a
+    /// leaf's onto the big centre sphere, in every universe there is.
+    ///
+    /// **The oracle is the radius, and it is deliberately not the index.** A
+    /// `want` list built by walking canonical indices the same way `colours_of`
+    /// does would reproduce whatever `colours_of` did, including the defect —
+    /// which is exactly how this class of test has shipped green here before.
+    /// `Embedding::radii()[i]` *is* the element's own `radius`, and every demo
+    /// radius is unique across the whole table in 500/500 universes, so the
+    /// radius identifies the element on screen with no reference to any index at
+    /// all. The uniqueness is asserted rather than trusted, so this test reports
+    /// the oracle failing instead of silently matching the wrong element.
+    #[test]
+    fn every_atom_is_coloured_from_its_own_element() {
+        let mut checked = 0_u64;
+        let mut atoms_checked = 0_u64;
+        for seed in 0..SEEDS {
+            let universe = Universe::generate(seed);
+            let demo =
+                build(&universe).unwrap_or_else(|| unreachable!("every seed builds a molecule"));
+
+            let (mass_lo, mass_hi) = super::mass_range(&universe);
+            assert_eq!(
+                demo.colours.len(),
+                demo.embedding.len(),
+                "seed {seed} has {} colours for {} atoms",
+                demo.colours.len(),
+                demo.embedding.len()
+            );
+
+            for (i, radius) in demo.embedding.radii().iter().enumerate() {
+                // The oracle: which elements of the whole table have this radius?
+                let matches: Vec<_> = universe
+                    .table
+                    .iter()
+                    .filter(|(_, e)| e.radius.get().to_bits() == radius.get().to_bits())
+                    .map(|(_, e)| e)
+                    .collect();
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "seed {seed}: radius {} names {} elements, so it cannot \
+                     identify the atom at canonical index {i} and this test's \
+                     oracle has stopped working",
+                    radius.get(),
+                    matches.len()
+                );
+                let element = matches
+                    .first()
+                    .unwrap_or_else(|| unreachable!("exactly one match, asserted above"));
+
+                let want = crate::palette::colour(
+                    element.affinity,
+                    element.valence,
+                    element.mass.to_f64(),
+                    mass_lo,
+                    mass_hi,
+                    element.group,
+                );
+                let got = demo
+                    .colours
+                    .get(i)
+                    .unwrap_or_else(|| unreachable!("one colour per atom, asserted above"));
+                assert_eq!(
+                    got.map(f64::to_bits),
+                    want.map(f64::to_bits),
+                    "seed {seed}: the atom at canonical index {i} has radius {} \
+                     — which is element {:?} — but is painted a colour that \
+                     element does not earn. Build order and canonical order \
+                     disagree in every universe, so this is what a `zip` of \
+                     `elements` against `coords` produces",
+                    radius.get(),
+                    element.symbol
+                );
+                atoms_checked += 1;
+            }
+            checked += 1;
+        }
+        assert_eq!(
+            checked, SEEDS,
+            "the corpus is not the one this claim was made over"
+        );
+        // Five atoms per universe, so the count is an equality rather than a
+        // floor: a loop that stopped selecting atoms would otherwise be silent.
+        assert_eq!(
+            atoms_checked,
+            SEEDS * (u64::from(LEAVES) + 1),
+            "the number of atoms examined is not five per universe"
+        );
+    }
+
+    /// Every bond names two atoms that exist, and no bond is a self-loop.
+    ///
+    /// Cheap, and it is what stops an out-of-range index reaching the scene,
+    /// where it would index a coordinate list and take the window with it.
+    #[test]
+    fn every_bond_names_two_atoms_of_this_molecule() {
+        let mut checked = 0_u64;
+        let mut bonds_checked = 0_u64;
+        for seed in 0..SEEDS {
+            let demo = build(&Universe::generate(seed))
+                .unwrap_or_else(|| unreachable!("every seed builds a molecule"));
+            let n = u8::try_from(demo.embedding.len())
+                .unwrap_or_else(|_| unreachable!("a molecule fits in a u8 index"));
+            for [a, b] in &demo.bonds {
+                assert!(
+                    *a < n && *b < n,
+                    "seed {seed}: bond [{a}, {b}] names an atom outside a \
+                     molecule of {n}"
+                );
+                assert_ne!(a, b, "seed {seed}: bond [{a}, {b}] is a self-loop");
+                bonds_checked += 1;
+            }
+            checked += 1;
+        }
+        assert_eq!(
+            checked, SEEDS,
+            "the corpus is not the one this claim was made over"
+        );
+        // The demo molecule is a centre and four leaves, so it has exactly
+        // `LEAVES` bonds — an equality, not a floor.
+        assert_eq!(
+            bonds_checked,
+            SEEDS * u64::from(LEAVES),
+            "the number of bonds examined is not one per leaf per universe"
         );
     }
 
