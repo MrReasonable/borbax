@@ -287,56 +287,60 @@ routes `sqrt`, `fma`, `rint`, `ceil` and `floor` to hardware — with `fma` on
 x86-64 doing **runtime CPU feature detection** between FMA3, FMA4 and soft.
 
 **"The only FMA instructions in our release binaries are inside `libm::cbrt`"
-was true and stopped being true at viewer Step 4.** `palette.rs`'s
-`sector.rem_euclid(2.0)` is a `frem` by a power of two, which LLVM does not
-route to a libcall on aarch64 — it inlines it as `x - trunc(x*0.5)*2`, **fused**
-(`frintz` / `fmadd d0, d0, d2, d1`). On x86-64 the same source line emits a
-second `fmod` libcall instead, so one expression compiles to structurally
-different arithmetic on the two matrix legs.
+was true and stopped being true at viewer Step 4, on aarch64 specifically.**
+`palette.rs`'s `sector.rem_euclid(2.0)` is a `frem` by a power of two, which
+LLVM does not route to a libcall on **either** default target — it inlines it
+on both. On aarch64 the expansion is **fused**: `frintz` / `fmsub d1, d1, d2,
+d0`. On x86-64, at this workspace's actual default codegen (`target-cpu`
+unset, matching every CI leg), it inlines to plain SSE2 with no FMA and no
+libcall at all: `mulsd`/`roundsd`/`subsd`/`andpd`/`orpd`/`addsd`. Only forcing
+`-C target-cpu=x86-64` — which nothing in this workspace does — makes LLVM fall
+back to a `callq _fmod` libcall for it.
 
-It reaches no result — nothing depends on `borbax-ui` — and **the two lowerings
-are bit-identical over the whole finite domain**, not merely value-identical.
-Built for `aarch64-apple-darwin` and `x86_64-apple-darwin` and both run, the
+So the two legs run **different instruction sequences and neither is a
+libcall**, and that difference does not matter: **the two lowerings are
+bit-identical over the whole finite domain**, not merely value-identical.
+Built for `aarch64-apple-darwin` and `x86_64-apple-darwin` at this workspace's
+actual release settings (`lto = "thin"`, `codegen-units = 1`) and both run, the
 hash over 20M random finite `f64` bit patterns is `d22129714af37cf9` on each.
 The reason is visible in the assembly: the aarch64 expansion ends
 `movi.2d`/`fneg.2d`/`bit.16b`, which takes the magnitude from the computed
 remainder and the **sign bit from the dividend** — reproducing `fmod`'s
-sign-of-zero rule exactly.
+sign-of-zero rule exactly; the x86-64 SSE2 sequence does the equivalent with
+`andpd`/`orpd` masks.
 
-**An earlier version of this paragraph said the legs differ in 23.7% of cases,
-and that figure measures something else.** It is the *naive* model
-`x - trunc(x*0.5)*2`, without the sign fixup, against the real lowering:
-4,746,398 of 20,000,000, every one a sign of zero and none a value — which is
-exactly the count of negative zeros in the output. Naive-model versus reality,
-not leg versus leg. The same version claimed the branch was safe "because LLVM
-proved a range" and that widening the argument type would make `-0.0`
-reachable. Both are wrong: `-0.0` is reachable **today** (`hue = -0.0` and
-`hue = -360.0` both give `sector` bits `8000000000000000`), and it does not
-matter, because the next operation is `(t - 1.0)` and `-0.0 - 1.0` and
-`+0.0 - 1.0` are both `bff0000000000000`. The sign of zero is erased one
-operation later, before `.abs()` and before any `to_bits()`. It is *not*
-before the six `sector < n` comparisons, which an earlier version of this
-sentence claimed — those see `-0.0`, and agree with `+0.0` on every one.
+**Three claims from earlier versions of this paragraph were wrong, and each was
+corrected by measuring rather than by re-reasoning:**
 
-The correct and reusable statement is the one `clippy.toml` already applies:
-**`fmod` is exactly specified, and LLVM's inline expansion carries the same
-sign-of-dividend fixup** — verified bit-identical over 20M inputs on both
-targets rather than argued. The wrong version mattered for the reason the next
-paragraph gives about libm: it would invite a future reviewer either to reject a
-legitimate `rem_euclid` in result-affecting code, or to wave through a genuinely
-inexact operation on the grounds that we already ship one that "differs 23.7% of
-the time". The residual worth naming is different again — the `360.0` call is a
-`frem` by a **non**-power-of-two, so it is a platform `fmod` libcall on every
-leg and rests entirely on that exactness.
+- "The legs differ in 23.7% of cases" measured the *naive* model
+  `x - trunc(x*0.5)*2`, without the sign fixup, against the real lowering:
+  4,746,398 of 20,000,000, every one a sign of zero and none a value — exactly
+  the count of negative zeros in the output. Naive-model versus reality, not
+  leg versus leg.
+- "The branch is safe because LLVM proved a range, and widening the argument
+  type would make `-0.0` reachable" — `-0.0` is reachable **today** (`hue =
+  -0.0` and `hue = -360.0` both give `sector` bits `8000000000000000`), and it
+  does not matter: the next operation is `(t - 1.0)`, and `-0.0 - 1.0` and
+  `+0.0 - 1.0` are both `bff0000000000000`. The sign is erased one operation
+  later, before `.abs()` and before any `to_bits()` — but **not** before the
+  six `sector < n` comparisons, which see `-0.0` and agree with `+0.0` on every
+  one.
+- "x86-64 emits a second `fmod` libcall" — false at this workspace's actual
+  default codegen, corrected above. It described what forcing a newer
+  `target-cpu` produces, not what CI or a `cargo build --release` produces.
 
-*What was and was not exercised, because the first version of this caveat named
-the wrong gap.* `x86_64-apple-darwin` defaults to `target-cpu=penryn` and
-**inlines** the power-of-two `frem` too, so both hashed binaries ran the inline
-expansion and neither took a libm `fmod` for it. Forcing
-`-C target-cpu=x86-64` emits `callq _fmod` and gives the same hash, so
-inline-aarch64, inline-x86 and Apple-libm-`fmod` all agree over the same 20M
-inputs. glibc was still not exercised; the exactness argument does not depend on
-the implementation, but that is reasoning rather than measurement.*
+**The correct and reusable statement is the one `clippy.toml` already
+applies: `fmod` is exactly specified, and LLVM's inline expansion — on every
+target that inlines it — carries the same sign-of-dividend fixup**, verified
+bit-identical over 20M inputs on both targets rather than argued. Getting this
+wrong would invite a future reviewer either to reject a legitimate
+`rem_euclid` in result-affecting code, or to wave through a genuinely inexact
+operation on the grounds that we already ship one that "differs 23.7% of the
+time" — neither of which is true. The residual worth naming is different
+again — the `360.0` call is a `frem` by a **non**-power-of-two, so it is a
+platform `fmod` libcall on every leg and rests entirely on that exactness.
+glibc was not exercised; the exactness argument does not depend on the
+implementation, but that is reasoning rather than measurement.
 
 That is safe, and the correct statement of why: **libm dispatches only on
 operations IEEE-754 specifies exactly**, which is the same criterion
@@ -600,8 +604,12 @@ conflicts will surface. This order breaks ties. **It ranks how expensive a
 mistake is to discover late, not how important each concern is** — every one
 of them matters.
 
-1. **Fiction guarantees (§5, G1–G6).** Absolute. No result is worth breaching
-   them, and there is nothing to trade against.
+1. **Fiction guarantees (§5).** G1, G2 and G4 are absolute — no result is worth
+   breaching them, and there is nothing to trade against. G3 and G6 are not:
+   revised 2026-08-06 to "not necessarily real", a property of the seed rather
+   than a rule about every seed, and G5 was withdrawn outright the same day.
+   See §5 for the exact wording; this line is a pointer to it, not a
+   restatement that can drift from it.
 2. **Correctness of the physics.** Geometry and numerics that are silently
    wrong poison everything downstream and are the hardest thing here to
    detect.

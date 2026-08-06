@@ -9,11 +9,20 @@ CI and in the pre-commit hook.
 
 ## What it checks
 
-**This table lists the checks `check_guarantees` actually calls, and nothing
-else.** An earlier version described a gate about four times wider than the
-code: it listed G4 as a check when nothing tests it, and omitted four checks
-that do run. Keep it that way — a README describing a wider gate than the code
-is how a guarantee comes to be believed rather than enforced.
+**This table covers §5 and its closely adjacent determinism/portability
+checks — it is a subset of what `check_guarantees` calls, not the whole
+list.** `check_guarantees` runs 17 functions; this table names 9. The other
+eight (the viewer-seam checks, lint inheritance, the signature pin, the
+wall-clock and `libm` single-home checks) are real and enforced, and are
+documented where they're more legible: CLAUDE.md's seam section, and the doc
+comment on each function in `xtask/src/main.rs`, which remains the only
+complete and current list.
+
+An earlier version of this table claimed completeness it did not have — listed
+G4 as a check when nothing tests it, and separately omitted checks that do
+run. Keep this one honest about being partial rather than repeat that: a
+README claiming a wider or more complete gate than the code is how a guarantee
+comes to be believed rather than enforced.
 
 **§5's G5 was withdrawn on 2026-08-06 and its two checks were deleted with it**
 — the chemical-format scan and the palette signature/lookup guard. See the spec
@@ -37,54 +46,22 @@ newtypes in `borbax-units` — `Quanta + Thermal` is a compile error — which i
 stronger than any grep. But it is not `xtask`, and a table headed "what it
 checks" that lists it is claiming a guard that is not here.
 
-**Why the format check lexes instead of grepping, and what that cost to learn.**
-Two versions of this check failed before the current one:
+**`check_no_unscanned_includes` (§5) bans `include!`, `include_str!`,
+`include_bytes!` and `#[path]` outright**, rather than trying to scan whatever
+they pull in. `include!` of a non-`.rs` file was verified to put a full importer
+in the public API with no name of any kind in the `.rs` source, and `#[path]`
+into a directory with no manifest walks past the crate-escape check too. Both
+were zero occurrences in the tree when banned, so the ban forbids nothing that
+exists — it closes a route future code could take, not one it has taken.
 
-1. A case-sensitive substring scan for `"SMILES"`, `"InChI"`, `"PDB format"` …
-   which read **one file**, so planting `SMILES` in `bonds.rs` passed.
-2. The same scan widened to every file — which then fired on *doc comments
-   stating the prohibition*, including a sentence lifted from `CLAUDE.md`. Fixed
-   by skipping comment-only lines, which quietly **deleted half the list**:
-   `"MOL format"`, `"PDB format"` and `"SDF format"` are English phrases that
-   occur only in prose.
-
-A **fourth** version followed, because the third was defeated four more times —
-each defeat built, compiled and run green. The two that mattered most:
-
-- **Acronym-cased identifiers scored zero.** `SMILESParser`, `PDBReader`,
-  `FASTAWriter`, `MMCIFParser` and `InChI` itself all missed, because the
-  camelCase split only fired after a lowercase letter, so an acronym absorbed the
-  word following it. That made version 3 **strictly weaker than version 1** for
-  all-caps spellings — the substring scan had caught them. Fixed with an
-  `ACRONYMWord` boundary, plus a second vocabulary tier matched as a substring,
-  because `InChI`'s own capitalisation splits to `in`-`ch`-`i` and no boundary
-  rule recovers it.
-- **A committed `experiments/src/target/` escaped every scan** — `.gitignore`
-  anchors `/target/` to the root while the walker pruned the name at any depth.
-  That is a **G1** hole, not G5: a real element table planted there passed the
-  whole gate, while the identical file one directory up failed as it should.
-
-Plus `include!` of a non-`.rs` file (verified to put a full importer in the
-public API with no format name anywhere in the `.rs` source) and `#[path]` into a
-directory with no manifest, which walks past the crate-escape check too. Both now
-banned outright — there were zero occurrences in the tree, so the ban forbids
-nothing that exists.
-
-**The six-format importer story belonged to the deleted check** and is kept in
-git history rather than here: a review wrote `SmilesParser`, `parse_smiles`,
+**The deleted format check's story is kept in git history, not here**, per the
+commit that deleted it — a review once wrote `SmilesParser`, `parse_smiles`,
 `read_molfile`, `read_pdb`, `write_fasta` and a real↔Borbax mapping table, and
-the gate reported all checks passed with `clippy -D warnings` clean. It is worth
-knowing only for its transferable half, which the surviving scanners still rely
+the gate reported all checks passed with `clippy -D warnings` clean. Worth
+knowing only for the transferable half, which the surviving scanners still rely
 on: **lex, do not grep.** An identifier is an identifier, a comment is not a
-token, and matching on whole lowercase segments is what made `SmilesParser`
-findable when a case-sensitive substring scan reported zero hits.
-
-Things this gate still does **not** do:
-
-- **It cannot scan itself.** `xtask` is necessarily outside the roots — the
-  vocabulary would match its own definition.
-- **A determined obfuscator wins.** `concat!("SMI", "LES")` and a string split
-  across lines both pass. The job is accident and casual addition, not sabotage.
+token, and matching on whole lowercase segments is what made a determined
+obfuscation findable when a substring scan missed it.
 
 §5 sits at the top of the review precedence with a human on it regardless.
 

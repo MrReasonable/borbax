@@ -58,7 +58,10 @@ const DATA_FREE_ROOTS: &[&str] = &["crates", "experiments"];
 ///
 /// `SmilesParser` -> `["smiles", "parser"]`; `read_pdb_file` -> `["read", "pdb",
 /// "file"]`; `SMILES` -> `["smiles"]`; `b"pdb"` -> `["b", "pdb"]`. Whole-segment
-/// matching is what lets `smi` be in the vocabulary without firing on `smith`.
+/// matching is what lets a real element's name (G2's literal scan) or a
+/// real-world unit (`eV`, `nM`; the unit-string scan) be in a vocabulary
+/// without firing on a longer word that merely contains the same letters —
+/// `"carbon"` catching a real element name without `"carbonate"` also firing.
 fn identifier_segments(name: &str) -> Vec<String> {
     segments_preserving_case(name)
         .iter()
