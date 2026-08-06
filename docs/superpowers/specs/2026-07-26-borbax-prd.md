@@ -198,7 +198,9 @@ So these guarantees are engineering constraints, not a safety boundary, and they
 
 **G2 — Generated names cannot collide with real ones.** The element name generator checks every candidate symbol and name against a blocklist of all real element symbols and names, and against a list of common real chemical and biological terms. Collisions are rejected and regenerated. The blocklist exists solely to *exclude*; it is never read as data.
 
-**G3 — The physics is deliberately non-isomorphic to real chemistry.** Period lengths are generated per universe rather than following any real shell structure. Valence rules are generated. The `affinity` scalar governs surface complementarity and is not electronegativity — it has different units, a different range, and different behaviour. The folding model is a lattice heuristic tuned for interesting shapes, not a physical force field. There is no transfer function from a Borbax molecule to any real molecule, and constructing one would require inventing the mapping from nothing.
+**G3 — REVISED 2026-08-06: the physics is not necessarily isomorphic to real chemistry, or not to be.** It read "deliberately non-isomorphic," a permanent guarantee that issue #26 makes false on its own terms: perturbing real physical constants by seed is a transfer function, built on purpose. Whether a given seed's physics resembles the real one is now a property of that seed, not a rule about all of them.
+
+What is still true of the V0 generator, as a description rather than a guarantee: period lengths are drawn independently of real shell structure, valence rules are generated, `affinity` is not electronegativity, and folding is a lattice heuristic rather than a force field. Every one of those is a fact about what `universe_gen` currently does, not a constraint it must keep doing — #26 is expected to change several of them directly.
 
 **G4 — No real-world units anywhere.** Temperature is measured in *thermals*, energy in *quanta*, distance in *spans*, time in *world-years* defined by the generated world's own orbit. Unit names are enforced by the type system. This is not cosmetic: it prevents anyone, including us, from quietly reasoning about the simulation as though it were a model of anything real.
 
@@ -208,7 +210,7 @@ Withdrawn because it forbade the project's own direction. A mapping to real-worl
 
 The number is kept rather than reused so that G6 does not shift and older citations stay resolvable. Its two CI checks — `check_no_real_chemical_formats` and `check_the_palette_reads_only_generated_properties` — were deleted with it.
 
-**G6 — Outputs are not predictive of anything real, by construction.** A Borbax result is a fact about Borbax. Because the elements, bonding rules, energetics, and folding model are all invented and mutually entangled, no result transfers. The documentation states this plainly and the README leads with it.
+**G6 — REVISED 2026-08-06: outputs are not necessarily predictive of anything real, or not to be.** It read "not predictive... by construction," which cannot survive #26 either: a result grounded in unperturbed real constants is predictive by the same construction. How far a result transfers is now a function of how far its seed's constants sit from the real ones — nothing, today, and potentially a great deal once #26 lands. The documentation and README's current "not modelled on the real world" framing describes V0 and will need to change alongside #26's implementation, not before it.
 
 Note that §2.5 cites prior work on folding maps for a *mathematical property* — that many-to-one maps produce neutral networks — and nothing else. No real structural data is used, referenced, or required.
 
