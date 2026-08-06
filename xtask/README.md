@@ -10,18 +10,20 @@ CI and in the pre-commit hook.
 ## What it checks
 
 **This table lists the checks `check_guarantees` actually calls, and nothing
-else.** An earlier version described a gate about four times wider than the code:
-it claimed G5 was enforced "anywhere" when the scan read one file, listed G4 as a
-check when nothing tests it, and omitted four checks that do run. A review
-planted `SMILES`, `InChI`, `FASTA` and `MOL` in `bonds.rs` and the gate reported
-all checks passed. (The scan is now genuinely repository-wide — that was fixed
-rather than documented around.)
+else.** An earlier version described a gate about four times wider than the
+code: it listed G4 as a check when nothing tests it, and omitted four checks
+that do run. Keep it that way — a README describing a wider gate than the code
+is how a guarantee comes to be believed rather than enforced.
+
+**§5's G5 was withdrawn on 2026-08-06 and its two checks were deleted with it**
+— the chemical-format scan and the palette signature/lookup guard. See the spec
+§5 for why. Nothing here enforces G5 any more, and nothing should be added that
+does without reopening that decision.
 
 | Function | Guarantee | What it does |
 |---|---|---|
 | `check_no_data_files` | G1 | No data files under the chemistry crates — no element tables, reaction databases, structures or sequence data. |
 | `check_blocklist_present` | G2 | `naming.rs` exists and contains `REAL_ELEMENT_SYMBOLS`. Fails loudly if the file is missing, rather than reporting green for a path that moved. |
-| `check_no_real_chemical_formats` | G5 | Lexes every `.rs` file under the scanned roots and rejects identifiers or string literals containing a real chemical-format name as a whole segment — `SmilesParser`, `parse_smiles`, `"pdb"`, `read_molfile`. Comments are not tokens, so doctrine may name them freely. |
 | `check_no_crate_escapes_the_scan` | §5 + §13.1 | Every crate directory in the workspace is inside a scanned root, so no crate can be added where the textual checks do not look. |
 | `check_no_unscanned_includes` | §5 | No `include!`, `include_str!`, `include_bytes!` or `#[path]` in scanned code — each reaches source the scanners never lex. |
 | `check_toolchain_pins_agree` | §18.1 | The Rust pin is the same in every place that states it. |
@@ -68,28 +70,17 @@ directory with no manifest, which walks past the crate-escape check too. Both no
 banned outright — there were zero occurrences in the tree, so the ban forbids
 nothing that exists.
 
-Then a review wrote a working six-format importer/exporter — `SmilesParser`,
-`parse_smiles`, `read_molfile`, `read_pdb`, `write_fasta`, an extension table
-`["smi", "smiles", "inchi", "mol", "sdf", "pdb", "fasta"]`, and the real↔Borbax
-mapping table G5 also forbids — and the gate reported **all checks passed**,
-with `clippy -D warnings` clean. Nobody writing Rust types `SMILESParser`.
-
-`xtask/Cargo.toml` had already written the verdict, about a different check:
-*"Hand-rolling was tried twice and failed twice … a textual matcher covers the
-shapes someone thought to probe."* `syn` and `proc-macro2` were already
-dependencies for that reason.
-
-So it lexes. An identifier is an identifier, a comment is not a token, and
-matching is on whole lowercase **segments** — `SmilesParser` splits to
-`["smiles", "parser"]`. That parser now produces 11 failures; the doctrine
-sentence produces none. Four adversarial tests pin both directions.
+**The six-format importer story belonged to the deleted check** and is kept in
+git history rather than here: a review wrote `SmilesParser`, `parse_smiles`,
+`read_molfile`, `read_pdb`, `write_fasta` and a real↔Borbax mapping table, and
+the gate reported all checks passed with `clippy -D warnings` clean. It is worth
+knowing only for its transferable half, which the surviving scanners still rely
+on: **lex, do not grep.** An identifier is an identifier, a comment is not a
+token, and matching on whole lowercase segments is what made `SmilesParser`
+findable when a case-sensitive substring scan reported zero hits.
 
 Things this gate still does **not** do:
 
-- **No mapping-table check.** G5 forbids a Borbax↔real correspondence table;
-  nothing looks for one. The review's `REAL_MAPPING` const passed on its name.
-- **`mol` is not in the vocabulary.** It collides with `fn embed(mol: &Molecule)`
-  six times in `experiments/`. `sdf` and `molfile` cover the same import path.
 - **It cannot scan itself.** `xtask` is necessarily outside the roots — the
   vocabulary would match its own definition.
 - **A determined obfuscator wins.** `concat!("SMI", "LES")` and a string split
