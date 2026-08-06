@@ -77,20 +77,21 @@ make probable. "Concentration rises in tidal flats" is physics. "Condensation is
 favoured when a template is present" is not.
 
 **Fiction guarantees** (§5), specifically the parts `cargo run -p xtask` cannot
-check. The mechanical checks catch data files, the missing blocklist, and
-forbidden format tokens. They cannot judge:
+check. The mechanical checks catch data files and the missing blocklist (G1,
+G2). G5 was withdrawn 2026-08-06 and G3/G6 revised the same day — both are now
+"not necessarily real", a property of the seed rather than a permanent rule, so
+neither is a violation on its own any more. Issue #26 (real physics with the
+seed perturbing constants) is the reason; do not flag work toward it as a G3/G6
+breach. What is still worth judging:
 
-- **G3, non-isomorphism.** Is the generated physics genuinely not a re-skin of
-  real chemistry? Period lengths and valence rules are generated, `affinity` is
-  not electronegativity in a hat. A property derivation that reproduces a real
-  trend because someone reached for a familiar formula is a violation even
-  though no data file exists.
 - **G4, units.** `Thermal`, `Quanta`, `Span`, `WorldYear`, `Mass` as distinct
   newtypes, with no cross-unit arithmetic compiling. A bare `f64` carrying a
   temperature through three functions defeats this quietly.
-- **G6, framing.** Comments, docs, and identifiers that imply a mapping to real
-  entities. "like a protein", "analogous to ATP" in a doc comment is a small
-  thing that becomes the project's public framing.
+- **Framing that outruns the code.** A doc comment or identifier claiming a
+  result is predictive, calibrated, or equivalent to something real is a defect
+  if the code does not yet do that — not because resemblance is forbidden, but
+  because an unbacked claim is a different problem (§13, honesty of what is
+  actually measured).
 
 ## How to report
 

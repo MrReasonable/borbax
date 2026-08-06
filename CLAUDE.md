@@ -532,10 +532,11 @@ chemical formats, on a Borbax↔real mapping table, and on real-world calibratio
 targets. Its two checks — `check_no_real_chemical_formats` and
 `check_the_palette_reads_only_generated_properties` — were deleted with it.
 
-**G3 and G6 are still written as absolutes and are incompatible with issue
-#26**, which proposes rebuilding the chemistry on approximated real physics with
-the seed perturbing the constants. Settle them deliberately when #26 is
-executed; do not erode them silently in the meantime.
+**G3 and G6 were revised on 2026-08-06, same reasoning as G5.** They no longer
+claim the physics is permanently non-isomorphic or permanently unpredictive —
+both are now "not necessarily real", a property of the seed rather than a rule
+about every seed. They no longer block #26; see the spec §5 for the exact
+wording.
 
 **Other:** no `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` in
 library code — all five are `deny` at workspace level.
