@@ -1340,3 +1340,71 @@ fn every_atom_differs_from_every_other_only_in_its_base_colour() {
         flattened.len()
     );
 }
+
+/// The solid view paints the same colours the sticks view does.
+///
+/// **Written because Ian reported the solid view as having no colours**, and
+/// because no test could have told him otherwise: every colour test in this
+/// file runs on the opening state, which is the *sticks* view. The colour path
+/// is shared between the two, so this should pass — and "should" is exactly the
+/// word that means a test is missing.
+#[test]
+fn the_solid_view_paints_the_same_colours_as_the_sticks_view() {
+    use std::collections::BTreeSet;
+
+    fn colours_now(app: &mut App) -> BTreeSet<[u32; 4]> {
+        let world = app.world_mut();
+        let mut atoms = world
+            .query_filtered::<&MeshMaterial3d<StandardMaterial>, With<borbax_ui::scene::Atom>>();
+        let handles: Vec<_> = atoms.iter(world).map(|m| m.0.id()).collect();
+        let materials = world.resource::<Assets<StandardMaterial>>();
+        handles
+            .iter()
+            .map(|h| {
+                let c = materials
+                    .get(*h)
+                    .unwrap_or_else(|| unreachable!("an atom's material handle resolves"))
+                    .base_color
+                    .to_srgba();
+                [
+                    c.red.to_bits(),
+                    c.green.to_bits(),
+                    c.blue.to_bits(),
+                    c.alpha.to_bits(),
+                ]
+            })
+            .collect()
+    }
+
+    let mut app = started();
+    let sticks = colours_now(&mut app);
+    assert_eq!(
+        sticks.len(),
+        5,
+        "the sticks view does not show five colours"
+    );
+
+    {
+        let mut viewer = app.world_mut().resource_mut::<borbax_ui::app::Viewer>();
+        viewer.0.flip_view();
+        assert!(
+            !viewer.0.view().draws_sticks(),
+            "the flip did not reach the solid view"
+        );
+    }
+    app.update();
+
+    let solid = colours_now(&mut app);
+    assert_eq!(
+        solid.len(),
+        5,
+        "the solid view shows {} distinct atom colours against five in the \
+         sticks view — the colours are not reaching this view",
+        solid.len()
+    );
+    assert_eq!(
+        solid, sticks,
+        "the solid view paints different colours from the sticks view, though \
+         both read the same `Demo::colours`"
+    );
+}
