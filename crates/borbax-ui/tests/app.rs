@@ -501,35 +501,31 @@ fn there_is_one_atom_entity_per_atom_of_the_molecule() {
     );
 }
 
-/// Every atom shares one material handle.
-///
-/// **This is what makes "no colour encodes any property" checkable rather than a
-/// matter of reading the code.** Step 4 owns palettes, and it lands with the
-/// guard that says a palette may not be built out of an element's mass, valence
-/// or affinity. Until then a per-atom colour is not merely out of scope — one
-/// keyed on an index looks exactly like a property map and encodes nothing.
-#[test]
-fn every_atom_is_painted_with_the_same_material() {
-    let mut app = started();
-    let world = app.world_mut();
-    let mut atoms =
-        world.query_filtered::<&MeshMaterial3d<StandardMaterial>, With<borbax_ui::scene::Atom>>();
-    let handles: Vec<_> = atoms.iter(world).map(|m| m.0.id()).collect();
-    assert!(!handles.is_empty(), "no atoms, so this asserted nothing");
-    let first = handles
-        .first()
-        .copied()
-        .unwrap_or_else(|| unreachable!("checked non-empty above"));
-    assert!(
-        handles.iter().all(|h| *h == first),
-        "the atoms hold {} distinct materials — a per-atom colour is a palette, \
-         and a palette lands with its own G6 guard at Step 4",
-        handles
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len()
-    );
-}
+// **`every_atom_is_painted_with_the_same_material` was deleted here, and the
+// deletion is part of Step 4 rather than a casualty of it.** It asserted that
+// every atom shared one material handle, and its own doc said it held the line
+// *until* Step 4 — the guarantee it published, "no colour encodes any
+// property", is precisely what this step exists to retire. Amending it to
+// admit colour would have left a test whose name no longer described anything.
+//
+// A deletion with nothing replacing it is a finding, so here is what replaces
+// it, and the replacement is strictly stronger. The old guard said *no*
+// information reached the colour channel. These say *this* information and no
+// other:
+//
+// - `every_atom_is_painted_the_colour_its_own_element_earns` — the colour is
+//   this element's, checked through an oracle that does not use any index;
+// - `the_five_atoms_are_five_different_colours` — the palette does not collapse;
+// - `every_atom_differs_from_every_other_only_in_its_base_colour` — the rest of
+//   the material is still uniform, so roughness and emissive cannot become a
+//   second, unguarded property map;
+// - `molecule.rs`'s palette tests, which pin what the colour is a function of.
+//
+// `every_atom_is_drawn_with_the_same_mesh` is **kept, unchanged**. Geometry is
+// now the only closed channel, which makes it more load-bearing rather than
+// less, and it already queries `With<Atom>` so it excludes sticks — provided
+// they carry a different marker, which `no_entity_is_both_an_atom_and_a_bond`
+// is what pins.
 
 /// The mesh handle resolves to a mesh that has vertices.
 ///
@@ -666,12 +662,29 @@ fn every_atom_is_drawn_where_the_embedding_put_it() {
         let demo = state
             .demo()
             .unwrap_or_else(|| unreachable!("the opening universe builds a molecule"));
+        // **The window opens on the sticks view, so the expected radius is the
+        // drawn one — and naming it here is the point.** The obvious repair
+        // when this test started failing was to delete it, which QA flagged as
+        // the most expensive mistake available in this step: it is the guard
+        // that exists because atoms were once moved to `[x*3, y, z+9]` and
+        // squashed into ellipsoids with all 81 tests green. A display scale is
+        // exactly the licence under which a per-atom fudge would re-enter, so
+        // the scale is written into the expectation rather than the expectation
+        // being dropped. `every_atom_is_shrunk_by_the_same_amount` in
+        // `molecule.rs` is what stops the scale becoming per-atom;
+        // `the_solid_view_draws_every_atom_at_its_true_size` is what keeps the
+        // unscaled picture honest.
+        assert!(
+            state.view().draws_sticks(),
+            "the window no longer opens on the sticks view, so this expectation \
+             names the wrong radius"
+        );
         demo.embedding
             .coords()
             .iter()
-            .zip(demo.embedding.radii())
+            .zip(&demo.stick_radii)
             .map(|(p, r)| {
-                let scale = borbax_ui::scene::narrow(r.get());
+                let scale = borbax_ui::scene::narrow(*r);
                 let at = borbax_ui::scene::place(*p);
                 [
                     at.x.to_bits(),
@@ -782,5 +795,518 @@ fn every_atom_is_drawn_with_the_same_mesh() {
             .iter()
             .collect::<std::collections::BTreeSet<_>>()
             .len()
+    );
+}
+
+/// One stick entity per bond of the molecule.
+///
+/// **Weak on its own and labelled so.** It cannot separate a correct bond
+/// lookup from "every pair containing the highest index" — on the demo
+/// molecule those agree in every universe, which is why the discriminating
+/// bond tests are the fixtures in `molecule.rs` rather than anything here. It
+/// stays because a count failure names the cause where a set failure names a
+/// symptom.
+#[test]
+fn there_is_one_stick_entity_per_bond() {
+    let expected = borbax_ui::state::ViewerState::opening().demo().map_or_else(
+        || unreachable!("the opening universe builds a molecule"),
+        |d| d.bonds.len(),
+    );
+    assert!(
+        expected > 0,
+        "the molecule has no bonds, so this asserts nothing"
+    );
+
+    let mut app = started();
+    let world = app.world_mut();
+    let mut sticks = world.query_filtered::<Entity, With<borbax_ui::scene::Bond>>();
+    assert_eq!(
+        sticks.iter(world).count(),
+        expected,
+        "the scene does not hold one stick per bond"
+    );
+}
+
+/// Every stick runs between the two atoms it joins.
+///
+/// **This is the bond channel's answer to "the picture is the chemistry".** The
+/// equivalent fabrication for a stick is the right count in the right places
+/// pointing the wrong way, or stretched — none of which any count test can see,
+/// and all of which are exactly what the position guard was added for on the
+/// atom channel.
+///
+/// **Compared as a set, with each pair internally ordered**, for two separate
+/// reasons: Bevy query order is not spawn order after entity churn, and a bond
+/// has two endpoints, so `(a, b)` and `(b, a)` are the same stick.
+///
+/// **Not bit-exact, unlike the atom transform test, and the difference is
+/// real.** A cylinder's placement involves a rotation, so the endpoints come
+/// back through `f32` trigonometry rather than through the same narrowing
+/// applied to the same values. The tolerance below is the measured
+/// reconstruction residue, not a number chosen to make this pass.
+#[test]
+fn every_stick_spans_the_two_atoms_it_bonds() {
+    /// The largest endpoint error the reconstruction actually produces.
+    ///
+    /// Measured over the shipped molecule rather than assumed: the failure this
+    /// must still catch is a stick nudged or stretched, which moves an endpoint
+    /// by order 0.05 span — three orders above this.
+    const TOLERANCE: f32 = 1e-4;
+
+    let want: Vec<(Vec3, Vec3)> = {
+        let state = borbax_ui::state::ViewerState::opening();
+        let demo = state
+            .demo()
+            .unwrap_or_else(|| unreachable!("the opening universe builds a molecule"));
+        demo.bonds
+            .iter()
+            .map(|[a, b]| {
+                let coords = demo.embedding.coords();
+                let from = borbax_ui::scene::place(
+                    *coords
+                        .get(usize::from(*a))
+                        .unwrap_or_else(|| unreachable!("a bond names an atom")),
+                );
+                let to = borbax_ui::scene::place(
+                    *coords
+                        .get(usize::from(*b))
+                        .unwrap_or_else(|| unreachable!("a bond names an atom")),
+                );
+                (from, to)
+            })
+            .collect()
+    };
+
+    let mut app = started();
+    let world = app.world_mut();
+    let mut sticks = world.query_filtered::<&Transform, With<borbax_ui::scene::Bond>>();
+    let got: Vec<(Vec3, Vec3)> = sticks
+        .iter(world)
+        .map(|t| {
+            // The mesh is a unit cylinder along Y, so its ends sit at
+            // ±0.5 in mesh space and the scale carries the length.
+            let half = t.rotation * (Vec3::Y * (t.scale.y / 2.0));
+            (t.translation - half, t.translation + half)
+        })
+        .collect();
+
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "the scene holds {} sticks against {} bonds",
+        got.len(),
+        want.len()
+    );
+
+    let mut worst = 0.0_f32;
+    for (from, to) in &want {
+        // Each wanted bond must be matched by some drawn stick, in either
+        // endpoint order.
+        let mut best = f32::INFINITY;
+        for (a, b) in &got {
+            // Explicit comparisons: `f32::max` is disallowed under §13.1 for
+            // disagreeing about NaN between platforms, and the deny reaches
+            // inside integration tests too.
+            let (fa, fb) = (from.distance(*a), to.distance(*b));
+            let forward = if fa > fb { fa } else { fb };
+            let (ra, rb) = (from.distance(*b), to.distance(*a));
+            let reversed = if ra > rb { ra } else { rb };
+            let error = if forward < reversed {
+                forward
+            } else {
+                reversed
+            };
+            if error < best {
+                best = error;
+            }
+        }
+        assert!(
+            best < TOLERANCE,
+            "a bond from {from:?} to {to:?} is drawn by no stick — the nearest \
+             is out by {best}, so a stick is mispointed, stretched or moved"
+        );
+        if best > worst {
+            worst = best;
+        }
+    }
+    assert!(
+        worst.is_finite(),
+        "no bond was matched, so this test asserted nothing"
+    );
+}
+
+/// No entity is both an atom and a bond.
+///
+/// **Not independently discriminating, and saying so is the point.** Spawning
+/// sticks with the `Atom` marker also fails three other tests. Its value is
+/// that those three would report the symptom in the wrong vocabulary — a wrong
+/// atom count, a wrong transform set — while this names the cause. It is also
+/// what keeps `every_atom_is_drawn_with_the_same_mesh` describing atoms now
+/// that a second entity kind exists.
+#[test]
+fn no_entity_is_both_an_atom_and_a_bond() {
+    let mut app = started();
+    let world = app.world_mut();
+
+    let atoms = world
+        .query_filtered::<Entity, With<borbax_ui::scene::Atom>>()
+        .iter(world)
+        .count();
+    let bonds = world
+        .query_filtered::<Entity, With<borbax_ui::scene::Bond>>()
+        .iter(world)
+        .count();
+    // The positive arm: without it this passes on a scene holding nothing.
+    assert!(
+        atoms > 0 && bonds > 0,
+        "the scene holds {atoms} atoms and {bonds} bonds, so the check below asserts nothing"
+    );
+
+    let both = world
+        .query_filtered::<Entity, (With<borbax_ui::scene::Atom>, With<borbax_ui::scene::Bond>)>()
+        .iter(world)
+        .count();
+    assert_eq!(
+        both, 0,
+        "{both} entities carry both markers, so every test querying \
+         `With<Atom>` has silently started counting sticks too"
+    );
+}
+
+/// Every stick shares one material.
+///
+/// A bond has no generated property of its own to encode — every bond this
+/// crate builds is `SINGLE` — so a per-bond colour would be a property map with
+/// no property, which is the shape the atom guard used to forbid and which is
+/// still forbidden here.
+#[test]
+fn every_stick_is_painted_with_the_same_material() {
+    let mut app = started();
+    let world = app.world_mut();
+    let mut sticks =
+        world.query_filtered::<&MeshMaterial3d<StandardMaterial>, With<borbax_ui::scene::Bond>>();
+    let handles: Vec<_> = sticks.iter(world).map(|m| m.0.id()).collect();
+    assert!(!handles.is_empty(), "no sticks, so this asserted nothing");
+    let first = handles
+        .first()
+        .copied()
+        .unwrap_or_else(|| unreachable!("checked non-empty above"));
+    assert!(
+        handles.iter().all(|h| *h == first),
+        "the sticks hold {} distinct materials — a per-bond colour is a property \
+         map, and every bond here is the same order",
+        handles
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    );
+}
+
+/// The solid view draws no sticks and shrinks nothing.
+///
+/// **Both halves in one test, because they are one claim**: the solid view is
+/// the picture Step 3 shipped, unchanged. The radius comparison is bit-exact
+/// for that reason — a display scale that was "1.0 but not quite" would be a
+/// silent change to the view this exists to preserve.
+#[test]
+fn the_solid_view_draws_every_atom_at_its_true_size_and_no_sticks() {
+    use std::collections::BTreeSet;
+
+    let want: BTreeSet<u32> = {
+        let state = borbax_ui::state::ViewerState::opening();
+        let demo = state
+            .demo()
+            .unwrap_or_else(|| unreachable!("the opening universe builds a molecule"));
+        demo.embedding
+            .radii()
+            .iter()
+            .map(|r| borbax_ui::scene::narrow(r.get()).to_bits())
+            .collect()
+    };
+
+    let mut app = started();
+    {
+        let mut viewer = app.world_mut().resource_mut::<borbax_ui::app::Viewer>();
+        assert!(
+            viewer.0.view().draws_sticks(),
+            "the window no longer opens on the sticks view, so this flips the wrong way"
+        );
+        viewer.0.flip_view();
+    }
+    app.update();
+
+    let world = app.world_mut();
+    let sticks = world
+        .query_filtered::<Entity, With<borbax_ui::scene::Bond>>()
+        .iter(world)
+        .count();
+    assert_eq!(
+        sticks, 0,
+        "the solid view left {sticks} sticks on screen — they are buried inside \
+         the overlapping atoms, so nobody would see them and nothing else would fail"
+    );
+
+    let mut atoms = world.query_filtered::<&Transform, With<borbax_ui::scene::Atom>>();
+    let got: BTreeSet<u32> = atoms.iter(world).map(|t| t.scale.x.to_bits()).collect();
+    assert_eq!(
+        got, want,
+        "the solid view is not drawing atoms at their true size, so it is no \
+         longer the picture Step 3 shipped"
+    );
+}
+
+/// Flipping the view redraws the molecule.
+///
+/// **The defect this catches shipped once already, one token along.** The scene
+/// rebuilds on a change token; flipping the view generates no universe, so
+/// `reloads` does not move. A token of only the reload count leaves the
+/// previous picture on screen after the toggle — atoms at the wrong size and
+/// sticks that should not be there — with every other test in this file green,
+/// because they all inspect the opening state.
+#[test]
+fn flipping_the_view_redraws_the_molecule() {
+    let mut app = started();
+
+    let before: Vec<u32> = {
+        let world = app.world_mut();
+        let mut atoms = world.query_filtered::<&Transform, With<borbax_ui::scene::Atom>>();
+        atoms.iter(world).map(|t| t.scale.x.to_bits()).collect()
+    };
+    assert!(!before.is_empty(), "no atoms, so this asserts nothing");
+
+    {
+        let mut viewer = app.world_mut().resource_mut::<borbax_ui::app::Viewer>();
+        viewer.0.flip_view();
+    }
+    app.update();
+
+    let after: Vec<u32> = {
+        let world = app.world_mut();
+        let mut atoms = world.query_filtered::<&Transform, With<borbax_ui::scene::Atom>>();
+        atoms.iter(world).map(|t| t.scale.x.to_bits()).collect()
+    };
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "the flip changed how many atoms are on screen"
+    );
+    assert_ne!(
+        before, after,
+        "the atoms are the same size after flipping the view, so the scene did \
+         not notice the flip and is still drawing the previous picture"
+    );
+}
+
+/// A refused seed takes the bonds off too.
+///
+/// **The exact Step 3 defect, one entity kind along.** Despawning only
+/// `With<Atom>` leaves four sticks hanging in space under the refusal message;
+/// `a_refused_seed_takes_the_molecule_off_the_screen` counts atoms and stays
+/// green over it.
+#[test]
+fn a_refused_seed_takes_the_bonds_off_the_screen_too() {
+    let mut app = started();
+
+    let before = {
+        let world = app.world_mut();
+        let mut sticks = world.query_filtered::<Entity, With<borbax_ui::scene::Bond>>();
+        sticks.iter(world).count()
+    };
+    assert!(
+        before > 0,
+        "no sticks to begin with, so this asserts nothing"
+    );
+
+    {
+        let mut viewer = app.world_mut().resource_mut::<borbax_ui::app::Viewer>();
+        viewer.0.seed_text_mut().clear();
+        viewer.0.seed_text_mut().push_str("not a seed");
+        viewer.0.commit_typed_seed();
+    }
+    app.update();
+
+    let world = app.world_mut();
+    let mut sticks = world.query_filtered::<Entity, With<borbax_ui::scene::Bond>>();
+    let after = sticks.iter(world).count();
+    assert_eq!(
+        after, 0,
+        "the refusal left {after} sticks on screen — bonds of a molecule from a \
+         universe that is no longer loaded"
+    );
+}
+
+/// Every atom is painted the colour its own element earns.
+///
+/// **The oracle is the atom's drawn size, not its position in a query.** Bevy
+/// query order is not spawn order, and `Demo::elements` is not canonical order,
+/// so the only thing on screen that identifies an atom is how big it is —
+/// which is a generated quantity, distinct across the five in every universe
+/// measured. The uniqueness is asserted rather than trusted, so a corpus where
+/// the oracle stopped working reports that instead of matching the wrong atom.
+///
+/// This is the *scene's* half of the claim: that it attaches colour `i` to the
+/// atom drawn at radius `i`. That colour `i` is the right colour for the
+/// element at canonical index `i` is `molecule.rs`'s
+/// `every_atom_is_coloured_from_its_own_element`, which uses a wholly
+/// independent oracle.
+#[test]
+fn every_atom_is_painted_the_colour_its_own_element_earns() {
+    use std::collections::BTreeMap;
+
+    let want: BTreeMap<u32, Color> = {
+        let state = borbax_ui::state::ViewerState::opening();
+        let demo = state
+            .demo()
+            .unwrap_or_else(|| unreachable!("the opening universe builds a molecule"));
+        let map: BTreeMap<u32, Color> = demo
+            .stick_radii
+            .iter()
+            .zip(&demo.colours)
+            .map(|(r, c)| {
+                (
+                    borbax_ui::scene::narrow(*r).to_bits(),
+                    borbax_ui::scene::srgb(*c),
+                )
+            })
+            .collect();
+        assert_eq!(
+            map.len(),
+            demo.stick_radii.len(),
+            "two atoms of this molecule are drawn the same size, so the size \
+             cannot identify which atom is which and this test's oracle has \
+             stopped working"
+        );
+        map
+    };
+
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms = world
+        .query_filtered::<(&Transform, &MeshMaterial3d<StandardMaterial>), With<borbax_ui::scene::Atom>>();
+    let painted: Vec<(u32, AssetId<StandardMaterial>)> = atoms
+        .iter(world)
+        .map(|(t, m)| (t.scale.x.to_bits(), m.0.id()))
+        .collect();
+    assert_eq!(
+        painted.len(),
+        want.len(),
+        "the scene holds {} atoms against {} in the molecule",
+        painted.len(),
+        want.len()
+    );
+
+    let materials = world.resource::<Assets<StandardMaterial>>();
+    let mut checked = 0_u32;
+    for (size, handle) in &painted {
+        let expected = want
+            .get(size)
+            .unwrap_or_else(|| unreachable!("every drawn size belongs to an atom"));
+        let material = materials
+            .get(*handle)
+            .unwrap_or_else(|| unreachable!("an atom's material handle resolves"));
+        assert_eq!(
+            material.base_color, *expected,
+            "the atom drawn at size {size} is painted a colour a different atom \
+             earns — the scene has permuted the colours against the coordinates"
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        usize::try_from(checked).unwrap_or(usize::MAX),
+        want.len(),
+        "not every atom was checked"
+    );
+}
+
+/// The five atoms are five different colours.
+///
+/// **The measurement behind this is why the palette is keyed the way it is.** A
+/// palette on valence alone gives three of the four leaves one colour in every
+/// universe — the valence multiset is `[1, 2, 2, 2, 4]` in 500 of 500 — and a
+/// smooth ramp over any single channel collapses the leaves, which sit at
+/// consecutive groups. Both pass every other test in this file.
+#[test]
+fn the_five_atoms_are_five_different_colours() {
+    use std::collections::BTreeSet;
+
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms =
+        world.query_filtered::<&MeshMaterial3d<StandardMaterial>, With<borbax_ui::scene::Atom>>();
+    let handles: Vec<_> = atoms.iter(world).map(|m| m.0.id()).collect();
+    assert!(!handles.is_empty(), "no atoms, so this asserts nothing");
+
+    let materials = world.resource::<Assets<StandardMaterial>>();
+    let colours: BTreeSet<[u32; 4]> = handles
+        .iter()
+        .map(|h| {
+            let c = materials
+                .get(*h)
+                .unwrap_or_else(|| unreachable!("an atom's material handle resolves"))
+                .base_color
+                .to_srgba();
+            [
+                c.red.to_bits(),
+                c.green.to_bits(),
+                c.blue.to_bits(),
+                c.alpha.to_bits(),
+            ]
+        })
+        .collect();
+
+    assert_eq!(
+        colours.len(),
+        handles.len(),
+        "the {} atoms carry only {} distinct colours, so two of them are \
+         indistinguishable on screen",
+        handles.len(),
+        colours.len()
+    );
+}
+
+/// Atoms differ in their colour and in nothing else about their material.
+///
+/// **This is the part of the retired single-material guard the colour tests do
+/// not recover.** That guard covered the whole material; Step 4 legitimises
+/// exactly one field of it. Without this, "the palette is allowed to vary"
+/// becomes the sentence under which roughness or emissive quietly becomes a
+/// second, unguarded property map.
+#[test]
+fn every_atom_differs_from_every_other_only_in_its_base_colour() {
+    use std::collections::BTreeSet;
+
+    let mut app = started();
+    let world = app.world_mut();
+    let mut atoms =
+        world.query_filtered::<&MeshMaterial3d<StandardMaterial>, With<borbax_ui::scene::Atom>>();
+    let handles: Vec<_> = atoms.iter(world).map(|m| m.0.id()).collect();
+    assert!(
+        handles.len() > 1,
+        "fewer than two atoms, so this asserts nothing"
+    );
+
+    let materials = world.resource::<Assets<StandardMaterial>>();
+    // Clone each material and overwrite the one field that is allowed to vary.
+    // **A clone-and-compare rather than an enumerated field list**, so a field
+    // nobody named is covered by construction — an enumeration would go silent
+    // at the next engine bump, which is the `[lints] workspace = true` shape.
+    let flattened: BTreeSet<String> = handles
+        .iter()
+        .map(|h| {
+            let mut m = materials
+                .get(*h)
+                .unwrap_or_else(|| unreachable!("an atom's material handle resolves"))
+                .clone();
+            m.base_color = Color::WHITE;
+            format!("{m:?}")
+        })
+        .collect();
+
+    assert_eq!(
+        flattened.len(),
+        1,
+        "the atoms' materials differ in {} ways once colour is set aside, so \
+         something other than `base_color` is carrying a per-atom property",
+        flattened.len()
     );
 }
