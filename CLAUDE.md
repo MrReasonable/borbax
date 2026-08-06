@@ -4,10 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Borbax simulates chemical evolution — abiogenesis up to protocells — in a universe
-whose chemistry is **invented from a 64-bit seed**, not modelled on the real world.
-Molecules are shapes; binding is a geometric complementarity test; catalysis,
-membranes and heredity are all downstream consequences of that single mechanism.
+Borbax simulates chemical evolution — abiogenesis up to protocells. Molecules are
+shapes; binding is a geometric complementarity test; catalysis, membranes and
+heredity are all downstream consequences of that single mechanism.
+
+**The chemistry is currently invented from a 64-bit seed rather than modelled on
+the real world, and that is a starting point rather than a principle.** It was
+adopted because another model refused to help build a chemistry simulation at
+all; the design it produced is worth keeping on its own merits, and none of it
+depends on the chemistry being *unlike* the real world. Issue #26 is the live
+direction: rebuild on approximated real physics with the seed perturbing the
+constants, "our universe" being the values left unperturbed. §5's G5 was
+withdrawn on 2026-08-06 for standing in the way of exactly that.
 
 **V0 Tasks 1-10 of 21 are complete**, and **Step 1 of the viewer** on top of
 them — the workspace and fiction-guarantee gate, `borbax-units` with the
@@ -504,19 +512,30 @@ Windows/x86-64 and Linux/x86-64, enforced by a CI golden matrix (§13.4, §13.6)
   invalidates golden hashes and requires deliberate regeneration, reviewed like
   a change to physics.
 
-**Fiction guarantees** (§5, enforced by `cargo xtask`):
+**Fiction guarantees** (§5). **G5 was withdrawn on 2026-08-06** — read §5 before
+adding any enforcement here, because the burden of proof now sits with keeping a
+constraint rather than with relaxing one. What remains, and what `cargo xtask`
+still enforces:
 
 - No real chemistry data anywhere — no element tables, reaction databases,
   molecular structures or sequence data. No data files in `borbax-universe`,
-  `borbax-molecule`, `borbax-reaction`.
+  `borbax-molecule`, `borbax-reaction`. (G1, `check_no_data_files`.)
 - Generated element names are blocklist-checked against real symbols and names
-  (`REAL_ELEMENT_SYMBOLS` in `borbax-universe/src/naming.rs`).
+  (`REAL_ELEMENT_SYMBOLS` in `borbax-universe/src/naming.rs`). (G2.)
 - No real-world units. Temperature is `Thermal`, energy `Quanta`, distance
   `Span`, time `WorldYear`, mass `Mass` — distinct newtypes; cross-unit
-  arithmetic must not compile.
-- Never SMILES, InChI, MOL, PDB or FASTA import/export, no Borbax↔real mapping
-  table, no real-world calibration targets. Feature requests implying otherwise
-  are rejected on sight.
+  arithmetic must not compile. (G4 — and it earns its place on type-safety
+  grounds regardless of the fiction argument.)
+
+**Withdrawn, and do not reinstate without reopening §5:** the ban on real
+chemical formats, on a Borbax↔real mapping table, and on real-world calibration
+targets. Its two checks — `check_no_real_chemical_formats` and
+`check_the_palette_reads_only_generated_properties` — were deleted with it.
+
+**G3 and G6 are still written as absolutes and are incompatible with issue
+#26**, which proposes rebuilding the chemistry on approximated real physics with
+the seed perturbing the constants. Settle them deliberately when #26 is
+executed; do not erode them silently in the meantime.
 
 **Other:** no `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` in
 library code — all five are `deny` at workspace level.

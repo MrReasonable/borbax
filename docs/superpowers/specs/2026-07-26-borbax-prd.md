@@ -188,7 +188,11 @@ These were settled before drafting and the rest of the document assumes them.
 
 ## 5. Fiction guarantees
 
-Borbax must be structurally incapable of describing real-world chemistry or biology. These are binding requirements on the implementation, testable in CI, not statements of intent.
+Borbax's chemistry is generated from a seed rather than modelled on the real world. These are binding requirements on the implementation, testable in CI, not statements of intent.
+
+**Why this section exists, recorded 2026-08-06 because it changes how strictly to read it.** The invented-chemistry framing was not the project's goal. It was adopted because a different AI model refused to help build a chemistry simulation at all, and inventing one was the way round that refusal. The design it produced — shape-based binding, emergent catalysis, per-species geometry — turned out to be worth keeping on its own merits, and none of it depends on the chemistry being *unlike* the real world.
+
+So these guarantees are engineering constraints, not a safety boundary, and they are revisable when they cost more than they buy. **G5 was withdrawn on that basis** (below). Issue #26 proposes going further: rebuilding the chemistry on approximated real physics with the seed perturbing the constants, where "our universe" is simply the unperturbed values. That direction is incompatible with G3 and G6 as written, and those two should be settled deliberately rather than eroded — but the burden of proof now sits with keeping a constraint, not with relaxing one.
 
 **G1 — No real chemistry data enters the repository.** No element property tables, no reaction databases, no molecular structures, no sequence data of any kind. The entire chemistry of every universe is produced by `universe_gen` from a seed. A CI check fails the build if any data file appears under the chemistry crates.
 
@@ -198,7 +202,11 @@ Borbax must be structurally incapable of describing real-world chemistry or biol
 
 **G4 — No real-world units anywhere.** Temperature is measured in *thermals*, energy in *quanta*, distance in *spans*, time in *world-years* defined by the generated world's own orbit. Unit names are enforced by the type system. This is not cosmetic: it prevents anyone, including us, from quietly reasoning about the simulation as though it were a model of anything real.
 
-**G5 — Permanent non-goals.** Borbax will never import or export real chemical formats (SMILES, InChI, MOL, PDB, FASTA or similar), will never contain a mapping table between Borbax entities and real-world entities, and will never accept real-world measurements as calibration targets. Any future feature request implying otherwise is rejected on sight.
+**G5 — WITHDRAWN 2026-08-06.** It read: *"Permanent non-goals. Borbax will never import or export real chemical formats (SMILES, InChI, MOL, PDB, FASTA or similar), will never contain a mapping table between Borbax entities and real-world entities, and will never accept real-world measurements as calibration targets. Any future feature request implying otherwise is rejected on sight."*
+
+Withdrawn because it forbade the project's own direction. A mapping to real-world entities and calibration against real measurements are exactly what issue #26 asks for, so a guarantee rejecting them "on sight" was blocking the work rather than protecting it. The cost had also stopped being theoretical: the palette guard enforcing the mapping-table clause was defeated by a reviewer-built artefact three times in one week — an `impl` block, a helper function, and an arithmetic identity — and no syntactic check can decide "closed-form formula" from "lookup", because every total function is expressible as arithmetic. Five review rounds went into a guard that could not hold.
+
+The number is kept rather than reused so that G6 does not shift and older citations stay resolvable. Its two CI checks — `check_no_real_chemical_formats` and `check_the_palette_reads_only_generated_properties` — were deleted with it.
 
 **G6 — Outputs are not predictive of anything real, by construction.** A Borbax result is a fact about Borbax. Because the elements, bonding rules, energetics, and folding model are all invented and mutually entangled, no result transfers. The documentation states this plainly and the README leads with it.
 

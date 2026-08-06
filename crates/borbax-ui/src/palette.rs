@@ -2,82 +2,50 @@
 //!
 //! **This file imports nothing.** Not the engine, not the UI toolkit, not even
 //! a `borbax-*` crate — it takes bare scalars and returns a bare triple. That is
-//! deliberate three times over: the seam guard has nothing to say about a file
-//! with no imports, every test here runs as plain logic with no window and no
-//! universe, and [`colour`]'s signature is a surface small enough for `xtask` to
-//! pin. See `check_the_palette_reads_only_generated_properties`.
+//! deliberate twice over: the seam guard has nothing to say about a file with
+//! no imports, and every test here runs as plain logic with no window and no
+//! universe.
 //!
-//! # The guarantee, and which one it actually is
+//! # Why it still takes bare scalars, now that G5 is gone
 //!
-//! The plan called this "the G6 guard". It is not, and the distinction is the
-//! difference between a guard a reviewer can check a diff against and one they
-//! cannot. The three candidates, from §5:
+//! **§5's G5 was withdrawn on 2026-08-06 and the `xtask` guard that enforced
+//! this file went with it.** That guard pinned [`colour`]'s signature and
+//! banned lookups in it, on the grounds that a per-element colour table using
+//! conventional colours is the "mapping table between Borbax entities and
+//! real-world entities" G5 forbade. G5 no longer exists; see the spec §5 for
+//! why, and issue #26 for the direction that made it untenable.
 //!
-//! - **G5** — "will never contain a *mapping table between Borbax entities and
-//!   real-world entities*". A per-element colour table using conventional
-//!   colours is *literally* that object, encoded in the colour channel. This is
-//!   the guarantee that names the artefact.
-//! - **G3** — "there is no transfer function from a Borbax molecule to any real
-//!   molecule". A property ramp whose anchors are chosen so the picture "reads
-//!   right" against real chemistry is the forbidden transfer function, written
-//!   in hues instead of numbers.
-//! - **G6** — "outputs are not predictive of anything real"; its stated
-//!   enforcement is the documentation and the README. It forbids no artefact,
-//!   so a guard citing it gives a reviewer nothing to check.
+//! The signature is unchanged anyway, because the reason for it was never only
+//! G5. Taking bare scalars is what keeps this file in the seam's strictest tier
+//! — it imports nothing, so every test here runs as plain logic with no window
+//! and no universe. That is worth keeping on its own.
 //!
-//! So the guard cites **G5 primarily and G3 secondarily**, and the plan line
-//! was amended rather than inherited.
+//! **What was worth learning from the guard, since it cost five review rounds.**
+//! No syntactic check can decide "closed-form formula" from "lookup": every
+//! total function `u8 -> f64` is expressible as arithmetic, so the artefact was
+//! rebuilt past each fix — in an `impl` block, in a helper, behind a `mut`
+//! keyword, as a bit-packed integer, as a fitted polynomial. Each fix also cost
+//! a false positive on honest code. If a structural guard is ever wanted here
+//! again, that is the thing to weigh first.
 //!
-//! # How a real colour scheme is made unrepresentable
+//! # The obligation that outlives the guard
 //!
-//! Not by a blocklist of forbidden colours. A blocklist of RGB triples is
-//! defeated by any perturbation, stays green forever, and — worse — the
-//! blocklist *is itself* the real-chemistry mapping table it exists to forbid,
-//! so writing it would breach G1 and G5 inside the guard.
+//! A guard could catch a colour constant. It could never catch a ramp
+//! *anchored* so the picture happens to read like a real scheme, because no
+//! forbidden word is written down and the breach lives entirely in the
+//! justification. That obligation is unchanged and is now the only one:
 //!
-//! The correct question is not *which* colour but *what it is keyed on*. Every
-//! real-world colour scheme is by definition keyed on **element identity**. So
-//! identity is made unreachable: [`colour`] takes generated scalars only and
-//! has no argument from which an element could be recognised — no symbol, no
-//! name, no id, no table position. There is nothing to write a `match` over.
+//! **Every channel assignment below names a generated quantity and a
+//! measurement over it.** The executable form is to re-read each justification
+//! with the seed changed — *"hue steps per group because families share a
+//! group"* survives, because it is a claim about the generator; *"the heavy
+//! atom is dark because heavy things read as dark"* does not.
 //!
-//! `group` is the one argument that could be mistaken for identity and is not:
-//! it is a *column*, shared by every element of a family, so it names a set
-//! rather than a member. An identity argument would be injective.
-//!
-//! That is a fact about the *signature*, which is why `xtask` pins the
-//! signature rather than testing the behaviour: with only scalars in scope, a
-//! behavioural test asserting "the colour ignores the symbol" cannot fail and
-//! would be worse than no test at all.
-//!
-//! # The obligation no guard can see
-//!
-//! `molecule.rs` records the same shape for its hard-coded topology, and it
-//! applies here one channel along. A guard can catch a colour constant. It
-//! cannot catch a ramp *anchored* so the picture happens to read like a real
-//! scheme, because no forbidden word is written down and the breach lives
-//! entirely in the justification.
-//!
-//! **So: every channel assignment below names a generated quantity and a
-//! measurement over it. A justification that appeals to how the picture
-//! compares to a real-world depiction is a G3 breach whether or not any real
-//! name appears.**
-//!
-//! **The obligation is a property, not a banned phrase, and the first version
-//! got that wrong.** It forbade the words "looks right" and "reads as" — which
-//! fires on three legitimate lines in its own commit ("the molecule looks
-//! connected", "reads as lumps connected by necks", "reads as one body"), all
-//! of them legibility arguments rather than resemblance ones. An obligation
-//! that flags correct code in the commit that introduces it is how guards get
-//! deleted.
-//!
-//! The executable form is to re-read each justification with the seed changed —
-//! *"hue steps per group because families share a group"* survives, because it
-//! is a claim about the generator; *"the heavy atom is dark because heavy
-//! things read as dark"* does not.
-//!
-//! This is a review obligation, written down because that is the only
-//! enforcement available.
+//! **It is a property, not a banned phrase, and the first version got that
+//! wrong.** It forbade the words "looks right" and "reads as", which fired on
+//! three legitimate lines in its own commit — all legibility arguments rather
+//! than resemblance ones. An obligation that flags correct code in the commit
+//! that introduces it is how guards get deleted.
 //!
 //! # Why each channel is the channel it is
 //!
@@ -182,12 +150,11 @@ const SAT_HI: f64 = 0.82;
 
 /// The colour an atom is drawn, as `[r, g, b]` in `0..=1`, sRGB.
 ///
-/// Every argument is a **generated scalar**. There is deliberately no way to
-/// recognise *which* element this is: no symbol, no name, no id, no position in
-/// the table. That is what makes a real-world colour scheme unrepresentable
-/// here rather than merely forbidden — see this module's header, and
-/// `check_the_palette_reads_only_generated_properties`, which pins this
-/// signature so it cannot quietly grow an identity argument.
+/// Every argument is a **generated scalar** — no symbol, no name, no id, no
+/// position in the table. Nothing enforces that any more (§5's G5 and its guard
+/// were withdrawn on 2026-08-06), and it is kept because it is what holds this
+/// file in the seam's strictest tier: with no identity type in the signature
+/// there is nothing to import, so the whole file tests as plain logic.
 ///
 /// **`group` is not an identity argument, and the difference is the whole
 /// design.** It is the generated column index — the quantity that *makes* a

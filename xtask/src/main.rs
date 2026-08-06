@@ -53,53 +53,6 @@ const DATA_EXTENSIONS: &[&str] = &["csv", "tsv", "json", "yaml", "yml", "parquet
 /// data.
 const DATA_FREE_ROOTS: &[&str] = &["crates", "experiments"];
 
-/// Real chemical-format tokens that must never appear anywhere (G5).
-/// §5, G5 — real chemical interchange formats, as **identifier segments**.
-///
-/// **Matched against lexed identifiers and string literals, case-insensitively
-/// and segment by segment — not as substrings of raw source.** The predecessor
-/// scanned for `"SMILES"`, `"InChI"`, `"PDB format"` and friends, and a review
-/// defeated it completely: a working six-format importer/exporter —
-/// `SmilesParser`, `parse_smiles`, `read_molfile`, `read_pdb`, `write_fasta`, an
-/// extension table `["smi", "smiles", "inchi", "mol", "sdf", "pdb", "fasta"]`
-/// and the real-to-Borbax mapping table G5 also forbids — passed with **zero**
-/// hits while `clippy -D warnings` stayed clean. Nobody writing Rust types
-/// `SMILESParser`.
-///
-/// Worse, three of the six were already *dead*: `"MOL format"`, `"PDB format"`
-/// and `"SDF format"` are English phrases occurring only in prose, and the
-/// commit before this one taught the scan to skip prose. A fix meant to narrow
-/// the check had deleted half of it.
-///
-/// `xtask/Cargo.toml` already carried the verdict, about a different check:
-/// *"Hand-rolling was tried twice and failed twice … a textual matcher covers
-/// the shapes someone thought to probe."* `syn` and `proc-macro2` are
-/// dependencies for that reason, and this check now uses them.
-///
-/// **`mol` is deliberately absent**: it appears six times in
-/// `experiments/src/embed.rs` as `fn embed(mol: &Molecule)`, and `sdf` /
-/// `molfile` cover the same import path. `xyz` and `cif` are absent for now but
-/// are the obvious next entries once 3D geometry lands.
-const FORMAT_SEGMENTS: &[&str] = &["smi", "sdf", "pdb"];
-
-/// Format names long enough to match as a **substring** of a squashed
-/// identifier, rather than as a whole segment.
-///
-/// **Segmentation alone cannot reach `InChI`**: its own capitalisation splits to
-/// `in`-`ch`-`i`, so no boundary rule recovers it. Matching these against the
-/// identifier with non-alphanumerics removed catches `InChIString`,
-/// `MOLFile`, `SDFile` and `PDBx` — measured, 46 of 47 probe spellings, the miss
-/// being `mol`, which is a deliberate exclusion.
-///
-/// The cost, stated because it is real: substring matching means the
-/// `inching`/`pinching`/`flinching` family would hit on `inchi`. A
-/// segment-prefix variant removes them and loses `InChI`, `MOLFile`, `SDFile`
-/// and `PDBx` — measured — so substring is the right trade. Zero hits across
-/// every `.rs` file in `crates/` and `experiments/` today.
-const FORMAT_SUBSTRINGS: &[&str] = &[
-    "smiles", "smarts", "inchi", "molfile", "sdfile", "mmcif", "fasta", "fastq", "pdbx",
-];
-
 /// Split an identifier into lowercase segments on `_`, `-`, `.` and camelCase
 /// boundaries.
 ///
@@ -413,8 +366,8 @@ const TRANSCENDENTAL_SCAN_ROOTS: &[&str] = &["crates", "experiments"];
 
 /// Workspace directories that hold crates and are deliberately **not** scanned.
 ///
-/// Only `xtask` — it cannot scan itself, because [`FORMAT_SEGMENTS`] and
-/// the banned-call lists would match their own definitions.
+/// Only `xtask` — it cannot scan itself, because the banned-call lists would
+/// match their own definitions.
 const UNSCANNED_CRATE_DIRS: &[&str] = &["xtask"];
 
 fn main() -> Result<(), String> {
@@ -493,7 +446,6 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     let mut failures = Vec::new();
     check_no_data_files(root, &mut failures)?;
     check_blocklist_present(root, &mut failures)?;
-    check_no_real_chemical_formats(root, &mut failures)?;
     check_no_crate_escapes_the_scan(root, &mut failures)?;
     check_no_unscanned_includes(root, &mut failures)?;
     check_toolchain_pins_agree(root, &mut failures)?;
@@ -509,7 +461,6 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_the_viewer_seam_holds(root, &mut failures)?;
     check_wall_clock_has_one_home(root, &mut failures)?;
     check_libm_has_one_home(root, &mut failures)?;
-    check_the_palette_reads_only_generated_properties(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -2529,9 +2480,9 @@ fn check_no_data_files(root: &Path, failures: &mut Vec<String>) -> Result<(), St
 /// per-site `#[expect(..., reason = "...")]`; the quiet one is dropping the
 /// lints table, and this is what makes the quiet one fail.
 ///
-/// Fail-closed on an unreadable manifest, for the reason
-/// `check_no_real_chemical_formats` gives about untokenisable files: "could not
-/// read" and "read it and it was fine" must not produce the same verdict.
+/// Fail-closed on an unreadable manifest: "could not read" and "read it and it
+/// was fine" must not produce the same verdict. (The check that first recorded
+/// that reasoning, about untokenisable files, went with G5.)
 fn check_every_member_inherits_the_lints(
     root: &Path,
     failures: &mut Vec<String>,
@@ -3702,285 +3653,6 @@ fn check_wall_clock_has_one_home(root: &Path, failures: &mut Vec<String>) -> Res
     Ok(())
 }
 
-/// The file the palette lives in, relative to the repository root.
-const PALETTE_FILE: &str = "crates/borbax-ui/src/palette.rs";
-
-/// The one function that decides what colour an atom is drawn.
-const PALETTE_FN: &str = "colour";
-
-/// The types [`PALETTE_FN`] may take.
-///
-/// **An allow-list, so the default is refusal.** That inversion is the whole
-/// design: a deny-list would have to enumerate the spellings by which an
-/// element's identity could arrive — `ElementId`, `&Element`, `&str`, `usize`,
-/// a tuple, a newtype — and enumeration of the spellings in front of you is the
-/// failure mode this repository has recorded at three different levels. An
-/// allow-list of *scalars* refuses everything nobody has argued for.
-const ALLOWED_PALETTE_INPUTS: &[&str] = &["f64", "u8"];
-
-/// Argument names that identify an element rather than describe one.
-///
-/// **Seed-independence is the criterion, not injectivity**, and the first
-/// version of this guard used the wrong one. Measured over 500 universes,
-/// `group == units - 1` holds in 500 of 500 for the first period — so `group`
-/// is a *stable* handle onto the same element in every universe, which is
-/// exactly what a mapping to a real-world element needs. `units` is stronger
-/// still: §7.1 says the element *is* that number.
-///
-/// `group` is not on this list because the shipped palette reads it as a
-/// family coordinate through a closed-form formula, which
-/// [`branch_failures`] is what enforces. `units` is, because nothing has
-/// argued for it.
-const BANNED_PALETTE_KEYS: &[&str] = &["units", "id", "index", "number"];
-
-/// Arguments the palette may branch on.
-///
-/// `valence == 0` marks a closed outer shell — one boolean, which cannot encode
-/// a colour scheme. Every other argument spans enough values to hold one.
-const BRANCH_EXEMPT_PALETTE_ARGS: &[&str] = &["valence"];
-
-/// The palette reads generated properties and cannot recognise an element (§5,
-/// G5; §5, G3).
-///
-/// **The guarantee, stated as the thing this actually enforces.** Every
-/// real-world element colour scheme is by definition keyed on element
-/// *identity*. So the check is not "is this colour the real colour of some
-/// element" — that question needs a symbol-to-colour table, which **is** G5's
-/// forbidden "mapping table between Borbax entities and real-world entities"
-/// and would ship the very artefact a future implementer could read from. The
-/// check is instead that identity is **unreachable**: the palette takes bare
-/// scalars, so there is nothing to write a `match` over.
-///
-/// `group` is a scalar and is deliberately allowed. It names a *family* — many
-/// elements share one — so it cannot identify an element. An identity argument
-/// would be injective.
-///
-/// **Not G6, and the plan said G6.** §5's G6 is about results not transferring
-/// and names the documentation as its enforcement, so it forbids no artefact
-/// and gives a reviewer nothing to check a diff against. G5 names the object in
-/// five words. The plan line was amended rather than inherited.
-///
-/// **A signature pin rather than a behavioural test, because the behavioural
-/// test cannot fail.** With only scalars in scope, a test asserting "the colour
-/// ignores the symbol" has no symbol to vary — it would read as coverage of the
-/// exact hazard while being incapable of failing, which is a shape this
-/// repository has shipped twice.
-///
-/// What no guard here can see is a ramp *anchored* so the picture happens to
-/// read like a real scheme: no forbidden word is written down and the breach
-/// lives entirely in the justification. `palette.rs`'s header carries that
-/// review obligation, in the same form `molecule.rs` carries it for its
-/// hard-coded topology.
-fn check_the_palette_reads_only_generated_properties(
-    root: &Path,
-    failures: &mut Vec<String>,
-) -> Result<(), String> {
-    let path = root.join(PALETTE_FILE);
-    // **A missing file is a failure, not a skip.** Rename or move the palette
-    // and a `return Ok(())` here would disable the whole check silently — the
-    // same fail-open shape the viewer seam records at its own missing-directory
-    // branch.
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        failures.push(format!(
-            "palette: {PALETTE_FILE} does not exist, so the G5 signature pin \
-             checked nothing. If the palette has moved, move this check with it; a \
-             silent pass here lets an element's identity reach the colour"
-        ));
-        return Ok(());
-    };
-    for failure in scan_palette(PALETTE_FILE, &text)? {
-        failures.push(failure);
-    }
-    Ok(())
-}
-
-/// The palette scan, over text rather than over a path.
-///
-/// **Split out for the reason `scan_for_derived_streams` was**: a check that can
-/// only be run against the real file can only be exercised against a tree that
-/// by construction produces no failures, and therefore tests nothing.
-fn scan_palette(rel: &str, text: &str) -> Result<Vec<String>, String> {
-    let file = syn::parse_file(text).map_err(|e| format!("{rel}: {e}"))?;
-    let mut failures = Vec::new();
-
-    // **Flattened first, because the top level is not the file.** The first
-    // version of this walked `file.items` only, so a nested
-    // `mod inner { use borbax_universe::Element; pub fn colour(e: &Element) .. }`
-    // escaped the import ban and the signature pin at once — a guard passing
-    // while the artefact it forbids sat in the file it was reading. Three other
-    // checks in this binary already recurse into `Item::Mod`; this one did not.
-    let items = flatten_items(&file.items);
-
-    // **Nothing may be imported.** This is the structural half of the
-    // guarantee: with no `use`, no type from any other crate is nameable here,
-    // so an element cannot arrive under an alias the signature check would have
-    // to recognise.
-    for item in &items {
-        if let syn::Item::Use(u) = item {
-            let span = quote::ToTokens::to_token_stream(u).to_string();
-            failures.push(format!(
-                "palette: {rel} imports `{span}`. It must import nothing — that is \
-                 what makes an element's identity unnameable here, and it is what \
-                 keeps the file in the seam's strictest tier"
-            ));
-        }
-    }
-
-    let mut found = false;
-    for item in &items {
-        let syn::Item::Fn(f) = item else { continue };
-        if f.sig.ident != PALETTE_FN {
-            continue;
-        }
-        found = true;
-
-        let mut names = Vec::new();
-        for arg in &f.sig.inputs {
-            let syn::FnArg::Typed(pat) = arg else {
-                failures.push(format!(
-                    "palette: {rel}'s `{PALETTE_FN}` takes a receiver, so it is a \
-                     method on something that may know which element this is"
-                ));
-                continue;
-            };
-            let spelling = quote::ToTokens::to_token_stream(&pat.ty).to_string();
-            let name = quote::ToTokens::to_token_stream(&pat.pat).to_string();
-            if !ALLOWED_PALETTE_INPUTS.contains(&spelling.as_str()) {
-                failures.push(format!(
-                    "palette: {rel}'s `{PALETTE_FN}` takes `{name}: {spelling}`, \
-                     which is not one of {ALLOWED_PALETTE_INPUTS:?}. §5's G5 forbids a \
-                     mapping table between Borbax entities and real-world ones, and \
-                     every real element colour scheme is keyed on element identity — \
-                     so the palette may read generated properties and may not be able \
-                     to tell which element it is looking at. If this argument really \
-                     is a property rather than an identity, add its type here and say \
-                     why in the commit"
-                ));
-            }
-            if BANNED_PALETTE_KEYS.contains(&name.as_str()) {
-                failures.push(format!(
-                    "palette: {rel}'s `{PALETTE_FN}` takes `{name}`, which is a \
-                     seed-independent handle on an element rather than a property of \
-                     one. Measured over 500 universes, `group == units - 1` holds in \
-                     500 of 500 for the first period — so a value keyed on it is the \
-                     same value for the same element in every universe, which is a \
-                     mapping between a Borbax entity and a real-world one (§5, G5)"
-                ));
-            }
-            names.push(name);
-        }
-
-        // **The branch ban, and it is the half that actually holds the
-        // guarantee.** A review demonstrated the signature pin alone is not
-        // enough: replacing the hue line with
-        // `match group { 6 => 240.0, 7 => 0.0, .. }` keeps every argument a
-        // permitted scalar, imports nothing, adds no data file, and passes all
-        // nine palette tests *and* this check. The forbidden artefact was
-        // representable with the guard in place.
-        //
-        // What actually protects the shipped code is that the hue is a
-        // **closed-form formula with no free per-group parameter** — a
-        // conventional colour cannot be assigned to any element without
-        // introducing a lookup, and a lookup needs a branch or a table. So both
-        // are refused: no `match` anywhere in the file, and no `if` whose
-        // condition names one of `colour`'s own arguments.
-        //
-        // The single legitimate branch is `valence == 0` (a closed shell bonds
-        // with nothing, drawn grey), which is why `valence` is exempt: one
-        // boolean cannot encode a scheme, where a branch over `group`'s 74
-        // attained values can.
-        for failure in branch_failures(rel, f, &names) {
-            failures.push(failure);
-        }
-    }
-
-    // **Unknown means fail**, which is the design rule `check_signature_surface_is_pinned`
-    // established: a rename must break this check rather than silence it.
-    if !found {
-        failures.push(format!(
-            "palette: {rel} has no `fn {PALETTE_FN}`, so the G5 signature pin \
-             matched nothing and checked nothing. Renaming the palette entry \
-             point must fail this check, not disable it"
-        ));
-    }
-
-    Ok(failures)
-}
-
-/// Every shipped item in the file, including those nested inside inline
-/// modules, and excluding anything behind `#[cfg(test)]`.
-///
-/// `syn` gives a tree; every check here wants the whole file. A nested module
-/// is not a smaller file, it is the same file with more indentation.
-///
-/// **`#[cfg(test)]` is skipped, and the positive arm is what found that it had
-/// to be.** `palette.rs`'s own test module does `use super::{..}` — a
-/// legitimate self-import that the first version of the recursion reported as a
-/// G5 breach, i.e. the check rejecting the correct file. Test code is not
-/// compiled into the binary and cannot reach the screen, so it cannot carry a
-/// colour scheme to a user; the shipped items are the whole surface.
-fn flatten_items(items: &[syn::Item]) -> Vec<&syn::Item> {
-    let mut out = Vec::new();
-    for item in items {
-        out.push(item);
-        if let syn::Item::Mod(m) = item
-            && let Some((_, inner)) = &m.content
-            && !is_cfg_test(&m.attrs)
-        {
-            out.extend(flatten_items(inner));
-        }
-    }
-    out
-}
-
-/// Is this item behind `#[cfg(test)]`?
-fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|a| {
-        a.path().is_ident("cfg")
-            && quote::ToTokens::to_token_stream(a)
-                .to_string()
-                .contains("test")
-    })
-}
-
-/// Branches inside the palette that could hold a lookup table.
-///
-/// Returns one failure per offending construct. See the block comment at the
-/// call site for why a branch, rather than an argument type, is what a real
-/// colour scheme actually needs.
-fn branch_failures(rel: &str, f: &syn::ItemFn, names: &[String]) -> Vec<String> {
-    let body = quote::ToTokens::to_token_stream(&f.block).to_string();
-    let mut failures = Vec::new();
-
-    if body.contains("match ") {
-        failures.push(format!(
-            "palette: {rel}'s `{PALETTE_FN}` contains a `match`. A real element \
-             colour scheme is a lookup, and a lookup needs a branch — the hue must \
-             stay a closed-form formula with no free per-element parameter (§5, G5)"
-        ));
-    }
-
-    for name in names {
-        if BRANCH_EXEMPT_PALETTE_ARGS.contains(&name.as_str()) {
-            continue;
-        }
-        // A condition naming an argument is the shape a per-element lookup
-        // takes once `match` is unavailable.
-        for form in [format!("if {name} "), format!("if {name}==")] {
-            if body.replace("  ", " ").contains(&form) {
-                failures.push(format!(
-                    "palette: {rel}'s `{PALETTE_FN}` branches on `{name}`. That is \
-                     the shape of a per-element lookup table, which §5's G5 forbids; \
-                     the hue must be a closed-form formula. Only `valence == 0` — a \
-                     closed shell, one boolean, which cannot encode a scheme — is \
-                     exempt"
-                ));
-            }
-        }
-    }
-    failures
-}
-
 /// The token run that spells a call into the `libm` crate.
 ///
 /// Tokens rather than the text `"libm::"` so that `#[cfg(test)]` bodies are
@@ -4274,16 +3946,16 @@ fn check_blocklist_present(root: &Path, failures: &mut Vec<String>) -> Result<()
 /// Every crate in the workspace is inside a scanned root.
 ///
 /// **The scan roots are hand-kept, and a crate added outside them escapes every
-/// textual check at once** — G5's format scan, §13.1's transcendental scan and
-/// §13.4's parallel-call scan all iterate `TRANSCENDENTAL_SCAN_ROOTS`. A review
-/// verified it: a workspace member at `tools/borbax-import/` containing both
-/// `pub const SMILES: &str = "SMILES";` and `(-e / t).exp()` produced
-/// "all checks passed".
+/// textual check at once** — §13.1's transcendental scan and §13.4's
+/// parallel-call scan both iterate `TRANSCENDENTAL_SCAN_ROOTS`. A review
+/// verified it: a workspace member at `tools/borbax-import/` containing
+/// `(-e / t).exp()` produced "all checks passed".
 ///
 /// §13.1 keeps a second guard there — `clippy::disallowed_methods` is
 /// warn-by-default and `clippy.toml` is read from the workspace root, so the
-/// `exp` would still be caught. **§5 has no second guard at all**, which is what
-/// makes this precedence 1 rather than housekeeping.
+/// `exp` would still be caught. The §5 checks that remain (G1's data-file scan,
+/// G2's real-symbol blocklist) have no second guard at all, which is what keeps
+/// this precedence 1 rather than housekeeping.
 ///
 /// So rather than trusting the list, fail when a `Cargo.toml` turns up outside
 /// it. That is the same self-maintaining argument
@@ -4319,7 +3991,7 @@ fn check_no_crate_escapes_the_scan(root: &Path, failures: &mut Vec<String>) -> R
         if manifests.iter().any(|m| m.exists()) {
             failures.push(format!(
                 "§5/§13.1: crate directory {name:?} is outside every scan root, so the \
-                 G5 format, transcendental and parallel-call checks do not see it. Add it \
+                 transcendental and parallel-call checks do not see it. Add it \
                  to TRANSCENDENTAL_SCAN_ROOTS, or to UNSCANNED_CRATE_DIRS with a reason"
             ));
         }
@@ -4374,104 +4046,6 @@ fn check_no_unscanned_includes(root: &Path, failures: &mut Vec<String>) -> Resul
         }
     }
     Ok(())
-}
-
-/// §5, G5 — no real chemical interchange format is read or written anywhere.
-///
-/// **Lexes rather than greps, for the reason `xtask/Cargo.toml` already
-/// records.** Tokenising makes an identifier an identifier and a comment not a
-/// token at all, so this can be strict about code and silent about prose
-/// without a hand-rolled rule for either — the previous version hand-rolled
-/// `starts_with("//")` and got block comments and trailing comments wrong in
-/// opposite directions.
-///
-/// Doc comments arrive as `#[doc = "..."]` and are skipped explicitly; `//` and
-/// `/* */` never reach the token stream at all.
-fn check_no_real_chemical_formats(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
-    for scan_root in TRANSCENDENTAL_SCAN_ROOTS {
-        let dir = root.join(scan_root);
-        if !dir.exists() {
-            continue;
-        }
-        for entry in walk(&dir)? {
-            if entry.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let src = std::fs::read_to_string(&entry).map_err(|e| e.to_string())?;
-            let rel = entry.strip_prefix(root).unwrap_or(&entry);
-            let Ok(stream) = src.parse::<proc_macro2::TokenStream>() else {
-                // **Loud, not skipped.** A file this cannot lex is one it cannot
-                // vouch for, and passing it silently is how a scanner reports
-                // green over the only file that needed it.
-                failures.push(format!("G5: {} could not be tokenised", rel.display()));
-                continue;
-            };
-            let mut hits: Vec<(String, String)> = Vec::new();
-            scan_format_tokens(stream, &mut hits);
-            for (seg, ctx) in hits {
-                failures.push(format!(
-                    "G5: real chemical format {seg:?} in {} (as {ctx})",
-                    rel.display()
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Match one identifier or literal against both tiers of the vocabulary.
-///
-/// Short names are whole **segments** — `smi` must not fire on `smith`. Long
-/// names are substrings of the squashed text, because segmentation cannot reach
-/// a name whose own capitalisation splits it (`InChI` -> `in`|`ch`|`i`).
-fn check_text(text: &str, ctx: &str, hits: &mut Vec<(String, String)>) {
-    for seg in identifier_segments(text) {
-        if FORMAT_SEGMENTS.contains(&seg.as_str()) {
-            hits.push((seg, ctx.to_owned()));
-        }
-    }
-    let squashed: String = text
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    for name in FORMAT_SUBSTRINGS {
-        if squashed.contains(name) {
-            hits.push(((*name).to_owned(), ctx.to_owned()));
-        }
-    }
-}
-
-/// Walk a token stream, reporting identifiers and string literals that contain a
-/// [`FORMAT_SEGMENTS`] entry as a whole segment.
-fn scan_format_tokens(stream: proc_macro2::TokenStream, hits: &mut Vec<(String, String)>) {
-    for tt in stream {
-        match tt {
-            proc_macro2::TokenTree::Group(g) => {
-                let is_doc = matches!(g.delimiter(), proc_macro2::Delimiter::Bracket)
-                    && g.stream().into_iter().next().is_some_and(
-                        |t| matches!(&t, proc_macro2::TokenTree::Ident(i) if i == "doc"),
-                    );
-                if !is_doc {
-                    scan_format_tokens(g.stream(), hits);
-                }
-            }
-            proc_macro2::TokenTree::Ident(id) => {
-                let name = id.to_string();
-                check_text(&name, &format!("identifier `{name}`"), hits);
-            }
-            proc_macro2::TokenTree::Literal(lit) => {
-                // **No `trim_matches` on the quotes.** It stripped `r` from the
-                // *content* as well as the prefix, so `"pdbr"` and `"rpdbr"`
-                // both scored a false hit on `pdb`. `identifier_segments`
-                // already treats `"`, `#` and the `b`/`r`/`c` prefixes as
-                // boundaries, so the raw token text is what to pass.
-                let text = lit.to_string();
-                check_text(&text, &format!("string literal {text}"), hits);
-            }
-            proc_macro2::TokenTree::Punct(_) => {}
-        }
-    }
 }
 
 /// The root the fiction scans cover. **Unknown ⇒ covered.**
@@ -5491,8 +5065,7 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
                 // element table at `experiments/src/target/elements.json` passed
                 // the whole gate, while the identical file one directory up
                 // failed `check_no_data_files` as it should. That is a **G1**
-                // hole, not merely G5, because `walk` is shared with the
-                // data-file check.
+                // hole, because `walk` is shared with the data-file check.
                 let is_build_dir = path.file_name().and_then(|n| n.to_str()) == Some("target")
                     && path.parent().and_then(|p| p.file_name()).is_none();
                 if !is_build_dir {
@@ -6005,6 +5578,7 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 /// each way it could miscount gets a test.
 #[cfg(test)]
 mod tests {
+    use super::identifier_segments;
     use super::scan_for_derived_streams;
     use super::{GENERATE_CALL, PATTERN_CALL};
     use super::{REAL_SYMBOLS, REAL_WORDS_COPY, collect_shipped_literals, fiction_breaches};
@@ -6017,7 +5591,6 @@ mod tests {
         viewer_banned_imports,
     };
     use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
-    use super::{identifier_segments, scan_format_tokens};
 
     /// A `{` inside a comment between `fn NAME(` and the real body must not be
     /// mistaken for the body brace. The two files are near-copies including
@@ -8059,120 +7632,6 @@ disallowed-types = [ { path = \"right::One\" } ]
         assert_eq!(scan(src).len(), 1, "{:?}", scan(src));
     }
 
-    /// Lex a source string for G5 hits the way the real check does.
-    fn g5(src: &str) -> Vec<(String, String)> {
-        let mut hits = Vec::new();
-        // Neither `unwrap`, `expect` nor `panic!` is available — all three are
-        // denied workspace-wide and the deny reaches inside `#[cfg(test)]`. The
-        // emptiness assert is not decoration: a source that failed to lex would
-        // make every assertion below pass vacuously.
-        let stream: proc_macro2::TokenStream = src.parse().unwrap_or_default();
-        assert!(!stream.is_empty(), "test source did not lex: {src:?}");
-        scan_format_tokens(stream, &mut hits);
-        hits
-    }
-
-    /// **The parser that defeated the predecessor.** A case-sensitive substring
-    /// scan reported zero hits on this while `clippy -D warnings` stayed clean.
-    #[test]
-    fn a_real_format_parser_is_caught_however_it_is_spelled() {
-        let src = r#"
-            pub struct SmilesParser { depth: usize }
-            impl SmilesParser {
-                pub fn parse_smiles(&mut self, s: &str) -> usize { s.len() }
-                pub fn to_smiles(&self) -> String { String::new() }
-            }
-            pub const IMPORT_EXTENSIONS: &[&str] =
-                &["smi", "smiles", "inchi", "sdf", "pdb", "fasta"];
-            pub fn read_molfile(t: &str) -> usize { t.len() }
-            pub fn write_fasta() -> String { String::new() }
-        "#;
-        let found = g5(src);
-        assert!(found.len() >= 10, "only {} hits: {found:?}", found.len());
-        for want in ["smiles", "smi", "inchi", "sdf", "pdb", "fasta", "molfile"] {
-            assert!(
-                found.iter().any(|(seg, _)| seg == want),
-                "missed {want}: {found:?}"
-            );
-        }
-    }
-
-    /// Doctrine must be writable where it matters. The predecessor failed on a
-    /// sentence lifted from CLAUDE.md, and a gate that fires on its own
-    /// rationale is one somebody disables.
-    #[test]
-    fn every_comment_form_may_state_the_prohibition() {
-        for src in [
-            "/// Never import SMILES, InChI, MOL format or FASTA.\nfn f() {}\n",
-            "//! No FASTA, no InChI, no SMILES anywhere.\nfn f() {}\n",
-            "/* Borbax will never read SMILES or PDB format files. */\nfn f() {}\n",
-            "fn f() {}\n// a SMILES parser does not live here\n",
-            "pub const Q: u8 = 1; // no SMILES parser here\n",
-        ] {
-            assert!(g5(src).is_empty(), "fired on prose: {src:?}");
-        }
-    }
-
-    /// `mol` is deliberately out of the vocabulary: `fn embed(mol: &Molecule)`
-    /// appears six times in `experiments/`, and `sdf`/`molfile` cover the same
-    /// import path without the collision.
-    #[test]
-    fn ordinary_molecule_vocabulary_does_not_fire() {
-        for src in [
-            "fn embed(mol: &Molecule) -> usize { 0 }\n",
-            "fn f() { let smith = 1; let summary = 2; }\n",
-            "struct Molecule { atoms: usize }\n",
-        ] {
-            assert!(g5(src).is_empty(), "false positive: {src:?}");
-        }
-    }
-
-    /// Segment splitting is what makes `smi` safe to carry: it matches
-    /// `parse_smi` and not `smith`.
-    /// **The acronym defeat.** A review built a working six-format importer
-    /// using only all-caps type names and scored **zero** — which made this
-    /// check *weaker* than the substring scan it replaced, since that one
-    /// caught `SMILES` inside `SMILESParser` and matched `InChI` exactly.
-    #[test]
-    fn acronym_cased_identifiers_are_caught() {
-        for src in [
-            "pub struct SMILESParser { d: usize }",
-            "pub struct PDBReader { d: usize }",
-            "pub struct InChIString(String);",
-            "pub struct FASTAWriter;",
-            "pub struct MMCIFParser;",
-            "pub fn read_pdb2_file(t: &str) -> usize { t.len() }",
-            r#"pub const K: &str = "InChI";"#,
-        ] {
-            assert!(!g5(src).is_empty(), "escaped: {src}");
-        }
-    }
-
-    /// `trim_matches` stripped `r` from the literal's *content*, not just its
-    /// prefix, so these scored a false hit on `pdb`.
-    #[test]
-    fn a_literal_ending_in_r_is_not_a_format() {
-        for src in [
-            r#"pub const A: &str = "pdbr";"#,
-            r#"pub const B: &str = "rpdbr";"#,
-        ] {
-            assert!(g5(src).is_empty(), "false positive: {src}");
-        }
-    }
-
-    /// Literal prefixes and quotes must not glue to the segment. `b"pdb"` once
-    /// scored zero because the `b` stayed attached.
-    #[test]
-    fn literal_prefixes_and_quotes_are_segment_boundaries() {
-        for src in [
-            r#"pub const X: &[u8] = b"pdb";"#,
-            r##"pub const X: &str = r#"smiles"#;"##,
-            r#"pub const D: &str = include_str!("data.inchi");"#,
-        ] {
-            assert!(!g5(src).is_empty(), "escaped the scan: {src}");
-        }
-    }
-
     #[test]
     fn identifiers_split_on_underscores_and_camel_case() {
         assert_eq!(identifier_segments("SmilesParser"), ["smiles", "parser"]);
@@ -9166,199 +8625,6 @@ mod tests {
         assert!(
             !fiction_hits(r#"fn f() -> &'static str { "made of Carbon" }"#).is_empty(),
             "the name tier must still match by word"
-        );
-    }
-
-    /// The shipped palette passes its own signature pin.
-    ///
-    /// The positive arm. Without it the four refusals below would pass over a
-    /// scan that rejects everything, including correct code.
-    #[test]
-    fn the_shipped_palette_reads_only_scalars() {
-        let text = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap_or_else(|| unreachable!("xtask has a parent directory"))
-                .join(super::PALETTE_FILE),
-        )
-        .unwrap_or_else(|e| unreachable!("the shipped palette is readable: {e}"));
-        let found = super::scan_palette(super::PALETTE_FILE, &text)
-            .unwrap_or_else(|e| unreachable!("the shipped palette parses: {e}"));
-        assert!(
-            found.is_empty(),
-            "the shipped palette fails its own check: {found:?}"
-        );
-    }
-
-    /// An argument naming which element this is, is refused.
-    ///
-    /// **The mutation the guard exists to stop.** `ElementId` is the shortest
-    /// path to a CPK table: with it in scope the palette can `match` on the
-    /// element and return a conventional colour, which is §5 G5's forbidden
-    /// mapping between a Borbax entity and a real-world one.
-    #[test]
-    fn an_identity_argument_is_refused() {
-        for spelling in [
-            "id: ElementId",
-            "element: &Element",
-            "symbol: &str",
-            "name: String",
-            "index: usize",
-        ] {
-            let src = format!("pub fn colour({spelling}, affinity: f64) -> [f64; 3] {{ todo }}");
-            let found = super::scan_palette("probe.rs", &src)
-                .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-            assert!(
-                found.iter().any(|f| f.contains("which is not one of")),
-                "`{spelling}` was accepted by the palette signature pin, so an \
-                 element's identity can reach the colour: {found:?}"
-            );
-        }
-    }
-
-    /// Renaming the palette entry point fails rather than disabling the check.
-    ///
-    /// **Unknown means fail**, the design rule `check_signature_surface_is_pinned`
-    /// established. A guard that matches nothing and says nothing is the shape
-    /// this repository keeps re-finding.
-    #[test]
-    fn a_renamed_palette_entry_point_fails_the_check() {
-        let src = "pub fn shade(affinity: f64) -> [f64; 3] { todo }";
-        let found = super::scan_palette("probe.rs", src)
-            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-        assert!(
-            found.iter().any(|f| f.contains("matched nothing")),
-            "renaming the palette entry point left the check silent: {found:?}"
-        );
-    }
-
-    /// The palette may import nothing.
-    ///
-    /// The structural half: with no `use`, no type from elsewhere is nameable,
-    /// so an element cannot arrive under an alias the type check would have to
-    /// recognise.
-    #[test]
-    fn an_import_into_the_palette_is_refused() {
-        let src =
-            "use borbax_universe::Element;\npub fn colour(affinity: f64) -> [f64; 3] { todo }";
-        let found = super::scan_palette("probe.rs", src)
-            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-        assert!(
-            found.iter().any(|f| f.contains("imports")),
-            "an import into the palette was accepted: {found:?}"
-        );
-    }
-
-    /// A per-group colour lookup is refused.
-    ///
-    /// **This is the mutant a review actually ran, and the guard passed it.**
-    /// Copying `palette.rs` verbatim and replacing the hue line with
-    /// `match group { 6 => 240.0, 7 => 0.0, .. }` keeps every argument a
-    /// permitted scalar, imports nothing, adds no data file, and left all nine
-    /// palette tests *and* this check green. The forbidden artefact — a mapping
-    /// between a Borbax element and a real-world one, §5's G5 in five words —
-    /// was representable with the guard in place.
-    ///
-    /// The signature pin was never going to catch it: the attack needs no new
-    /// argument. What the shipped palette actually relies on is that the hue is
-    /// a **closed-form formula with no free per-element parameter**, and a
-    /// lookup needs a branch. So the branch is what is refused.
-    #[test]
-    fn a_per_group_colour_lookup_is_refused() {
-        let src = "pub fn colour(group: u8, affinity: f64) -> [f64; 3] { \
-                   let hue = match group { 6 => 240.0, 7 => 0.0, _ => 1.0 }; [hue, 0.0, 0.0] }";
-        let found = super::scan_palette("probe.rs", src)
-            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-        assert!(
-            found.iter().any(|f| f.contains("contains a `match`")),
-            "a per-group colour lookup was accepted: {found:?}"
-        );
-    }
-
-    /// The same lookup written as an `if` chain is refused too.
-    ///
-    /// Removing `match` is the first thing anyone would try.
-    #[test]
-    fn a_per_group_if_chain_is_refused() {
-        let src = "pub fn colour(group: u8) -> [f64; 3] { \
-                   if group == 6 { [0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0] } }";
-        let found = super::scan_palette("probe.rs", src)
-            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-        assert!(
-            found.iter().any(|f| f.contains("branches on `group`")),
-            "an if-chain keyed on group was accepted: {found:?}"
-        );
-    }
-
-    /// `valence == 0` is the one permitted branch.
-    ///
-    /// The positive arm for the branch ban. A closed outer shell drawn grey is
-    /// one boolean, which cannot encode a scheme — and without this arm the ban
-    /// would be a check that rejects the shipped file.
-    #[test]
-    fn the_closed_shell_branch_is_permitted() {
-        let src = "pub fn colour(valence: u8, affinity: f64) -> [f64; 3] { \
-                   let s = if valence == 0 { 0.0 } else { affinity }; [s, s, s] }";
-        let found = super::scan_palette("probe.rs", src)
-            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-        assert!(
-            found.is_empty(),
-            "the closed-shell branch was refused, so the ban rejects correct code: {found:?}"
-        );
-    }
-
-    /// A nested module does not escape either check.
-    ///
-    /// The first version walked top-level items only, so
-    /// `mod inner { use ..; pub fn colour(..) }` escaped the import ban and the
-    /// signature pin at once.
-    #[test]
-    fn a_nested_module_does_not_escape_the_palette_scan() {
-        let src = "mod inner { use borbax_universe::Element; \
-                   pub fn colour(e: Element) -> [f64; 3] { [0.0, 0.0, 0.0] } }";
-        let found = super::scan_palette("probe.rs", src)
-            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-        assert!(
-            found.iter().any(|f| f.contains("imports")),
-            "a nested import escaped: {found:?}"
-        );
-        assert!(
-            found.iter().any(|f| f.contains("which is not one of")),
-            "a nested identity argument escaped: {found:?}"
-        );
-    }
-
-    /// An argument that is a stable handle on an element is refused.
-    ///
-    /// `units` is the strongest one: §7.1 says the element *is* that number, so
-    /// it names the same element in every universe. The allow-list is by type
-    /// and `units: u8` passes it, which is why the name is checked separately.
-    #[test]
-    fn a_seed_independent_handle_is_refused() {
-        let src = "pub fn colour(units: u8, affinity: f64) -> [f64; 3] { [0.0, 0.0, 0.0] }";
-        let found = super::scan_palette("probe.rs", src)
-            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-        assert!(
-            found.iter().any(|f| f.contains("seed-independent handle")),
-            "`units` was accepted as a palette input: {found:?}"
-        );
-    }
-
-    /// A type alias cannot smuggle an identity past the allow-list.
-    ///
-    /// `syn` performs no name resolution, so a deny-list of type *spellings*
-    /// would be defeated by `type Id = ElementId;`. The allow-list is not:
-    /// the alias is still not `f64` or `u8`, so it is refused on sight. This is
-    /// the measured difference between the two designs, and the reason the
-    /// default is refusal.
-    #[test]
-    fn an_aliased_identity_is_still_refused() {
-        let src = "type Whatever = u8;\npub fn colour(x: Whatever) -> [f64; 3] { todo }";
-        let found = super::scan_palette("probe.rs", src)
-            .unwrap_or_else(|e| unreachable!("the probe parses: {e}"));
-        assert!(
-            found.iter().any(|f| f.contains("which is not one of")),
-            "an aliased type was accepted by name rather than by spelling: {found:?}"
         );
     }
 }
