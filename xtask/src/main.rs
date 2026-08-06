@@ -4613,10 +4613,9 @@ fn whole_words_preserving_case(name: &str) -> Vec<String> {
 /// removes *every* leading and trailing character satisfying the predicate — so
 /// `"Nr"` became `N`, `"Ib"` became `I` and `"bH"` became `H`, and the
 /// one-letter symbol tier reported nitrogen, iodine and hydrogen on literals
-/// containing no symbol at all. That is the same defect
-/// `a_literal_ending_in_r_is_not_a_format` already pins one scan over, and it
-/// was reintroduced here by a reviewer's own recorded failure mode: reaching for
-/// the convenient trim.
+/// containing no symbol at all. `a_literal_ending_in_r_or_b_is_not_an_element_symbol`
+/// pins it; it was reached for twice by two different reviewers, which is why
+/// it is worth stating in prose as well.
 ///
 /// Handles `"…"`, `r"…"`, `r#"…"#`, `b"…"`, `br#"…"#` and `c"…"`. The trailing
 /// delimiter is as long as the leading one, so the hash count is measured once
@@ -8079,8 +8078,7 @@ opt-level = 1
         // **Asserted, because a fixture that does not lex strips to nothing.**
         // An empty stream contains no vocabulary entry, so every `is_empty()`
         // assertion below would pass without scanning anything — the vacuous
-        // shape this repository keeps re-finding. `g5` asserts the same thing
-        // for the same reason.
+        // shape this repository keeps re-finding.
         assert!(
             !src.trim().is_empty() && !stream.is_empty(),
             "the fixture did not lex, so this assertion would pass over nothing: {src}"
@@ -8351,9 +8349,7 @@ u!(
     /// *every* leading and trailing character matching its predicate, so the
     /// first version of the content extraction turned `"Nr"` into `N`, `"Ib"`
     /// into `I` and `"bH"` into `H` — reporting nitrogen, iodine and hydrogen on
-    /// literals containing no symbol. `a_literal_ending_in_r_is_not_a_format`
-    /// pins the identical defect one scan over; this is it arriving again in new
-    /// code, which is why the fixture list here is the same shape.
+    /// literals containing no symbol.
     #[test]
     fn a_literal_ending_in_r_or_b_is_not_an_element_symbol() {
         for src in [
