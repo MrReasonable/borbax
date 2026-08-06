@@ -133,6 +133,7 @@
 pub mod app;
 pub mod molecule;
 pub mod orbit;
+pub mod palette;
 pub mod panel;
 pub mod scene;
 pub mod state;
