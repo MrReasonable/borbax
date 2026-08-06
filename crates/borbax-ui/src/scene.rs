@@ -1,9 +1,18 @@
 //! The 3D scene: one sphere per atom, a light, and a camera that orbits.
 //!
-//! **The engine draws; it computes nothing.** Every position and every radius
-//! here comes out of `Embedding` unchanged — the only arithmetic applied to a
-//! chemistry value is the narrowing to `f32` the GPU requires, and it happens in
-//! exactly one function so a reviewer can find it.
+//! **The engine draws; it computes no chemistry.** Every position and every
+//! radius here comes out of `molecule::Demo` unchanged — the only arithmetic
+//! applied to a chemistry value is the narrowing to `f32` the GPU requires, and
+//! it happens in exactly one function so a reviewer can find it.
+//!
+//! **Step 4 added display geometry, and the earlier "it computes nothing" was
+//! too strong to survive it.** A bond's midpoint, length and orientation are
+//! derived here, in `f32`, from endpoints that have *already* crossed the
+//! narrowing — deliberately, because `narrow(midpoint_of_f64)` and
+//! `midpoint_of_narrowed` differ, and only the second makes a stick meet its
+//! spheres exactly. Nothing derived here flows back into a chemistry value, and
+//! the drawn radii and colours are computed once per molecule in `molecule.rs`
+//! rather than per frame here.
 //!
 //! # Two cameras, and the reason is a measurement rather than tidiness
 //!
@@ -43,9 +52,9 @@ use crate::orbit::{FOV_Y, NEAR, Orbit};
 )]
 mod systems {
     use super::{
-        AccumulatedMouseMotion, AccumulatedMouseScroll, Atom, AtomLook, DrawnAt, FOV_Y,
-        MouseScrollUnit, NEAR, Orbit, OrbitState, PrimaryWindow, SceneCamera, SceneRegion, Viewer,
-        WORLD_UP, narrow, place, viewport_within,
+        AccumulatedMouseMotion, AccumulatedMouseScroll, Atom, AtomLook, Bond, Drawn, DrawnAt,
+        FOV_Y, MouseScrollUnit, NEAR, Orbit, OrbitState, PrimaryWindow, SceneCamera, SceneRegion,
+        Viewer, WORLD_UP, narrow, place, srgb, viewport_within,
     };
     use bevy::prelude::*;
 
@@ -105,22 +114,32 @@ mod systems {
             Transform::from_xyz(4.0, 8.0, 6.0).looking_at(Vec3::ZERO, WORLD_UP),
         ));
 
-        // **One mesh and one material, shared by every atom**, and both halves
-        // are guarded. A single material handle is what makes "no colour encodes
-        // any property" checkable in one assertion rather than by reading — and
-        // a single *mesh* handle closes the same door one channel along, because
-        // a per-atom mesh keyed on valence (a subdivision count, a different
-        // primitive) is a property map reaching the screen through geometry.
-        // Measured during review: giving every atom its own mesh handle failed
-        // only the material assertion.
+        // **One mesh for every atom and one for every bond, and the mesh
+        // guard survives Step 4 unchanged.** A per-atom *mesh* keyed on a
+        // generated property — a subdivision count, a different primitive — is
+        // a property map reaching the screen through geometry, and it is a
+        // separate door from colour. Step 4 opens the colour channel
+        // deliberately; geometry stays closed, and is now the *only* closed
+        // channel, which makes its guard more load-bearing rather than less.
         //
-        // Atoms are told apart by radius, which is a generated quantity drawn
-        // faithfully.
+        // The atom *material* is no longer shared: Step 4's whole point is that
+        // an atom is painted the colour its own element earns, so materials are
+        // built per atom in `respawn_atoms`. What replaces the retired
+        // single-material guarantee is a set of tests saying the colour is
+        // *this element's* — see `tests/app.rs`.
+        //
+        // Sticks keep a shared material, because a bond has no generated
+        // property of its own to encode: every bond this crate builds is
+        // `SINGLE`. A per-bond colour would be a property map with no property.
         commands.insert_resource(AtomLook {
             mesh: meshes.add(Mesh::from(Sphere::new(1.0))),
-            material: materials.add(StandardMaterial {
-                base_color: Color::srgb(0.62, 0.68, 0.78),
-                perceptual_roughness: 0.45,
+            // Unit radius **and** unit height, so scaling by `(r, length, r)`
+            // is the whole transform — the same "the mesh is a unit thing and
+            // the scale is the measurement" rule the sphere follows.
+            stick_mesh: meshes.add(Mesh::from(Cylinder::new(1.0, 1.0))),
+            stick_material: materials.add(StandardMaterial {
+                base_color: Color::srgb(0.62, 0.64, 0.70),
+                perceptual_roughness: 0.55,
                 ..default()
             }),
         });
@@ -150,11 +169,23 @@ mod systems {
         mut commands: Commands<'_, '_>,
         viewer: Res<'_, Viewer>,
         look: Res<'_, AtomLook>,
+        mut materials: ResMut<'_, Assets<StandardMaterial>>,
         mut drawn: ResMut<'_, DrawnAt>,
         mut orbit: ResMut<'_, OrbitState>,
-        existing: Query<'_, '_, Entity, With<Atom>>,
+        // **Atoms *and* bonds**, so a view flip or a refused seed takes both
+        // off the screen. Despawning only `With<Atom>` left four sticks hanging
+        // in space under the refusal message — the exact defect that shipped
+        // for atoms at Step 3, one entity kind along.
+        existing: Drawn<'_, '_>,
     ) {
-        let generation = viewer.0.reloads();
+        // **The view is part of the token, not a second mechanism.** Flipping
+        // it changes what is drawn without generating a universe, so `reloads`
+        // does not move — and gating on `reloads` alone would leave the old
+        // picture on screen after the toggle, with every test green. Adding it
+        // here reuses the respawn path that is already tested rather than
+        // introducing a parallel "update in place" system whose idle behaviour
+        // nothing watches.
+        let generation = (viewer.0.reloads(), viewer.0.view());
         if drawn.0 == generation {
             return;
         }
@@ -167,19 +198,107 @@ mod systems {
         let Some(demo) = viewer.0.demo() else {
             return;
         };
-        for (position, radius) in demo.embedding.coords().iter().zip(demo.embedding.radii()) {
+        let view = viewer.0.view();
+        // **The drawn radii come off the molecule, not from a constant here.**
+        // `Demo::stick_radii` is the true radii times one scale derived from
+        // this molecule's own bonded pairs — see `molecule::stick_geometry`.
+        // The solid view uses the true radii unchanged, so that picture stays
+        // bit-identical to what Step 3 shipped rather than merely close to it.
+        let drawn: Vec<f64> = if view.draws_sticks() {
+            demo.stick_radii.clone()
+        } else {
+            demo.embedding.radii().iter().map(|r| r.get()).collect()
+        };
+
+        for (i, position) in demo.embedding.coords().iter().enumerate() {
+            let Some(radius) = drawn.get(i).copied() else {
+                continue;
+            };
+            // **Canonical index throughout.** `colours` is aligned with
+            // `coords`; `Demo::elements` is *not*, and zipping that instead
+            // paints the centre's colour onto a leaf in every universe.
+            let Some(colour) = demo.colours.get(i) else {
+                continue;
+            };
             commands.spawn((
                 Mesh3d(look.mesh.clone()),
-                MeshMaterial3d(look.material.clone()),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: srgb(*colour),
+                    perceptual_roughness: 0.45,
+                    ..default()
+                })),
                 // The sphere mesh has unit radius, so scaling by the atom's own
-                // radius is the whole transform. No fudge, no clamp, no
-                // per-atom adjustment: the picture is the chemistry.
+                // radius is the whole transform. The one multiplication is the
+                // view's uniform scale, and it happens in `f64` before the
+                // single narrowing rather than after it.
                 Transform::from_translation(place(*position))
-                    .with_scale(Vec3::splat(narrow(radius.get()))),
+                    .with_scale(Vec3::splat(narrow(radius))),
                 Atom,
             ));
         }
+
+        if view.draws_sticks() {
+            spawn_sticks(&mut commands, &look, demo);
+        }
+
         orbit.0 = Orbit::framing(demo.embedding.radius_of_gyration().get());
+    }
+
+    /// One cylinder along each bond.
+    ///
+    /// **The geometry is derived in engine space from the *narrowed* endpoints
+    /// the spheres already use**, not computed in `f64` and narrowed
+    /// separately. `narrow(midpoint_of_f64)` and `midpoint_of_narrowed` differ
+    /// in general, and the difference is visible: a stick would meet its atoms
+    /// fractionally off-centre. Deriving from the same `place()` values is what
+    /// makes stick and sphere agree exactly.
+    ///
+    /// That is display geometry on values that have already left the chemistry,
+    /// so nothing here flows back — which is the sense in which this module
+    /// still "computes nothing".
+    fn spawn_sticks(
+        commands: &mut Commands<'_, '_>,
+        look: &AtomLook,
+        demo: &crate::molecule::Demo,
+    ) {
+        let coords = demo.embedding.coords();
+        // A share of this molecule's own smallest drawn atom, so the stick is
+        // always thinner than everything it joins whatever shape it is.
+        let radius = narrow(demo.stick_width);
+        for [a, b] in &demo.bonds {
+            let (Some(from), Some(to)) = (
+                coords.get(usize::from(*a)).map(|p| place(*p)),
+                coords.get(usize::from(*b)).map(|p| place(*p)),
+            ) else {
+                continue;
+            };
+            let along = to - from;
+            let length = along.length();
+            // Two atoms at one point have no direction to point a stick along,
+            // and `normalize` would hand back NaN. The embedding never produces
+            // it — `no_two_atoms_share_a_point` says so — which is why this
+            // declines rather than clamping to an arbitrary axis.
+            if !length.is_finite() || length <= f32::EPSILON {
+                continue;
+            }
+            commands.spawn((
+                Mesh3d(look.stick_mesh.clone()),
+                MeshMaterial3d(look.stick_material.clone()),
+                Transform {
+                    translation: from.midpoint(to),
+                    // **`from_rotation_arc`, not `looking_at`.** The cylinder
+                    // primitive is Y-aligned and `looking_at` aims −Z, so that
+                    // spelling needs a correction rotation that says nothing.
+                    // The antiparallel case picks an arbitrary perpendicular
+                    // axis, which is invisible *by construction* here: a
+                    // cylinder is rotationally symmetric about its own axis.
+                    rotation: Quat::from_rotation_arc(Vec3::Y, along / length),
+                    // Unit mesh, so this is radius, length, radius.
+                    scale: Vec3::new(radius, length, radius),
+                },
+                Bond,
+            ));
+        }
     }
 
     /// Is the pointer in the region the panel left for the scene?
@@ -386,6 +505,21 @@ pub struct SceneCamera;
 #[derive(Component, Debug)]
 pub struct Atom;
 
+/// Everything the scene draws for a molecule: its atoms and its bonds.
+///
+/// A named alias because `clippy::type_complexity` denies the inline spelling —
+/// and because "everything drawn for the molecule" is the concept the despawn
+/// loop actually wants, rather than a filter someone has to read twice.
+pub type Drawn<'w, 's> = Query<'w, 's, Entity, Or<(With<Atom>, With<Bond>)>>;
+
+/// Marks one bond of the molecule on screen.
+///
+/// **A marker of its own, never [`Atom`].** Five shipped tests count and
+/// compare atoms through `With<Atom>`, and a stick carrying that marker would
+/// leave every one of them green while describing something else.
+#[derive(Component, Debug)]
+pub struct Bond;
+
 /// The orbit camera's parameters, held where a system can reach them.
 #[derive(Resource, Default, Debug)]
 pub struct OrbitState(pub Orbit);
@@ -394,15 +528,25 @@ pub struct OrbitState(pub Orbit);
 #[derive(Resource, Default, Debug)]
 pub struct SceneRegion(pub Option<Rect>);
 
-/// Which reload the atoms currently on screen were built from.
+/// Which reload, and which view, the entities on screen were built from.
+///
+/// **Both halves, because either can change what is drawn.** A seed commit
+/// moves the reload count; flipping the view moves neither it nor anything else
+/// in `ViewerState` that the scene reads, so a token of only the count would
+/// leave the previous picture up after the toggle with the whole suite green.
 #[derive(Resource, Default, Debug)]
-pub struct DrawnAt(pub u64);
+pub struct DrawnAt(pub (u64, crate::state::ViewMode));
 
-/// The one mesh and the one material every atom shares.
+/// The shared meshes, and the material every bond shares.
+///
+/// Atom materials are **not** here: Step 4 gives each atom the colour its own
+/// element earns, so they are built per atom. A bond has no generated property
+/// of its own to encode, so its material is shared and that sharing is checked.
 #[derive(Resource, Debug)]
 pub struct AtomLook {
     mesh: Handle<Mesh>,
-    material: Handle<StandardMaterial>,
+    stick_mesh: Handle<Mesh>,
+    stick_material: Handle<StandardMaterial>,
 }
 
 /// The viewer's state, as the engine holds it.
@@ -436,6 +580,19 @@ pub const fn narrow(x: f64) -> f32 {
 /// A chemistry-space point, as the engine wants it.
 pub const fn place(v: [f64; 3]) -> Vec3 {
     Vec3::new(narrow(v[0]), narrow(v[1]), narrow(v[2]))
+}
+
+/// A palette colour, as the engine wants it.
+///
+/// **Three calls to [`narrow`], not a fourth narrowing site.** The palette
+/// computes in `f64` like every other chemistry-derived quantity here, and the
+/// components cross to the GPU through the crate's single declared boundary —
+/// which is what `check_the_viewer_narrows_in_one_place` counts.
+///
+/// `Color::srgb` takes sRGB components and the engine does the linearisation,
+/// so no gamma is applied here; doing it by hand would double-correct.
+pub const fn srgb(c: [f64; 3]) -> Color {
+    Color::srgb(narrow(c[0]), narrow(c[1]), narrow(c[2]))
 }
 
 /// A logical-point coordinate as a whole physical pixel.

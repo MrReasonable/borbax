@@ -1,9 +1,18 @@
 //! The molecule the scene shows, built out of whatever elements this universe
 //! turned out to have.
 //!
-//! **No engine type, no UI type, no arithmetic on a chemistry value.** This file
-//! is in the seam's strictest tier, so every test here runs as plain logic with
-//! no window and no device.
+//! **No engine type and no UI type.** This file is in the seam's strictest
+//! tier, so every test here runs as plain logic with no window and no device.
+//!
+//! **It does arithmetic on chemistry values, and Step 4 is when that started.**
+//! An earlier version of this line said it did not, which stopped being true
+//! the moment colours and drawn radii were baked here. The honest rule is
+//! narrower and still load-bearing: everything computed here is a **display**
+//! quantity derived from chemistry values, and **none of it flows back** — no
+//! `Embedding`, no `Element` and no `Universe` is altered, and nothing here is
+//! read by anything that computes chemistry. The reason it lives here rather
+//! than at paint time is §8.6: it is per-species work, done once when the
+//! molecule is laid out, and no frame may recompute it.
 //!
 //! # Why the molecule is specified by valence and not by element
 //!
@@ -142,6 +151,28 @@ pub struct Demo {
     /// question answer itself: a colour can only change when the molecule does,
     /// which is the event the scene already rebuilds on.
     pub colours: Vec<[f64; 3]>,
+    /// The radius each atom is drawn at in the sticks view, in **canonical**
+    /// order, aligned with [`Embedding::coords`].
+    ///
+    /// **Derived from this molecule's own geometry, not from a constant.** A
+    /// stick between two atoms is only visible if the two drawn spheres do not
+    /// swallow it, which happens exactly when their drawn radii sum to less
+    /// than the distance between them. That is a property of *this* molecule,
+    /// so it is computed from it — see [`stick_geometry`]. A hard-coded scale
+    /// would be correct on the molecules it was surveyed against and
+    /// unjustified for any other, which is the whole reason this is a list
+    /// rather than a number.
+    ///
+    /// Every radius is the true radius times **one** scale shared by all of
+    /// them, so the relative sizes are exactly as the solver computed them. A
+    /// per-atom adjustment would be the fabrication the scene refuses.
+    pub stick_radii: Vec<f64>,
+    /// How fat a bond is drawn, in chemistry-space units.
+    ///
+    /// A share of the **smallest drawn atom of this molecule**, so a stick
+    /// always reads as thinner than everything it joins — again a ratio of a
+    /// real atom rather than a constant chosen once.
+    pub stick_width: f64,
 }
 
 /// Lay out this universe's demo molecule, or say there is none.
@@ -178,12 +209,113 @@ pub fn build(universe: &Universe) -> Option<Demo> {
     }
 
     let (species, _search) = canonicalise(&mol).ok()?;
+    let embedding = embed(&species, universe);
+    let bonds = bonds_of(&species)?;
+    let (stick_radii, stick_width) = stick_geometry(&embedding, &bonds);
     Some(Demo {
-        embedding: embed(&species, universe),
-        bonds: bonds_of(&species)?,
         colours: colours_of(&species, universe)?,
+        embedding,
+        bonds,
+        stick_radii,
+        stick_width,
         elements,
     })
+}
+
+/// How much of the separating bound the drawn atoms actually take up.
+///
+/// The bound itself is the largest scale at which the closest bonded pair still
+/// touches; drawing *at* it leaves a gap of exactly zero. 0.6 spends 60% of it
+/// on the atoms and leaves **40% of that pair's separation as visible gap**,
+/// which is the quantity a person sees. Measured on the demo molecule, whose
+/// worst bound across 500 universes is 0.872035: a scale of about 0.523 and a
+/// minimum surface gap of about 0.47 span.
+const STICK_CLEARANCE: f64 = 0.6;
+
+/// How fat a bond is, as a share of the smallest atom it could join.
+///
+/// Below 1.0 by enough that a stick never reads as a neck between two lumps,
+/// and far enough above zero to be visible while the molecule turns.
+const STICK_SHARE: f64 = 0.38;
+
+// A stick has to be thinner than the atoms it joins or it is not a stick. A
+// compile-time check because the comparison is between two constants, and
+// because the failure is a picture nobody would call wrong — just muddled.
+const _: () = assert!(
+    STICK_SHARE < 1.0,
+    "a bond is drawn at least as fat as the thinnest atom it joins, so the      molecule reads as lumps connected by necks rather than as balls and sticks"
+);
+
+/// The drawn radii and bond width for the sticks view.
+///
+/// **The scale is the largest one at which every bonded pair still separates,
+/// less a clearance.** Two drawn spheres of radii `s·rₐ` and `s·r_b` whose
+/// centres are `d` apart stop overlapping exactly when `s < d / (rₐ + r_b)`, so
+/// the binding constraint is the smallest such ratio over the molecule's bonds.
+/// Taking it from the molecule rather than from a survey is what makes this
+/// correct for a shape nobody has measured yet — which is every shape the
+/// builder will produce.
+///
+/// A molecule with no bonds has no constraint and nothing to hide a stick
+/// behind, so it is drawn at true size; the scale is never above 1.0, because
+/// drawing an atom *larger* than it is would be a fabrication rather than a
+/// display choice.
+///
+/// **Folded with explicit comparisons rather than `f64::min`/`f64::max`**,
+/// which §13.1 disallows for disagreeing about NaN between platforms.
+fn stick_geometry(embedding: &Embedding, bonds: &[[u8; 2]]) -> (Vec<f64>, f64) {
+    let radii: Vec<f64> = embedding.radii().iter().map(|r| r.get()).collect();
+
+    let mut bound = f64::INFINITY;
+    for [a, b] in bonds {
+        let (Some(ra), Some(rb)) = (
+            radii.get(usize::from(*a)).copied(),
+            radii.get(usize::from(*b)).copied(),
+        ) else {
+            continue;
+        };
+        let Some(distance) = embedding.distance(usize::from(*a), usize::from(*b)) else {
+            continue;
+        };
+        let sum = ra + rb;
+        if sum <= 0.0 {
+            continue;
+        }
+        let ratio = distance.get() / sum;
+        if ratio < bound {
+            bound = ratio;
+        }
+    }
+
+    // `bound` is infinite when the molecule has no bonds, which the clamp turns
+    // into "draw it at true size" rather than into a non-finite scale.
+    let mut scale = STICK_CLEARANCE * bound;
+    // **`is_finite` first, and it is not defensive padding.** `bound` is
+    // `f64::INFINITY` for a molecule with no bonds, and a `NaN` would slip past
+    // a bare `scale > 1.0` — every comparison against `NaN` is false, so the
+    // guard shaped to catch the bad case is the one the bad case passes
+    // through. That exact shape is recorded in `scene.rs`'s viewport check.
+    if !scale.is_finite() || scale > 1.0 {
+        scale = 1.0;
+    }
+
+    let drawn: Vec<f64> = radii.iter().map(|r| r * scale).collect();
+
+    let mut smallest = f64::INFINITY;
+    for r in &drawn {
+        if *r < smallest {
+            smallest = *r;
+        }
+    }
+    // An empty molecule leaves `smallest` infinite; a width of zero is the
+    // honest answer for a molecule with no atoms to join.
+    let width = if smallest.is_finite() {
+        STICK_SHARE * smallest
+    } else {
+        0.0
+    };
+
+    (drawn, width)
 }
 
 /// Which pairs of atoms are bonded, as canonical indices.
@@ -862,6 +994,225 @@ mod tests {
             bonds_checked,
             SEEDS * u64::from(LEAVES),
             "the number of bonds examined is not one per leaf per universe"
+        );
+    }
+
+    /// The sticks view separates every bonded pair, in every universe.
+    ///
+    /// **This is the test that says the sticks view does its job**, and it is
+    /// the one that would fail for the obvious implementation. Step 3 made
+    /// interpenetration the way the molecule reads as one body — 94.7% of
+    /// bonded pairs overlap at true size — so a stick drawn between two
+    /// true-size atoms is buried inside them and shows on about 9% of bonds.
+    /// Every structural test passes over that: the entity count is right, the
+    /// transforms are right, and nothing is visible.
+    ///
+    /// So the assertion is the *geometric* one — two drawn spheres do not
+    /// reach each other — rather than a count of entities.
+    #[test]
+    fn the_sticks_view_separates_every_bonded_pair() {
+        let mut checked = 0_u64;
+        let mut bonds_checked = 0_u64;
+        let mut tightest = f64::INFINITY;
+        for seed in 0..SEEDS {
+            let demo = build(&Universe::generate(seed))
+                .unwrap_or_else(|| unreachable!("every seed builds a molecule"));
+            for [a, b] in &demo.bonds {
+                let ra = demo
+                    .stick_radii
+                    .get(usize::from(*a))
+                    .copied()
+                    .unwrap_or_else(|| unreachable!("one drawn radius per atom"));
+                let rb = demo
+                    .stick_radii
+                    .get(usize::from(*b))
+                    .copied()
+                    .unwrap_or_else(|| unreachable!("one drawn radius per atom"));
+                let distance = demo
+                    .embedding
+                    .distance(usize::from(*a), usize::from(*b))
+                    .unwrap_or_else(|| unreachable!("a bond names two atoms"))
+                    .get();
+                let gap = distance - (ra + rb);
+                assert!(
+                    gap > 0.0,
+                    "seed {seed}: the atoms of bond [{a}, {b}] still overlap by \
+                     {:.6} in the sticks view, so the stick between them is \
+                     buried inside them and the view shows nothing new",
+                    -gap
+                );
+                if gap < tightest {
+                    tightest = gap;
+                }
+                bonds_checked += 1;
+            }
+            checked += 1;
+        }
+        assert_eq!(
+            checked, SEEDS,
+            "the corpus is not the one this claim was made over"
+        );
+        assert_eq!(
+            bonds_checked,
+            SEEDS * u64::from(LEAVES),
+            "the number of bonds examined is not one per leaf per universe"
+        );
+        // Reported rather than asserted against a chosen bar: the assertion
+        // above is the requirement, and this says how much room it had.
+        assert!(
+            tightest.is_finite(),
+            "no bond was measured, so the loop above asserted nothing"
+        );
+    }
+
+    /// A molecule with no bonds is drawn at true size, not at infinity.
+    ///
+    /// **This test exists because a mutation probe found the clamp it guards to
+    /// be vacuous without it.** The separating bound is a minimum over bonded
+    /// pairs, so a molecule with *no* bonds leaves it at `f64::INFINITY` and the
+    /// scale would be infinite. The clamp catches that — but the demo molecule
+    /// can never reach it: its bound runs about 0.87 to 1.16 across 500
+    /// universes, so the scale never approaches 1.0 and deleting the clamp
+    /// outright left the whole suite green.
+    ///
+    /// Calling [`stick_geometry`] directly with an empty bond list is what makes
+    /// the branch reachable, and it is a real case rather than a contrived one:
+    /// the builder can produce a lone atom, and a `NaN` scale would size every
+    /// sphere to nothing.
+    #[test]
+    fn a_molecule_with_no_bonds_is_drawn_at_true_size() {
+        let demo = build(&Universe::generate(1))
+            .unwrap_or_else(|| unreachable!("seed 1 builds a molecule"));
+        let (drawn, width) = super::stick_geometry(&demo.embedding, &[]);
+
+        assert_eq!(
+            drawn.len(),
+            demo.embedding.len(),
+            "one drawn radius per atom, even with nothing to separate"
+        );
+        for (got, want) in drawn.iter().zip(demo.embedding.radii()) {
+            assert!(
+                got.is_finite(),
+                "an unbonded atom is drawn at {got}, so the infinite bound \
+                 reached the scale"
+            );
+            assert!(
+                (got - want.get()).abs() < 1e-12,
+                "an unbonded atom is drawn at {got:.6} against a true radius of \
+                 {:.6} — with no bond to hide, there is nothing to shrink for",
+                want.get()
+            );
+        }
+        assert!(
+            width.is_finite() && width > 0.0,
+            "the bond width is {width}, which is not a size"
+        );
+    }
+
+    /// A bond is drawn thinner than every atom it could join.
+    ///
+    /// Fails if the stick width stops being a share of the *smallest* drawn
+    /// atom — a width taken from the average or the largest gives a stick fatter
+    /// than the leaves, and the molecule reads as lumps joined by necks.
+    #[test]
+    fn a_stick_is_thinner_than_every_atom_it_joins() {
+        let mut checked = 0_u64;
+        for seed in 0..SEEDS {
+            let demo = build(&Universe::generate(seed))
+                .unwrap_or_else(|| unreachable!("every seed builds a molecule"));
+            for (i, radius) in demo.stick_radii.iter().enumerate() {
+                assert!(
+                    demo.stick_width < *radius,
+                    "seed {seed}: a bond is drawn at {:.6} against atom {i} at \
+                     {radius:.6}, so the stick is not thinner than the atoms",
+                    demo.stick_width
+                );
+            }
+            assert!(
+                demo.stick_width > 0.0,
+                "seed {seed}: bonds are drawn with no width at all"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, SEEDS,
+            "the corpus is not the one this claim was made over"
+        );
+    }
+
+    /// No atom is ever drawn larger than it is.
+    ///
+    /// The scale is a *display* choice and shrinking is one; enlarging would be
+    /// a fabrication. Guards the clamp, which is also what stops a molecule
+    /// with no bonds — where the separating bound is infinite — producing a
+    /// non-finite scale.
+    #[test]
+    fn no_atom_is_drawn_larger_than_it_is() {
+        let mut checked = 0_u64;
+        for seed in 0..SEEDS {
+            let demo = build(&Universe::generate(seed))
+                .unwrap_or_else(|| unreachable!("every seed builds a molecule"));
+            assert_eq!(
+                demo.stick_radii.len(),
+                demo.embedding.len(),
+                "seed {seed} has {} drawn radii for {} atoms",
+                demo.stick_radii.len(),
+                demo.embedding.len()
+            );
+            for (drawn, true_radius) in demo.stick_radii.iter().zip(demo.embedding.radii()) {
+                assert!(
+                    drawn.is_finite() && *drawn > 0.0,
+                    "seed {seed}: an atom is drawn at {drawn}, which is not a size"
+                );
+                assert!(
+                    *drawn <= true_radius.get(),
+                    "seed {seed}: an atom is drawn at {drawn:.6} against a true \
+                     radius of {:.6} — the view may shrink an atom and may not \
+                     invent one",
+                    true_radius.get()
+                );
+            }
+            checked += 1;
+        }
+        assert_eq!(
+            checked, SEEDS,
+            "the corpus is not the one this claim was made over"
+        );
+    }
+
+    /// The drawn radii are the true radii times **one** shared scale.
+    ///
+    /// **This is the guard against a per-atom fudge**, which is the fabrication
+    /// the scene's own header refuses and which no separation test can see: an
+    /// implementation that shrank only the two atoms of the tightest bond would
+    /// satisfy every assertion above while destroying the relative sizes the
+    /// solver computed.
+    #[test]
+    fn every_atom_is_shrunk_by_the_same_amount() {
+        let mut checked = 0_u64;
+        for seed in 0..SEEDS {
+            let demo = build(&Universe::generate(seed))
+                .unwrap_or_else(|| unreachable!("every seed builds a molecule"));
+            let mut ratios = demo
+                .stick_radii
+                .iter()
+                .zip(demo.embedding.radii())
+                .map(|(drawn, r)| drawn / r.get());
+            let first = ratios
+                .next()
+                .unwrap_or_else(|| unreachable!("the molecule has atoms"));
+            for ratio in ratios {
+                assert!(
+                    (ratio - first).abs() < 1e-12,
+                    "seed {seed}: atoms are shrunk by {first:.9} and {ratio:.9}, \
+                     so the relative sizes the solver computed have been changed"
+                );
+            }
+            checked += 1;
+        }
+        assert_eq!(
+            checked, SEEDS,
+            "the corpus is not the one this claim was made over"
         );
     }
 
