@@ -8,11 +8,21 @@
 //! **Step 4 added display geometry, and the earlier "it computes nothing" was
 //! too strong to survive it.** A bond's midpoint, length and orientation are
 //! derived here, in `f32`, from endpoints that have *already* crossed the
-//! narrowing — deliberately, because `narrow(midpoint_of_f64)` and
-//! `midpoint_of_narrowed` differ, and only the second makes a stick meet its
-//! spheres exactly. Nothing derived here flows back into a chemistry value, and
-//! the drawn radii and colours are computed once per molecule in `molecule.rs`
-//! rather than per frame here.
+//! narrowing.
+//!
+//! **The reason is consistency, not magnitude, and an earlier version of this
+//! paragraph claimed the difference was visible.** It is not: measured over
+//! every bonded pair in 500 universes, `narrow(midpoint_of_f64)` and
+//! `midpoint_of_narrowed` differ by at most **7.3e-8 span** against a molecule
+//! of gyration radius 0.8 to 1.6 — seven orders below anything a screen shows,
+//! and three orders below the rotation residue the endpoint test already
+//! tolerates. What deriving from the same `place()` values does buy is that a
+//! stick's endpoints are *bit-identical* to the sphere centres they join, so no
+//! second narrowing-order term enters at all.
+//!
+//! Nothing derived here flows back into a chemistry value, and the drawn radii
+//! and colours are computed once per molecule in `molecule.rs` rather than per
+//! frame here.
 //!
 //! # Two cameras, and the reason is a measurement rather than tidiness
 //!

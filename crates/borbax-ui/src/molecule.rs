@@ -24,13 +24,17 @@
 //! obvious "chain the first few elements" spelling is refused by
 //! [`Mol12::add_bond`] on its first bond, 100% of the time.
 //!
-//! **Three corpus sizes appear in this file and they are three different
-//! measurements, not one quoted inconsistently.** The shipped tests run over
-//! **500** seeds, which is the number every bar here was set from. The **5000**
-//! figures come from an independent run during design and are quoted where they
-//! are the stronger evidence. The **2000** figures come from the Step 3 design
-//! memo's own survey of `embed`'s output and are about shapes this file does not
-//! build.
+//! **Four numbers in this file look like corpus sizes and only three are, and
+//! the fourth was introduced by Step 4 directly below a paragraph warning about
+//! exactly this.** The shipped tests run over **500** seeds, which is the number
+//! every bar here was set from. The **5000** figures come from an independent
+//! run during design and are quoted where they are the stronger evidence. The
+//! **2000 universes** of the Step 3 design memo are its own survey of `embed`'s
+//! output, about shapes this file does not build.
+//!
+//! **`1893 of 2000` is none of those.** Its 2000 is 500 universes x 4 bonds — a
+//! count of *pairs*, not of universes. Read it as a corpus size and it looks
+//! like the memo's, which is how two correct measurements got compared as one.
 //!
 //! # Why a centre and four leaves, and why the valences differ
 //!
@@ -51,12 +55,23 @@
 //! carries information rather than being an artefact.
 //!
 //! **The count is stated rather than the percentage, and it is pinned by
-//! `the_bonded_pairs_overlap_at_true_size` rather than by this sentence.** An
-//! earlier version said 94.5% and Step 4's first draft said 94.7%; the shipped
-//! corpus measures neither. A figure quoted in prose has no memory, so
-//! correcting it by hand is a one-time act the next change undoes silently —
-//! the remedy already recorded here for the gel-band figures is a test whose
-//! failure message names every site to requote.
+//! `the_bonded_pairs_overlap_at_true_size` rather than by this sentence.**
+//!
+//! **The Step 3 memo's 94.5% is not wrong, and a commit on this branch said it
+//! was.** That memo measures over **2000** universes, where the figure is
+//! 7557/8000 = 94.46%; this file measures over **500**, where it is
+//! 1893/2000 = 94.65%. Two corpora, two correct answers, and the retraction
+//! compared them as though they were one — the same class of error it was
+//! written to fix, committed inside the fix. Step 4's own first draft said
+//! 94.7%, which was a rounding of this corpus and is the only figure here that
+//! was ever simply wrong.
+//!
+//! A figure quoted in prose has no memory, so correcting one by hand is a
+//! one-time act the next change undoes silently. The remedy already recorded
+//! here for the gel-band figures is a test whose failure message names every
+//! site to requote, and **the count is what that test pins** — which is also
+//! why the count is written out rather than a percentage, so the corpus it
+//! belongs to is visible at the point of use.
 //!
 //! # What this is not
 //!
@@ -234,10 +249,16 @@ pub fn build(universe: &Universe) -> Option<Demo> {
 ///
 /// The bound itself is the largest scale at which the closest bonded pair still
 /// touches; drawing *at* it leaves a gap of exactly zero. 0.6 spends 60% of it
-/// on the atoms and leaves **40% of that pair's separation as visible gap**,
-/// which is the quantity a person sees. Measured on the demo molecule, whose
-/// worst bound across 500 universes is 0.872035: a scale of about 0.523 and a
-/// minimum surface gap of about 0.47 span.
+/// on the atoms and leaves **40% of that pair's separation as visible gap** —
+/// exactly 40%, not approximately: at `s = 0.6 x bound` the binding pair's gap
+/// is `d - 0.6 x d`, and the measured minimum of `gap / distance` over 2000
+/// bonded pairs is 0.400000.
+///
+/// Measured across 500 universes: the worst bound is **0.872035** (seed 22),
+/// giving a scale of **0.523221**; the smallest surface gap anywhere in the
+/// corpus is **0.362060** (seed 132). **Those are two different universes**, and
+/// an earlier version of this doc attributed a third figure — 0.47, which is
+/// seed 1's — to the worst-bound one.
 const STICK_CLEARANCE: f64 = 0.6;
 
 /// How fat a bond is, as a share of the smallest atom it could join.
@@ -251,7 +272,8 @@ const STICK_SHARE: f64 = 0.38;
 // because the failure is a picture nobody would call wrong — just muddled.
 const _: () = assert!(
     STICK_SHARE < 1.0,
-    "a bond is drawn at least as fat as the thinnest atom it joins, so the      molecule reads as lumps connected by necks rather than as balls and sticks"
+    "a bond is drawn at least as fat as the thinnest atom it joins, so the \
+     molecule reads as lumps connected by necks rather than as balls and sticks"
 );
 
 /// The drawn radii and bond width for the sticks view.
@@ -1065,8 +1087,12 @@ mod tests {
             SEEDS * u64::from(LEAVES),
             "the number of bonds examined is not one per leaf per universe"
         );
-        // Reported rather than asserted against a chosen bar: the assertion
-        // above is the requirement, and this says how much room it had.
+        // **A vacuity check, not a report.** An earlier comment here said this
+        // "says how much room it had", which it does not — `tightest` is never
+        // printed. What it does is refuse a corpus that measured no bond at
+        // all, and `f64::INFINITY` is the right sentinel for that where `0.0`
+        // would not be (see `every_stick_spans_the_two_atoms_it_bonds`, which
+        // shipped the `0.0` version and could not fire).
         assert!(
             tightest.is_finite(),
             "no bond was measured, so the loop above asserted nothing"
@@ -1079,14 +1105,19 @@ mod tests {
     /// be vacuous without it.** The separating bound is a minimum over bonded
     /// pairs, so a molecule with *no* bonds leaves it at `f64::INFINITY` and the
     /// scale would be infinite. The clamp catches that — but the demo molecule
-    /// can never reach it: its bound runs about 0.87 to 1.16 across 500
+    /// can never reach it: its bound runs **0.872035 to 0.888513** across 500
     /// universes, so the scale never approaches 1.0 and deleting the clamp
-    /// outright left the whole suite green.
+    /// outright left the whole suite green. (An earlier version of this
+    /// sentence said "about 0.87 to 1.16". The upper figure belongs to a
+    /// different molecule in the Step 3 memo; the real span is 18x narrower,
+    /// which makes the clamp *more* unreachable than stated, not less.)
     ///
     /// Calling [`stick_geometry`] directly with an empty bond list is what makes
     /// the branch reachable, and it is a real case rather than a contrived one:
-    /// the builder can produce a lone atom, and a `NaN` scale would size every
-    /// sphere to nothing.
+    /// the builder can produce a lone atom, and an **infinite** scale would
+    /// size every sphere past the far plane. (`NaN` is a different hazard, and
+    /// the clamp's own comment handles it separately — with no bonds the bound
+    /// is `+INFINITY`, not `NaN`.)
     #[test]
     fn a_molecule_with_no_bonds_is_drawn_at_true_size() {
         let demo = build(&Universe::generate(1))
@@ -1238,9 +1269,14 @@ mod tests {
     /// No atom is ever drawn larger than it is.
     ///
     /// The scale is a *display* choice and shrinking is one; enlarging would be
-    /// a fabrication. Guards the clamp, which is also what stops a molecule
-    /// with no bonds — where the separating bound is infinite — producing a
-    /// non-finite scale.
+    /// a fabrication.
+    ///
+    /// **It does not guard the clamp, and an earlier version of this doc said
+    /// it did.** The probe recorded three tests below settles it: deleting the
+    /// clamp left the whole suite green, this test included. The bound never
+    /// exceeds 0.888513, so the scale never approaches 1.0 and the clamp cannot
+    /// fire on the demo molecule at all. `a_molecule_with_no_bonds_is_drawn_at_true_size`
+    /// is what reaches it, by calling `stick_geometry` with an empty bond list.
     #[test]
     fn no_atom_is_drawn_larger_than_it_is() {
         let mut checked = 0_u64;

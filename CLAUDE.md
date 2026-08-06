@@ -276,8 +276,24 @@ disabled for this exact hazard. That chain already delivers what the dependency
 doctrine asks, so `=0.2.16` would add nothing but a resolution failure the first
 time something wants `^0.2.17`. `arch` is a *default* feature, and it
 routes `sqrt`, `fma`, `rint`, `ceil` and `floor` to hardware — with `fma` on
-x86-64 doing **runtime CPU feature detection** between FMA3, FMA4 and soft. The
-only FMA instructions in our release binaries today are inside `libm::cbrt`.
+x86-64 doing **runtime CPU feature detection** between FMA3, FMA4 and soft.
+
+**"The only FMA instructions in our release binaries are inside `libm::cbrt`"
+was true and stopped being true at viewer Step 4.** `palette.rs`'s
+`sector.rem_euclid(2.0)` is a `frem` by a power of two, which LLVM does not
+route to a libcall on aarch64 — it inlines it as `x - trunc(x*0.5)*2`, **fused**
+(`frintz` / `fmadd d0, d0, d2, d1`). On x86-64 the same source line emits a
+second `fmod` libcall instead, so one expression compiles to structurally
+different arithmetic on the two matrix legs.
+
+It reaches no result — nothing depends on `borbax-ui` — and the two lowerings
+are value-identical. They are **not** bit-identical: over 20M random finite
+inputs they differ in 23.7% of cases and **every difference is the sign of
+zero**, none in value. On the domain `hsl_to_rgb` reaches (`sector` in `[0,6)`,
+because LLVM proves `hue >= 0` from `group: u8`) all three lowerings agree in
+20,000,000 of 20,000,000. So the branch is safe *because LLVM proved a range*,
+not because the source is portable — widen that argument's type and `-0.0`
+becomes reachable, where `to_bits()` and any ordering see it.
 
 That is safe, and the correct statement of why: **libm dispatches only on
 operations IEEE-754 specifies exactly**, which is the same criterion

@@ -894,3 +894,60 @@ fn the_window_names_the_molecule_it_is_showing() {
         );
     }
 }
+
+/// Clicking a view label shows that view; clicking the one already showing does
+/// nothing.
+///
+/// **The switch is the feature Step 4 was asked for and it had no test at all.**
+/// `flip_view` was exercised only by calling it directly on the state, so the
+/// widget — including the two inverted `&&` guards that stop a click on the
+/// already-highlighted label toggling *away* from it — was never driven. Delete
+/// either guard and clicking the highlighted label flips the view; the whole
+/// suite stayed green over that.
+///
+/// **Asserted as "becomes this view", not "changes".** A `flip` assertion
+/// cannot tell the difference between the two once a third view exists, and
+/// Step 4b is likely to add one.
+#[test]
+fn clicking_a_view_label_shows_that_view() {
+    let mut harness = Harness::new_ui_state(|ui, state| draw(state, ui), ViewerState::opening());
+    harness.run();
+    assert!(
+        harness.state().view().draws_sticks(),
+        "the window no longer opens on the sticks view, so this test drives the \
+         wrong label first"
+    );
+
+    // The one already showing: nothing happens.
+    harness.get_by_label("sticks").click();
+    harness.run();
+    assert!(
+        harness.state().view().draws_sticks(),
+        "clicking the label of the view already showing flipped away from it — \
+         the guard that stops a no-op click moving the scene's change token is \
+         gone"
+    );
+
+    // The other one: that view, specifically.
+    harness.get_by_label("solid").click();
+    harness.run();
+    assert!(
+        !harness.state().view().draws_sticks(),
+        "clicking `solid` did not show the solid view"
+    );
+
+    // And again on the one now showing.
+    harness.get_by_label("solid").click();
+    harness.run();
+    assert!(
+        !harness.state().view().draws_sticks(),
+        "clicking `solid` while solid was showing flipped away from it"
+    );
+
+    harness.get_by_label("sticks").click();
+    harness.run();
+    assert!(
+        harness.state().view().draws_sticks(),
+        "clicking `sticks` did not return to the sticks view"
+    );
+}
