@@ -482,13 +482,76 @@ this paragraph exists.
       **Nothing catches "the molecule is too far away".** Measured and stated
       rather than papered over: the field-of-view test catches too *close* only.
       That gap belongs to the manual checklist.
-- [ ] **4. Bonds, and colour by generated property.** Cylinders between bonded
+- [x] **4. Bonds, and colour by generated property.** Cylinders between bonded
       atoms; palettes driven by affinity, mass and valence.
 
       *Ian asked for both directly, 2026-08-04: "I like the sticks idea, it makes
       it easy to visualise" and "it would be nice if atoms had unique colours".*
       The G6 guard lands with the palette — a colour may encode a **generated**
       property and must never reproduce a real-world element colour scheme.
+
+      *Shipped, and three things in the paragraph above were amended by
+      execution rather than inherited.*
+
+      **The guard is G5, not G6.** §5's G6 is about results not transferring and
+      names the documentation as its enforcement, so it forbids no artefact and
+      gives a reviewer nothing to check a diff against. The artefact at issue —
+      a per-element colour table using conventional colours — is *literally*
+      G5's "mapping table between Borbax entities and real-world entities", and
+      a ramp anchored to make the picture read right against real chemistry is
+      G3's forbidden transfer function. `xtask` cites G1, G2, G4 and G5 today
+      and has no G6 check; this did not mint one.
+
+      **There are two views, not one, and it is a toggle.** Ian's instruction,
+      2026-08-06. Step 3 made interpenetration the way the molecule reads as a
+      single body — **94.7% of bonded pairs overlap**, measured over 500
+      universes — so a stick between two true-size atoms is buried inside them
+      and shows on about **9%** of bonds. Sticks and overlap are close to
+      mutually exclusive and each carries what the other loses, so `Solid` keeps
+      Step 3's picture exactly and `Sticks` shrinks the atoms. The view joins the
+      scene's change token rather than getting a second mechanism.
+
+      **The drawn size is derived from the molecule, not hard-coded** — Ian's
+      correction, and it was right. A first version used a constant 0.5,
+      justified against a survey minimum of 0.872035 across 500 universes: that
+      is correct-on-average and unjustified for any *particular* molecule, and
+      wrong for anything Step 5 builds. Two drawn spheres separate exactly when
+      `s < d / (rₐ + r_b)`, so `stick_geometry` takes the smallest such ratio
+      over **this** molecule's bonds. Baked in `build` under §8.6, never on the
+      way to a frame.
+
+      **The palette is keyed on `group`, stepped by the golden angle, and the
+      reason is a measurement that killed the obvious design.** An affinity ramp
+      gives the five demo atoms a minimum pairwise separation of **0.0239** —
+      four leaves collapsed into one colour — because the leaves land at
+      *consecutive* groups `(0,1), (0,2), (0,3), (0,4)` in every universe
+      measured. Golden-angle stepping on `group` gives **0.1932** across the
+      five and **0.6748** among the leaves, and it is the coordinate that makes
+      families visible, which §7.1 calls the payload. Saturation carries
+      `affinity` (radius order equals mass order in 500/500, so a mass hue would
+      restate the sphere sizes; it equals affinity order in **0** of 500);
+      lightness carries `mass`; `valence == 0` is grey.
+
+      **Three things nobody should re-derive.** `Demo::elements` is build order
+      and disagrees with canonical order in **500 of 500** universes, in the
+      permutation that paints the centre's colour onto a leaf. The demo molecule
+      **cannot discriminate a bond lookup at all** — its bond set is one
+      constant across the corpus, and six wrong implementations agree with the
+      right one — so `mod shapes` builds a path, a ring, a tree and a two-hub
+      graph inside the test. And `every_atom_is_drawn_where_the_embedding_put_it`
+      was **rewritten, not deleted**, when the display scale made it fail.
+
+      583 tests. `every_atom_is_painted_with_the_same_material` was retired
+      deliberately, with its five replacements recorded at the deletion site;
+      `every_atom_is_drawn_with_the_same_mesh` is kept, and is now the only
+      closed channel.
+
+      **Still manual, and stated rather than hidden.** Nothing catches "the
+      molecule is too far away" (unchanged from Step 3), and nothing catches
+      *colour legibility* — five distinct bit patterns is not five
+      distinguishable colours on a screen, or to a colour-blind child. A
+      distance bar would have to be measured against the shipped palette before
+      it meant anything, which is a Step 4b job.
 - [ ] **4b. Open the atoms up, and name what the generation already separates.**
       *New, from Ian on 2026-08-04, and it is mostly making visible what already
       exists rather than adding physics.*

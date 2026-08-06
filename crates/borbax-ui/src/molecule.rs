@@ -158,7 +158,7 @@ pub struct Demo {
     /// stick between two atoms is only visible if the two drawn spheres do not
     /// swallow it, which happens exactly when their drawn radii sum to less
     /// than the distance between them. That is a property of *this* molecule,
-    /// so it is computed from it — see [`stick_geometry`]. A hard-coded scale
+    /// so it is computed from it — see `stick_geometry`. A hard-coded scale
     /// would be correct on the molecules it was surveyed against and
     /// unjustified for any other, which is the whole reason this is a list
     /// rather than a number.
