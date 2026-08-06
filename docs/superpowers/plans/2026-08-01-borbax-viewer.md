@@ -118,7 +118,8 @@ breaching them, because a UI wants labels.
   It also carries a structural question nobody has costed: the vocabulary lives
   in `borbax-universe`, and `xtask` depending on a chemistry crate to enforce
   §5 inverts the gate — so the blocklist is either extracted or duplicated in
-  `xtask`, which is what `FORMAT_SEGMENTS` already does for G5.
+  `xtask`, the way `FORMAT_SEGMENTS` once did for G5 before G5 was withdrawn
+  (2026-08-06).
 - **No real-world units.** Labels read "spans", "quanta", "thermals",
   "world-years". A tooltip saying "Å" or "kJ/mol" is a G4 breach.
 - **No real-world visual conventions.** CPK colouring (carbon black, oxygen

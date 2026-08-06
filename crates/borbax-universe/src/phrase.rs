@@ -35,10 +35,12 @@
 //! receipt.
 //!
 //! **The phrase is destroyed here, at the crate boundary.** No `&str` and no
-//! `String` reaches any chemistry type, which makes G1, G3, G5 and G6 (§5)
-//! structurally unreachable from this feature rather than merely unviolated by
-//! it. The check is a grep, not a reading: a `&str` field on a type in a
-//! `borbax-*` crate is the defect, and there is none.
+//! `String` reaches any chemistry type, which makes G1 structurally
+//! unreachable from this feature rather than merely unviolated by it. (G5 was
+//! withdrawn 2026-08-06; G3 and G6 were revised the same day from absolutes to
+//! "not necessarily real" and no longer name a rule this boundary needs to
+//! keep — see spec §5.) The check is a grep, not a reading: a `&str` field on a
+//! type in a `borbax-*` crate is the defect, and there is none.
 //!
 //! The phrase is deliberately **not** filtered through `naming`'s G2 blocklist.
 //! G2 constrains *generated* element names; a user typing "Carbon" into a text

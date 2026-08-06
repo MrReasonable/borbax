@@ -1,10 +1,7 @@
 //! What colour an atom is drawn, as a function of what the generator made it.
 //!
-//! **This file imports nothing.** Not the engine, not the UI toolkit, not even
-//! a `borbax-*` crate — it takes bare scalars and returns a bare triple. That is
-//! deliberate twice over: the seam guard has nothing to say about a file with
-//! no imports, and every test here runs as plain logic with no window and no
-//! universe.
+//! **This file imports nothing today.** Not the engine, not the UI toolkit, not
+//! even a `borbax-*` crate — it takes bare scalars and returns a bare triple.
 //!
 //! # Why it still takes bare scalars, now that G5 is gone
 //!
@@ -15,18 +12,30 @@
 //! real-world entities" G5 forbade. G5 no longer exists; see the spec §5 for
 //! why, and issue #26 for the direction that made it untenable.
 //!
-//! The signature is unchanged anyway, because the reason for it was never only
-//! G5. Taking bare scalars is what keeps this file in the seam's strictest tier
-//! — it imports nothing, so every test here runs as plain logic with no window
-//! and no universe. That is worth keeping on its own.
+//! **Nothing enforces the scalar-only signature any more, and an earlier
+//! version of this comment claimed otherwise.** It said the seam guard kept
+//! this file import-free. Measured: `use borbax_universe::Element;` plus a
+//! `match e.units { 6 => 1.0, .. }` compiles and `cargo xtask` reports "all
+//! checks passed" — the seam's strictest tier bans `egui`/`bevy`/`wgpu`/`epaint`
+//! specifically (`xtask/src/main.rs`), and is indifferent to every `borbax-*`
+//! crate, `borbax-ui` already depends on `borbax-universe` elsewhere in this
+//! crate. There is no guard here at all.
 //!
-//! **What was worth learning from the guard, since it cost five review rounds.**
-//! No syntactic check can decide "closed-form formula" from "lookup": every
-//! total function `u8 -> f64` is expressible as arithmetic, so the artefact was
-//! rebuilt past each fix — in an `impl` block, in a helper, behind a `mut`
-//! keyword, as a bit-packed integer, as a fitted polynomial. Each fix also cost
-//! a false positive on honest code. If a structural guard is ever wanted here
-//! again, that is the thing to weigh first.
+//! The reason worth keeping is smaller and still real: constructing an
+//! `Element` fixture needs the universe generator, so a scalar-only signature
+//! is what lets every test below run as plain logic, with no window and no
+//! universe. That is a property of the *tests*, not of a guard, and it is
+//! discipline rather than enforcement — which is exactly the shape of the
+//! obligation the next section describes.
+//!
+//! **What was worth learning from the guard, since it cost several review
+//! rounds — the exact count lives in commits this branch no longer carries,
+//! so it is not quoted here.** No syntactic check can decide "closed-form
+//! formula" from "lookup": every total function `u8 -> f64` is expressible as
+//! arithmetic, so the artefact was rebuilt past each fix — in an `impl` block,
+//! behind a `mut` keyword, as a bit-packed integer. Each fix also cost a false
+//! positive on honest code. If a structural guard is ever wanted here again,
+//! that is the thing to weigh first.
 //!
 //! # The obligation that outlives the guard
 //!
@@ -152,9 +161,10 @@ const SAT_HI: f64 = 0.82;
 ///
 /// Every argument is a **generated scalar** — no symbol, no name, no id, no
 /// position in the table. Nothing enforces that any more (§5's G5 and its guard
-/// were withdrawn on 2026-08-06), and it is kept because it is what holds this
-/// file in the seam's strictest tier: with no identity type in the signature
-/// there is nothing to import, so the whole file tests as plain logic.
+/// were withdrawn on 2026-08-06 — see this module's header for what was tried
+/// and measured false about the replacement justification). It is kept because
+/// an `Element` fixture needs the universe generator to construct, so a
+/// scalar-only signature is what lets every test below run as plain logic.
 ///
 /// **`group` is not an identity argument, and the difference is the whole
 /// design.** It is the generated column index — the quantity that *makes* a
