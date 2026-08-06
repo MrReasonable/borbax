@@ -504,7 +504,7 @@ this paragraph exists.
 
       **There are two views, not one, and it is a toggle.** Ian's instruction,
       2026-08-06. Step 3 made interpenetration the way the molecule reads as a
-      single body — **94.7% of bonded pairs overlap**, measured over 500
+      single body — **1893 of 2000 bonded pairs overlap** (94.65%), over 500
       universes — so a stick between two true-size atoms is buried inside them
       and shows on about **9%** of bonds. Sticks and overlap are close to
       mutually exclusive and each carries what the other loses, so `Solid` keeps

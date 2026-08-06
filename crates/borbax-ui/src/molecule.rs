@@ -45,10 +45,18 @@
 //! body: drawing every atom from one narrow band gives five same-sized balls
 //! floating apart (radius ratio 1.04, no bonded pair touching), while a
 //! high-valence centre with low-valence leaves gives a centre about 2.1x its
-//! leaves and **94.5% of bonded pairs interpenetrating**, with non-bonded pairs
-//! never overlapping. So the molecule looks connected without Step 4's
-//! cylinders, and an overlap on screen carries information rather than being an
-//! artefact.
+//! leaves and **1893 of 2000 bonded pairs interpenetrating** (94.65%, over 500
+//! universes), with non-bonded pairs never overlapping. So the molecule looks
+//! connected without the sticks view's cylinders, and an overlap on screen
+//! carries information rather than being an artefact.
+//!
+//! **The count is stated rather than the percentage, and it is pinned by
+//! `the_bonded_pairs_overlap_at_true_size` rather than by this sentence.** An
+//! earlier version said 94.5% and Step 4's first draft said 94.7%; the shipped
+//! corpus measures neither. A figure quoted in prose has no memory, so
+//! correcting it by hand is a one-time act the next change undoes silently —
+//! the remedy already recorded here for the gel-band figures is a test whose
+//! failure message names every site to requote.
 //!
 //! # What this is not
 //!
@@ -1001,7 +1009,7 @@ mod tests {
     ///
     /// **This is the test that says the sticks view does its job**, and it is
     /// the one that would fail for the obvious implementation. Step 3 made
-    /// interpenetration the way the molecule reads as one body — 94.7% of
+    /// interpenetration the way the molecule reads as one body — 1893 of 2000
     /// bonded pairs overlap at true size — so a stick drawn between two
     /// true-size atoms is buried inside them and shows on about 9% of bonds.
     /// Every structural test passes over that: the entity count is right, the
@@ -1106,6 +1114,93 @@ mod tests {
         assert!(
             width.is_finite() && width > 0.0,
             "the bond width is {width}, which is not a size"
+        );
+    }
+
+    /// The atoms of a bond overlap at true size, and non-bonded atoms never do.
+    ///
+    /// **This pins a figure four documents quote and none owned.** It is the
+    /// measurement the whole two-view design rests on: bonded atoms
+    /// interpenetrating is what makes the solid view read as one body, and it is
+    /// exactly why a stick drawn between true-size atoms is invisible.
+    ///
+    /// **It was quoted wrongly in three places, which is why this exists.** This
+    /// file's header and the Step 3 design memo said 94.5%; Step 4's first draft
+    /// said 94.7% in three more. The shipped corpus measures **1893 of 2000** —
+    /// neither. Correcting a figure by hand is a one-time act with no memory,
+    /// and the next change to the molecule re-orphans every site at once, so the
+    /// remedy this repository already recorded for the gel-band figures is a
+    /// test whose failure message names the sites to requote.
+    ///
+    /// The bar is an equality, not a band, on purpose: the job is to catch the
+    /// molecule changing, not to tolerate it.
+    #[test]
+    fn the_bonded_pairs_overlap_at_true_size() {
+        /// Bonded pairs whose atoms interpenetrate, over `SEEDS` universes.
+        const OVERLAPPING: u64 = 1893;
+        /// Pairs of five atoms: `5 * 4 / 2`.
+        const PAIRS: u64 = 10;
+
+        let mut overlapping = 0_u64;
+        let mut bonded = 0_u64;
+        let mut non_bonded_overlaps = 0_u64;
+        let mut non_bonded = 0_u64;
+        for seed in 0..SEEDS {
+            let demo = build(&Universe::generate(seed))
+                .unwrap_or_else(|| unreachable!("every seed builds a molecule"));
+            let n = demo.embedding.len();
+            let radii = demo.embedding.radii();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let (Some(ri), Some(rj)) = (radii.get(i), radii.get(j)) else {
+                        continue;
+                    };
+                    let Some(distance) = demo.embedding.distance(i, j) else {
+                        continue;
+                    };
+                    let touching = distance.get() < ri.get() + rj.get();
+                    let a = u8::try_from(i).unwrap_or(u8::MAX);
+                    let b = u8::try_from(j).unwrap_or(u8::MAX);
+                    if demo.bonds.contains(&[a, b]) {
+                        bonded += 1;
+                        if touching {
+                            overlapping += 1;
+                        }
+                    } else {
+                        non_bonded += 1;
+                        if touching {
+                            non_bonded_overlaps += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Equalities, so a loop that stopped selecting is visible rather than
+        // silently green — and they say which quantity each counter holds.
+        assert_eq!(
+            bonded,
+            SEEDS * u64::from(LEAVES),
+            "the bonded-pair count is not one per leaf per universe, so the \
+             figure below is over a corpus nobody measured"
+        );
+        assert_eq!(
+            non_bonded,
+            SEEDS * (PAIRS - u64::from(LEAVES)),
+            "the non-bonded-pair count is not six per universe"
+        );
+        assert_eq!(
+            overlapping, OVERLAPPING,
+            "the number of interpenetrating bonded pairs moved to {overlapping} \
+             of {bonded}. Requote it in: this file's header, `state.rs`'s \
+             `ViewMode` doc, and Step 4 of \
+             `docs/superpowers/plans/2026-08-01-borbax-viewer.md`"
+        );
+        assert_eq!(
+            non_bonded_overlaps, 0,
+            "{non_bonded_overlaps} non-bonded pairs interpenetrate, so an overlap \
+             on screen no longer means the two atoms are bonded — which is the \
+             whole reason the solid view is worth keeping"
         );
     }
 

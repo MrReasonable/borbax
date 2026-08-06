@@ -353,7 +353,8 @@ pub enum Outcome {
 /// **Two modes rather than one, on Ian's instruction of 2026-08-06**, and the
 /// reason they cannot be collapsed into one is geometric rather than a matter
 /// of taste. Step 3 chose interpenetration as the way the molecule reads as a
-/// single body: **94.7% of bonded pairs overlap**, measured over 500 universes.
+/// single body: **1893 of 2000 bonded pairs overlap** (94.65%, over 500
+/// universes), pinned by `molecule.rs`'s `the_bonded_pairs_overlap_at_true_size`.
 /// A stick between two overlapping spheres is buried inside them — measured, a
 /// conventionally thin stick emerges on only about **9%** of bonds. So the
 /// overlap and the sticks are close to mutually exclusive, and each carries
