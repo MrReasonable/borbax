@@ -579,14 +579,21 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
 
         // Per-unit binding energy: made contacts, less radial strain.
         //
-        // **The strain term is the invented destabiliser, and the obvious one
-        // is a G3 breach.** The familiar way to bend a binding curve back down
-        // is the semi-empirical mass formula's Coulomb term, and reaching for
-        // it imports real nuclear physics with no data file in sight. This is a
-        // different mechanism: a lattice cannot tile a sphere, so each shell is
-        // stretched over a larger radius than the one below and carries a
-        // strain growing as `n^2`, which competes with the contact term's
-        // saturation and produces a maximum.
+        // **The strain term is the invented destabiliser, and it was chosen to
+        // avoid the semi-empirical mass formula's Coulomb term** — the familiar
+        // way to bend a binding curve back down, which imports real nuclear
+        // physics with no data file in sight. That reasoning was written under
+        // §5's G3, which forbade resemblance to real chemistry absolutely; G3
+        // was revised 2026-08-06 to "not necessarily real", so the reasoning is
+        // no longer load-bearing on its own. It is kept here because nobody has
+        // evaluated a Coulomb-like alternative against this formula's own
+        // measured behaviour (below) — that evaluation is issue #26's, not a
+        // quick swap, since #26 is the deliberate redesign toward approximated
+        // real physics and a term changed in isolation would be tuned blind.
+        // The mechanism as it stands: a lattice cannot tile a sphere, so each
+        // shell is stretched over a larger radius than the one below and
+        // carries a strain growing as `n^2`, which competes with the contact
+        // term's saturation and produces a maximum.
         //
         // (The defence "no charge, no isospin, no pairing and no asymmetry
         // term" stood here and is deleted: it enumerates the terms that are
