@@ -85,7 +85,25 @@ const REAL_WORDS: &[&str] = &[
     "barium",
     "lanthanum",
     "cerium",
+    "praseodymium",
+    "neodymium",
+    "promethium",
+    "samarium",
+    "europium",
+    "gadolinium",
+    "terbium",
+    "dysprosium",
+    "holmium",
+    "erbium",
+    "thulium",
+    "ytterbium",
+    "lutetium",
+    "hafnium",
+    "tantalum",
     "tungsten",
+    "rhenium",
+    "osmium",
+    "iridium",
     "platinum",
     "gold",
     "mercury",
@@ -99,9 +117,34 @@ const REAL_WORDS: &[&str] = &[
     "radium",
     "actinium",
     "thorium",
+    "protactinium",
     "uranium",
     "neptunium",
     "plutonium",
+    "americium",
+    "curium",
+    "berkelium",
+    "californium",
+    "einsteinium",
+    "fermium",
+    "mendelevium",
+    "nobelium",
+    "lawrencium",
+    "rutherfordium",
+    "dubnium",
+    "seaborgium",
+    "bohrium",
+    "hassium",
+    "meitnerium",
+    "darmstadtium",
+    "roentgenium",
+    "copernicium",
+    "nihonium",
+    "flerovium",
+    "moscovium",
+    "livermorium",
+    "tennessine",
+    "oganesson",
     // Common real terms that would imply a mapping even without a symbol clash.
     "water",
     "protein",
@@ -285,6 +328,205 @@ mod tests {
                 "minted a real element: {sym} / {name}"
             );
         }
+    }
+
+    /// The independent oracle both tests below use. **Never read `REAL_WORDS`
+    /// to build this** — it is the blocklist under test, and its whole defect
+    /// was a silent gap in exactly this list. Built from atomic number, zipped
+    /// against `REAL_ELEMENT_SYMBOLS` (already complete and in atomic-number
+    /// order), so this list's own completeness is checked structurally rather
+    /// than assumed.
+    ///
+    /// Verified live on `main` at `cb3a28c`, before this fix: `REAL_WORDS`
+    /// covered only 78 of these 118 — it jumped from `cerium` (Z=58) straight
+    /// to `tungsten` (Z=74), dropping the whole Z=59..=73 lanthanide run, then
+    /// dropped Z=75..=77, Z=91 and everything from Z=95 onward. 43 names
+    /// missing in total, one of them `thulium`.
+    const REAL_ELEMENT_NAMES: [&str; 118] = [
+        "hydrogen",
+        "helium",
+        "lithium",
+        "beryllium",
+        "boron",
+        "carbon",
+        "nitrogen",
+        "oxygen",
+        "fluorine",
+        "neon",
+        "sodium",
+        "magnesium",
+        "aluminium",
+        "silicon",
+        "phosphorus",
+        "sulfur",
+        "chlorine",
+        "argon",
+        "potassium",
+        "calcium",
+        "scandium",
+        "titanium",
+        "vanadium",
+        "chromium",
+        "manganese",
+        "iron",
+        "cobalt",
+        "nickel",
+        "copper",
+        "zinc",
+        "gallium",
+        "germanium",
+        "arsenic",
+        "selenium",
+        "bromine",
+        "krypton",
+        "rubidium",
+        "strontium",
+        "yttrium",
+        "zirconium",
+        "niobium",
+        "molybdenum",
+        "technetium",
+        "ruthenium",
+        "rhodium",
+        "palladium",
+        "silver",
+        "cadmium",
+        "indium",
+        "tin",
+        "antimony",
+        "tellurium",
+        "iodine",
+        "xenon",
+        "caesium",
+        "barium",
+        "lanthanum",
+        "cerium",
+        "praseodymium",
+        "neodymium",
+        "promethium",
+        "samarium",
+        "europium",
+        "gadolinium",
+        "terbium",
+        "dysprosium",
+        "holmium",
+        "erbium",
+        "thulium",
+        "ytterbium",
+        "lutetium",
+        "hafnium",
+        "tantalum",
+        "tungsten",
+        "rhenium",
+        "osmium",
+        "iridium",
+        "platinum",
+        "gold",
+        "mercury",
+        "thallium",
+        "lead",
+        "bismuth",
+        "polonium",
+        "astatine",
+        "radon",
+        "francium",
+        "radium",
+        "actinium",
+        "thorium",
+        "protactinium",
+        "uranium",
+        "neptunium",
+        "plutonium",
+        "americium",
+        "curium",
+        "berkelium",
+        "californium",
+        "einsteinium",
+        "fermium",
+        "mendelevium",
+        "nobelium",
+        "lawrencium",
+        "rutherfordium",
+        "dubnium",
+        "seaborgium",
+        "bohrium",
+        "hassium",
+        "meitnerium",
+        "darmstadtium",
+        "roentgenium",
+        "copernicium",
+        "nihonium",
+        "flerovium",
+        "moscovium",
+        "livermorium",
+        "tennessine",
+        "oganesson",
+    ];
+
+    /// **`REAL_WORDS` itself can be incomplete in a way `never_mints_a_real_element`
+    /// cannot see, because that test's oracle *is* `REAL_WORDS`.** A name missing
+    /// from the list is never rejected by `is_real`, however many draws are taken.
+    /// This test checks the blocklist's own coverage against `REAL_ELEMENT_NAMES`,
+    /// never against itself.
+    #[test]
+    fn the_blocklist_names_every_real_element() {
+        assert_eq!(
+            REAL_ELEMENT_NAMES.len(),
+            REAL_ELEMENT_SYMBOLS.len(),
+            "the reference list above must cover the same 118 elements \
+             REAL_ELEMENT_SYMBOLS does, or the zip below is comparing the wrong pairs"
+        );
+        for (symbol, name) in REAL_ELEMENT_SYMBOLS.iter().zip(REAL_ELEMENT_NAMES) {
+            assert!(
+                REAL_WORDS.contains(&name),
+                "REAL_WORDS is missing '{name}' (element {symbol}) — a generated \
+                 element could be minted with that name and pass is_real() falsely"
+            );
+        }
+    }
+
+    /// The empirical companion to `the_blocklist_names_every_real_element`:
+    /// sweep universe seeds, not just draws within one, and confirm no minted
+    /// name collides with a real one under the actual generator.
+    ///
+    /// **This must check against `REAL_ELEMENT_NAMES`, never against
+    /// `is_real`.** A first draft of this test asserted `!is_real(&sym, &name)`
+    /// and passed cleanly even with the bug this test exists to catch, still
+    /// present. The reason: `mint` already filters every candidate through
+    /// `is_real` before returning it, so *nothing `mint` ever returns can fail
+    /// an `is_real`-based check* — the assertion was checking the generator
+    /// agreed with itself, not with reality. Caught by hand-tracing seed 1631
+    /// before this landed, not by the test — which is exactly why the
+    /// independent-oracle version below is the one that ships.
+    ///
+    /// **Neither pinned universe digest can see this class of regression
+    /// either.** `symbol`/`name` are mixed into `the_universe_digest_is_pinned`
+    /// (`element.rs`), but that digest sweeps seeds `0..64` only. The specific
+    /// defect this test was added for first reproduces at seed 1631, at 43 of
+    /// the first 20 000 seeds (0.215%). A digest test would have reported
+    /// "unchanged", correctly, while this many universes shipped a
+    /// falsely-real element name.
+    #[test]
+    fn no_seed_in_a_large_sweep_mints_a_real_element_name() {
+        let mut examined: u64 = 0;
+        for seed in 0..20_000u64 {
+            let mut s = Stream::new(seed, Domain::Naming, 0);
+            let mut taken = Vec::new();
+            for _ in 0..120 {
+                let (_, name, _) = mint(&mut s, &mut taken);
+                examined += 1;
+                let lower = name.to_ascii_lowercase();
+                assert!(
+                    !REAL_ELEMENT_NAMES.contains(&lower.as_str()),
+                    "seed {seed} minted a real element name: {name}"
+                );
+            }
+        }
+        assert_eq!(
+            examined,
+            20_000 * 120,
+            "examined count must equal every mint actually attempted"
+        );
     }
 
     /// The margin between the symbol space and the largest table, pinned.
