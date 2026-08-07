@@ -297,7 +297,11 @@ So the generator invents a shell structure and derives properties from position:
 
 The result is a table with **families**: elements sharing a group behave alike. This produces the moment we actually want — *"wait, everything in this column makes rings"* — which is the moment a person starts to understand a chemistry rather than just watch it.
 
-**The trends must have generated *direction*, not just generated magnitude.** It is not enough that `affinity` rises across a period and `radius` shrinks across one while growing down a group — those are the real trends, in the real direction, and reproducing them makes G3 an assertion rather than a fact. The sign of each trend is drawn from the seed, so one universe has affinity rising across a period and another has it falling. This costs nothing and is the difference between "invented" and "renamed".
+**The trends must have generated *direction*, not just generated magnitude.** It is not enough that `affinity` rises across a period and `radius` shrinks across one while growing down a group — those are the real trends, in the real direction, and reproducing them makes G3 an assertion rather than a fact.
+
+**REVISED 2026-08-07: the sentence that followed here promised the sign is drawn from the seed, and the shipped V0 generator never implemented that.** Measured over 500 universes: `affinity` falls across a period in 1020 of 1020 cases and `radius` rises in every case measured — both fixed, neither drawn. `element.rs`'s own doc comments state the actual, reviewed design plainly: radius "rises monotonically... the opposite of a real atomic radius, which falls," by construction of the packing geometry, not by a per-seed coin flip. That is a *stronger* non-isomorphism than a seed-drawn sign would have given — every universe's trends run opposite to the real ones, rather than matching in half of them — and it costs nothing extra, since it falls out of the shell-packing model already in use. Kept as a design fact rather than restored as a requirement: G3 no longer needs an ironclad per-seed proof now that it is not absolute (§5), which was the sentence's own stated reason for wanting the draw ("makes G3 an assertion rather than a fact").
+
+This is unrelated to a separate, tracked defect in `affinity` itself: its attained range never straddles zero, which degenerates §8.3's charge-complementarity term. See Task 10's plan section ("Carried in from Task 4's review") for the measured extent and the specified remedy — open, not yet executed.
 
 Each element carries:
 
