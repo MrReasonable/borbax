@@ -325,11 +325,15 @@ So any two implementations that are each individually correct — glibc's,
 `msvcrt`'s, and LLVM's inlined bit-fused expansion on aarch64 — must produce
 the identical bit pattern, by definition of "correct", not by coincidence
 measured over a finite sample. `rem_euclid`'s sign-fixup wrapper around the raw
-remainder (`if r < 0 { r + y.abs() } else { r }`, compiled to the same
-`addsd`/`xorpd`/`cmpltsd`/`andpd`/`andnpd`/`orpd` shape on every leg regardless
-of whether the `fmod` core beneath it is inlined or called) is identical
-source, so it operates on an already-identical raw remainder and produces an
-identical result.
+remainder (`if r < 0 { r + y.abs() } else { r }`) is the same source
+expression on every leg, whatever instructions each compiler chooses to
+implement it with — LLVM's own range analysis can and does eliminate the
+fixup entirely at one of the two call sites here, since `hue` is provably
+non-negative before it reaches `rem_euclid(360.0)`, and neither x86-64 leg's
+disassembly needs to match aarch64's instruction-for-instruction for the
+argument to hold. What has to be true, and is, is that each leg's fixup
+correctly implements the same source-level conditional over an
+already-identical raw remainder.
 
 What *is* measured, as supporting evidence that the inline expansion itself has
 no hidden bug (a sign-of-zero mismatch would be exactly this class of thing):
