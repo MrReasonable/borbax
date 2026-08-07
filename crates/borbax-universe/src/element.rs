@@ -590,10 +590,15 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
         // measured behaviour (below) — that evaluation is issue #26's, not a
         // quick swap, since #26 is the deliberate redesign toward approximated
         // real physics and a term changed in isolation would be tuned blind.
-        // The mechanism as it stands: a lattice cannot tile a sphere, so each
-        // shell is stretched over a larger radius than the one below and
-        // carries a strain growing as `n^2`, which competes with the contact
-        // term's saturation and produces a maximum.
+        // **The physical motivation, not the literal computation.** A lattice
+        // cannot tile a sphere, so each shell is stretched over a larger
+        // radius than the one below and carries a strain growing as `n^2` —
+        // that picture is what motivates a strain term at all, and it is not
+        // what is computed below. Read on: a per-shell sum of that quantity
+        // gives a constant, not `N^(2/3)`; what is actually charged is a
+        // single direct per-site penalty on the *total* cluster size, chosen
+        // to reach the `2/3` exponent this scheme wants without claiming to
+        // derive it from the per-shell picture above.
         //
         // (The defence "no charge, no isospin, no pairing and no asymmetry
         // term" stood here and is deleted: it enumerates the terms that are
