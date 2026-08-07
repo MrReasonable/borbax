@@ -555,18 +555,21 @@ Windows/x86-64 and Linux/x86-64, enforced by a CI golden matrix (§13.4, §13.6)
 
 **Fiction guarantees** (§5). **G5 was withdrawn on 2026-08-06** — read §5 before
 adding any enforcement here, because the burden of proof now sits with keeping a
-constraint rather than with relaxing one. What remains, and what `cargo xtask`
-still enforces:
+constraint rather than with relaxing one. What remains:
 
 - No real chemistry data anywhere — no element tables, reaction databases,
   molecular structures or sequence data. No data files in `borbax-universe`,
-  `borbax-molecule`, `borbax-reaction`. (G1, `check_no_data_files`.)
+  `borbax-molecule`, `borbax-reaction`. **`cargo xtask` enforces this**
+  (G1, `check_no_data_files`.)
 - Generated element names are blocklist-checked against real symbols and names
-  (`REAL_ELEMENT_SYMBOLS` in `borbax-universe/src/naming.rs`). (G2.)
+  (`REAL_ELEMENT_SYMBOLS` in `borbax-universe/src/naming.rs`).
+  **`cargo xtask` enforces this too** (G2.)
 - No real-world units. Temperature is `Thermal`, energy `Quanta`, distance
   `Span`, time `WorldYear`, mass `Mass` — distinct newtypes; cross-unit
-  arithmetic must not compile. (G4 — and it earns its place on type-safety
-  grounds regardless of the fiction argument.)
+  arithmetic must not compile. **Not `xtask` at all** — G4 is enforced by the
+  compiler, and it earns its place on type-safety grounds regardless of the
+  fiction argument. `xtask/README.md` is explicit that a table headed "what it
+  checks" does not list this, for the same reason.
 
 **Withdrawn, and do not reinstate without reopening §5:** the ban on real
 chemical formats, on a Borbax↔real mapping table, and on real-world calibration

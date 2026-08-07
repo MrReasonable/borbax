@@ -188,7 +188,7 @@ These were settled before drafting and the rest of the document assumes them.
 
 ## 5. Fiction guarantees
 
-Borbax's chemistry is generated from a seed rather than modelled on the real world. These are binding requirements on the implementation, testable in CI, not statements of intent.
+Borbax's chemistry is generated from a seed rather than modelled on the real world. G1, G2 and G4 are binding requirements on the implementation, testable in CI, not statements of intent. G3 and G6 are revised (below) to descriptive facts about the current generator rather than binding, CI-tested requirements; G5 is withdrawn outright.
 
 **Why this section exists, recorded 2026-08-06 because it changes how strictly to read it.** The invented-chemistry framing was not the project's goal. It was adopted because a different AI model refused to help build a chemistry simulation at all, and inventing one was the way round that refusal. The design it produced — shape-based binding, emergent catalysis, per-species geometry — turned out to be worth keeping on its own merits, and none of it depends on the chemistry being *unlike* the real world.
 
@@ -297,7 +297,7 @@ So the generator invents a shell structure and derives properties from position:
 
 The result is a table with **families**: elements sharing a group behave alike. This produces the moment we actually want — *"wait, everything in this column makes rings"* — which is the moment a person starts to understand a chemistry rather than just watch it.
 
-**The trends must not simply reproduce the real *direction*, magnitude alone is not enough.** It is not enough that `affinity` rises across a period and `radius` shrinks across one while growing down a group — those are the real trends, in the real direction, and reproducing them makes G3 an assertion rather than a fact.
+**The trends must not simply reproduce the real *direction*, magnitude alone is not enough.** It is not enough that `affinity` rises across a period and `radius` shrinks across one while growing down a group — those are the real trends, in the real direction, and reproducing them would have made G3 an assertion rather than a fact. That was the standard when G3 was absolute; G3 is now revised to a descriptive fact about the current generator (below), so this is the reasoning behind why the shipped design avoids the real directions, not a live requirement it must keep proving.
 
 **REVISED 2026-08-07: the sentence that followed here promised the sign is drawn from the seed, and the shipped V0 generator never implemented that.** Measured over 500 universes, *across a period*: `affinity` falls in 1020 of 1020 cases and `radius` rises in every case measured — both fixed, neither drawn, and both opposite to the real trend named two sentences above (real affinity rises across a period, real radius falls). `element.rs`'s own doc comments state the actual, reviewed design plainly: radius "rises monotonically... the opposite of a real atomic radius, which falls," by construction of the packing geometry, not by a per-seed coin flip.
 

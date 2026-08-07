@@ -1300,6 +1300,12 @@ fn a_reload_that_arrives_with_a_view_flip_still_frames() {
         "a reload sharing its frame with a view flip was read as a mere flip, so \
          the new molecule is drawn at the old one's camera"
     );
+    assert_eq!(
+        eye(&app).map(f64::to_bits),
+        want.eye().map(f64::to_bits),
+        "a reload sharing its frame with a view flip kept the old orientation, so \
+         the new molecule opens at whatever angle the previous one was left at"
+    );
 }
 
 /// A refused seed takes the bonds off too.
