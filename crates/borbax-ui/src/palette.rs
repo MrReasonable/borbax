@@ -18,7 +18,7 @@
 //! `match e.units { 6 => 1.0, .. }` compiles and `cargo xtask` reports "all
 //! checks passed" — the seam's strictest tier bans `egui`/`bevy`/`wgpu`/`epaint`
 //! specifically (`xtask/src/main.rs`), and is indifferent to every `borbax-*`
-//! crate, `borbax-ui` already depends on `borbax-universe` elsewhere in this
+//! crate — `borbax-ui` already depends on `borbax-universe` elsewhere in this
 //! crate. There is no guard here at all.
 //!
 //! The reason worth keeping is smaller and still real: constructing an
@@ -29,8 +29,8 @@
 //! obligation the next section describes.
 //!
 //! **What was worth learning from the guard, since it cost several review
-//! rounds — the exact count lives in commits this branch no longer carries,
-//! so it is not quoted here.** No syntactic check can decide "closed-form
+//! rounds; the exact count is not quoted here, because it was never pinned
+//! precisely enough across the files that cite it to be worth restating.** No syntactic check can decide "closed-form
 //! formula" from "lookup": every total function `u8 -> f64` is expressible as
 //! arithmetic, so the artefact was rebuilt past each fix — in an `impl` block,
 //! behind a `mut` keyword, as a bit-packed integer. Each fix also cost a false
@@ -113,10 +113,13 @@
 //! The golden angle is a literal.
 //!
 //! A perceptual space (Oklab) would need `cbrt` and would be admissible —
-//! `det_math::cbrt` exists — but it is not needed to place five colours apart,
-//! and `cbrt` is the one call CLAUDE.md names as the only FMA site in the
-//! release binaries. The cheaper space is also the one with less to argue
-//! about.
+//! `det_math::cbrt` exists — but it is not needed to place five colours apart.
+//! (`cbrt` was once the only FMA site CLAUDE.md named in the release
+//! binaries; this file's own `rem_euclid(2.0)` below is now a second, on
+//! aarch64 specifically — CLAUDE.md's `rem_euclid` section has the current
+//! account, verified against all three CI triples rather than one.) The
+//! cheaper space is still the one with less to argue about: it needs no new
+//! call at all, where Oklab would add one.
 
 /// The lowest `affinity` any element attains, over the universes surveyed.
 ///
@@ -178,8 +181,9 @@ const SAT_HI: f64 = 0.82;
 /// channel sits at its midpoint.
 ///
 /// **One function, not a convenience wrapper beside it.** A second spelling
-/// defaulting `group` would be a second surface for the signature guard to pin
-/// and a second place for an identity argument to arrive.
+/// defaulting `group` would be a second place for an identity argument to
+/// arrive — and, with §5's G5 withdrawn and its signature guard deleted
+/// alongside it, nothing left to notice.
 #[must_use]
 pub fn colour(
     affinity: f64,

@@ -12,8 +12,9 @@ CI and in the pre-commit hook.
 **This table covers §5 and its closely adjacent determinism/portability
 checks — it is a subset of what `check_guarantees` calls, not the whole
 list.** `check_guarantees` runs 17 functions; this table names 9. The other
-eight (the viewer-seam checks, lint inheritance, the signature pin, the
-wall-clock and `libm` single-home checks) are real and enforced, and are
+eight (the viewer-seam checks, lint inheritance, the real-chemistry literal
+scan, the signature pin, the wall-clock and `libm` single-home checks) are real
+and enforced, and are
 documented where they're more legible: CLAUDE.md's seam section, and the doc
 comment on each function in `xtask/src/main.rs`, which remains the only
 complete and current list.
@@ -60,8 +61,18 @@ commit that deleted it — a review once wrote `SmilesParser`, `parse_smiles`,
 the gate reported all checks passed with `clippy -D warnings` clean. Worth
 knowing only for the transferable half, which the surviving scanners still rely
 on: **lex, do not grep.** An identifier is an identifier, a comment is not a
-token, and matching on whole lowercase segments is what made a determined
-obfuscation findable when a substring scan missed it.
+token, and matching on whole lowercase segments is what made `SmilesParser`
+findable when a case-sensitive substring scan reported zero hits — ordinary
+camelCase, not obfuscation.
+
+Two limits worth stating plainly rather than losing when the story above moved
+to git history:
+
+- **A determined obfuscator wins.** `concat!("Car", "bon")` and a string split
+  across lines both pass. The job these scanners do is catching accident and
+  casual addition, not sabotage.
+- **`xtask` cannot scan itself.** It is necessarily outside the roots it
+  walks — the vocabulary would match its own definition.
 
 §5 sits at the top of the review precedence with a human on it regardless.
 

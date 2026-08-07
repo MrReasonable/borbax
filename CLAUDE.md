@@ -288,29 +288,71 @@ x86-64 doing **runtime CPU feature detection** between FMA3, FMA4 and soft.
 
 **"The only FMA instructions in our release binaries are inside `libm::cbrt`"
 was true and stopped being true at viewer Step 4, on aarch64 specifically.**
-`palette.rs`'s `sector.rem_euclid(2.0)` is a `frem` by a power of two, which
-LLVM does not route to a libcall on **either** default target — it inlines it
-on both. On aarch64 the expansion is **fused**: `frintz` / `fmsub d1, d1, d2,
-d0`. On x86-64, at this workspace's actual default codegen (`target-cpu`
-unset, matching every CI leg), it inlines to plain SSE2 with no FMA and no
-libcall at all: `mulsd`/`roundsd`/`subsd`/`andpd`/`orpd`/`addsd`. Only forcing
-`-C target-cpu=x86-64` — which nothing in this workspace does — makes LLVM fall
-back to a `callq _fmod` libcall for it.
+`palette.rs`'s `sector.rem_euclid(2.0)` is a `frem` by a power of two. Measured
+by compiling `palette.rs` verbatim — it imports nothing, so it compiles
+standalone — for the three triples the CI matrix actually runs
+(`.github/workflows/ci.yml`'s `macos-latest`/`ubuntu-latest`/`windows-latest`
+are `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and
+`x86_64-pc-windows-msvc`), at this workspace's actual release profile
+(`lto = "thin"`, `codegen-units = 1`):
 
-So the two legs run **different instruction sequences and neither is a
-libcall**, and that difference does not matter: **the two lowerings are
-bit-identical over the whole finite domain**, not merely value-identical.
-Built for `aarch64-apple-darwin` and `x86_64-apple-darwin` at this workspace's
-actual release settings (`lto = "thin"`, `codegen-units = 1`) and both run, the
-hash over 20M random finite `f64` bit patterns is `d22129714af37cf9` on each.
-The reason is visible in the assembly: the aarch64 expansion ends
-`movi.2d`/`fneg.2d`/`bit.16b`, which takes the magnitude from the computed
-remainder and the **sign bit from the dividend** — reproducing `fmod`'s
-sign-of-zero rule exactly; the x86-64 SSE2 sequence does the equivalent with
-`andpd`/`orpd` masks.
+| leg | `rem_euclid(2.0)` | `rem_euclid(360.0)` |
+|---|---|---|
+| `aarch64-apple-darwin` | inlined, **fused**: `frintz` / `fmsub d1, d1, d2, d0` | `bl _fmod` |
+| `x86_64-unknown-linux-gnu` | `callq *fmod@GOTPCREL` | `callq *fmod@GOTPCREL` |
+| `x86_64-pc-windows-msvc` | `callq fmod` | `callq fmod` |
 
-**Three claims from earlier versions of this paragraph were wrong, and each was
-corrected by measuring rather than by re-reasoning:**
+**An earlier version of this paragraph said x86-64 also inlines the power-of-two
+case, "matching every CI leg", and named `x86_64-apple-darwin` as its evidence.**
+`x86_64-apple-darwin` is not a CI leg — GitHub's `macos-latest` runners are
+`aarch64` — and its default `target-cpu` (`penryn`, SSE4.1) is not the two real
+x86-64 legs' default (the generic `x86-64` baseline, SSE2 only), which is
+exactly the difference that makes `roundsd` unavailable and pushes LLVM to a
+libcall. Measuring the wrong triple produced the wrong conclusion; this table
+is against the three triples that actually run.
+
+So aarch64 is the only leg with an FMA instruction here — a real change from
+"the only FMA is inside `libm::cbrt`" — and it is also the only leg that inlines
+the power-of-two `rem_euclid` at all. Both x86-64 legs take a genuine `fmod`
+libcall for **both** calls, same as aarch64's `360.0` call, which is a `frem`
+by a non-power-of-two and is a libcall on every leg without exception.
+
+**Why this is still safe, and the argument is provable rather than merely
+measured.** `fmod`'s mathematical result — `x - n·y` for the integer `n`
+nearest zero — is *exactly* representable in `f64` for any finite non-zero
+divisor: no rounding step exists for a correct implementation to differ on.
+So any two implementations that are each individually correct — glibc's,
+`msvcrt`'s, and LLVM's inlined bit-fused expansion on aarch64 — must produce
+the identical bit pattern, by definition of "correct", not by coincidence
+measured over a finite sample. `rem_euclid`'s sign-fixup wrapper around the raw
+remainder (`if r < 0 { r + y.abs() } else { r }`, compiled to the same
+`addsd`/`xorpd`/`cmpltsd`/`andpd`/`andnpd`/`orpd` shape on every leg regardless
+of whether the `fmod` core beneath it is inlined or called) is identical
+source, so it operates on an already-identical raw remainder and produces an
+identical result.
+
+What *is* measured, as supporting evidence that the inline expansion itself has
+no hidden bug (a sign-of-zero mismatch would be exactly this class of thing):
+hashing `aarch64-apple-darwin`'s fused expansion against `x86_64-apple-darwin`'s
+inlined-but-unfused SSE4.1 expansion (`mulsd`/`roundsd`/`subsd`/`andpd`/`orpd`)
+over 20M random finite `f64` bit patterns gives `d22129714af37cf9` on each —
+two *different* inline expansions agreeing is evidence neither has a
+platform-specific bug, though neither is a real CI leg's libcall path. Glibc's
+and `msvcrt`'s actual `fmod` were not directly cross-executed from this
+environment; the exactness argument above is what stands in for that, and it
+is a stronger claim than a hash match would be, not a weaker one — a hash
+match over any finite sample cannot rule out a divergence outside the sample,
+where "any two correct implementations must agree" rules it out entirely,
+provided both are in fact correct implementations.
+
+The reason the fused expansion is a correct implementation is visible in the
+assembly: it ends `movi.2d`/`fneg.2d`/`bit.16b`, which takes the magnitude from
+the computed remainder and the **sign bit from the dividend** — reproducing
+`fmod`'s sign-of-zero rule exactly, the one place a naive reimplementation
+would most likely diverge from a real libm.
+
+**Three more claims from earlier versions of this paragraph were wrong, and
+each was corrected by measuring rather than by re-reasoning:**
 
 - "The legs differ in 23.7% of cases" measured the *naive* model
   `x - trunc(x*0.5)*2`, without the sign fixup, against the real lowering:
@@ -325,22 +367,13 @@ corrected by measuring rather than by re-reasoning:**
   later, before `.abs()` and before any `to_bits()` — but **not** before the
   six `sector < n` comparisons, which see `-0.0` and agree with `+0.0` on every
   one.
-- "x86-64 emits a second `fmod` libcall" — false at this workspace's actual
-  default codegen, corrected above. It described what forcing a newer
-  `target-cpu` produces, not what CI or a `cargo build --release` produces.
+- "x86-64 inlines with no libcall at all, matching every CI leg" — false,
+  corrected above; it was measured against a target that is not a CI leg.
 
-**The correct and reusable statement is the one `clippy.toml` already
-applies: `fmod` is exactly specified, and LLVM's inline expansion — on every
-target that inlines it — carries the same sign-of-dividend fixup**, verified
-bit-identical over 20M inputs on both targets rather than argued. Getting this
-wrong would invite a future reviewer either to reject a legitimate
-`rem_euclid` in result-affecting code, or to wave through a genuinely inexact
-operation on the grounds that we already ship one that "differs 23.7% of the
-time" — neither of which is true. The residual worth naming is different
-again — the `360.0` call is a `frem` by a **non**-power-of-two, so it is a
-platform `fmod` libcall on every leg and rests entirely on that exactness.
-glibc was not exercised; the exactness argument does not depend on the
-implementation, but that is reasoning rather than measurement.
+Getting any of this wrong would invite a future reviewer either to reject a
+legitimate `rem_euclid` in result-affecting code, or to wave through a
+genuinely inexact operation on the grounds that we already ship one that
+"differs 23.7% of the time" — neither of which is true.
 
 That is safe, and the correct statement of why: **libm dispatches only on
 operations IEEE-754 specifies exactly**, which is the same criterion
@@ -604,12 +637,15 @@ conflicts will surface. This order breaks ties. **It ranks how expensive a
 mistake is to discover late, not how important each concern is** — every one
 of them matters.
 
-1. **Fiction guarantees (§5).** G1, G2 and G4 are absolute — no result is worth
-   breaching them, and there is nothing to trade against. G3 and G6 are not:
-   revised 2026-08-06 to "not necessarily real", a property of the seed rather
-   than a rule about every seed, and G5 was withdrawn outright the same day.
-   See §5 for the exact wording; this line is a pointer to it, not a
-   restatement that can drift from it.
+1. **Fiction guarantees (§5).** G1, G2 and G4 stand unrevised and are treated
+   as absolute in review — no result is worth breaching them, and there is
+   nothing to trade against. Revising one of them is a §5 change in its own
+   right, not a tiebreak call. G3 and G6 were revised 2026-08-06 to "not
+   necessarily real", a property of the seed rather than a rule about every
+   seed, and G5 was withdrawn outright the same day — a conflict against G3 or
+   G6 is a design question at precedence 2, not an automatic veto. See §5 for
+   the exact wording; this line is a pointer to it, not a restatement that can
+   drift from it.
 2. **Correctness of the physics.** Geometry and numerics that are silently
    wrong poison everything downstream and are the hardest thing here to
    detect.
