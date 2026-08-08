@@ -1,6 +1,6 @@
 ---
 name: emergence-auditor
-description: Use when reviewing simulation or chemistry code for violations of Borbax's founding constraints — that nothing about life is hardcoded, that shape complementarity is the only mechanism, that expensive work happens per-species and never per-molecule, and that no real chemistry enters the repository. Invoke before adding any threshold, special case, or new per-molecule field; when a desired behaviour is not emerging and there is a temptation to help it along; and when reviewing a diff in the chemistry, reaction or simulation crates.
+description: Use when reviewing simulation or chemistry code for violations of Borbax's founding constraints — that nothing about life is hardcoded, that shape complementarity is the only mechanism, that expensive work happens per-species and never per-molecule, and that no real chemistry data is imported into the repository (revised 2026-08-07 — see spec §5 before flagging a G1/G2-shaped finding; real-world calibration, correspondence and, at the one identity-seed configuration, real names are now legitimate). Invoke before adding any threshold, special case, or new per-molecule field; when a desired behaviour is not emerging and there is a temptation to help it along; and when reviewing a diff in the chemistry, reaction or simulation crates.
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite
 ---
 
@@ -78,11 +78,20 @@ favoured when a template is present" is not.
 
 **Fiction guarantees** (§5), specifically the parts `cargo run -p xtask` cannot
 check. The mechanical checks catch data files and the missing blocklist (G1,
-G2). G5 was withdrawn 2026-08-06 and G3/G6 revised the same day — both are now
-"not necessarily real", a property of the seed rather than a permanent rule, so
-neither is a violation on its own any more. Issue #26 (real physics with the
-seed perturbing constants) is the reason; do not flag work toward it as a G3/G6
-breach. What is still worth judging:
+G2) — that part of G1/G2 is unrevised and still absolute for every *perturbed*
+universe. G5 was withdrawn 2026-08-06; G3 and G6 were revised the same day;
+**G1 and G2 were revised 2026-08-07, on the same reasoning** — a generative
+formula's parameter may now equal or approximate its real physical
+counterpart, and the one seed-equivalent configuration whose unperturbed
+constants reproduce the real periodic table is expected to use real names
+rather than be blocked from them. All four are now "not necessarily real" /
+seed-scoped, a property of the seed rather than a permanent rule, so none is a
+violation on its own any more. Issue #26 (real physics with the seed
+perturbing constants) is the reason for all four revisions; do not flag work
+toward it as a G1/G2/G3/G6 breach — flag it only if a *perturbed* universe's
+generated table collides with a real name, or if a literal data file (not a
+generative parameter) appears under the chemistry crates. See spec §5 for the
+exact wording before relying on this summary. What is still worth judging:
 
 - **G4, units.** `Thermal`, `Quanta`, `Span`, `WorldYear`, `Mass` as distinct
   newtypes, with no cross-unit arithmetic compiling. A bare `f64` carrying a
