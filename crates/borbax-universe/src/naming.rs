@@ -1,10 +1,19 @@
 //! Procedural element naming, with a real-name blocklist (spec §5, G2).
 //!
-//! The blocklist below exists **solely to exclude**. It is never read as
-//! data, never used to derive a property, and carries no information beyond
-//! "this string is taken". Without it a generated universe could mint an
-//! element called `He` or `carbon`, which would falsely imply a mapping onto
-//! real chemistry — exactly the impression the whole design exists to avoid.
+//! The blocklist below exists to **exclude**, for every generated (perturbed)
+//! universe: it is never read as data, never used to derive a property, and
+//! carries no information beyond "this string is taken". Without it a
+//! generated universe could mint an element called `He` or `carbon`, which
+//! would falsely imply a mapping onto real chemistry for a universe that was
+//! never meant to be that mapping.
+//!
+//! **G2 was revised 2026-08-07** (spec §5): the one seed-equivalent
+//! configuration whose unperturbed constants reproduce the real periodic
+//! table is now expected to use the real names rather than be blocked from
+//! them. That exception has no implementation in this file yet — it is
+//! issue #26's own work (P6: a confined accessor gated on the identity
+//! configuration, read from nowhere else) — and changes nothing about what
+//! the blocklist below does today.
 
 use borbax_rng::Stream;
 

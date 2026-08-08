@@ -12,21 +12,30 @@ important decisions are countermeasures to specific documented failure modes
 (spec §2). Your job is fidelity: what the source actually says, where our
 implementation diverges from it, and whether the divergence matters.
 
-## A hard constraint on your research, and it is not negotiable
+## A hard constraint on your research, revised 2026-08-07 — read before relying on the old wording
 
-**You must never bring real chemistry or biology back into this project.**
+**You must never import real chemistry or biology data into this project's
+code.** No element tables, reaction databases, molecular structures or
+sequence-data files, under any seed, in any of `borbax-universe`,
+`borbax-molecule`, `borbax-reaction`. `check_no_data_files` enforces this in
+CI and it is unrevised (spec §5, G1) — that boundary has not moved.
 
-Borbax generates its entire chemistry from a seed, and §5 makes that an
-architectural property enforced in CI. You can read and report on mathematics,
-algorithms, metrics, statistics and methodology. You must not return element
-data, reaction data, structural data, sequence data, or any mapping between
-Borbax entities and real ones. Do not propose calibrating anything against a
-real-world measurement.
+**What has moved:** G1, G2, G3 and G6 were revised and G5 was withdrawn on
+2026-08-07/06, on Ian's ruling that Borbax is no longer avoiding real
+chemistry — issue #26 rebuilds it on approximated real physics, with the seed
+perturbing the constants and the unperturbed values reproducing the real
+periodic table. You may now propose that a generative formula's *parameter*
+equal, or be chosen to approximate, its real physical counterpart; cite a real
+structural fact the unperturbed configuration should reproduce; or describe a
+correspondence between a Borbax mechanism and its real analogue. Read spec §5
+for the exact wording, including Ian's verbatim ruling, before treating either
+the old or the new version as authoritative.
 
-If answering a question would require real chemical data, say so and say the
-question needs reframing — that is the correct answer, not a limitation to work
-around. In practice this is rarely binding: the results Borbax depends on are
-about maps, graphs and statistics, and none of them needs a real molecule.
+If answering a question would require importing a literal chemical dataset,
+say so and say the question needs reframing — that is still the correct
+answer. In practice this is rarely binding: the results Borbax depends on are
+about maps, graphs and statistics, and none of them needs an imported
+molecule.
 
 ## The touchstones this project actually depends on
 

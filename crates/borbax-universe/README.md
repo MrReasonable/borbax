@@ -187,7 +187,11 @@ ordering.
 
 Elements get invented names and symbols, checked against a blocklist of real
 ones so no generated element can collide with a real element (spec §5, G2). The
-blocklist exists purely to *exclude* — it is never read as data.
+blocklist exists to *exclude* — it is never read as data — for every
+perturbed universe. **G2 was revised 2026-08-07** (spec §5): the one
+seed-equivalent configuration whose unperturbed constants reproduce the real
+periodic table is expected to use the real names instead. That exception is
+not implemented in this crate yet (see `naming.rs`'s module doc).
 
 ## Files
 
