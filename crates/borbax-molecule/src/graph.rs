@@ -543,7 +543,7 @@ impl Mol12 {
 mod tests {
     use super::*;
     use borbax_universe::element::generate_elements;
-    use borbax_universe::{BondOrder, ElementId, PeriodicTable};
+    use borbax_universe::{BondOrder, ElementId, PeriodicTable, PhysicsVersion};
 
     /// A real drawn element table.
     ///
@@ -554,7 +554,7 @@ mod tests {
     /// would put `Universe` in `graph.rs`'s dependency surface, where it does
     /// not belong until Task 8 embeds something.
     fn table() -> PeriodicTable {
-        generate_elements(5)
+        generate_elements(5, PhysicsVersion::CURRENT)
     }
 
     /// The lowest-id element with exactly this valence.
@@ -748,7 +748,7 @@ mod tests {
     #[test]
     fn every_refusal_leaves_the_molecule_untouched() {
         let big = table(); // seed 5
-        let small = generate_elements(1);
+        let small = generate_elements(1, PhysicsVersion::CURRENT);
         assert!(
             small.len() < big.len(),
             "this test needs an id valid in one table and absent from the other"

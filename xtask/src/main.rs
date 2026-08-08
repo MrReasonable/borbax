@@ -5132,26 +5132,103 @@ const CLOSURE_PREDICATE_FILES: &[&str] = &[
     "crates/borbax-universe/src/element.rs",
 ];
 
-/// Functions exempted from [`scan_closure_predicates`], **by name and with a
-/// reason**.
+/// Functions [`scan_closure_predicates`] watches, **an allowlist, not a
+/// denylist of exemptions**.
 ///
-/// `compact_bound` contains `if a == 0`, and `a = min(outer, cap - outer)`, so
-/// that *is* a branch on the closure predicate. It is a legitimate guard
-/// against `sqrt(12*0 - 3)`, and measured, it alone holds zero-at-closure when
-/// the other factor is broken. A whole-file grep either flags it forever or is
-/// switched off and stops seeing the real thing.
+/// **Why the polarity flipped.** The prototype exempted `compact_bound` by
+/// name and scanned everything else in the file against one global
+/// vocabulary. Decision 8 (issue #26) needs that vocabulary widened —
+/// `unpaired`, `occupancy` — for the energy-gap valence-promotion computation
+/// Task 26.1 lands, and widening it under the denylist is unsound: the
+/// vocabulary applies file-wide, so a legitimate, unrelated closure-predicate
+/// -shaped comparison elsewhere in the same file (`l == 0`, needed by
+/// `2*(2*l+1)`'s orbital degeneracy and by a future `block()`'s derivation)
+/// becomes a false positive — and the only way to silence it without touching
+/// the vocabulary is to exempt *its function* by name. If that function is
+/// ever the one this check exists to watch, the exemption defeats the check
+/// it was meant to protect, silently. An allowlist has no such failure mode:
+/// a legitimate `l == 0` in a function that was never listed here is simply
+/// never scanned, so widening the sentinel vocabulary below is safe
+/// regardless of what else the file contains.
 ///
-/// The exemption is bounded by *output* as well as by name:
-/// `unmade_lateral_is_finite_and_non_negative_everywhere` asserts the frontier
-/// count is finite and non-negative for every `(cap, outer)` the table reaches.
-/// Without that, `NaN` and negatives escape the `min` in `unmade_lateral` and
-/// both saturate to 0 through `round_ties_even() as u8` — so
-/// `closed_shells_have_valence_zero` would read a correct zero while
+/// **Today's entries are every non-test top-level function in
+/// [`CLOSURE_PREDICATE_FILES`], minus `compact_bound` — a deliberate,
+/// exhaustive superset of what the old file-wide denylist scanned, not a
+/// narrowed "just the valence chain" list.** An earlier draft of this list
+/// stopped at the direct `valence` call chain (`lateral_coordination`,
+/// `unmade_lateral`, `continuum_at`, `frontier_notches`) plus
+/// `generate_elements`, silently dropping `lateral_made`, `lateral_made_raw`
+/// and `contacts_upto` from coverage relative to the pre-allowlist scan —
+/// found in review before this landed, verified none of the three currently
+/// contains a matching branch, so no live defect went uncaught, but the
+/// coverage gap itself was real and unstated. `shell_size` and `closures`
+/// are included too even though neither has ever had a comparison this check
+/// could match, for the same reason: parity with what the old scan actually
+/// covered, not with what happens to fire today. `compact_bound` contains
+/// `if a == 0`, and `a = min(outer, cap - outer)`, so that *is* a branch on
+/// the closure predicate — a legitimate guard against `sqrt(12*0 - 3)`, and
+/// measured, it alone holds zero-at-closure when the other factor is broken.
+/// Leaving it off this list is exactly as exempt as the old denylist made
+/// it; the exemption is bounded by *output* as well as by name —
+/// `unmade_lateral_is_finite_and_non_negative_everywhere` asserts the
+/// frontier count is finite and non-negative for every `(cap, outer)` the
+/// table reaches. Without that, `NaN` and negatives escape the `min` in
+/// `unmade_lateral` and both saturate to 0 through `round_ties_even() as u8`
+/// — so `closed_shells_have_valence_zero` would read a correct zero while
 /// `contacts_upto` was poisoned.
-const CLOSURE_PREDICATE_EXEMPT_FNS: &[&str] = &["compact_bound"];
+///
+/// **When Task 26.1 lands Decision 8's dedicated gap-based valence function,
+/// add its name here** — the same "the guard's subject doesn't exist yet"
+/// pattern P4 (`crates/borbax-universe/src/element.rs`'s `block()` guard)
+/// uses, landing its own rescoping immediately after Task 26.1 Step 8.
+/// [`unmatched_watched_fns`] fails loudly, not silently, if an entry here is
+/// ever renamed out from under it.
+const CLOSURE_PREDICATE_WATCHED_FNS: &[&str] = &[
+    "shell_size",
+    "lateral_coordination",
+    "unmade_lateral",
+    "continuum_at",
+    "frontier_notches",
+    "lateral_made",
+    "lateral_made_raw",
+    "contacts_upto",
+    "closures",
+    "generate_elements",
+];
+
+/// Every name in [`CLOSURE_PREDICATE_WATCHED_FNS`] that `seen` never reached
+/// — a renamed or deleted watched function, protecting nothing while the
+/// six-leg gate stays green. Kept as a small, pure, directly testable
+/// function rather than inlined, so this bookkeeping has its own test
+/// independent of file I/O — see CLAUDE.md's "probe the guard's
+/// bookkeeping" discipline: Task 8's `pairs > 2000` counted the wrong thing
+/// and nothing caught it because nobody tested the counter itself.
+fn unmatched_watched_fns(seen: &[&'static str]) -> Vec<&'static str> {
+    CLOSURE_PREDICATE_WATCHED_FNS
+        .iter()
+        .copied()
+        .filter(|name| !seen.contains(name))
+        .collect()
+}
 
 /// Variables that name the fill count on the frontier path.
-const FRONTIER_VARS: &[&str] = &["outer", "a", "take", "fill", "filled", "f", "smaller"];
+///
+/// `unpaired` and `occupancy` are Decision 8's vocabulary for Task 26.1's
+/// not-yet-built valence-promotion computation — added now, safely, because
+/// [`CLOSURE_PREDICATE_WATCHED_FNS`]'s allowlist means they can only ever
+/// match inside a function this check was deliberately pointed at, never as
+/// an accidental file-wide false positive.
+const FRONTIER_VARS: &[&str] = &[
+    "outer",
+    "a",
+    "take",
+    "fill",
+    "filled",
+    "f",
+    "smaller",
+    "unpaired",
+    "occupancy",
+];
 
 /// Values that mean "this shell is closed".
 const CLOSURE_SENTINELS: &[&str] = &[
@@ -5231,6 +5308,57 @@ fn closure_predicate_hit(code: &str) -> Option<String> {
     None
 }
 
+/// Clamp-idiom method names that compute a branch without writing one.
+/// `x.max(0)` is `if x > 0 { x } else { 0 }`; `closure_predicate_hit` cannot
+/// see it because there is no comparison operator in the source at all.
+const CLAMP_METHODS: &[&str] = &["max", "min", "clamp"];
+
+/// A closure-predicate clamp on `code` — `<receiver>.<method>(<args>)` where
+/// the receiver is a [`FRONTIER_VARS`] entry and at least one argument is a
+/// [`CLOSURE_SENTINELS`] entry.
+///
+/// **This is the spelling P1's review found likeliest for real**:
+/// `unpaired.max(1)` has no `==`, `<` or any other comparison operator
+/// [`closure_predicate_hit`] matches on, so a vocabulary widened to catch
+/// only comparisons would still miss it.
+///
+/// **Argument parsing stops at the first `)`, and unlike
+/// [`closure_predicate_hit`]'s `terminates`, that boundary trades the wrong
+/// way if it's ever wrong.** `terminates` makes that matcher *more
+/// conservative* — it can only reject a real predicate as a subexpression,
+/// never invent one. Stopping at the first `)` here makes this matcher *less
+/// complete* instead: `unpaired.max(some_helper())` would extract
+/// `"some_helper("`, match no sentinel, and silently miss a real hit. Correct
+/// for every clamp call in both watched files today — verified none nests a
+/// call in its argument list — but that is a fact about today's code, not a
+/// property of the parser. **Re-verify this when Task 26.1 lands Decision
+/// 8's real function and its name joins [`CLOSURE_PREDICATE_WATCHED_FNS`]**;
+/// nothing here re-checks the assumption automatically.
+fn clamp_hit(code: &str) -> Option<String> {
+    for method in CLAMP_METHODS {
+        let needle = format!(".{method}(");
+        let mut from = 0;
+        while let Some(rel) = code.get(from..).and_then(|c| c.find(&needle)) {
+            let at = from + rel;
+            let receiver = last_token(code.get(..at).unwrap_or(""));
+            let args_start = at + needle.len();
+            let Some(args_end) = code.get(args_start..).and_then(|s| s.find(')')) else {
+                from = args_start;
+                continue;
+            };
+            let args = code.get(args_start..args_start + args_end).unwrap_or("");
+            let has_sentinel = args
+                .split(',')
+                .any(|a| CLOSURE_SENTINELS.contains(&a.trim()));
+            if FRONTIER_VARS.contains(&receiver) && has_sentinel {
+                return Some(format!("{receiver}.{method}({args})"));
+            }
+            from = args_start + args_end;
+        }
+    }
+    None
+}
+
 /// §7.1 — no branch in the frontier path may read the closure predicate.
 ///
 /// The claim this protects is that zero-valence-at-closure is *arithmetic*,
@@ -5259,6 +5387,7 @@ fn check_no_closure_predicate_branch(
     root: &Path,
     failures: &mut Vec<String>,
 ) -> Result<(), String> {
+    let mut seen: Vec<&'static str> = Vec::new();
     for rel in CLOSURE_PREDICATE_FILES {
         let path = root.join(rel);
         // **Loudly, not `Ok(())`.** `check_blocklist_present` returned success
@@ -5271,18 +5400,35 @@ fn check_no_closure_predicate_branch(
             continue;
         }
         let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        scan_closure_predicates(rel, &src, failures);
+        scan_closure_predicates(rel, &src, failures, &mut seen);
+    }
+    seen.sort_unstable();
+    seen.dedup();
+    for name in unmatched_watched_fns(&seen) {
+        failures.push(format!(
+            "§7.1: {name} is on CLOSURE_PREDICATE_WATCHED_FNS but was never found in \
+             any of {CLOSURE_PREDICATE_FILES:?} — renamed or deleted, and the check is \
+             protecting nothing for it"
+        ));
     }
     Ok(())
 }
 
-/// Report every closure-predicate branch in `src` outside an exempt function
-/// and outside `#[cfg(test)]`.
+/// Report every closure-predicate branch or clamp in `src` inside a
+/// [`CLOSURE_PREDICATE_WATCHED_FNS`] entry, outside `#[cfg(test)]`, recording
+/// every watched name actually reached into `seen`.
 ///
-/// Function scoping is by the innermost `fn` name at the current brace depth,
-/// which is what lets `compact_bound` be exempted without switching the check
-/// off for the file it lives in.
-fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
+/// Function scoping is by the innermost `fn` name at the current brace depth
+/// — the allowlist check at each line is purely by name, independent of
+/// which file `rel` names, which is why the fixture tests below can plant a
+/// watched function's name under a fake filename and still exercise this
+/// exactly as production code does.
+fn scan_closure_predicates(
+    rel: &str,
+    src: &str,
+    failures: &mut Vec<String>,
+    seen: &mut Vec<&'static str>,
+) {
     let mut lex = LexState::default();
     let mut depth: i64 = 0;
     let mut test_region: Option<i64> = None;
@@ -5290,6 +5436,16 @@ fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
     // (depth at which the fn body opened, name).
     let mut fn_stack: Vec<(i64, String)> = Vec::new();
     let mut pending_fn: Option<String> = None;
+    // (depth at which a *watched* fn's body opened, its name) — a stack
+    // rather than the innermost `fn` name alone, so that a nested item
+    // inside a watched function's braces (`#[inline] fn inner(outer) { if
+    // outer == 0 {..} }` nested inside `frontier_notches`) stays covered by
+    // its watched ancestor even though `inner` itself is never listed.
+    // Without this, switching from a denylist to an allowlist would
+    // reopen exactly the historical bug `fn_name_of`'s own doc comment
+    // records: a nested item silently inheriting its enclosing frame's
+    // status — there, an exemption leaking in; here, coverage leaking out.
+    let mut watched_stack: Vec<(i64, &'static str)> = Vec::new();
 
     for (i, raw) in src.lines().enumerate() {
         let code = strip_comments_and_literals(raw, &mut lex);
@@ -5303,29 +5459,32 @@ fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
         }
 
         if test_region.is_none() {
-            // A line that *declares* a function is attributed to that function,
-            // not to its parent. Otherwise a single-line nested item —
-            // `#[inline] fn inner(outer) { if outer == 0 { .. } }` inside
-            // `compact_bound` — is scanned under the parent's frame and
-            // inherits its exemption, because the frame is only pushed when the
-            // brace is processed at the end of the line.
+            // A line that *declares* a function is attributed to that
+            // function's own name first — a single-line nested item is
+            // scanned under its own frame, not its parent's, because the
+            // frame is only pushed when the brace is processed at the end
+            // of the line. Falling back to `watched_stack` covers every
+            // other line once a watched function's braces are open.
             let current = pending_fn
                 .as_deref()
                 .unwrap_or_else(|| fn_stack.last().map_or("", |(_, n)| n.as_str()));
-            if !CLOSURE_PREDICATE_EXEMPT_FNS.contains(&current)
-                && let Some(pat) = closure_predicate_hit(&code)
-            {
-                failures.push(format!(
-                    "§7.1: {rel}:{} branches on the closure predicate ({pat:?}) \
-                         inside `{}` — zero at a closure must be arithmetic, not a \
-                         declaration",
-                    i + 1,
-                    if current.is_empty() {
-                        "<file scope>"
-                    } else {
-                        current
-                    },
-                ));
+            let self_watched = CLOSURE_PREDICATE_WATCHED_FNS
+                .iter()
+                .find(|w| **w == current)
+                .copied();
+            let label = self_watched.or_else(|| watched_stack.last().map(|(_, name)| *name));
+            if let Some(label) = label {
+                if let Some(name) = self_watched {
+                    seen.push(name);
+                }
+                if let Some(pat) = closure_predicate_hit(&code).or_else(|| clamp_hit(&code)) {
+                    failures.push(format!(
+                        "§7.1: {rel}:{} branches on the closure predicate ({pat:?}) \
+                             inside `{label}` — zero at a closure must be arithmetic, \
+                             not a declaration",
+                        i + 1,
+                    ));
+                }
             }
         }
 
@@ -5338,6 +5497,11 @@ fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
                         pending_cfg_test = false;
                     }
                     if let Some(name) = pending_fn.take() {
+                        if let Some(&watched) =
+                            CLOSURE_PREDICATE_WATCHED_FNS.iter().find(|w| **w == name)
+                        {
+                            watched_stack.push((depth, watched));
+                        }
                         fn_stack.push((depth, name));
                     }
                 }
@@ -5347,6 +5511,9 @@ fn scan_closure_predicates(rel: &str, src: &str, failures: &mut Vec<String>) {
                     }
                     if fn_stack.last().is_some_and(|(d, _)| *d == depth) {
                         fn_stack.pop();
+                    }
+                    if watched_stack.last().is_some_and(|(d, _)| *d == depth) {
+                        watched_stack.pop();
                     }
                     depth -= 1;
                 }
@@ -5427,8 +5594,9 @@ fn fn_name_of(line: &str) -> Option<String> {
 /// Frame name for a `fn` whose declaration parsed but whose name did not.
 ///
 /// Deliberately not a valid Rust identifier, so it can never collide with an
-/// entry in [`CLOSURE_PREDICATE_EXEMPT_FNS`] and therefore never inherits an
-/// exemption.
+/// entry in [`CLOSURE_PREDICATE_WATCHED_FNS`] — an unparsed name falls
+/// outside the allowlist and stays unwatched, the same outcome any other
+/// unlisted function name gets.
 const UNNAMED_FN: &str = "<unnamed fn>";
 
 /// The probe and `packing.rs` share these function bodies verbatim.
@@ -5625,6 +5793,10 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 mod tests {
     use super::identifier_segments;
     use super::scan_for_derived_streams;
+    use super::{
+        CLOSURE_PREDICATE_WATCHED_FNS, extract_const_value, extract_fn_body,
+        scan_closure_predicates, unmatched_watched_fns,
+    };
     use super::{GENERATE_CALL, PATTERN_CALL};
     use super::{REAL_SYMBOLS, REAL_WORDS_COPY, collect_shipped_literals, fiction_breaches};
     use super::{
@@ -5635,7 +5807,6 @@ mod tests {
         banned_idents_given, code_without_prose, count_outside_tests, viewer_banned_idents,
         viewer_banned_imports,
     };
-    use super::{extract_const_value, extract_fn_body, scan_closure_predicates};
 
     /// A `{` inside a comment between `fn NAME(` and the real body must not be
     /// mistaken for the body brace. The two files are near-copies including
@@ -5675,47 +5846,76 @@ mod tests {
     /// end to end by the emergence auditor: `if 0 == outer` walked past the
     /// fixed-string list while a load-bearing declaration sat behind it and all
     /// six gate legs stayed green. It is not another pattern, it is the same
-    /// predicate with its operands swapped.
+    /// predicate with its operands swapped. The fixture function must be a
+    /// watched name, or every case here would pass even if the operand-order
+    /// matching were completely broken.
     #[test]
     fn the_predicate_is_matched_in_either_operand_order() {
         for src in [
-            "fn f(cap: usize, outer: usize) -> f64 { if outer == 0 { return 0.0; } 1.0 }",
-            "fn f(cap: usize, outer: usize) -> f64 { if 0 == outer { return 0.0; } 1.0 }",
-            "fn f(cap: usize, outer: usize) -> f64 { if 0 >= outer { return 0.0; } 1.0 }",
-            "fn f(cap: usize, outer: usize) -> f64 { if outer <= 0 { return 0.0; } 1.0 }",
-            "fn f(cap: usize, outer: usize) -> f64 { if cap == outer { return 0.0; } 1.0 }",
-            "fn f(cap: usize, outer: usize) -> f64 { let done = 0 == outer; 1.0 }",
+            "fn frontier_notches(cap: usize, outer: usize) -> f64 { if outer == 0 { return 0.0; } 1.0 }",
+            "fn frontier_notches(cap: usize, outer: usize) -> f64 { if 0 == outer { return 0.0; } 1.0 }",
+            "fn frontier_notches(cap: usize, outer: usize) -> f64 { if 0 >= outer { return 0.0; } 1.0 }",
+            "fn frontier_notches(cap: usize, outer: usize) -> f64 { if outer <= 0 { return 0.0; } 1.0 }",
+            "fn frontier_notches(cap: usize, outer: usize) -> f64 { if cap == outer { return 0.0; } 1.0 }",
+            "fn frontier_notches(cap: usize, outer: usize) -> f64 { let done = 0 == outer; 1.0 }",
         ] {
             assert_eq!(closure_hits(src).len(), 1, "missed a spelling: {src}");
         }
     }
 
-    /// ...and must not fire on the legitimate lines of the real file. The
-    /// `smaller` computation is the one that matters: without the
-    /// whole-predicate check, `outer < cap - outer` matches `outer < cap`.
+    /// ...and must not fire on the legitimate lines of the real file, even
+    /// inside a watched function. The `smaller` computation is the one that
+    /// matters: without the whole-predicate check, `outer < cap - outer`
+    /// matches `outer < cap`.
     #[test]
     fn the_matcher_does_not_fire_on_legitimate_frontier_code() {
         for src in [
-            "fn f(cap: usize, outer: usize) -> usize { let smaller = if outer < cap - outer { outer } else { cap - outer }; smaller }",
-            "fn f(remaining: usize, cap: usize) -> usize { let take = if remaining < cap { remaining } else { cap }; take }",
-            "fn f(continuum: f64, discrete: f64) -> f64 { if continuum < discrete { continuum } else { discrete } }",
+            "fn unmade_lateral(cap: usize, outer: usize) -> usize { let smaller = if outer < cap - outer { outer } else { cap - outer }; smaller }",
+            "fn frontier_notches(remaining: usize, cap: usize) -> usize { let take = if remaining < cap { remaining } else { cap }; take }",
+            "fn unmade_lateral(continuum: f64, discrete: f64) -> f64 { if continuum < discrete { continuum } else { discrete } }",
         ] {
             assert!(closure_hits(src).is_empty(), "false positive on: {src}");
         }
     }
 
-    /// A nested item inside an exempt function must not inherit the exemption.
+    /// A nested item inside a watched function must stay covered, not vanish
+    /// into its own unwatched frame. This is the property that replaces the
+    /// old denylist's "a nested item inside an exempt function must not
+    /// inherit the exemption" — flipped, because an allowlist's failure mode
+    /// runs the other way: exemption used to leak *in*; watched coverage
+    /// could now leak *out* the moment a nested item gets its own frame.
     #[test]
-    fn a_nested_item_does_not_inherit_the_exemption() {
+    fn a_nested_item_inside_a_watched_function_stays_covered() {
+        let hits = closure_hits(
+            "fn frontier_notches(cap: usize) -> f64 {\n\
+             \x20   #[inline] fn inner(outer: usize) -> f64 { if outer == 0 { 0.0 } else { 1.0 } }\n\
+             \x20   inner(cap)\n}\n",
+        );
+        assert_eq!(
+            hits.len(),
+            1,
+            "coverage did not reach the nested item: {hits:?}"
+        );
+        assert!(
+            hits.first().is_some_and(|h| h.contains("frontier_notches")),
+            "expected the watched ancestor's name in the message: {hits:?}"
+        );
+    }
+
+    /// ...and a nested item inside a function that was never watched stays
+    /// just as unwatched as its parent — `compact_bound` is fully exempt by
+    /// design (see [`CLOSURE_PREDICATE_WATCHED_FNS`]'s doc comment), and
+    /// nothing legitimately hides frontier-path logic inside it.
+    #[test]
+    fn a_nested_item_inside_an_unwatched_function_stays_unwatched() {
         let hits = closure_hits(
             "fn compact_bound(a: usize) -> f64 {\n\
              \x20   #[inline] fn inner(outer: usize) -> f64 { if outer == 0 { 0.0 } else { 1.0 } }\n\
              \x20   inner(a)\n}\n",
         );
-        assert_eq!(
-            hits.len(),
-            1,
-            "the exemption leaked into a nested item: {hits:?}"
+        assert!(
+            hits.is_empty(),
+            "an unwatched function's nested item was scanned: {hits:?}"
         );
     }
 
@@ -6450,7 +6650,8 @@ mod tests {
 
     fn closure_hits(src: &str) -> Vec<String> {
         let mut f = Vec::new();
-        scan_closure_predicates("probe.rs", src, &mut f);
+        let mut seen = Vec::new();
+        scan_closure_predicates("probe.rs", src, &mut f, &mut seen);
         f
     }
 
@@ -6471,23 +6672,52 @@ mod tests {
         );
     }
 
-    /// ...and must NOT fire on the identical line inside the function exempted
-    /// by name. An exemption that is never exercised is indistinguishable from
-    /// a check that does not scope by function at all.
+    /// ...and must NOT fire on the identical line inside a function that was
+    /// never put on the watch list. `compact_bound`'s own `if a == 0` is a
+    /// legitimate guard (see [`CLOSURE_PREDICATE_WATCHED_FNS`]'s doc comment)
+    /// and this fixture deliberately uses `outer`, not `a`, to prove the
+    /// mechanism is "not on the allowlist" rather than "the vocabulary
+    /// happens not to match" — a distinction that is never exercised is
+    /// indistinguishable from a check that does not scope by function at all.
     #[test]
-    fn the_same_branch_inside_compact_bound_is_exempt() {
+    fn an_unwatched_function_is_never_scanned() {
         let hits = closure_hits(
             "fn compact_bound(a: usize) -> f64 {\n\
              \x20   if outer == 0 { return 0.0; }\n\
              \x20   6.0\n}\n",
         );
-        assert!(hits.is_empty(), "the exemption did not apply: {hits:?}");
+        assert!(
+            hits.is_empty(),
+            "an unwatched function was scanned: {hits:?}"
+        );
     }
 
-    /// The exemption must be scoped to `compact_bound` and end with it, or it
-    /// silently covers whatever function follows.
+    /// A legitimate closure-predicate-*shaped* comparison outside the watch
+    /// list must never trip the check, regardless of vocabulary — this is
+    /// the property that makes widening [`FRONTIER_VARS`] for Decision 8
+    /// (`unpaired`, `occupancy`) safe. `l == 0` is real: it gates the s-orbital
+    /// case in `2*(2*l+1)`'s degeneracy and in a future `block()`'s
+    /// derivation, and under the old file-wide denylist this exact shape,
+    /// once `l` joined the vocabulary, would have forced exempting whatever
+    /// function it lives in — even if that function is the one this check
+    /// exists to watch.
     #[test]
-    fn the_exemption_ends_with_the_exempt_function() {
+    fn a_legitimate_comparison_outside_the_watch_list_is_never_scanned() {
+        let hits = closure_hits(
+            "fn block_of(l: u8) -> Block {\n\
+             \x20   if l == 0 { return Block::S; }\n\
+             \x20   Block::P\n}\n",
+        );
+        assert!(
+            hits.is_empty(),
+            "a comparison outside the watch list was scanned: {hits:?}"
+        );
+    }
+
+    /// The watch must be scoped to exactly the listed function and end with
+    /// it, or it silently covers whatever function follows.
+    #[test]
+    fn watching_ends_with_the_watched_function() {
         let hits = closure_hits(
             "fn compact_bound(a: usize) -> f64 {\n\
              \x20   if a == 0 { return 0.0; }\n\
@@ -6503,15 +6733,75 @@ mod tests {
         );
     }
 
+    /// P1's own required probe: the likeliest real spelling of Decision 8's
+    /// valence-promotion shortcut has no comparison operator at all, so only
+    /// [`clamp_hit`] — not [`closure_predicate_hit`] — can catch it. This must
+    /// fail before `clamp_hit` exists and pass once it does.
+    #[test]
+    fn catches_the_clamp_idiom_a_comparison_operator_would_miss() {
+        let hits = closure_hits(
+            "fn frontier_notches(unpaired: usize) -> f64 {\n\
+             \x20   unpaired.max(1) as f64\n}\n",
+        );
+        assert_eq!(hits.len(), 1, "expected one finding, got {hits:?}");
+        assert!(
+            hits.first().is_some_and(|h| h.contains("unpaired.max(1)")),
+            "{hits:?}"
+        );
+    }
+
+    /// A `.max`/`.min`/`.clamp` call is only a hit when *both* the receiver is
+    /// a frontier variable and an argument is a closure sentinel — otherwise
+    /// every unrelated clamp in the codebase (`max_shell.max(shell)`,
+    /// `fourth_completes.min(units)`) would trip it.
+    #[test]
+    fn a_clamp_on_an_unrelated_receiver_is_not_a_hit() {
+        let hits = closure_hits(
+            "fn frontier_notches(outer: usize) -> f64 {\n\
+             \x20   max_outer.max(outer) as f64\n}\n",
+        );
+        assert!(hits.is_empty(), "an unrelated clamp was flagged: {hits:?}");
+    }
+
     /// Test code legitimately enumerates `outer` and must not trip the check —
     /// `the_clamp_fires_only_at_a_lone_outer_site` asserts on `outer == 1`.
+    /// The fixture uses a *watched* function name so this discriminates
+    /// "the cfg(test) region was skipped" from "that name was never watched" —
+    /// an unwatched name inside `mod tests` would pass this test even if
+    /// cfg(test)-region-skipping were completely broken.
     #[test]
     fn cfg_test_regions_are_skipped() {
         let hits = closure_hits(
             "#[cfg(test)]\nmod tests {\n\
-             \x20   fn t() { assert_eq!(raw(cap, outer) < 0.0, outer == 0); }\n}\n",
+             \x20   fn frontier_notches() { assert_eq!(raw(cap, outer) < 0.0, outer == 0); }\n}\n",
         );
         assert!(hits.is_empty(), "test region was scanned: {hits:?}");
+    }
+
+    /// [`unmatched_watched_fns`] is the bookkeeping half of the guard — it
+    /// must report a name that `seen` never reached, not silently pass.
+    #[test]
+    fn a_renamed_watched_fn_is_reported() {
+        let seen: Vec<&'static str> = CLOSURE_PREDICATE_WATCHED_FNS
+            .iter()
+            .copied()
+            .filter(|&name| name != "frontier_notches")
+            .collect();
+        assert_eq!(
+            unmatched_watched_fns(&seen),
+            vec!["frontier_notches"],
+            "expected exactly the one name `seen` did not reach"
+        );
+    }
+
+    /// ...and must report nothing once every watched name has been reached.
+    #[test]
+    fn no_missing_watched_fns_when_all_are_seen() {
+        let seen: Vec<&'static str> = CLOSURE_PREDICATE_WATCHED_FNS.to_vec();
+        assert!(
+            unmatched_watched_fns(&seen).is_empty(),
+            "a fully-seen list must report nothing missing"
+        );
     }
 
     /// Step 8d's extractor has to normalise away exactly the differences that

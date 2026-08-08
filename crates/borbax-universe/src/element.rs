@@ -20,6 +20,7 @@
 //! has no frontier and so no bonding slots, and the element one unit past any
 //! closure has exactly one.
 
+use crate::PhysicsVersion;
 use crate::naming;
 use crate::packing::{self, PackingConsts};
 use borbax_rng::{Domain, Stream};
@@ -300,13 +301,24 @@ pub struct ShellPattern {
 pub struct PeriodicTable {
     pattern: ShellPattern,
     elements: Vec<Element>,
+    /// The laws this table was generated under. Private, like `pattern` and
+    /// `elements` — [`Self::physics`] is the only route out, for the same
+    /// reason `elements` isn't `pub`: a bare field lets a caller build a
+    /// `BondEnergyMatrix` whose dispatch disagrees with the table it names,
+    /// which is exactly the "in range, plausible and silent" failure this
+    /// type already exists to close for element ids.
+    physics: PhysicsVersion,
 }
 
 impl PeriodicTable {
     /// Assemble a table. In-crate only: outside, a table comes from
     /// [`generate_elements`] and nowhere else, so no caller can build one whose
     /// elements disagree with its shell law.
-    pub(crate) fn new(pattern: ShellPattern, elements: Vec<Element>) -> Self {
+    pub(crate) fn new(
+        pattern: ShellPattern,
+        elements: Vec<Element>,
+        physics: PhysicsVersion,
+    ) -> Self {
         // **The bound belongs here, not at the read site.** An `ElementId` is a
         // `u8`, so a table longer than 256 cannot round-trip position through an
         // id: measured, a 300-slot table hands out 256 distinct ids, 44 slots
@@ -334,7 +346,11 @@ impl PeriodicTable {
             elements.len(),
             Self::MAX_ELEMENTS
         );
-        Self { pattern, elements }
+        Self {
+            pattern,
+            elements,
+            physics,
+        }
     }
 
     /// The largest table an [`ElementId`] can address.
@@ -352,6 +368,18 @@ impl PeriodicTable {
         &self.pattern
     }
 
+    /// The laws this table was generated under.
+    ///
+    /// Read by `BondEnergyMatrix::generate` (`pub(crate)`, so not linkable
+    /// from this public doc comment), the consumer P3 (issue #26's
+    /// prerequisites) added this field for: it takes a table, not a
+    /// generation call, so without this accessor it has nothing to dispatch
+    /// a version-aware bond-generation path on.
+    #[must_use]
+    pub const fn physics(&self) -> PhysicsVersion {
+        self.physics
+    }
+
     /// Take the table apart. In-crate only, and used only by tests.
     ///
     /// An earlier version said "tests that predate this type" — round 3 then
@@ -359,16 +387,17 @@ impl PeriodicTable {
     /// calls this and postdates it by 200 lines, falsifying a doc it never
     /// touched.
     ///
-    /// Keeping them destructuring the same pair they always did is what lets
-    /// `the_universe_digest_is_pinned` keep its **destructuring** unchanged
-    /// across this refactor, so a moved digest means moved physics rather than
-    /// a rewritten test. An earlier version of this sentence claimed the test
+    /// Keeping them destructuring the same triple they always did (a pair,
+    /// before P3 added `physics`) is what lets `the_universe_digest_is_pinned`
+    /// keep its **destructuring** unchanged across this refactor, so a moved
+    /// digest means moved physics-the-generated-quantity rather than a
+    /// rewritten test. An earlier version of this sentence claimed the test
     /// stayed *textually* unchanged, which the same commit falsified: one line
     /// moved from `energy_per_unit.to_bits()` to `energy_per_unit.0.to_bits()`
     /// when the field became `Quanta`.
     #[cfg(test)]
-    pub(crate) fn into_parts(self) -> (ShellPattern, Vec<Element>) {
-        (self.pattern, self.elements)
+    pub(crate) fn into_parts(self) -> (ShellPattern, Vec<Element>, PhysicsVersion) {
+        (self.pattern, self.elements, self.physics)
     }
 
     /// The element with this id, or `None` if this table has no such slot.
@@ -442,8 +471,35 @@ pub const fn stream(seed: u64) -> Stream {
     Stream::new(seed, Domain::Universe, 0)
 }
 
-/// Build a universe's periodic table by fusion.
+/// Build a universe's periodic table under stated laws.
 ///
+/// **Dispatches on `physics`, exhaustively, the same shape
+/// `BondEnergyMatrix::generate` (`pub(crate)`, so not linkable from this
+/// public doc comment) dispatches on `table.physics()`.** An earlier
+/// version of this function took `physics`
+/// and only *stamped* it onto the returned table without branching on it —
+/// which was textually compliant with P3 (issue #26's prerequisites, which
+/// only named `BondEnergyMatrix::generate` as needing a version-aware path)
+/// but left this `pub fn` without the one property that actually matters:
+/// today, with one variant, a stamp-only parameter and an exhaustive match
+/// are behaviourally identical, so this looked like unrequested structure.
+/// The day Task 26.1 adds `PhysicsVersion::V2` with its own
+/// electron-configuration derivation, the difference stops being cosmetic —
+/// a stamp-only `generate_elements` would keep compiling and keep silently
+/// returning V1's derivation for a caller that asked for V2, "in range,
+/// plausible and silent," while every other version-aware site in this
+/// crate (`From<PhysicsVersion> for u8`, `Universe::generate_under`,
+/// `BondEnergyMatrix::generate`, `the_assembled_universe_digest_is_pinned`)
+/// would already refuse to compile until V2 is handled. `generate_elements`
+/// is `pub`, reachable from any downstream crate, which is exactly where
+/// that gap would bite hardest.
+#[must_use]
+pub fn generate_elements(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
+    match physics {
+        PhysicsVersion::V1 => generate_elements_v1(seed, physics),
+    }
+}
+
 /// **There is no `peak` parameter and there must never be one.** The
 /// predecessor took one, computed instability as `((N - peak)/peak)^2`, and
 /// reported the resulting minimum as emergent — it was the distance from a
@@ -470,7 +526,7 @@ pub const fn stream(seed: u64) -> Stream {
               `cap` <= 130, `valence` in 0..=6, `outer_fill_band` <= 5, mass sub-units \
               in 1024..=215040. `out.len()` and `units` are <= `n_elements` <= 120"
 )]
-pub fn generate_elements(seed: u64) -> PeriodicTable {
+fn generate_elements_v1(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
     let mut rng = stream(seed);
 
     // `k` spans 6..=14. Below 6 a shell cannot triangulate a sphere; above 14
@@ -823,7 +879,7 @@ pub fn generate_elements(seed: u64) -> PeriodicTable {
         fallback_symbols,
         peak,
     };
-    PeriodicTable::new(shell, out)
+    PeriodicTable::new(shell, out, physics)
 }
 
 #[cfg(test)]
@@ -832,8 +888,12 @@ mod tests {
 
     /// Named for brevity below; `generate_elements` is infallible because the
     /// mass is built in sub-units (see its doc), so there is nothing to unwrap.
-    fn table(seed: u64) -> (ShellPattern, Vec<Element>) {
-        generate_elements(seed).into_parts()
+    ///
+    /// `PhysicsVersion::CURRENT`, not a hardcoded `V1`: this helper predates
+    /// versioning and every caller below wants "the shipped table", the same
+    /// intent [`crate::Universe::generate`] follows.
+    fn table(seed: u64) -> (ShellPattern, Vec<Element>, PhysicsVersion) {
+        generate_elements(seed, PhysicsVersion::CURRENT).into_parts()
     }
 
     /// The maximum valence of a table at an explicit `(k, n_elements)`.
@@ -933,7 +993,7 @@ mod tests {
     #[test]
     fn valence_is_continuous_across_closures() {
         for seed in 0..12 {
-            let (_, els) = table(seed);
+            let (_, els, _physics) = table(seed);
             for pair in els.windows(2) {
                 let jump = i16::from(pair[1].valence) - i16::from(pair[0].valence);
                 assert!(
@@ -961,7 +1021,7 @@ mod tests {
     #[test]
     fn elements_one_past_a_closure_all_have_valence_one() {
         for seed in 0..12 {
-            let (shell, els) = table(seed);
+            let (shell, els, _physics) = table(seed);
             for &c in &shell.closures {
                 if let Some(e) = els.get(c) {
                     assert_eq!(
@@ -1046,7 +1106,7 @@ mod tests {
     #[test]
     fn mass_increases_with_index() {
         for seed in 0..12 {
-            let (_, els) = table(seed);
+            let (_, els, _physics) = table(seed);
             for w in els.windows(2) {
                 assert!(
                     w[1].mass > w[0].mass,
@@ -1091,7 +1151,7 @@ mod tests {
         const MAX_BASE_SUB: i64 = 1792;
         const CEILING: i64 = MAX_UNITS * MAX_BASE_SUB;
         for seed in 0..24 {
-            let (_, els) = table(seed);
+            let (_, els, _physics) = table(seed);
             for e in els {
                 let raw = e.mass.raw();
                 assert!(
@@ -1119,7 +1179,7 @@ mod tests {
     #[test]
     fn closed_shells_have_valence_zero() {
         for seed in 0..24 {
-            let (sp, els) = table(seed);
+            let (sp, els, _physics) = table(seed);
             for n in packing::closures(sp.k, els.len()) {
                 if let Some(e) = els.get(n - 1) {
                     assert_eq!(e.valence, 0, "seed {seed}: N={n} is a closure");
@@ -1190,7 +1250,7 @@ mod tests {
         );
 
         for seed in 0..12 {
-            let (_, els) = table(seed);
+            let (_, els, _physics) = table(seed);
             assert!(els.iter().all(|e| e.affinity > -1.0 && e.affinity <= 1.0));
             for w in els.windows(2) {
                 let bound = 2.0 / w[0].units as f64;
@@ -1392,7 +1452,7 @@ mod tests {
     #[test]
     fn no_drawn_table_falls_back_to_a_minted_symbol() {
         for seed in 0..64 {
-            let (shell, els) = table(seed);
+            let (shell, els, _physics) = table(seed);
             assert_eq!(
                 shell.fallback_symbols,
                 0,
@@ -1448,7 +1508,16 @@ mod tests {
             h = h.wrapping_mul(0x0100_0000_01b3);
         };
         for seed in 0..64 {
-            let (sp, els) = table(seed);
+            // `_physics`, deliberately: this digest is about the table's
+            // *content* (`ShellPattern`, `Element`), predates
+            // `PhysicsVersion` entirely, and sweeps seeds only, not versions.
+            // Mixing it here would duplicate
+            // `the_assembled_universe_digest_is_pinned`'s job (P2, issue
+            // #26's prerequisites), which pins one golden value *per
+            // version*, exhaustively, in `lib.rs` — the right place for a
+            // per-version pin, since this test's own golden below is a
+            // single value with no version axis to index it by.
+            let (sp, els, _physics) = table(seed);
             // **Destructured, for the reason the assembled-universe digest is.**
             // A hand-written field list cannot see a field that is not in it: a
             // review added `pub mutant_species_field: f64` to `Element`, filled
@@ -1541,12 +1610,12 @@ mod tests {
         // 300 slots: measured before the guard, `iter` handed out 256 distinct
         // ids, 44 slots disagreed with `get`, and the bond matrix priced slot
         // 299 as slot 255 — in range, plausible and silent.
-        let (pattern, els) = generate_elements(0).into_parts();
+        let (pattern, els, physics) = generate_elements(0, PhysicsVersion::CURRENT).into_parts();
         let mut long = els.clone();
         while long.len() <= PeriodicTable::MAX_ELEMENTS {
             long.extend(els.iter().cloned());
         }
-        let _ = PeriodicTable::new(pattern, long);
+        let _ = PeriodicTable::new(pattern, long, physics);
     }
 
     #[test]

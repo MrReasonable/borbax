@@ -608,10 +608,10 @@ mod tests {
     use crate::graph::{MAX_ATOMS, Mol12};
     use borbax_rng::{Domain, Stream};
     use borbax_universe::element::generate_elements;
-    use borbax_universe::{BondOrder, ElementId, PeriodicTable};
+    use borbax_universe::{BondOrder, ElementId, PeriodicTable, PhysicsVersion};
 
     fn table(seed: u64) -> PeriodicTable {
-        generate_elements(seed)
+        generate_elements(seed, PhysicsVersion::CURRENT)
     }
 
     /// Every element that can carry a chain interior.

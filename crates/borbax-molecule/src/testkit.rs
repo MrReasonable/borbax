@@ -65,12 +65,27 @@
 use crate::canonical::{CanonMol, canonicalise};
 use crate::graph::{MAX_ATOMS, Mol12};
 use borbax_rng::Stream;
-use borbax_universe::{BondOrder, ElementId, PeriodicTable, Universe, element::generate_elements};
+use borbax_universe::{BondOrder, ElementId, PeriodicTable, Universe};
 
-/// A periodic table and a universe **from the same seed**.
+/// A periodic table and a universe **from the same seed, under the same
+/// physics** — because the table *is* the universe's own, never a second,
+/// independent draw.
+///
+/// **An earlier version of this function called `generate_elements(seed,
+/// PhysicsVersion::CURRENT)` alongside `Universe::generate(seed)` — two
+/// independent `CURRENT` reads that agreed only by convention, not by
+/// construction.** This module's own doc comment already records what a
+/// mismatched *seed* pairing costs (30.8% of ids absent, a fallback radius,
+/// a null inflated to within 0.008 of its gate); a mismatched *version*
+/// pairing is the same class of chimera, and two `CURRENT` reads stay
+/// unspellable-safe only until a future edit updates one call site and
+/// misses the other. Cloning `universe.table` closes it the same way the
+/// module's one-seed rule closes the seed version: by construction, not by
+/// convention.
 #[must_use]
 pub(crate) fn fixture(seed: u64) -> (PeriodicTable, Universe) {
-    (generate_elements(seed), Universe::generate(seed))
+    let universe = Universe::generate(seed);
+    (universe.table.clone(), universe)
 }
 
 /// Elements that can carry two bonds, so a chain is buildable.

@@ -216,6 +216,7 @@
 //! carries is to draw the energy in units of the universe's own temperature,
 //! which a review measured collapses the `Ea/T` spread from 4.39x to 1.09x.
 
+use crate::PhysicsVersion;
 use crate::element::{ElementId, PeriodicTable};
 use borbax_rng::Stream;
 use borbax_units::{Quanta, det_math};
@@ -567,7 +568,22 @@ impl BondEnergyMatrix {
     /// ids from table B — in range, plausible and silent, which is the failure
     /// this crate keeps closing. Universes come from [`crate::Universe`], and
     /// the matrix comes with one.
+    ///
+    /// **Dispatches on `table.physics()`, not a second parameter.** P3
+    /// (issue #26's prerequisites) added this: before it, `generate` took a
+    /// table and nothing else, so there was no version to read and no way to
+    /// stop a future variant's derivation from being bolted onto V1's body
+    /// unnoticed. The match below is exhaustive over [`PhysicsVersion`] —
+    /// despite `#[non_exhaustive]` not binding in-crate — so a second variant
+    /// with no arm here is `E0004` at compile time, the same forcing function
+    /// [`crate::Universe::generate_under`] already uses.
     pub(crate) fn generate(table: &PeriodicTable, rng: &mut Stream) -> Self {
+        match table.physics() {
+            PhysicsVersion::V1 => Self::generate_v1(table, rng),
+        }
+    }
+
+    fn generate_v1(table: &PeriodicTable, rng: &mut Stream) -> Self {
         let n = table.len();
         let pattern = table.pattern();
 
@@ -785,13 +801,14 @@ impl BondEnergyMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PhysicsVersion;
     use crate::element::{ElementId, PeriodicTable, generate_elements};
     use borbax_rng::{Domain, Stream};
 
     /// One universe's table and its bond matrix, drawn the way
     /// [`crate::Universe::generate`] draws them.
     fn universe(seed: u64) -> (PeriodicTable, BondEnergyMatrix) {
-        let table = generate_elements(seed);
+        let table = generate_elements(seed, PhysicsVersion::CURRENT);
         let mut rng = Stream::new(seed, Domain::Universe, 2);
         let bonds = BondEnergyMatrix::generate(&table, &mut rng);
         (table, bonds)
@@ -866,7 +883,7 @@ mod tests {
         let mut counted = 0_usize;
 
         for seed in 0..64 {
-            let table = generate_elements(seed);
+            let table = generate_elements(seed, PhysicsVersion::CURRENT);
             let mut per_group = [0_usize; 256];
             for (_, e) in table.iter() {
                 counted += 1;
@@ -1687,12 +1704,15 @@ mod tests {
     #[test]
     fn scaling_the_tables_energy_scales_every_bond_energy() {
         for seed in 0..12 {
-            let table = generate_elements(seed);
+            let table = generate_elements(seed, PhysicsVersion::CURRENT);
             let alpha = 3.0;
             let mut scaled = table.pattern().clone();
             scaled.eps = scaled.eps * alpha;
-            let scaled_table =
-                PeriodicTable::new(scaled, table.iter().map(|(_, e)| e.clone()).collect());
+            let scaled_table = PeriodicTable::new(
+                scaled,
+                table.iter().map(|(_, e)| e.clone()).collect(),
+                table.physics(),
+            );
 
             let mut r0 = Stream::new(seed, Domain::Universe, 2);
             let mut r1 = Stream::new(seed, Domain::Universe, 2);
