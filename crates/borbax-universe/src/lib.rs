@@ -1,7 +1,13 @@
 //! Layer 0 — the generated chemistry of one universe (spec §7).
 //!
 //! A 64-bit seed becomes a complete periodic table. Nothing here is read from
-//! a data file and nothing is modelled on real chemistry (§5, G1–G6).
+//! a data file (§5, G1). **"Nothing here is modelled on real chemistry" no
+//! longer holds without qualification** — `naming::REAL_TABLE` ships the
+//! real periodic table verbatim, for the one seed-equivalent identity
+//! configuration G2's 2026-08-07 revision carves out; every *perturbed*
+//! universe is exactly as unmodelled as before. G5 (cited here as "G1–G6"
+//! in an earlier version of this line) was withdrawn 2026-08-06; see §5 for
+//! the current, revised set.
 //!
 //! # The migrated surface, as an executable table
 //!
@@ -72,6 +78,7 @@ pub mod naming;
               public with it. The redundancy is the belt to the module's braces"
 )]
 pub(crate) mod packing;
+pub mod perturbation;
 /// A typed phrase in, a seed out — and the phrase goes no further.
 ///
 /// Deliberately **not** part of [`naming`], which is about *generated* element
@@ -84,6 +91,7 @@ pub mod phrase;
 // reach into `bonds::` for one item.
 pub use bonds::{BondEnergyMatrix, BondOrder, NotABondOrder};
 pub use element::{Element, ElementId, PeriodicTable, ShellPattern};
+pub use perturbation::{Direction, Rung};
 pub use phrase::seed_from_phrase;
 
 use borbax_rng::{Domain, Stream};

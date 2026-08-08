@@ -37,7 +37,7 @@ workspace = true
 # were the same kind: a textual matcher covers the shapes someone thought to
 # probe. An AST makes the receiver, the return type and the enclosing `impl`
 # structural facts rather than substrings.
-syn = { version = "3", features = ["full", "parsing", "printing"] }
+syn = { version = "3", features = ["full", "parsing", "printing", "visit"] }
 quote = "1"
 # `span-locations` so a failure names a line an editor can open.
 proc-macro2 = { version = "1", features = ["span-locations"] }

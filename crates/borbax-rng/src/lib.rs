@@ -253,6 +253,28 @@ pub enum Domain {
     /// the subsystem it names: adding a draw in folding must not change fold
     /// cache keys.
     Hash = 9,
+    /// The rung — how far a universe's constants sit from the identity
+    /// configuration (issue #26, Decision 10).
+    ///
+    /// **Its own `Domain`, not an index shared with anything else — the
+    /// mechanism, not a location, matching this enum's own precedent
+    /// ([`Domain::Hash`]).** An earlier draft reserved index `0` of a
+    /// shared `Domain::Perturbation` for the rung and started per-constant
+    /// draws from index `1`. issue #26's plan (P7) argued this collision
+    /// is load-bearing under a discrete `p` ladder specifically, via a
+    /// modular-congruence claim about the rung and the first constant's
+    /// draw index — **that specific claim did not survive a determinism
+    /// review measuring it against this crate's actual `Stream`/`next_range`
+    /// implementation** (10.8-11.0% coincidence over 10,000 seeds under both
+    /// plausible readings of "shared index", matching pure independence,
+    /// not a guaranteed correlation), so it is not restated here. What
+    /// holds regardless: sharing an index invites a birthday-style
+    /// *coincidence* risk between the rung and whatever else reads that
+    /// index, and a separate `Domain` removes the obligation to reason
+    /// about that at all, rather than discharging it by choosing indices
+    /// carefully — which is reason enough on its own, independent of the
+    /// unverified stronger claim.
+    PerturbationRung = 10,
 }
 
 impl Domain {
@@ -262,7 +284,7 @@ impl Domain {
     /// compiler does not force that — what it does force, via the exhaustive
     /// `match` in `every_domain_stream_is_pinned`, is that a new variant
     /// cannot be added without giving it a pinned stream.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Universe,
         Self::Naming,
         Self::Molecule,
@@ -272,6 +294,7 @@ impl Domain {
         Self::Beaker,
         Self::Shadow,
         Self::Hash,
+        Self::PerturbationRung,
     ];
 
     /// This domain's permanent discriminant.
@@ -1879,7 +1902,7 @@ mod tests {
     /// new variant is given its own pinned triple. That is a compile-time
     /// gate, not a comment. What it does *not* enforce is that the new variant
     /// also reaches [`Domain::ALL`] — if it is omitted there, the new stream
-    /// goes unexercised while all nine existing ones stay pinned, which is the
+    /// goes unexercised while every existing one stays pinned, which is the
     /// property this test exists to protect.
     #[test]
     fn every_domain_stream_is_pinned() {
@@ -1929,6 +1952,11 @@ mod tests {
                     543_525_597_416_629_224,
                     15_581_591_749_131_607_509,
                     11_412_060_199_028_555_773,
+                ],
+                Domain::PerturbationRung => [
+                    9_970_090_515_558_423_042,
+                    12_728_952_834_155_642_677,
+                    16_491_960_438_584_152_858,
                 ],
             };
             let mut s = Stream::new(0x5EED, domain, 0);

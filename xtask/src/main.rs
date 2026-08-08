@@ -464,6 +464,9 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_the_viewer_seam_holds(root, &mut failures)?;
     check_wall_clock_has_one_home(root, &mut failures)?;
     check_libm_has_one_home(root, &mut failures)?;
+    check_real_table_confined(root, &mut failures)?;
+    check_identity_witness_construction_is_singular(root, &mut failures)?;
+    check_real_name_takes_witness_not_rung(root, &mut failures)?;
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -3946,6 +3949,397 @@ fn check_blocklist_present(root: &Path, failures: &mut Vec<String>) -> Result<()
     Ok(())
 }
 
+/// The root `borbax-universe` module tree checked by
+/// [`check_real_table_confined`], [`check_identity_witness_construction_is_singular`]
+/// and [`check_real_name_takes_witness_not_rung`] — Decision 9's real-name
+/// guard (issue #26, P6) lives in this crate alone.
+const IDENTITY_GUARD_SCAN_ROOT: &str = "crates/borbax-universe/src";
+
+/// True if the identifier `name` occurs anywhere in `node`'s subtree.
+///
+/// Built fresh per (function, name) pair — never reused across two
+/// functions — so a hit found while checking one function cannot leak into
+/// the answer for the next. `syn::visit::Visit`'s default methods recurse
+/// into every expression variant on their own, which is the reason this
+/// check exists at the `syn` level at all rather than as a hand-rolled
+/// walk over the ~40 `syn::Expr` variants: the crate's own maintained
+/// definition of "every place an identifier can appear" is more reliable
+/// than a partial one written here.
+struct IdentUse<'a> {
+    name: &'a str,
+    found: bool,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for IdentUse<'_> {
+    fn visit_ident(&mut self, i: &'ast syn::Ident) {
+        if i == self.name {
+            self.found = true;
+        }
+    }
+}
+
+fn mentions(name: &str, block: &syn::Block) -> bool {
+    let mut v = IdentUse { name, found: false };
+    syn::visit::visit_block(&mut v, block);
+    v.found
+}
+
+fn mentions_expr(name: &str, expr: &syn::Expr) -> bool {
+    let mut v = IdentUse { name, found: false };
+    syn::visit::visit_expr(&mut v, expr);
+    v.found
+}
+
+/// Every shipped (non-`#[cfg(test)]`) item in `items`, at every nesting
+/// depth, that mentions the identifier `name` anywhere in its body or
+/// initialiser — the reader names [`check_real_table_confined`] needs.
+///
+/// **Covers `const`/`static` initialisers and trait default method bodies,
+/// not just `fn` and `impl` method bodies — found missing in review.** An
+/// earlier version of this function (`shipped_fn_bodies`) handled
+/// `Item::Fn`/`ImplItem::Fn` only. Measured against the real check with that
+/// version: `pub const LEAKED_TABLE: &[(&str, &str)] = REAL_TABLE;`,
+/// `pub static LEAKED_STATIC: &[(&str, &str)] = REAL_TABLE;`, and a trait
+/// default method returning `REAL_TABLE` all passed `cargo xtask` clean —
+/// each is a one-line public re-export of the entire real element table
+/// with no witness required, invisible to a scan that only opens `fn`
+/// bodies. `ImplItem::Const` is included for the same reason at the method
+/// level; `TraitItem::Fn`'s `default` is `Option<Block>` because a trait
+/// method can be a signature with no body, which is not a reader.
+fn shipped_readers_of(items: &[syn::Item], name: &str, in_test: bool, out: &mut Vec<String>) {
+    for item in items {
+        match item {
+            syn::Item::Fn(f) => {
+                let test = in_test | cfg_test(&f.attrs);
+                if !test && mentions(name, &f.block) {
+                    out.push(f.sig.ident.to_string());
+                }
+            }
+            syn::Item::Const(c) => {
+                let test = in_test | cfg_test(&c.attrs);
+                if !test && c.ident != name && mentions_expr(name, &c.expr) {
+                    out.push(c.ident.to_string());
+                }
+            }
+            syn::Item::Static(s) => {
+                let test = in_test | cfg_test(&s.attrs);
+                if !test && mentions_expr(name, &s.expr) {
+                    out.push(s.ident.to_string());
+                }
+            }
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    shipped_readers_of(inner, name, in_test | cfg_test(&m.attrs), out);
+                }
+            }
+            syn::Item::Impl(i) => {
+                let test = in_test | cfg_test(&i.attrs);
+                for it in &i.items {
+                    match it {
+                        syn::ImplItem::Fn(f) => {
+                            let ftest = test | cfg_test(&f.attrs);
+                            if !ftest && mentions(name, &f.block) {
+                                out.push(f.sig.ident.to_string());
+                            }
+                        }
+                        syn::ImplItem::Const(c) => {
+                            let ctest = test | cfg_test(&c.attrs);
+                            if !ctest && mentions_expr(name, &c.expr) {
+                                out.push(c.ident.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            syn::Item::Trait(t) => {
+                let test = in_test | cfg_test(&t.attrs);
+                for it in &t.items {
+                    if let syn::TraitItem::Fn(f) = it
+                        && let Some(block) = &f.default
+                    {
+                        let ftest = test | cfg_test(&f.attrs);
+                        if !ftest && mentions(name, block) {
+                            out.push(f.sig.ident.to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Every `IdentUse`-shaped file under [`IDENTITY_GUARD_SCAN_ROOT`], parsed
+/// once and handed to `visit` — the shared traversal all three of this
+/// module's structural checks build on, so "which files were examined"
+/// cannot drift between them.
+fn walk_identity_guard_scan_root(
+    root: &Path,
+    failures: &mut Vec<String>,
+    mut visit: impl FnMut(&str, &syn::File, &mut Vec<String>),
+) -> Result<(), String> {
+    let scan_root = root.join(IDENTITY_GUARD_SCAN_ROOT);
+    let mut examined = 0usize;
+    for path in walk(&scan_root)?
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let Ok(file) = syn::parse_file(&src) else {
+            failures.push(format!(
+                "§5 (G2): {rel} could not be parsed, so Decision 9's real-name guard was \
+                 not checked there — an unrecognised shape fails closed"
+            ));
+            continue;
+        };
+        examined += 1;
+        visit(&rel, &file, failures);
+    }
+    // **The corpus filter, asserted rather than assumed** — `check_libm_has_one_home`'s
+    // own pattern. If `IDENTITY_GUARD_SCAN_ROOT` moves and `walk` returns
+    // nothing, every check below is vacuously green over zero files.
+    if examined == 0 {
+        failures.push(format!(
+            "§5 (G2): no `.rs` files were examined under {IDENTITY_GUARD_SCAN_ROOT}, so \
+             Decision 9's real-name guard checked nothing — the workspace layout moved \
+             rather than the invariant holding"
+        ));
+    }
+    Ok(())
+}
+
+/// Decision 9 (issue #26), P6's first structural check: `REAL_TABLE` is
+/// declared in exactly one file and read by exactly one function outside
+/// tests. Complete and decidable, not dominance-based — it does not ask
+/// "can a caller reach this", it counts every declaration and every
+/// shipped reader directly.
+fn check_real_table_confined(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    // Recursive, matching `shipped_readers_of`'s own descent into
+    // `syn::Item::Mod` — `REAL_TABLE` lives at file scope today, so this is
+    // not live, but scanning only the top level would silently miss a
+    // declaration inside a nested `mod`, which is the exact asymmetry the
+    // reader-scan below (via `shipped_readers_of`) does not have.
+    fn declares_real_table(items: &[syn::Item]) -> bool {
+        items.iter().any(|item| match item {
+            syn::Item::Const(c) => c.ident == "REAL_TABLE",
+            syn::Item::Mod(m) => m
+                .content
+                .as_ref()
+                .is_some_and(|(_, inner)| declares_real_table(inner)),
+            _ => false,
+        })
+    }
+
+    let mut declaring_files: Vec<String> = Vec::new();
+    let mut reader_fns: Vec<String> = Vec::new();
+    walk_identity_guard_scan_root(root, failures, |rel, file, _| {
+        if declares_real_table(&file.items) {
+            declaring_files.push(rel.to_owned());
+        }
+        shipped_readers_of(&file.items, "REAL_TABLE", false, &mut reader_fns);
+    })?;
+
+    if declaring_files.len() != 1 {
+        failures.push(format!(
+            "§5 (G2): REAL_TABLE is declared in {declaring_files:?}, expected exactly one \
+             file — it is a third copy of the real element table beside the exclusion \
+             lists, and it exists so the identity configuration's real names have exactly \
+             one confined source"
+        ));
+    }
+    reader_fns.sort_unstable();
+    reader_fns.dedup();
+    if reader_fns != ["real_name".to_owned()] {
+        failures.push(format!(
+            "§5 (G2): REAL_TABLE is read by {reader_fns:?} outside tests, expected exactly \
+             [\"real_name\"] — a second reader is a second place the identity \
+             configuration's real names could leak into a perturbed universe"
+        ));
+    }
+    Ok(())
+}
+
+/// Decision 9, P6's second structural check: exactly one construction
+/// expression for `IdentityWitness` in the crate, counted at the `syn`
+/// expression level.
+///
+/// **Resolves `Self` inside `impl IdentityWitness` to this type's own
+/// name.** An earlier reading of Decision 9's text assumed the constructor
+/// would write `IdentityWitness(())` literally, which `clippy::use_self`
+/// (workspace `-D warnings`) forbids — the real shape is `Self(())`, and a
+/// textual scan for the substring `"IdentityWitness("` would find only this
+/// struct's own declaration (one occurrence, not "at least two by
+/// construction" as an earlier draft assumed) and could pass while counting
+/// the wrong thing. Resolving `Self` via the enclosing `impl`'s own name is
+/// what a textual scan cannot do and `syn` can.
+fn check_identity_witness_construction_is_singular(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    struct WitnessConstructions<'a> {
+        self_stack: Vec<String>,
+        sites: &'a mut Vec<(String, usize)>,
+        rel: String,
+    }
+
+    impl WitnessConstructions<'_> {
+        /// `Self` resolved against the innermost open `impl`'s own name,
+        /// any other path segment left as-is — the one place a bare
+        /// textual scan for the substring `"IdentityWitness("` cannot do
+        /// what this does, since `Self(..)` never contains that substring
+        /// at all.
+        fn record_if_witness(&mut self, last_segment: &syn::Ident, line: usize) {
+            let ident = last_segment.to_string();
+            let resolved = if ident == "Self" {
+                self.self_stack.last().cloned()
+            } else {
+                Some(ident)
+            };
+            if resolved.as_deref() == Some("IdentityWitness") {
+                self.sites.push((self.rel.clone(), line));
+            }
+        }
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for WitnessConstructions<'_> {
+        fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
+            let name = idents_of(&i.self_ty).into_iter().next().unwrap_or_default();
+            self.self_stack.push(name);
+            syn::visit::visit_item_impl(self, i);
+            self.self_stack.pop();
+        }
+
+        // A tuple struct's construction, e.g. `IdentityWitness(())` or
+        // `Self(())` — parsed as a call expression whose callee names the
+        // type.
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if let syn::Expr::Path(p) = &*call.func
+                && let Some(seg) = p.path.segments.last()
+            {
+                let line = syn::spanned::Spanned::span(call).start().line;
+                self.record_if_witness(&seg.ident, line);
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
+        // **The shape `visit_expr_call` alone cannot see, found in
+        // review.** `IdentityWitness { 0: () }` — struct-literal syntax
+        // with a numbered field — also constructs a tuple struct with a
+        // private field, and it is a `syn::ExprStruct`, not an
+        // `ExprCall`. Currently, and *only* currently, this specific
+        // bypass is independently blocked by `clippy::init_numbered_fields`
+        // (part of `clippy::all`, warn-by-default) — but that lint knows
+        // nothing about `IdentityWitness`'s unforgeability contract, so a
+        // future clippy version demoting or renaming it would reopen this
+        // silently. This method is what makes the doc comment's "counted
+        // at the syn expression level" claim actually true rather than
+        // true by an unrelated lint's accident.
+        fn visit_expr_struct(&mut self, s: &'ast syn::ExprStruct) {
+            if let Some(seg) = s.path.segments.last() {
+                let line = syn::spanned::Spanned::span(s).start().line;
+                self.record_if_witness(&seg.ident, line);
+            }
+            syn::visit::visit_expr_struct(self, s);
+        }
+    }
+
+    let mut sites: Vec<(String, usize)> = Vec::new();
+    walk_identity_guard_scan_root(root, failures, |rel, file, _| {
+        let mut v = WitnessConstructions {
+            self_stack: Vec::new(),
+            sites: &mut sites,
+            rel: rel.to_owned(),
+        };
+        syn::visit::Visit::visit_file(&mut v, file);
+    })?;
+
+    if sites.len() != 1 {
+        failures.push(format!(
+            "§5 (G2): {} `IdentityWitness` construction expression(s) found at {sites:?}, \
+             expected exactly 1 (inside `IdentityWitness::new`) — a witness constructible \
+             anywhere else defeats the type-system unforgeability its own doc comment \
+             claims",
+            sites.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Decision 9, P6's third structural check: `real_name`'s parameter list
+/// names `IdentityWitness` and never `Rung`.
+///
+/// **Why `Rung` specifically is forbidden, not merely unrequired.** An
+/// earlier revision of this prerequisite gave `real_name` both an
+/// `IdentityWitness` *and* a `rung: Rung` parameter, which reopened exactly
+/// the hazard the witness exists to close: a caller could construct any
+/// `Rung` directly (a public, safely-constructible type) and pass it here
+/// without ever going through `IdentityWitness::new`'s fallible check. The
+/// witness alone must be the capability.
+fn check_real_name_takes_witness_not_rung(
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    fn find_fn_sig<'a>(items: &'a [syn::Item], name: &str) -> Option<&'a syn::Signature> {
+        for item in items {
+            match item {
+                syn::Item::Fn(f) if f.sig.ident == name => return Some(&f.sig),
+                syn::Item::Mod(m) => {
+                    if let Some((_, inner)) = &m.content
+                        && let Some(sig) = find_fn_sig(inner, name)
+                    {
+                        return Some(sig);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    let mut found = false;
+    walk_identity_guard_scan_root(root, failures, |_, file, out| {
+        let Some(sig) = find_fn_sig(&file.items, "real_name") else {
+            return;
+        };
+        found = true;
+        let param_idents: Vec<String> = sig
+            .inputs
+            .iter()
+            .flat_map(|arg| match arg {
+                syn::FnArg::Typed(t) => idents_of(&t.ty),
+                syn::FnArg::Receiver(_) => Vec::new(),
+            })
+            .collect();
+        if !param_idents.iter().any(|i| i == "IdentityWitness") {
+            out.push(format!(
+                "§5 (G2): real_name's parameter list {param_idents:?} does not name \
+                 IdentityWitness — the accessor must be reachable only through the witness"
+            ));
+        }
+        if param_idents.iter().any(|i| i == "Rung") {
+            out.push(format!(
+                "§5 (G2): real_name's parameter list {param_idents:?} names Rung — a caller \
+                 could construct one directly and bypass IdentityWitness::new's fallible \
+                 check entirely"
+            ));
+        }
+    })?;
+
+    if !found {
+        failures.push(format!(
+            "§5 (G2): no `fn real_name` found under {IDENTITY_GUARD_SCAN_ROOT} — the \
+             real-name accessor has moved or been renamed, and this check did not follow it"
+        ));
+    }
+    Ok(())
+}
+
 /// Every crate in the workspace is inside a scanned root.
 ///
 /// **The scan roots are hand-kept, and a crate added outside them escapes every
@@ -4068,6 +4462,26 @@ const FICTION_SCAN_ROOT: &str = "crates";
 /// not treated as "nothing to exempt". That is the `check_blocklist_present`
 /// lesson — a guard that reports success when its subject has vanished is worse
 /// than no guard, because the green tick is read as evidence.
+///
+/// **The exemption is total, by path, not scoped to `REAL_TABLE` specifically
+/// — a residual gap named in review, not closed.** Decision 9 (issue #26,
+/// P6) needed this file able to hold real element names, and this is that
+/// door. It is wider than the one sanctioned use: any `const`/`static` added
+/// to this file today, containing any literal data, passes
+/// `check_no_real_chemistry_in_literals` regardless of what it names —
+/// measured, planting `REAL_ELECTRONEGATIVITY`/`REAL_COVALENT_RADII_PM`
+/// tables here (real, unrelated chemistry data) passed `cargo xtask` clean.
+/// No breach exists today — `REAL_TABLE` is the only such table this file
+/// holds, and [`check_real_table_confined`] separately guards its
+/// confinement — but the established answer to "where does real data go" is
+/// now "`naming.rs`, which this scan doesn't look inside", which is worth a
+/// second reader noticing before it becomes precedent for something this
+/// door was never meant to admit. Narrowing the exemption to specific
+/// `const` items, or adding a shape-keyed check bounding how much literal
+/// data this file may hold beyond the three sanctioned constants, would
+/// close it; left open here as a design call for whoever revisits this
+/// scan next; see the emergence-auditor's review of P6 for the full
+/// reasoning.
 const BLOCKLIST_FILE: &str = "borbax-universe/src/naming.rs";
 
 /// `xtask`'s own copy of the real element symbols (G2).
