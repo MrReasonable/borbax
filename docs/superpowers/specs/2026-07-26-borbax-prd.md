@@ -188,7 +188,7 @@ These were settled before drafting and the rest of the document assumes them.
 
 ## 5. Fiction guarantees
 
-Borbax's chemistry is generated from a seed rather than modelled on the real world. G4 is the one binding requirement left unrevised and untouched. G1, G2, G3 and G6 are revised (below) to descriptive facts about the current generator, or to seed-dependent statements, rather than permanent binding requirements; G5 is withdrawn outright.
+Borbax's chemistry is generated from a seed rather than modelled on the real world. G4 is the one binding requirement left unrevised and untouched. G3 and G6 are revised (below) to descriptive facts about the current generator, or to seed-dependent statements, rather than permanent binding requirements. **G1 and G2 are revised in scope, not in kind, and remain binding**: the no-data-file rule stays absolute for every seed, and the name blocklist stays absolute for every perturbed universe — the only change is a narrow, explicitly-scoped exception for the one seed-equivalent configuration that reproduces the real periodic table, detailed in the two G1/G2 paragraphs below. G5 is withdrawn outright.
 
 **Why this section exists, recorded 2026-08-06 because it changes how strictly to read it.** The invented-chemistry framing was not the project's goal. It was adopted because a different AI model refused to help build a chemistry simulation at all, and inventing one was the way round that refusal. The design it produced — shape-based binding, emergent catalysis, per-species geometry — turned out to be worth keeping on its own merits, and none of it depends on the chemistry being *unlike* the real world.
 
