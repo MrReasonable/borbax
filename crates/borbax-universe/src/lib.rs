@@ -206,21 +206,8 @@ pub enum PhysicsVersion {
 /// `as` on a `#[non_exhaustive]` enum silently accepts a future variant, and a
 /// version number reaching an address is the last place that should happen.
 impl From<PhysicsVersion> for u8 {
-    #[expect(
-        clippy::as_conversions,
-        reason = "the hazard this impl exists to avoid is `v as u8` on an opaque \
-                  value, which silently accepts a future variant. Inside an \
-                  exhaustive match arm the variant is already known, so writing \
-                  the discriminant this way makes the wire form and the derived \
-                  `Ord` one fact instead of two encodings that can drift — \
-                  `V2 = 2` with a hand-written `=> 3` here compiles, orders \
-                  correctly, and writes the wrong number into both the digest \
-                  and the `U-7F3A21C9@N` address"
-    )]
     fn from(v: PhysicsVersion) -> Self {
-        match v {
-            PhysicsVersion::V1 => PhysicsVersion::V1 as Self,
-        }
+        v.discriminant()
     }
 }
 
@@ -231,7 +218,95 @@ impl PhysicsVersion {
     /// its own recorded version to [`Universe::generate_under`] instead — that
     /// asymmetry is the whole seam.
     pub const CURRENT: Self = Self::V1;
+
+    /// Every variant, in discriminant order — the same shape as
+    /// `borbax_rng::Domain::ALL`.
+    ///
+    /// **This is what lets `the_assembled_universe_digest_is_pinned` pin V1's
+    /// digest by name instead of by `CURRENT`.** Before this existed, that
+    /// test called [`Universe::generate`], which resolves through `CURRENT` —
+    /// so the moment a second variant landed and `CURRENT` moved to it, the
+    /// test would still fail, but for the wrong reason its own message names
+    /// (a seed/order range widening, or a reordered draw), and "fixing" it by
+    /// re-pinning the literal to the new digest would silently discard V1's
+    /// own golden value forever, even though `V1` stays fully live and
+    /// reachable via `generate_under` for every world generated before the
+    /// bump. Iterating `ALL` and matching each variant to its own golden
+    /// value, exhaustively, means a new variant with no arm is `E0004` at
+    /// compile time — the same forcing function `Domain::ALL` already gives
+    /// `every_domain_stream_is_pinned`.
+    ///
+    /// **What this does not enforce, stated precisely, the same caveat
+    /// `Domain::ALL` carries — this *is* a hand-written array, and the
+    /// compile-time forcing above is narrower than "checks against the
+    /// enum's actual variants."** Appending a variant forces a golden arm to
+    /// exist so the crate compiles — it does not force the new variant to
+    /// also reach `ALL`. Omitted there, that arm still has to exist, but the
+    /// loop never reaches it, so a wrong golden value goes unexercised until
+    /// someone remembers to add the variant here too. `PhysicsVersion::CURRENT
+    /// missing from ALL` is the one shape of that gap this module can close
+    /// without a proc-macro dependency (`const _`, below) — `CURRENT` is the
+    /// physics *every new universe* is generated under, so a universe with no
+    /// pinned digest for its own laws is the failure that actually matters;
+    /// "V2 exists, CURRENT is still V1, and V2 is missing from ALL" is not
+    /// closed by anything here, and is not closed by `Domain::ALL` either.
+    pub const ALL: [Self; 1] = [Self::V1];
+
+    /// The single place the discriminant cast is written. `From<Self> for
+    /// u8` delegates here rather than carrying its own second copy of the
+    /// same match and the same `#[expect]` — two exhaustive matches over one
+    /// enum, one hand-written cast each, is exactly the "two encodings that
+    /// can drift" this fn's own `#[expect]` reason warns against, applied to
+    /// itself.
+    #[must_use]
+    #[expect(
+        clippy::as_conversions,
+        reason = "the hazard this fn exists to avoid is `v as u8` on an opaque \
+                  value, which silently accepts a future variant. Inside an \
+                  exhaustive match arm the variant is already known, so writing \
+                  the discriminant this way makes the wire form and the derived \
+                  `Ord` one fact instead of two encodings that can drift — \
+                  `V2 = 2` with a hand-written `=> 3` here compiles, orders \
+                  correctly, and writes the wrong number into both the digest \
+                  and the `U-7F3A21C9@N` address"
+    )]
+    const fn discriminant(self) -> u8 {
+        match self {
+            Self::V1 => Self::V1 as u8,
+        }
+    }
 }
+
+/// **`CURRENT` must be swept by `the_assembled_universe_digest_is_pinned`.**
+/// Promoting a variant to `CURRENT` without adding it to `ALL` leaves the
+/// physics every *new* universe is generated under with no pinned digest,
+/// while every other test — including the digest test itself — stays green:
+/// `ALL`'s own doc comment records that a golden arm is forced to *exist*,
+/// not to *run*. A `const` block, not a runtime test, so the gap cannot
+/// survive even a single `cargo test` invocation that happens to skip this
+/// one function.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a const context: `.get(i)` returns an `Option` this loop would have to \
+              `unwrap()`, which is exactly as deniable, and the index is provably in \
+              bounds — `i < PhysicsVersion::ALL.len()` is the loop condition, checked \
+              before every indexing operation reached, never after"
+)]
+const _: () = {
+    let mut i = 0;
+    let mut found = false;
+    while i < PhysicsVersion::ALL.len() {
+        if PhysicsVersion::ALL[i].discriminant() == PhysicsVersion::CURRENT.discriminant() {
+            found = true;
+        }
+        i += 1;
+    }
+    assert!(
+        found,
+        "PhysicsVersion::CURRENT is missing from PhysicsVersion::ALL — the physics \
+         every new universe is generated under has no pinned digest"
+    );
+};
 
 /// One generated universe: the laws of physics for one `universe_seed`.
 ///
@@ -288,7 +363,7 @@ impl Universe {
         // `Universe`'s pattern would then describe a table that does not exist,
         // with nothing failing. This is the class of bug dropping `Copy` on
         // `Stream` (Task 3) exists to surface.
-        let table = element::generate_elements(seed);
+        let table = element::generate_elements(seed, physics);
 
         // **Three indices, not two, and the third was bought with a measured
         // defect.** The comment here used to read "a separate stream index so
@@ -397,11 +472,23 @@ mod tests {
     /// The half of the seam that `generate` alone cannot provide. With only
     /// `generate(seed)` there is no argument that could say which laws to
     /// apply, so a `V2` binary would restamp every reloaded world.
+    ///
+    /// **No comparison against `Universe::generate` here** — an earlier
+    /// version of this test also asserted `u ==
+    /// Universe::generate(77)`, which is exactly the coupling P2 (issue
+    /// #26's prerequisites) removed from
+    /// `the_assembled_universe_digest_is_pinned`: it agrees only because
+    /// `CURRENT == V1` today, and at the V2 bump it fails naming no cause —
+    /// the two natural repairs are deleting the assertion (correct) or
+    /// changing `V1` to `CURRENT` (tautological, and it would silently
+    /// retire the delegation check). `generate_follows_current` is that
+    /// comparison's one home now.
     #[test]
     fn generate_under_stamps_what_it_is_told() {
-        let u = Universe::generate_under(77, PhysicsVersion::V1);
-        assert_eq!(u.physics, PhysicsVersion::V1);
-        assert_eq!(u, Universe::generate(77));
+        assert_eq!(
+            Universe::generate_under(77, PhysicsVersion::V1).physics,
+            PhysicsVersion::V1
+        );
     }
 
     #[test]
@@ -455,115 +542,193 @@ mod tests {
     /// a `-0.0` that differs by architecture onto `+0.0` and report "unchanged"
     /// while the value genuinely differed. Lossiness is right for a product
     /// hash and wrong here.
+    ///
+    /// **Pinned by [`PhysicsVersion::ALL`], one golden hash per variant, not by
+    /// [`PhysicsVersion::CURRENT`].** An earlier version of this test called
+    /// `Universe::generate(seed)`, which resolves through `CURRENT` — so the
+    /// literal it pinned was never actually "V1's digest", it was "whatever
+    /// `CURRENT` happens to point at today". P2 (issue #26's prerequisites)
+    /// found the failure mode by mutation: add a byte-identical `V2` variant,
+    /// move `CURRENT` to it, and the old test failed — but its own message
+    /// named a seed-range widening, an order-range widening, or a reordered
+    /// draw, none of which had happened, and "fixing" it the natural way (
+    /// re-pinning the literal to the new hash) would have permanently
+    /// discarded V1's golden value while `V1` stayed fully reachable via
+    /// `generate_under` for every world already generated under it. Iterating
+    /// `PhysicsVersion::ALL` and calling `generate_under` explicitly per
+    /// version decouples "what does V1 digest to" from "what does `CURRENT`
+    /// point at this week" — and the exhaustive `match` below means a new
+    /// variant with no golden arm is `E0004` at compile time, not a value
+    /// silently outside the pin.
     #[test]
     fn the_assembled_universe_digest_is_pinned() {
-        // FNV-1a: XOR-then-multiply, so the low k bits of the product depend
-        // only on the low k bits of the operands — there is essentially no
-        // avalanche downward. Measured: a mutation touching only exponent bits
-        // of every Single cell left the low 32 bits identical. Compare the full
-        // `u64` only — never a prefix, never truncated to a display address.
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut mix = |x: u64| {
-            h ^= x;
-            h = h.wrapping_mul(0x0100_0000_01b3);
-        };
-        let (mut mixed, mut pairs) = (0_usize, 0_usize);
-        for seed in 0..64 {
-            let u = Universe::generate(seed);
-            // **Destructured, not field-accessed, and that is the whole guard.**
-            // A review added a ninth drawn constant three ways — appended to the
-            // stream, and on a fresh `Domain::Universe` index as this enum's own
-            // doc *recommends* — and all 54 tests stayed green each time. A
-            // hand-written field list cannot see a field that is not in it.
-            // `#[non_exhaustive]` does not bind in-crate, so destructuring makes
-            // an added field `E0027` here instead of a value silently outside
-            // the digest — the same forcing function as `generate_under`'s match.
-            let Universe {
-                seed: s,
-                physics,
-                table,
-                bonds,
-                consts,
-            } = &u;
-            let UniverseConsts {
-                ideal_gap,
-                w_shape,
-                w_charge,
-                rate_prefactor,
-                decay_scale,
-                solvent,
-                temp_min,
-                temp_max,
-            } = consts;
-            mix(*s);
-            // `u8::from` on the discriminant rather than `as`: the enum is
-            // `#[non_exhaustive]` and a future variant must not silently widen.
-            mix(u64::from(u8::from(*physics)));
-            // Fixed order, this test's own — so a reorder of the struct literal
-            // cannot reorder the digest with it.
-            mix(ideal_gap.0.to_bits());
-            mix(w_shape.to_bits());
-            mix(w_charge.to_bits());
-            mix(rate_prefactor.to_bits());
-            mix(decay_scale.to_bits());
-            mix(u64::try_from(solvent.index()).unwrap_or(u64::MAX));
-            mix(temp_min.0.to_bits());
-            mix(temp_max.0.to_bits());
-            // Every bond cell at every order, covering `e` and both order
-            // multipliers.
-            let ids: Vec<ElementId> = table.iter().map(|(id, _)| id).collect();
-            for &a in &ids {
-                for &b in &ids {
-                    // Every representable order, not the first three: the cap
-                    // is now `BondOrder::MAX`, derived from the valence ceiling.
-                    //
-                    // (This iterated `1..=MAX` through `BondOrder::new` and
-                    // carried a paragraph about its `None` arm. It is
-                    // `for order in ALL` now — there is no `Option` here.)
-                    for order in BondOrder::ALL {
-                        let v = bonds.energy(a, b, order).get();
-                        // **A non-finite value must name itself here.** Both
-                        // unreachable fallbacks in `bonds.rs` are `NAN`, and a
-                        // review measured that NaN *propagation* through `*`,
-                        // `/` and `sqrt` is bit-identical on aarch64 and x86-64
-                        // — so a poisoned universe would move this hash the same
-                        // way on all three CI legs, the §13.4 matrix would stay
-                        // green, and "category one, regenerate" is the natural
-                        // and wrong conclusion. Only *freshly generated* NaNs
-                        // diverge by architecture.
-                        assert!(
-                            v.is_finite(),
-                            "seed {seed}: {a:?}-{b:?} order {order:?} is {v} — a \
-                             non-finite value reached the digest. This is NOT one \
-                             of §18.1's three; an unreachable fallback fired"
-                        );
-                        mix(v.to_bits());
-                        mixed += 1;
+        for version in PhysicsVersion::ALL {
+            // FNV-1a: XOR-then-multiply, so the low k bits of the product
+            // depend only on the low k bits of the operands — there is
+            // essentially no avalanche downward. Measured: a mutation
+            // touching only exponent bits of every Single cell left the low
+            // 32 bits identical. Compare the full `u64` only — never a
+            // prefix, never truncated to a display address.
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            let mut mix = |x: u64| {
+                h ^= x;
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            };
+            let (mut mixed, mut pairs) = (0_usize, 0_usize);
+            for seed in 0..64 {
+                let u = Universe::generate_under(seed, version);
+                // **Destructured, not field-accessed, and that is the whole
+                // guard.** A review added a ninth drawn constant three ways —
+                // appended to the stream, and on a fresh `Domain::Universe`
+                // index as this enum's own doc *recommends* — and all 54
+                // tests stayed green each time. A hand-written field list
+                // cannot see a field that is not in it. `#[non_exhaustive]`
+                // does not bind in-crate, so destructuring makes an added
+                // field `E0027` here instead of a value silently outside the
+                // digest — the same forcing function as `generate_under`'s
+                // own match.
+                let Universe {
+                    seed: s,
+                    physics,
+                    table,
+                    bonds,
+                    consts,
+                } = &u;
+                let UniverseConsts {
+                    ideal_gap,
+                    w_shape,
+                    w_charge,
+                    rate_prefactor,
+                    decay_scale,
+                    solvent,
+                    temp_min,
+                    temp_max,
+                } = consts;
+                // **The invariant P3's whole design rests on, pinned here
+                // rather than merely relied upon.** `BondEnergyMatrix::generate`
+                // dispatches on `table.physics()`, while the universe's own
+                // address, digest and every downstream reader use `u.physics`
+                // — `generate_v1` holds them equal by construction (one
+                // `physics` binding feeds both), but nothing before this
+                // assertion checked it. A future version whose derivation
+                // touched some other subsystem and left this equality broken
+                // would be undetectable by the digest alone.
+                assert_eq!(
+                    table.physics(),
+                    *physics,
+                    "version {version:?} seed {seed}: the table's laws disagree with \
+                     the universe's own"
+                );
+                mix(*s);
+                // `u8::from` on the discriminant rather than `as`: the enum is
+                // `#[non_exhaustive]` and a future variant must not silently widen.
+                mix(u64::from(u8::from(*physics)));
+                // Fixed order, this test's own — so a reorder of the struct literal
+                // cannot reorder the digest with it.
+                mix(ideal_gap.0.to_bits());
+                mix(w_shape.to_bits());
+                mix(w_charge.to_bits());
+                mix(rate_prefactor.to_bits());
+                mix(decay_scale.to_bits());
+                mix(u64::try_from(solvent.index()).unwrap_or(u64::MAX));
+                mix(temp_min.0.to_bits());
+                mix(temp_max.0.to_bits());
+                // Every bond cell at every order, covering `e` and both order
+                // multipliers.
+                let ids: Vec<ElementId> = table.iter().map(|(id, _)| id).collect();
+                for &a in &ids {
+                    for &b in &ids {
+                        // Every representable order, not the first three: the cap
+                        // is now `BondOrder::MAX`, derived from the valence ceiling.
+                        //
+                        // (This iterated `1..=MAX` through `BondOrder::new` and
+                        // carried a paragraph about its `None` arm. It is
+                        // `for order in ALL` now — there is no `Option` here.)
+                        for order in BondOrder::ALL {
+                            let v = bonds.energy(a, b, order).get();
+                            // **A non-finite value must name itself here.** Both
+                            // unreachable fallbacks in `bonds.rs` are `NAN`, and a
+                            // review measured that NaN *propagation* through `*`,
+                            // `/` and `sqrt` is bit-identical on aarch64 and x86-64
+                            // — so a poisoned universe would move this hash the same
+                            // way on all three CI legs, the §13.4 matrix would stay
+                            // green, and "category one, regenerate" is the natural
+                            // and wrong conclusion. Only *freshly generated* NaNs
+                            // diverge by architecture.
+                            assert!(
+                                v.is_finite(),
+                                "version {version:?} seed {seed}: {a:?}-{b:?} order \
+                                 {order:?} is {v} — a non-finite value reached the \
+                                 digest. This is NOT one of §18.1's three; an \
+                                 unreachable fallback fired"
+                            );
+                            mix(v.to_bits());
+                            mixed += 1;
+                        }
+                        pairs += 1;
                     }
-                    pairs += 1;
                 }
             }
+            // Catches exactly one thing: a `continue` added inside the order
+            // loop, which would silently hash fewer cells. `mixed` and
+            // `pairs` exist only for this. `ALL`'s *contents* are guarded by
+            // a `const _` in `bonds.rs`, at compile time.
+            assert_eq!(
+                mixed,
+                pairs * BondOrder::ALL.len(),
+                "version {version:?}: the digest skipped an order — `{mixed}` cells \
+                 for `{pairs}` pairs"
+            );
+            let want = match version {
+                PhysicsVersion::V1 => 0xef29_79c6_1879_20d8,
+            };
+            assert_eq!(
+                h, want,
+                "version {version:?}'s assembled-universe digest moved — say which \
+                 of §18.1's three this is, or one of two widenings that move the \
+                 constant while moving no universe value: the seed range (0..64 \
+                 today) or the order range (1..=BondOrder::MAX today). Recompute \
+                 over the previous range for whichever changed. Otherwise check \
+                 whether a draw was reordered or inserted — and note that since \
+                 the bond generator moved to its own stream index, its draw count \
+                 can no longer do that silently, which it previously could and did"
+            );
         }
-        // Catches exactly one thing: a `continue` added inside the order loop,
-        // which would silently hash fewer cells. `mixed` and `pairs` exist only
-        // for this. `ALL`'s *contents* are guarded by a `const _` in `bonds.rs`,
-        // at compile time.
-        assert_eq!(
-            mixed,
-            pairs * BondOrder::ALL.len(),
-            "the digest skipped an order — `{mixed}` cells for `{pairs}` pairs"
-        );
-        assert_eq!(
-            h, 0xef29_79c6_1879_20d8,
-            "the assembled-universe digest moved — say which of §18.1's three this \
-             is, or one of two widenings that move the constant while moving no \
-             universe value: the seed range (0..64 today) or the order range \
-             (1..=BondOrder::MAX today). Recompute over the previous range for \
-             whichever changed. Otherwise check whether a draw was reordered or \
-             inserted — and note that since the bond generator moved to its own \
-             stream index, its draw count can no longer do that silently, which \
-             it previously could and did"
-        );
+    }
+
+    /// **`Universe::generate`'s entire job is delegating to `generate_under`
+    /// under `CURRENT`, and this test replaces the delegation check that
+    /// used to live inside `generate_under_stamps_what_it_is_told`** — moved
+    /// out, not newly added: that test's own `assert_eq!(u,
+    /// Universe::generate(77))` was the same CURRENT-coupled comparison,
+    /// under a name that didn't say so. [`the_assembled_universe_digest_is_pinned`]
+    /// no longer calls `generate` at all — it iterates
+    /// [`PhysicsVersion::ALL`] through `generate_under` explicitly, by
+    /// design (see that test's own doc comment) — so this is now the one
+    /// place in the file that would catch a `generate` body drifting from
+    /// `generate_under(seed, CURRENT)`.
+    ///
+    /// **The comparison is `Universe`'s derived `PartialEq`, not a digest,
+    /// and that has one live direction worth naming: a `NaN` on either side
+    /// compares unequal to itself, so a poisoned universe (either of
+    /// `bonds.rs`'s two unreachable `NAN` fallbacks firing) would fail this
+    /// assertion with a message blaming the delegation, not the poison.**
+    /// `-0.0`/`+0.0` is not a live hazard here the way it is for the digest
+    /// test's `to_bits()`: that distinction exists to catch a value that
+    /// differs *by architecture*, and both sides of this comparison run in
+    /// the same process on the same architecture. Seeds `[0, 1, 63]` all sit
+    /// inside `the_assembled_universe_digest_is_pinned`'s own `0..64`
+    /// finiteness sweep, so this cannot fire today.
+    #[test]
+    fn generate_follows_current() {
+        for seed in [0, 1, 63] {
+            assert_eq!(
+                Universe::generate(seed),
+                Universe::generate_under(seed, PhysicsVersion::CURRENT),
+                "seed {seed}: Universe::generate no longer matches \
+                 generate_under(seed, CURRENT)"
+            );
+        }
     }
 
     #[test]
