@@ -553,17 +553,12 @@ Windows/x86-64 and Linux/x86-64, enforced by a CI golden matrix (§13.4, §13.6)
   invalidates golden hashes and requires deliberate regeneration, reviewed like
   a change to physics.
 
-**Fiction guarantees** (§5). **G5 was withdrawn on 2026-08-06** — read §5 before
-adding any enforcement here, because the burden of proof now sits with keeping a
-constraint rather than with relaxing one. What remains:
+**Fiction guarantees** (§5). **G5 was withdrawn on 2026-08-06; G1 and G2 were
+revised on 2026-08-07, on the same reasoning, in the review pass that scoped
+#26's first implementation task** — read §5 before adding any enforcement here,
+because the burden of proof now sits with keeping a constraint rather than with
+relaxing one. Only G4 is still unrevised and absolute:
 
-- No real chemistry data anywhere — no element tables, reaction databases,
-  molecular structures or sequence data. No data files in `borbax-universe`,
-  `borbax-molecule`, `borbax-reaction`. **`cargo xtask` enforces this**
-  (G1, `check_no_data_files`.)
-- Generated element names are blocklist-checked against real symbols and names
-  (`REAL_ELEMENT_SYMBOLS` in `borbax-universe/src/naming.rs`).
-  **`cargo xtask` enforces this too** (G2.)
 - No real-world units. Temperature is `Thermal`, energy `Quanta`, distance
   `Span`, time `WorldYear`, mass `Mass` — distinct newtypes; cross-unit
   arithmetic must not compile. **Not `xtask` at all** — G4 is enforced by the
@@ -571,16 +566,37 @@ constraint rather than with relaxing one. What remains:
   fiction argument. `xtask/README.md` is explicit that a table headed "what it
   checks" does not list this, for the same reason.
 
+**G1 (no real chemistry data) is revised, not withdrawn — the target of the
+revision is narrower than it sounds.** `check_no_data_files` still holds
+absolutely: no element tables, reaction databases, molecular structures or
+sequence-data files anywhere in `borbax-universe`, `borbax-molecule`,
+`borbax-reaction`, under any seed. What is no longer forbidden is a generative
+formula's *parameter* equalling, or being chosen to approximate, its real
+physical counterpart — Ian's ruling was that there is one calculation for every
+seed, and a seed landing on values that reproduce real structure is a point in
+that calculation's own parameter space, not smuggled-in data. Ian, verbatim:
+"G1 doesn't need to protect. We're not 'inventing chemistry' anymore. We're
+demonstrating how it really works in an interactive tool," and, on why this is
+not a new kind of exception: "That is why we removed G3 through G6." See spec
+§5 for the full ruling and the exact wording.
+
+**G2 (real-name blocklist) is revised the same way, seed-scoped.** The
+blocklist in `borbax-universe/src/naming.rs` (`REAL_ELEMENT_SYMBOLS`) still
+applies, unchanged, to every perturbed universe — a generated table must still
+avoid colliding with real names. The one seed (or seed-equivalent
+configuration) whose unperturbed constants reproduce the real periodic table is
+now the exception: it is expected to use the real names, not blocked from them.
+
 **Withdrawn, and do not reinstate without reopening §5:** the ban on real
 chemical formats, on a Borbax↔real mapping table, and on real-world calibration
 targets. Its two checks — `check_no_real_chemical_formats` and
 `check_the_palette_reads_only_generated_properties` — were deleted with it.
 
-**G3 and G6 were revised on 2026-08-06, same reasoning as G5.** They no longer
-claim the physics is permanently non-isomorphic or permanently unpredictive —
-both are now "not necessarily real", a property of the seed rather than a rule
-about every seed. They no longer block #26; see the spec §5 for the exact
-wording.
+**G3 and G6 were revised on 2026-08-06, same reasoning as G5, G1 and G2.** They
+no longer claim the physics is permanently non-isomorphic or permanently
+unpredictive — both are "not necessarily real", a property of the seed rather
+than a rule about every seed. See the spec §5 for the exact wording of all
+five revisions.
 
 **Other:** no `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` in
 library code — all five are `deny` at workspace level.
@@ -631,7 +647,7 @@ rather than to a generic role. They review; none of them writes code.
 | `determinism-auditor` | Before adding parallelism or a dependency that touches results; when a golden hash moves; on any diff touching float arithmetic, collection iteration, sorting or RNG. Every hazard here is invisible on one machine. |
 | `emergence-auditor` | Before adding a threshold, special case or per-molecule field; when a behaviour is not emerging and there is a temptation to help it along; on any chemistry or simulation diff. |
 | `geometry-numerics-reviewer` | On canonicalisation, geodesic construction, the rotation table, stress majorization, signatures, binding, FCC folding, cavity detection — code that is either correct or silently wrong forever. |
-| `alife-researcher` | When implementing an algorithm or metric from the literature (RAF, Gillespie, Bedau activity statistics, neutral networks, plateau fitting), or when a design decision rests on a cited result. Constrained never to return real chemistry (§5). |
+| `alife-researcher` | When implementing an algorithm or metric from the literature (RAF, Gillespie, Bedau activity statistics, neutral networks, plateau fitting), or when a design decision rests on a cited result. Constrained by the revised §5: never import real chemistry data or biology data, but real-world calibration and correspondence are in scope since 2026-08-07. |
 
 The auditors are independent lenses on the same diff and can run in parallel.
 Run the emergence and determinism auditors before any commit that touches
@@ -644,15 +660,18 @@ conflicts will surface. This order breaks ties. **It ranks how expensive a
 mistake is to discover late, not how important each concern is** — every one
 of them matters.
 
-1. **Fiction guarantees (§5).** G1, G2 and G4 stand unrevised and are treated
-   as absolute in review — no result is worth breaching them, and there is
-   nothing to trade against. Revising one of them is a §5 change in its own
-   right, not a tiebreak call. G3 and G6 were revised 2026-08-06 to "not
-   necessarily real", a property of the seed rather than a rule about every
-   seed, and G5 was withdrawn outright the same day — a conflict against G3 or
-   G6 is a design question at precedence 2, not an automatic veto. See §5 for
-   the exact wording; this line is a pointer to it, not a restatement that can
-   drift from it.
+1. **Fiction guarantees (§5).** G4 stands unrevised and is treated as absolute
+   in review — no result is worth breaching it, and there is nothing to trade
+   against. Revising it is a §5 change in its own right, not a tiebreak call.
+   G3 and G6 were revised 2026-08-06, and G1 and G2 on 2026-08-07, all to
+   "not necessarily real" / seed-scoped statements rather than permanent rules
+   about every seed; G5 was withdrawn outright on 2026-08-06. A conflict
+   against any of G1, G2, G3 or G6 is a design question at precedence 2, not
+   an automatic veto — but note `check_no_data_files` and the real-name
+   blocklist itself remain absolute for every *perturbed* universe under G1/G2's
+   revision; only the seed-equivalent configuration that reproduces the real
+   table is exempt. See §5 for the exact wording; this line is a pointer to
+   it, not a restatement that can drift from it.
 2. **Correctness of the physics.** Geometry and numerics that are silently
    wrong poison everything downstream and are the hardest thing here to
    detect.
