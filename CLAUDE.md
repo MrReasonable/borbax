@@ -581,15 +581,16 @@ not a new kind of exception: "That is why we removed G3 through G6." See spec
 §5 for the full ruling and the exact wording.
 
 **G2 (real-name blocklist) is revised the same way, seed-scoped.** The
-blocklist in `borbax-universe/src/naming.rs` (`REAL_ELEMENT_SYMBOLS`) still
-applies, unchanged, to every perturbed universe — a generated table must still
-avoid colliding with real names. The one seed (or seed-equivalent
-configuration) whose unperturbed constants reproduce the real periodic table is
-now the exception: it is expected to use the real names, not blocked from them.
+blocklist in `borbax-universe/src/naming.rs` (`REAL_ELEMENT_SYMBOLS` and
+`REAL_WORDS`) still applies, unchanged, to every perturbed universe — a
+generated table must still avoid colliding with real names. The one seed (or
+seed-equivalent configuration) whose unperturbed constants reproduce the real
+periodic table is now the exception: it is expected to use the real names, not
+blocked from them.
 
-**Withdrawn, and do not reinstate without reopening §5:** the ban on real
-chemical formats, on a Borbax↔real mapping table, and on real-world calibration
-targets. Its two checks — `check_no_real_chemical_formats` and
+**G5, withdrawn 2026-08-06 — do not reinstate without reopening §5:** the ban
+on real chemical formats, on a Borbax↔real mapping table, and on real-world
+calibration targets. Its two checks — `check_no_real_chemical_formats` and
 `check_the_palette_reads_only_generated_properties` — were deleted with it.
 
 **G3 and G6 were revised on 2026-08-06, same reasoning as G5, G1 and G2.** They
@@ -647,7 +648,7 @@ rather than to a generic role. They review; none of them writes code.
 | `determinism-auditor` | Before adding parallelism or a dependency that touches results; when a golden hash moves; on any diff touching float arithmetic, collection iteration, sorting or RNG. Every hazard here is invisible on one machine. |
 | `emergence-auditor` | Before adding a threshold, special case or per-molecule field; when a behaviour is not emerging and there is a temptation to help it along; on any chemistry or simulation diff. |
 | `geometry-numerics-reviewer` | On canonicalisation, geodesic construction, the rotation table, stress majorization, signatures, binding, FCC folding, cavity detection — code that is either correct or silently wrong forever. |
-| `alife-researcher` | When implementing an algorithm or metric from the literature (RAF, Gillespie, Bedau activity statistics, neutral networks, plateau fitting), or when a design decision rests on a cited result. Constrained by the revised §5: never import real chemistry data or biology data, but real-world calibration and correspondence are in scope since 2026-08-07. |
+| `alife-researcher` | When implementing an algorithm or metric from the literature (RAF, Gillespie, Bedau activity statistics, neutral networks, plateau fitting), or when a design decision rests on a cited result. Constrained by the revised §5: never import real chemistry or biology data (G1's unrevised core) — real-world calibration and correspondence are in scope since the 2026-08-06/07 revisions. |
 
 The auditors are independent lenses on the same diff and can run in parallel.
 Run the emergence and determinism auditors before any commit that touches

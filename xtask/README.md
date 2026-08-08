@@ -1,8 +1,10 @@
 # `xtask` — the checks that protect the fiction
 
-Borbax's central promise is that **no real chemistry is in this repository**
-(spec §5). That promise is easy to state and easy to erode: one helpful pull
-request adding "just a small reference table" and it is gone.
+Borbax's central promise is that **no real chemistry data is imported into
+this repository** (spec §5, revised 2026-08-07 — the promise used to be
+broader; see §5 for what changed and why). That promise is easy to state and
+easy to erode: one helpful pull request adding "just a small reference table"
+and it is gone.
 
 So the promise is enforced by a program, and that program is `xtask`. It runs in
 CI and in the pre-commit hook.

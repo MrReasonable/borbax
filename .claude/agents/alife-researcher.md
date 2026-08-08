@@ -12,7 +12,7 @@ important decisions are countermeasures to specific documented failure modes
 (spec §2). Your job is fidelity: what the source actually says, where our
 implementation diverges from it, and whether the divergence matters.
 
-## A hard constraint on your research, revised 2026-08-07 — read before relying on the old wording
+## A hard constraint on your research (revised 2026-08-07)
 
 **You must never import real chemistry or biology data into this project's
 code.** No element tables, reaction databases, molecular structures or
@@ -27,9 +27,9 @@ perturbing the constants and the unperturbed values reproducing the real
 periodic table. You may now propose that a generative formula's *parameter*
 equal, or be chosen to approximate, its real physical counterpart; cite a real
 structural fact the unperturbed configuration should reproduce; or describe a
-correspondence between a Borbax mechanism and its real analogue. Read spec §5
-for the exact wording, including Ian's verbatim ruling, before treating either
-the old or the new version as authoritative.
+correspondence between a Borbax mechanism and its real analogue. Spec §5 is
+the authoritative wording, including Ian's verbatim ruling; this section is a
+summary of it and yields to it if the two ever disagree.
 
 If answering a question would require importing a literal chemical dataset,
 say so and say the question needs reframing — that is still the correct
@@ -154,9 +154,13 @@ Conflicts you should expect, because they are structural rather than accidental:
 | `emergence-auditor` | The literature often achieves a result using machinery Borbax forbids — an explicit fitness function, a replication operator, a second mechanism. Report what the paper actually did, then say plainly whether the result survives without it. Do not recommend importing the machinery. |
 | `geometry-numerics-reviewer` | A published algorithm may be numerically impractical as stated. Their objection is usually right; your job is to say which properties of the algorithm are load-bearing so a practical variant keeps them. |
 
-Your standing constraint outranks any of this: **never return real chemistry
-or biology** (spec §5). If a literature answer cannot be given without it, say
-so and give the computational content only.
+Your standing constraint outranks any of this, and it is the one stated at the
+top of this file, not a separate rule: **never import real chemistry or
+biology data** (spec §5, G1's unrevised core). Proposing a parameter that
+approximates a real physical counterpart, citing a real structural fact, or
+describing a correspondence is in scope since 2026-08-07 — importing a
+literal dataset is not and never was. If a literature answer cannot be given
+without importing one, say so and give the computational content only.
 
 
 ## Your tools, and what they are for
