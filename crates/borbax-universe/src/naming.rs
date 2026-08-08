@@ -11,11 +11,12 @@
 //! configuration whose unperturbed constants reproduce the real periodic
 //! table — generated too, just unperturbed, not exempt for any other reason
 //! — is now expected to use the real names rather than be blocked from
-//! them. That exception has no implementation in this file yet — it is
-//! issue #26's own work: a confined accessor gated on the identity
-//! configuration, read from nowhere else — and changes nothing about what
+//! them. That exception is implemented in this file (`REAL_TABLE`,
+//! `IdentityWitness`, `real_name`) but has no consumer yet — wiring it to a
+//! live `Universe` is issue #26's Task 26.1, and changes nothing about what
 //! the blocklist below does today.
 
+use crate::Rung;
 use borbax_rng::Stream;
 
 /// Real element symbols. Exclusion list only (G2).
@@ -175,6 +176,141 @@ const REAL_WORDS: &[&str] = &[
     "chitin",
 ];
 
+/// Symbol paired with name, for the identity configuration only (Decision 9,
+/// issue #26). **A third copy, deliberately** — `REAL_ELEMENT_SYMBOLS` and
+/// `REAL_WORDS` stay exactly as they are (flat exclusion lists, read by two
+/// `xtask` guards keyed on their exact source text), and this table exists
+/// beside them rather than being built from them, matching `xtask`'s own
+/// `REAL_WORDS_COPY` precedent: "duplicated, never imported, and the
+/// duplication is the point." `the_real_table_corresponds_to_the_blocklists`
+/// is what actually enforces the correspondence a shared-storage refactor
+/// would otherwise buy for free — and buy at the cost of a second reader on
+/// `REAL_ELEMENT_SYMBOLS`/`REAL_WORDS`, which the identity guard's own
+/// "exactly one reader" requirement (see [`real_name`]) forbids.
+///
+/// Ordered by atomic number, `Z = 1..=118` — index `Z - 1`. [`real_name`] is
+/// this table's only reader.
+const REAL_TABLE: &[(&str, &str)] = &[
+    ("H", "hydrogen"),
+    ("He", "helium"),
+    ("Li", "lithium"),
+    ("Be", "beryllium"),
+    ("B", "boron"),
+    ("C", "carbon"),
+    ("N", "nitrogen"),
+    ("O", "oxygen"),
+    ("F", "fluorine"),
+    ("Ne", "neon"),
+    ("Na", "sodium"),
+    ("Mg", "magnesium"),
+    ("Al", "aluminium"),
+    ("Si", "silicon"),
+    ("P", "phosphorus"),
+    ("S", "sulfur"),
+    ("Cl", "chlorine"),
+    ("Ar", "argon"),
+    ("K", "potassium"),
+    ("Ca", "calcium"),
+    ("Sc", "scandium"),
+    ("Ti", "titanium"),
+    ("V", "vanadium"),
+    ("Cr", "chromium"),
+    ("Mn", "manganese"),
+    ("Fe", "iron"),
+    ("Co", "cobalt"),
+    ("Ni", "nickel"),
+    ("Cu", "copper"),
+    ("Zn", "zinc"),
+    ("Ga", "gallium"),
+    ("Ge", "germanium"),
+    ("As", "arsenic"),
+    ("Se", "selenium"),
+    ("Br", "bromine"),
+    ("Kr", "krypton"),
+    ("Rb", "rubidium"),
+    ("Sr", "strontium"),
+    ("Y", "yttrium"),
+    ("Zr", "zirconium"),
+    ("Nb", "niobium"),
+    ("Mo", "molybdenum"),
+    ("Tc", "technetium"),
+    ("Ru", "ruthenium"),
+    ("Rh", "rhodium"),
+    ("Pd", "palladium"),
+    ("Ag", "silver"),
+    ("Cd", "cadmium"),
+    ("In", "indium"),
+    ("Sn", "tin"),
+    ("Sb", "antimony"),
+    ("Te", "tellurium"),
+    ("I", "iodine"),
+    ("Xe", "xenon"),
+    ("Cs", "caesium"),
+    ("Ba", "barium"),
+    ("La", "lanthanum"),
+    ("Ce", "cerium"),
+    ("Pr", "praseodymium"),
+    ("Nd", "neodymium"),
+    ("Pm", "promethium"),
+    ("Sm", "samarium"),
+    ("Eu", "europium"),
+    ("Gd", "gadolinium"),
+    ("Tb", "terbium"),
+    ("Dy", "dysprosium"),
+    ("Ho", "holmium"),
+    ("Er", "erbium"),
+    ("Tm", "thulium"),
+    ("Yb", "ytterbium"),
+    ("Lu", "lutetium"),
+    ("Hf", "hafnium"),
+    ("Ta", "tantalum"),
+    ("W", "tungsten"),
+    ("Re", "rhenium"),
+    ("Os", "osmium"),
+    ("Ir", "iridium"),
+    ("Pt", "platinum"),
+    ("Au", "gold"),
+    ("Hg", "mercury"),
+    ("Tl", "thallium"),
+    ("Pb", "lead"),
+    ("Bi", "bismuth"),
+    ("Po", "polonium"),
+    ("At", "astatine"),
+    ("Rn", "radon"),
+    ("Fr", "francium"),
+    ("Ra", "radium"),
+    ("Ac", "actinium"),
+    ("Th", "thorium"),
+    ("Pa", "protactinium"),
+    ("U", "uranium"),
+    ("Np", "neptunium"),
+    ("Pu", "plutonium"),
+    ("Am", "americium"),
+    ("Cm", "curium"),
+    ("Bk", "berkelium"),
+    ("Cf", "californium"),
+    ("Es", "einsteinium"),
+    ("Fm", "fermium"),
+    ("Md", "mendelevium"),
+    ("No", "nobelium"),
+    ("Lr", "lawrencium"),
+    ("Rf", "rutherfordium"),
+    ("Db", "dubnium"),
+    ("Sg", "seaborgium"),
+    ("Bh", "bohrium"),
+    ("Hs", "hassium"),
+    ("Mt", "meitnerium"),
+    ("Ds", "darmstadtium"),
+    ("Rg", "roentgenium"),
+    ("Cn", "copernicium"),
+    ("Nh", "nihonium"),
+    ("Fl", "flerovium"),
+    ("Mc", "moscovium"),
+    ("Lv", "livermorium"),
+    ("Ts", "tennessine"),
+    ("Og", "oganesson"),
+];
+
 /// True if either the symbol or the name collides with something real.
 #[must_use]
 pub fn is_real(symbol: &str, name: &str) -> bool {
@@ -183,6 +319,106 @@ pub fn is_real(symbol: &str, name: &str) -> bool {
         .iter()
         .any(|s| s.eq_ignore_ascii_case(symbol))
         || REAL_WORDS.contains(&n.as_str())
+}
+
+/// Proof that a universe is the one seed-equivalent configuration whose
+/// unperturbed constants reproduce the real periodic table (spec §5, G2's
+/// 2026-08-07 revision).
+///
+/// **Confined to this crate by the type system, not merely by convention —
+/// and an earlier version of this doc comment overstated that as
+/// "unforgeable by the type system" full stop, which a review falsified in
+/// under a minute from a different crate.** `Rung::IDENTITY` and
+/// `Rung::new(0)` are both `pub`, always succeed, and carry no information
+/// about any actual universe — so if `Self::new` were `pub`, any crate in
+/// the workspace could write `IdentityWitness::new(Rung::IDENTITY)` and
+/// mint a witness with zero evidence that any universe exists, let alone
+/// one at the identity rung. Measured: from `borbax-molecule`, with no
+/// `unsafe`, three lines dumped all 118 real element names, and a
+/// `Rung::draw(seed)` off a *non-identity* rung changed nothing about the
+/// answer, because the witness never consulted it. `new` is `pub(crate)`
+/// for exactly this reason — the field being private stops nothing on its
+/// own, since a public fallible constructor is a public capability
+/// regardless of what the type's internals look like.
+///
+/// **No `PhysicsVersion` field, and that is a known, deliberate gap in this
+/// prerequisite, not an oversight.** A `Rung` alone cannot express "this
+/// version has real-physics constants to reproduce" — under
+/// `PhysicsVersion::V1`, which has none, `rung == 0` is not meaningfully
+/// "the real periodic table" at all. Wiring a version-aware witness (and the
+/// `Rung` field on `Universe` this needs to be checked against a live
+/// universe) is Task 26.1's job, deliberately deferred — see
+/// `crate::perturbation`'s own module doc for the full reasoning and the
+/// determinism-auditor finding that produced it. Task 26.1 is also where
+/// this crate gains its first real caller of `new` — until then the
+/// `pub(crate)` capability is unused by design, not an oversight either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentityWitness(());
+
+impl IdentityWitness {
+    /// A witness, or `None` unless `rung` is the identity rung.
+    ///
+    /// **`pub(crate)`, not `pub` — see [`Self`]'s own doc for why a public
+    /// fallible constructor over a public, always-succeeding `Rung::IDENTITY`
+    /// is not actually a capability restriction at all.** `Universe::identity_witness`
+    /// (Task 26.1, not yet built) is meant to be the single public door,
+    /// checking a *live* universe's own rung rather than a caller-supplied
+    /// one.
+    ///
+    /// **No in-crate caller exists yet — deliberately, until Task 26.1 —
+    /// which `dead_code` would otherwise report.** The `#[expect]` is
+    /// `cfg_attr`-gated to `not(test)` because this crate's own tests *are*
+    /// callers, and an unconditional `#[expect(dead_code)]` fires
+    /// `unfulfilled_lint_expectations` on the test target for exactly that
+    /// reason — verified.
+    ///
+    /// **The one place this type may be constructed in the crate — `xtask`
+    /// checks it, at the `syn` level.** Written as `Self(())`, not
+    /// `IdentityWitness(())`: `clippy::use_self` (workspace `-D warnings`)
+    /// forbids the latter, so the plan's own framing — "a textual count of
+    /// the substring `IdentityWitness(` is at least two by construction" —
+    /// does not hold for this codebase's actual constructor shape; a naive
+    /// textual scan would find exactly one occurrence (this struct's
+    /// declaration) and could pass while counting the wrong thing entirely.
+    /// The `syn`-level guard resolves this correctly: it walks
+    /// `impl IdentityWitness` specifically and treats a `Self(..)` call
+    /// inside it as a construction of this type, which is the one place
+    /// AST-level structure can do what a textual scan cannot.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no in-crate caller until Task 26.1 gives Universe a rung and a public \
+                      identity_witness() door. Held pub(crate) rather than pub so a \
+                      downstream crate cannot mint the capability from Rung::IDENTITY; this \
+                      attribute pays for the deferral visibly instead of paying for it with \
+                      public API surface"
+        )
+    )]
+    pub(crate) const fn new(rung: Rung) -> Option<Self> {
+        if rung.is_identity() {
+            Some(Self(()))
+        } else {
+            None
+        }
+    }
+}
+
+/// The real symbol and name for atomic number `z` (`1..=118`), or `None`
+/// outside that range — reachable only with proof of the identity
+/// configuration in hand.
+///
+/// **No `Rung` parameter.** An earlier revision of this prerequisite gave
+/// this accessor a `rung: Rung` parameter *and* an `IdentityWitness`
+/// parameter, which reopened exactly the hazard the witness exists to
+/// close: a caller could construct any `Rung` value directly and pass it
+/// here without ever going through `IdentityWitness::new`'s fallible check.
+/// The witness alone is the capability; `_` is deliberate — this accessor
+/// reads nothing from it but the proof that constructing it succeeded.
+#[must_use]
+pub fn real_name(_: &IdentityWitness, z: usize) -> Option<(&'static str, &'static str)> {
+    z.checked_sub(1).and_then(|i| REAL_TABLE.get(i)).copied()
 }
 
 // Phonotactics chosen to be pronounceable and to sound like they belong to
@@ -518,6 +754,103 @@ mod tests {
                  element could be minted with that name and pass is_real() falsely"
             );
         }
+    }
+
+    /// **`REAL_TABLE` is a deliberate third copy (see its own doc comment) —
+    /// this test is what keeps that duplication honest rather than merely
+    /// declared.** Checks correspondence against both blocklists, never
+    /// shared storage with either: same length, same symbols in the same
+    /// order as `REAL_ELEMENT_SYMBOLS`, same names in the same order as
+    /// `REAL_ELEMENT_NAMES`, and every name present in `REAL_WORDS`.
+    ///
+    /// **The `REAL_ELEMENT_NAMES` zip is not redundant with the
+    /// `REAL_WORDS.contains` check below it, found in review.** `REAL_WORDS`
+    /// is a flat, unordered 176-entry set (118 element names plus 58
+    /// unrelated chemistry/biology terms) — membership in it cannot catch
+    /// two adjacent names being *transposed* (`B` paired with "carbon",
+    /// `C` paired with "boron"): both names are still somewhere in
+    /// `REAL_WORDS`, so `contains` passes for both while the pairing itself
+    /// is wrong. `REAL_ELEMENT_NAMES` is ordered by atomic number, the same
+    /// axis `REAL_TABLE` is, so zipping against it is the one check that
+    /// actually verifies the *pairing*, not just the *wordlist*.
+    #[test]
+    fn the_real_table_corresponds_to_the_blocklists() {
+        assert_eq!(
+            REAL_TABLE.len(),
+            REAL_ELEMENT_SYMBOLS.len(),
+            "REAL_TABLE must cover the same 118 elements REAL_ELEMENT_SYMBOLS does"
+        );
+        for ((&(table_symbol, table_name), &blocklist_symbol), reference_name) in REAL_TABLE
+            .iter()
+            .zip(REAL_ELEMENT_SYMBOLS)
+            .zip(REAL_ELEMENT_NAMES)
+        {
+            assert_eq!(
+                table_symbol, blocklist_symbol,
+                "REAL_TABLE's symbol order has drifted from REAL_ELEMENT_SYMBOLS's"
+            );
+            assert_eq!(
+                table_name, reference_name,
+                "REAL_TABLE pairs {table_symbol} with '{table_name}', but the \
+                 independently-ordered REAL_ELEMENT_NAMES says this position is \
+                 '{reference_name}' — the pairing has drifted, not just the wordlist"
+            );
+            assert!(
+                REAL_WORDS.contains(&table_name),
+                "REAL_TABLE names '{table_name}' ({table_symbol}), which REAL_WORDS \
+                 does not contain — the two blocklists and this table have drifted apart"
+            );
+        }
+    }
+
+    /// Decision 9's exhaustive test, restated on the constructor: every
+    /// non-identity rung must fail to produce a witness. `Rung::all_off_identity()`
+    /// is the corpus, derived from `Rung::MAX` rather than a hardcoded
+    /// `1..=RUNGS` literal that could drift from it.
+    #[test]
+    fn identity_witness_is_none_for_every_off_identity_rung() {
+        for rung in Rung::all_off_identity() {
+            assert!(
+                IdentityWitness::new(rung).is_none(),
+                "rung {rung:?} produced a witness — only Rung::IDENTITY should"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_witness_exists_only_for_the_identity_rung() {
+        assert!(IdentityWitness::new(Rung::IDENTITY).is_some());
+    }
+
+    #[test]
+    fn real_name_answers_every_atomic_number_and_nothing_outside_it() {
+        let witness = IdentityWitness::new(Rung::IDENTITY)
+            .unwrap_or_else(|| unreachable!("Rung::IDENTITY always constructs a witness"));
+        assert_eq!(
+            real_name(&witness, 0),
+            None,
+            "atomic number 0 does not exist"
+        );
+        assert_eq!(
+            real_name(&witness, 1),
+            Some(("H", "hydrogen")),
+            "atomic number 1 is hydrogen"
+        );
+        assert_eq!(
+            real_name(&witness, 118),
+            Some(("Og", "oganesson")),
+            "atomic number 118 is oganesson, the last entry in REAL_TABLE"
+        );
+        assert_eq!(
+            real_name(&witness, 119),
+            None,
+            "atomic number 119 is past REAL_TABLE's end"
+        );
+        assert_eq!(
+            real_name(&witness, usize::MAX),
+            None,
+            "an absurd atomic number must not panic or wrap into range"
+        );
     }
 
     /// **Exhaustive, not probabilistic, and this is what makes it strictly
