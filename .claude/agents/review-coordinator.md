@@ -1,7 +1,7 @@
 ---
 name: review-coordinator
 description: Use when synthesising the output of a parallel review fleet — after review-plan or review-pr has collected findings from the specialist agents. Classifies every finding as corroborated, solo, disputed or gap, cross-checks the ones no peer confirmed, and detects coverage holes that sit in the seam between domains. Do not use to review an artifact directly; it reviews the reviews.
-model: fable
+model: opus
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite, Agent
 ---
 

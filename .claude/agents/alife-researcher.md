@@ -1,7 +1,7 @@
 ---
 name: alife-researcher
 description: Use when implementing or reviewing an algorithm or metric taken from the artificial-life literature — RAF detection, Gillespie next-reaction and tau-leaping, evolutionary activity statistics, novelty and open-endedness measures, neutral-network and shape-space-covering properties, plateau model fitting. Invoke when a design decision rests on a cited result, when checking whether an observed run behaviour is a known artefact of this class of system, and before assuming that a published result generalises to Borbax.
-model: fable
+model: opus
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite
 ---
 

@@ -1,6 +1,7 @@
 ---
 name: emergence-auditor
 description: Use when reviewing simulation or chemistry code for violations of Borbax's founding constraints — that nothing about life is hardcoded, that shape complementarity is the only mechanism, that expensive work happens per-species and never per-molecule, and that no real chemistry data is imported into the repository (revised 2026-08-07 — see spec §5 before flagging a G1/G2-shaped finding; real-world calibration, correspondence and, at the one identity-seed configuration, real names are now legitimate). Invoke before adding any threshold, special case, or new per-molecule field; when a desired behaviour is not emerging and there is a temptation to help it along; and when reviewing a diff in the chemistry, reaction or simulation crates.
+model: opus
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite
 ---
 

@@ -1,6 +1,7 @@
 ---
 name: geometry-numerics-reviewer
 description: Use when designing, implementing or reviewing the geometric and numerical core — graph canonical labelling, geodesic sphere construction, the icosahedral rotation permutation table, stress-majorization embedding, shape signatures, the binding kernel, FCC-lattice folding, cavity detection, or any iterative numerical routine. Invoke before committing to a geometric predicate or convergence criterion, and when a shape-derived result looks subtly wrong rather than obviously broken.
+model: opus
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite
 ---
 

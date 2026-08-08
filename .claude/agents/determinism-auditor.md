@@ -1,6 +1,7 @@
 ---
 name: determinism-auditor
 description: Use when reviewing or writing any code whose output affects simulation results — RNG use, float arithmetic, collection iteration, parallel reduction, sorting, or serialisation. Invoke before adding parallelism, before adding a dependency that touches results, when a golden hash changes unexpectedly, and when reviewing a diff that touches the chemistry or simulation crates. Also use to audit that a performance optimisation preserved bit-for-bit reproducibility.
+model: opus
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite
 ---
 
