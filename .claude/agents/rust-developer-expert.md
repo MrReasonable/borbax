@@ -1,7 +1,6 @@
 ---
 name: rust-developer-expert
 description: Use when reviewing or writing Rust for idiom, API design, and readability — whether a type makes illegal states unrepresentable, whether an abstraction earns its keep, whether error handling is honest, and whether a well-known gotcha is lurking. Invoke on any new module before it settles, when a type or trait is being introduced, when code works but reads badly, and as the last review pass before a task is committed. Not a performance reviewer and not a correctness auditor — those are other agents.
-model: fable
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite
 ---
 

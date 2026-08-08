@@ -1,7 +1,6 @@
 ---
 name: rust-performance-expert
 description: Use when designing, reviewing, or optimising performance-critical Rust — hot loops, data layout, allocation behaviour, cache efficiency, SIMD/autovectorisation, parallelism, or benchmark design. Invoke before committing to a data structure in a hot path, when a plan specifies performance targets, and when reviewing simulation or numerical code for throughput. Also use to audit that determinism constraints survive optimisation.
-model: fable
 tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch, WebFetch, TodoWrite
 ---
 
