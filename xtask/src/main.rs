@@ -464,9 +464,15 @@ fn check_guarantees(root: &Path) -> Result<(), String> {
     check_the_viewer_seam_holds(root, &mut failures)?;
     check_wall_clock_has_one_home(root, &mut failures)?;
     check_libm_has_one_home(root, &mut failures)?;
-    check_real_table_confined(root, &mut failures)?;
-    check_identity_witness_construction_is_singular(root, &mut failures)?;
-    check_real_name_takes_witness_not_rung(root, &mut failures)?;
+    // **One corpus, three checks — found rebuilding it three times in
+    // review.** Each check calling `identity_guard_corpus` independently
+    // meant a corpus-level failure (an unparseable file, an empty scan
+    // root) was pushed into `failures` once per check, inflating the
+    // reported failure count for a single underlying cause.
+    let identity_corpus = identity_guard_corpus(root, &mut failures)?;
+    check_real_table_confined_over(&identity_corpus, &mut failures);
+    check_identity_witness_construction_is_singular_over(&identity_corpus, &mut failures);
+    check_real_name_takes_witness_not_rung_over(&identity_corpus, &mut failures);
 
     if failures.is_empty() {
         // Deliberately not an unqualified "all checks passed". The §13.1 scan
@@ -3950,9 +3956,9 @@ fn check_blocklist_present(root: &Path, failures: &mut Vec<String>) -> Result<()
 }
 
 /// The root `borbax-universe` module tree checked by
-/// [`check_real_table_confined`], [`check_identity_witness_construction_is_singular`]
-/// and [`check_real_name_takes_witness_not_rung`] — Decision 9's real-name
-/// guard (issue #26, P6) lives in this crate alone.
+/// [`check_real_table_confined_over`], [`check_identity_witness_construction_is_singular_over`]
+/// and [`check_real_name_takes_witness_not_rung_over`] — Decision 9's
+/// real-name guard (issue #26, P6) lives in this crate alone.
 const IDENTITY_GUARD_SCAN_ROOT: &str = "crates/borbax-universe/src";
 
 /// True if the identifier `name` occurs anywhere in `node`'s subtree.
@@ -3992,7 +3998,7 @@ fn mentions_expr(name: &str, expr: &syn::Expr) -> bool {
 
 /// Every shipped (non-`#[cfg(test)]`) item in `items`, at every nesting
 /// depth, that mentions the identifier `name` anywhere in its body or
-/// initialiser — the reader names [`check_real_table_confined`] needs.
+/// initialiser — the reader names [`check_real_table_confined_over`] needs.
 ///
 /// **Covers `const`/`static` initialisers and trait default method bodies,
 /// not just `fn` and `impl` method bodies — found missing in review.** An
@@ -4006,6 +4012,14 @@ fn mentions_expr(name: &str, expr: &syn::Expr) -> bool {
 /// bodies. `ImplItem::Const` is included for the same reason at the method
 /// level; `TraitItem::Fn`'s `default` is `Option<Block>` because a trait
 /// method can be a signature with no body, which is not a reader.
+///
+/// **`TraitItem::Const`'s own default is a fourth reader shape, found
+/// missing in `/review-pr`.** `pub trait Leak { const TABLE: &'static [..] =
+/// REAL_TABLE; }` exposes the table to any external implementor via `<Type
+/// as Leak>::TABLE` — verified by compiling and reading it from a separate
+/// crate, not merely asserted. Covered the same way `TraitItem::Fn`'s
+/// default is: `.default` is `Option<(Token![=], Expr)>`, `None` for a
+/// signature-only associated const, which is not a reader either.
 fn shipped_readers_of(items: &[syn::Item], name: &str, in_test: bool, out: &mut Vec<String>) {
     for item in items {
         match item {
@@ -4055,13 +4069,33 @@ fn shipped_readers_of(items: &[syn::Item], name: &str, in_test: bool, out: &mut 
             syn::Item::Trait(t) => {
                 let test = in_test | cfg_test(&t.attrs);
                 for it in &t.items {
-                    if let syn::TraitItem::Fn(f) = it
-                        && let Some(block) = &f.default
-                    {
-                        let ftest = test | cfg_test(&f.attrs);
-                        if !ftest && mentions(name, block) {
-                            out.push(f.sig.ident.to_string());
+                    match it {
+                        syn::TraitItem::Fn(f) => {
+                            if let Some(block) = &f.default {
+                                let ftest = test | cfg_test(&f.attrs);
+                                if !ftest && mentions(name, block) {
+                                    out.push(f.sig.ident.to_string());
+                                }
+                            }
                         }
+                        // **A trait's default associated const, missed until
+                        // `/review-pr` — the same shape of gap `ImplItem::Const`
+                        // closed for `impl` blocks, not yet closed here.**
+                        // `pub trait Leak { const TABLE: ... = REAL_TABLE; }`
+                        // exposes the default to any external implementor via
+                        // `<Type as Leak>::TABLE`, verified by actually
+                        // compiling and reading it from a separate crate —
+                        // this arm existed for `Item::Const`/`Item::Static`/
+                        // `ImplItem::Const` and not for this fourth shape.
+                        syn::TraitItem::Const(c) => {
+                            if let Some((_, expr)) = &c.default {
+                                let ctest = test | cfg_test(&c.attrs);
+                                if !ctest && mentions_expr(name, expr) {
+                                    out.push(c.ident.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -4127,15 +4161,13 @@ fn identity_guard_corpus(
 /// tests. Complete and decidable, not dominance-based — it does not ask
 /// "can a caller reach this", it counts every declaration and every
 /// shipped reader directly.
-fn check_real_table_confined(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
-    let corpus = identity_guard_corpus(root, failures)?;
-    check_real_table_confined_over(&corpus, failures);
-    Ok(())
-}
-
-/// The pure decision logic behind [`check_real_table_confined`], over an
-/// already-parsed corpus — see [`identity_guard_corpus`]'s doc for why this
-/// split exists.
+///
+/// Takes an already-parsed corpus rather than walking the filesystem itself
+/// — see [`identity_guard_corpus`]'s doc for why, and note `check_guarantees`
+/// builds that corpus once and shares it across all three of this module's
+/// structural checks, found rebuilding it independently three times over in
+/// review (each corpus-level failure — an unparseable file, an empty scan
+/// root — was reported once per check instead of once).
 fn check_real_table_confined_over(corpus: &[(String, syn::File)], failures: &mut Vec<String>) {
     // Recursive, matching `shipped_readers_of`'s own descent into
     // `syn::Item::Mod` — `REAL_TABLE` lives at file scope today, so this is
@@ -4194,19 +4226,10 @@ fn check_real_table_confined_over(corpus: &[(String, syn::File)], failures: &mut
 /// construction" as an earlier draft assumed) and could pass while counting
 /// the wrong thing. Resolving `Self` via the enclosing `impl`'s own name is
 /// what a textual scan cannot do and `syn` can.
-fn check_identity_witness_construction_is_singular(
-    root: &Path,
-    failures: &mut Vec<String>,
-) -> Result<(), String> {
-    let corpus = identity_guard_corpus(root, failures)?;
-    check_identity_witness_construction_is_singular_over(&corpus, failures);
-    Ok(())
-}
-
-/// The pure decision logic behind
-/// [`check_identity_witness_construction_is_singular`], over an
-/// already-parsed corpus — see [`identity_guard_corpus`]'s doc for why this
-/// split exists.
+///
+/// Takes an already-parsed corpus, shared with the other two structural
+/// checks in this module by `check_guarantees` — see
+/// [`identity_guard_corpus`]'s doc.
 fn check_identity_witness_construction_is_singular_over(
     corpus: &[(String, syn::File)],
     failures: &mut Vec<String>,
@@ -4309,65 +4332,75 @@ fn check_identity_witness_construction_is_singular_over(
 /// `Rung` directly (a public, safely-constructible type) and pass it here
 /// without ever going through `IdentityWitness::new`'s fallible check. The
 /// witness alone must be the capability.
-fn check_real_name_takes_witness_not_rung(
-    root: &Path,
-    failures: &mut Vec<String>,
-) -> Result<(), String> {
-    let corpus = identity_guard_corpus(root, failures)?;
-    check_real_name_takes_witness_not_rung_over(&corpus, failures);
-    Ok(())
-}
-
-/// The pure decision logic behind [`check_real_name_takes_witness_not_rung`],
-/// over an already-parsed corpus — see [`identity_guard_corpus`]'s doc for
-/// why this split exists.
+///
+/// Takes an already-parsed corpus, shared with the other two structural
+/// checks in this module by `check_guarantees` — see
+/// [`identity_guard_corpus`]'s doc.
+///
+/// **`in_test`-filtered, and collects every shipped match rather than the
+/// first — found in review to do neither.** The previous version returned
+/// the first `fn real_name` found in a file with no `#[cfg(test)]` check at
+/// all, which fails in both directions: a `#[cfg(test)] mod tests { fn
+/// real_name(rung: Rung, ..) {} }` declared *before* the shipped item in
+/// the same file is returned instead of it, so the real signature is never
+/// examined (fail-open); and a legitimate test helper named `real_name`
+/// that happens to take a `Rung` for its own reasons fails the check even
+/// when the shipped accessor is correct (false positive). Matches
+/// `shipped_readers_of`'s existing `in_test` propagation.
 fn check_real_name_takes_witness_not_rung_over(
     corpus: &[(String, syn::File)],
     failures: &mut Vec<String>,
 ) {
-    fn find_fn_sig<'a>(items: &'a [syn::Item], name: &str) -> Option<&'a syn::Signature> {
+    fn shipped_fn_sigs<'a>(
+        items: &'a [syn::Item],
+        name: &str,
+        in_test: bool,
+        out: &mut Vec<&'a syn::Signature>,
+    ) {
         for item in items {
             match item {
-                syn::Item::Fn(f) if f.sig.ident == name => return Some(&f.sig),
+                syn::Item::Fn(f) if f.sig.ident == name => {
+                    if !(in_test | cfg_test(&f.attrs)) {
+                        out.push(&f.sig);
+                    }
+                }
                 syn::Item::Mod(m) => {
-                    if let Some((_, inner)) = &m.content
-                        && let Some(sig) = find_fn_sig(inner, name)
-                    {
-                        return Some(sig);
+                    if let Some((_, inner)) = &m.content {
+                        shipped_fn_sigs(inner, name, in_test | cfg_test(&m.attrs), out);
                     }
                 }
                 _ => {}
             }
         }
-        None
     }
 
     let mut found = false;
     for (_, file) in corpus {
-        let Some(sig) = find_fn_sig(&file.items, "real_name") else {
-            continue;
-        };
-        found = true;
-        let param_idents: Vec<String> = sig
-            .inputs
-            .iter()
-            .flat_map(|arg| match arg {
-                syn::FnArg::Typed(t) => idents_of(&t.ty),
-                syn::FnArg::Receiver(_) => Vec::new(),
-            })
-            .collect();
-        if !param_idents.iter().any(|i| i == "IdentityWitness") {
-            failures.push(format!(
-                "§5 (G2): real_name's parameter list {param_idents:?} does not name \
-                 IdentityWitness — the accessor must be reachable only through the witness"
-            ));
-        }
-        if param_idents.iter().any(|i| i == "Rung") {
-            failures.push(format!(
-                "§5 (G2): real_name's parameter list {param_idents:?} names Rung — a caller \
-                 could construct one directly and bypass IdentityWitness::new's fallible \
-                 check entirely"
-            ));
+        let mut sigs = Vec::new();
+        shipped_fn_sigs(&file.items, "real_name", false, &mut sigs);
+        for sig in sigs {
+            found = true;
+            let param_idents: Vec<String> = sig
+                .inputs
+                .iter()
+                .flat_map(|arg| match arg {
+                    syn::FnArg::Typed(t) => idents_of(&t.ty),
+                    syn::FnArg::Receiver(_) => Vec::new(),
+                })
+                .collect();
+            if !param_idents.iter().any(|i| i == "IdentityWitness") {
+                failures.push(format!(
+                    "§5 (G2): real_name's parameter list {param_idents:?} does not name \
+                     IdentityWitness — the accessor must be reachable only through the witness"
+                ));
+            }
+            if param_idents.iter().any(|i| i == "Rung") {
+                failures.push(format!(
+                    "§5 (G2): real_name's parameter list {param_idents:?} names Rung — a \
+                     caller could construct one directly and bypass IdentityWitness::new's \
+                     fallible check entirely"
+                ));
+            }
         }
     }
 
@@ -4502,25 +4535,23 @@ const FICTION_SCAN_ROOT: &str = "crates";
 /// lesson — a guard that reports success when its subject has vanished is worse
 /// than no guard, because the green tick is read as evidence.
 ///
-/// **The exemption is total, by path, not scoped to `REAL_TABLE` specifically
-/// — a residual gap named in review, not closed.** Decision 9 (issue #26,
-/// P6) needed this file able to hold real element names, and this is that
-/// door. It is wider than the one sanctioned use: any `const`/`static` added
-/// to this file today, containing any literal data, passes
-/// `check_no_real_chemistry_in_literals` regardless of what it names —
-/// measured, planting `REAL_ELECTRONEGATIVITY`/`REAL_COVALENT_RADII_PM`
-/// tables here (real, unrelated chemistry data) passed `cargo xtask` clean.
-/// No breach exists today — `REAL_TABLE` is the only such table this file
-/// holds, and [`check_real_table_confined`] separately guards its
-/// confinement — but the established answer to "where does real data go" is
-/// now "`naming.rs`, which this scan doesn't look inside", which is worth a
-/// second reader noticing before it becomes precedent for something this
-/// door was never meant to admit. Narrowing the exemption to specific
-/// `const` items, or adding a shape-keyed check bounding how much literal
-/// data this file may hold beyond the three sanctioned constants, would
-/// close it; left open here as a design call for whoever revisits this
-/// scan next; see the emergence-auditor's review of P6 for the full
-/// reasoning.
+/// **The exemption is scoped to three named constants' own initializers,
+/// not total by path — closed in `/review-pr`, having been named as an open
+/// residual gap in the original P6 review and independently rediscovered
+/// by `CodeRabbit`.** Decision 9 (issue #26, P6) needed this file able to
+/// hold real element names, and this is that door — but
+/// [`check_no_real_chemistry_in_literals`] now opens it only for
+/// [`SANCTIONED_REAL_NAME_CONSTANTS`] specifically
+/// (see [`literals_outside_the_sanctioned_constants`]), not for the whole
+/// file. Measured before the fix: planting
+/// `REAL_ELECTRONEGATIVITY`/`REAL_COVALENT_RADII_PM` tables here (real,
+/// unrelated chemistry data) passed `cargo xtask` clean; mutation-verified
+/// after the fix that the same plant is caught.
+/// [`check_real_table_confined_over`] still separately guards `REAL_TABLE`'s
+/// own confinement to one declaring file and one reader — the two checks
+/// are complementary, not redundant: this one bounds what real-world
+/// literal data may exist in the file at all, that one bounds who may read
+/// the one table this file is allowed to hold.
 const BLOCKLIST_FILE: &str = "borbax-universe/src/naming.rs";
 
 /// `xtask`'s own copy of the real element symbols (G2).
@@ -4817,7 +4848,7 @@ fn check_no_real_chemistry_in_literals(
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
     {
-        if path == blocklist || is_test_only_tree(&path) {
+        if is_test_only_tree(&path) {
             continue;
         }
         let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -4826,15 +4857,35 @@ fn check_no_real_chemistry_in_literals(
             .unwrap_or(&path)
             .display()
             .to_string();
-        let Ok(stream) = src.parse::<proc_macro2::TokenStream>() else {
-            failures.push(format!(
-                "§5: {rel} could not be lexed, so it was not scanned for real element \
-                 names or units. Reported rather than skipped"
-            ));
-            continue;
+        // **`blocklist` is narrowed to `REAL_TABLE`'s own initializer, not
+        // skipped entirely — found total-by-path in `/review-pr`, matching
+        // a residual risk the original P6 review had already named and left
+        // open.** Everything else in this file (the two exclusion lists,
+        // the naming grammar, `IdentityWitness`, any future addition) is
+        // scanned exactly like every other file in the workspace; only the
+        // one sanctioned table's own literals are exempt.
+        let literals = if path == blocklist {
+            let Ok(lits) = literals_outside_the_sanctioned_constants(&src) else {
+                failures.push(format!(
+                    "§5: {rel} could not be parsed, so it was not scanned for real element \
+                     names or units outside {SANCTIONED_REAL_NAME_CONSTANTS:?}. Reported \
+                     rather than skipped"
+                ));
+                continue;
+            };
+            lits
+        } else {
+            let Ok(stream) = src.parse::<proc_macro2::TokenStream>() else {
+                failures.push(format!(
+                    "§5: {rel} could not be lexed, so it was not scanned for real element \
+                     names or units. Reported rather than skipped"
+                ));
+                continue;
+            };
+            let mut lits = Vec::new();
+            collect_shipped_literals(stream, &mut lits);
+            lits
         };
-        let mut literals = Vec::new();
-        collect_shipped_literals(stream, &mut literals);
         for lit in literals {
             for (word, why) in fiction_breaches(&lit) {
                 failures.push(format!(
@@ -4846,6 +4897,60 @@ fn check_no_real_chemistry_in_literals(
         }
     }
     Ok(())
+}
+
+/// The three constants `naming.rs` is sanctioned to hold real element names
+/// and words in: the two exclusion lists (whose entire purpose is *naming*
+/// what a generated universe must avoid) and `REAL_TABLE` (the identity
+/// configuration's dispensed names, G2's 2026-08-07 revision). Named once
+/// here rather than inline in [`literals_outside_the_sanctioned_constants`]
+/// so the three-way exemption cannot silently narrow to one and reopen the
+/// exact false-positive this fix's own review round hit first.
+const SANCTIONED_REAL_NAME_CONSTANTS: &[&str] =
+    &["REAL_ELEMENT_SYMBOLS", "REAL_WORDS", "REAL_TABLE"];
+
+/// Every shipped literal in `src` outside [`SANCTIONED_REAL_NAME_CONSTANTS`]'
+/// own initializers — the narrowed scan [`BLOCKLIST_FILE`] gets instead of a
+/// full-file exemption.
+///
+/// **Parses via `syn` rather than extending [`collect_shipped_literals`]'s
+/// token-stream walker with new item-name-aware state**, matching this
+/// module's existing pattern for `naming.rs`-specific checks
+/// ([`identity_guard_corpus`] and its callers): every top-level item's own
+/// token stream (attributes included, via `ToTokens`) is fed through the
+/// same [`collect_shipped_literals`] every other file uses, except the
+/// three sanctioned constants' own initializer expressions, which are
+/// skipped. A parse failure fails closed — `Err(())`, not an empty result —
+/// matching [`identity_guard_corpus`]'s "an unrecognised shape fails
+/// closed" rule.
+///
+/// **First version of this fix exempted `REAL_TABLE` alone and broke
+/// `cargo xtask` on this repository's own `naming.rs`**, found immediately
+/// by running it: `REAL_ELEMENT_SYMBOLS` and `REAL_WORDS` are exclusion
+/// lists whose whole purpose is naming real elements and chemical terms, so
+/// narrowing the exemption to `REAL_TABLE` only reported both of them as
+/// breaches. The three-constant list above is what the original P6 review
+/// (recorded in [`BLOCKLIST_FILE`]'s own prior doc) already named as
+/// sanctioned; this fix closes the gap between that naming and what the
+/// scan actually checked, rather than inventing a narrower rule.
+///
+/// **Scoped to top-level items, which is where all three constants live
+/// today and where this stays correct.** If any of them ever moves inside a
+/// nested `mod`, this function would no longer recognise it and would scan
+/// its literals like any other item's — failing toward *more* scanning of a
+/// table that legitimately contains real names, not toward a silent gap.
+fn literals_outside_the_sanctioned_constants(src: &str) -> Result<Vec<String>, ()> {
+    let file = syn::parse_file(src).map_err(|_| ())?;
+    let mut literals = Vec::new();
+    for item in &file.items {
+        if let syn::Item::Const(c) = item
+            && SANCTIONED_REAL_NAME_CONSTANTS.contains(&c.ident.to_string().as_str())
+        {
+            continue;
+        }
+        collect_shipped_literals(quote::ToTokens::to_token_stream(item), &mut literals);
+    }
+    Ok(literals)
 }
 
 /// Whether a bracket group is a `#[cfg(..)]` that includes `test`.
@@ -6271,6 +6376,7 @@ fn extract_fn_body(src: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::identifier_segments;
+    use super::literals_outside_the_sanctioned_constants;
     use super::scan_for_derived_streams;
     use super::{
         CLOSURE_PREDICATE_WATCHED_FNS, extract_const_value, extract_fn_body,
@@ -7237,6 +7343,30 @@ mod tests {
     /// a frontier variable and an argument is a closure sentinel — otherwise
     /// every unrelated clamp in the codebase (`max_shell.max(shell)`,
     /// `fourth_completes.min(units)`) would trip it.
+    ///
+    /// **The first fixture fails both conditions at once, found in review to
+    /// not isolate which one the test claims to check.** `max_outer` is not
+    /// a `FRONTIER_VARS` receiver *and* `outer` is not a `CLOSURE_SENTINELS`
+    /// argument, so a `clamp_hit` that dropped the receiver check entirely
+    /// would still pass this test — it says nothing about the receiver rule
+    /// on its own.
+    ///
+    /// **The second fixture isolates the receiver condition specifically —
+    /// found needing a real sentinel argument, not merely an argument
+    /// outside both lists.** `CodeRabbit`'s own first suggestion here used
+    /// `outer.max(cap)` believing `cap` "sentinel-free"; `cap` is itself a
+    /// `CLOSURE_SENTINELS` entry, so that fixture is a genuine hit (`outer`
+    /// is a frontier receiver, `cap` is a sentinel) and the suggested
+    /// `assert!(hits.is_empty())` fails — caught by running it before
+    /// trusting it. A second attempt using a neutral argument (`limit`, in
+    /// neither list) is equally uninformative, for the mirror reason the
+    /// first fixture is: with no sentinel present, `has_sentinel` is false
+    /// regardless of whether the receiver check exists, so dropping that
+    /// check changes nothing observable. Isolating the receiver condition
+    /// needs the sentinel side genuinely `true` and only the receiver
+    /// unrelated: `unrelated_name` (not in `FRONTIER_VARS`) against `cap` (a
+    /// real sentinel) — if the receiver check is ever dropped, `has_sentinel`
+    /// alone would wrongly fire on this.
     #[test]
     fn a_clamp_on_an_unrelated_receiver_is_not_a_hit() {
         let hits = closure_hits(
@@ -7244,6 +7374,14 @@ mod tests {
              \x20   max_outer.max(outer) as f64\n}\n",
         );
         assert!(hits.is_empty(), "an unrelated clamp was flagged: {hits:?}");
+        let hits = closure_hits(
+            "fn frontier_notches(unrelated_name: usize, cap: usize) -> f64 {\n\
+             \x20   unrelated_name.max(cap) as f64\n}\n",
+        );
+        assert!(
+            hits.is_empty(),
+            "a sentinel argument alone, with an unrelated receiver, was flagged: {hits:?}"
+        );
     }
 
     /// Test code legitimately enumerates `outer` and must not trip the check —
@@ -9321,6 +9459,65 @@ fn shipped() -> &'static str { "Carbon" }
         );
     }
 
+    /// Every G2 breach [`literals_outside_the_sanctioned_constants`] finds in
+    /// one source fixture, mirroring `fiction_hits`'s shape for
+    /// [`BLOCKLIST_FILE`]'s narrowed scan specifically.
+    fn sanctioned_constants_hits(src: &str) -> Vec<String> {
+        let literals = literals_outside_the_sanctioned_constants(src)
+            .unwrap_or_else(|()| unreachable!("fixture failed to parse: {src}"));
+        literals
+            .iter()
+            .flat_map(|lit| fiction_breaches(lit))
+            .map(|(word, _)| word)
+            .collect()
+    }
+
+    /// **The bug this fix closes, reproduced directly.** A rogue real-world
+    /// data table added to `naming.rs` outside the three sanctioned
+    /// constants must be caught — before this fix, exempting the whole file
+    /// by path let it through, verified by planting exactly this in the
+    /// real `naming.rs` and watching `cargo xtask` pass clean.
+    #[test]
+    fn a_rogue_real_chemistry_table_outside_the_sanctioned_constants_is_caught() {
+        let src = "const REAL_ELECTRONEGATIVITY: &[(&str, f64)] = &[(\"hydrogen\", 2.20)];\n\
+                   const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n";
+        let hits = sanctioned_constants_hits(src);
+        assert!(
+            hits.iter().any(|w| w == "hydrogen"),
+            "a real chemistry table outside the sanctioned constants went unreported: {hits:?}"
+        );
+    }
+
+    /// All three sanctioned constants are exempt, not just `REAL_TABLE` —
+    /// the bug the first version of this fix shipped, caught by running it
+    /// against this repository's own `naming.rs` before committing.
+    #[test]
+    fn all_three_sanctioned_constants_are_exempt() {
+        let src = "const REAL_ELEMENT_SYMBOLS: &[&str] = &[\"H\", \"He\"];\n\
+                   const REAL_WORDS: &[&str] = &[\"hydrogen\", \"helium\"];\n\
+                   const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n";
+        let hits = sanctioned_constants_hits(src);
+        assert!(
+            hits.is_empty(),
+            "a sanctioned constant was incorrectly scanned: {hits:?}"
+        );
+    }
+
+    /// A literal outside all three sanctioned constants, in an otherwise
+    /// realistic `naming.rs`-shaped fixture, is still caught — the exemption
+    /// is per-constant, not per-file once any sanctioned constant exists.
+    #[test]
+    fn a_literal_beside_the_sanctioned_constants_is_still_caught() {
+        let src = "const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n\
+                   pub fn leaked() -> &'static str { \"carbon\" }\n";
+        let hits = sanctioned_constants_hits(src);
+        assert!(
+            hits.iter().any(|w| w == "carbon"),
+            "a real word outside the sanctioned constants, beside them in the same file, \
+             went unreported: {hits:?}"
+        );
+    }
+
     /// A call written *below* the test module is still counted.
     ///
     /// **The positional cut this replaced could not see it.** Both call counts
@@ -9527,6 +9724,58 @@ mod tests {
         );
     }
 
+    /// **A trait's default associated const, found missing entirely from
+    /// `shipped_readers_of` in `/review-pr`.** `TraitItem::Fn`'s default
+    /// *body* was covered; `TraitItem::Const`'s default *value* was not —
+    /// a fourth reader shape distinct from the `fn`/`impl`/`const`/`static`
+    /// ones already covered, verified separately (outside this test suite)
+    /// to actually leak `REAL_TABLE` to an external crate via `<Type as
+    /// Leak>::TABLE` when uncaught.
+    #[test]
+    fn a_trait_default_const_reader_is_reported() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n\
+             pub(crate) fn real_name(z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   REAL_TABLE.get(z).copied()\n\
+             }\n\
+             pub trait Leak {\n\
+             \x20   const TABLE: &'static [(&'static str, &'static str)] = REAL_TABLE;\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_real_table_confined_over(&corpus, &mut failures);
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("REAL_TABLE is read by") && f.contains("TABLE")),
+            "a trait default associated const reading REAL_TABLE went unreported: {failures:?}"
+        );
+    }
+
+    /// The `#[cfg(test)]` side of the same shape — a trait default const
+    /// inside a test module must not be reported.
+    #[test]
+    fn a_test_only_trait_default_const_reader_is_not_reported() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n\
+             pub(crate) fn real_name(z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   REAL_TABLE.get(z).copied()\n\
+             }\n\
+             #[cfg(test)]\n\
+             pub trait Leak {\n\
+             \x20   const TABLE: &'static [(&'static str, &'static str)] = REAL_TABLE;\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_real_table_confined_over(&corpus, &mut failures);
+        assert!(
+            failures.is_empty(),
+            "a #[cfg(test)] trait's default const was incorrectly reported: {failures:?}"
+        );
+    }
+
     /// The exact shape `visit_expr_call` alone cannot see — struct-literal
     /// construction with a numbered field, `IdentityWitness { 0: () }` —
     /// which `visit_expr_struct` exists to catch. Reproduces the bypass a
@@ -9602,6 +9851,60 @@ mod tests {
         assert!(
             failures.is_empty(),
             "a legitimate real_name signature was flagged: {failures:?}"
+        );
+    }
+
+    /// **The fail-open direction `CodeRabbit` found in `/review-pr`, made
+    /// discriminating by giving the mock and the shipped fn *different*
+    /// signatures.** A same-signature mock cannot tell the old buggy
+    /// behaviour (return the first match, no `#[cfg(test)]` filter) apart
+    /// from the fix, since either one is examined the failure looks
+    /// identical. Here the `#[cfg(test)]` mock takes neither `IdentityWitness`
+    /// nor `Rung` (an unrelated test helper that happens to share the
+    /// name), declared *before* a correctly-signed shipped `real_name`. The
+    /// old code returned the mock's signature first and reported a false
+    /// "does not name `IdentityWitness`" against it — the shipped fn, which
+    /// is actually correct, was never examined at all.
+    #[test]
+    fn a_test_mock_real_name_does_not_shadow_the_shipped_one() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "#[cfg(test)]\n\
+             mod tests {\n\
+             \x20   fn real_name(z: usize) -> String { String::new() }\n\
+             }\n\
+             pub(crate) fn real_name(_: IdentityWitness, z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   None\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_real_name_takes_witness_not_rung_over(&corpus, &mut failures);
+        assert!(
+            failures.is_empty(),
+            "the correct shipped real_name was masked by the test mock declared before it: \
+             {failures:?}"
+        );
+    }
+
+    /// **The false-positive direction — a legitimate test helper sharing the
+    /// name must not fail the check on the shipped item's behalf.**
+    #[test]
+    fn a_test_only_real_name_taking_rung_does_not_fail_the_check() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "pub(crate) fn real_name(_: IdentityWitness, z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   None\n\
+             }\n\
+             #[cfg(test)]\n\
+             mod tests {\n\
+             \x20   fn real_name(rung: Rung, z: usize) -> Option<(&'static str, &'static str)> { None }\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_real_name_takes_witness_not_rung_over(&corpus, &mut failures);
+        assert!(
+            failures.is_empty(),
+            "a test-only real_name taking Rung incorrectly failed the check: {failures:?}"
         );
     }
 }

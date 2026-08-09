@@ -328,18 +328,24 @@ pub fn is_real(symbol: &str, name: &str) -> bool {
 /// **Confined to this crate by the type system, not merely by convention —
 /// and an earlier version of this doc comment overstated that as
 /// "unforgeable by the type system" full stop, which a review falsified in
-/// under a minute from a different crate.** `Rung::IDENTITY` and
-/// `Rung::new(0)` are both `pub`, always succeed, and carry no information
-/// about any actual universe — so if `Self::new` were `pub`, any crate in
-/// the workspace could write `IdentityWitness::new(Rung::IDENTITY)` and
-/// mint a witness with zero evidence that any universe exists, let alone
-/// one at the identity rung. Measured: from `borbax-molecule`, with no
-/// `unsafe`, three lines dumped all 118 real element names, and a
-/// `Rung::draw(seed)` off a *non-identity* rung changed nothing about the
-/// answer, because the witness never consulted it. `new` is `pub(crate)`
-/// for exactly this reason — the field being private stops nothing on its
-/// own, since a public fallible constructor is a public capability
-/// regardless of what the type's internals look like.
+/// under a minute from a different crate.** At the time `new` was sealed,
+/// `Rung::IDENTITY` and `Rung::new(0)` were both `pub`, always succeeded, and
+/// carried no information about any actual universe — so with `Self::new`
+/// `pub`, any crate in the workspace could write
+/// `IdentityWitness::new(Rung::IDENTITY)` and mint a witness with zero
+/// evidence that any universe exists, let alone one at the identity rung.
+/// Measured: from `borbax-molecule`, with no `unsafe`, three lines dumped
+/// all 118 real element names, and a `Rung::draw(seed)` off a *non-identity*
+/// rung changed nothing about the answer, because the witness never
+/// consulted it. `new` was sealed `pub(crate)` for exactly this reason — the
+/// field being private stops nothing on its own, since a public fallible
+/// constructor is a public capability regardless of what the type's
+/// internals look like. **`Rung`, `Rung::IDENTITY` and `Rung::new` are
+/// themselves `pub(crate)` now too** (found stated as still-`pub` here,
+/// which `/review-pr` corrected) — no external crate can name or construct
+/// them at all, which makes the conclusion above doubly true rather than
+/// obsolete: it was correct when only `new` was sealed, and remains correct
+/// now that both the constructor and the type it takes are.
 ///
 /// **The type itself is `pub(crate)` too, added in `/review-pr` after that
 /// same fix round.** Sealing only `new` left three routes open, all
@@ -880,6 +886,17 @@ mod tests {
             Some(("Og", "oganesson")),
             "atomic number 118 is oganesson, the last entry in REAL_TABLE"
         );
+        // **The name claims "every atomic number"; found in review to check
+        // only the two boundary cases.** An off-by-one inside `real_name`
+        // for a mid-range `z` would pass the boundary-only version.
+        for (i, &(symbol, name)) in REAL_TABLE.iter().enumerate() {
+            assert_eq!(
+                real_name(witness, i + 1),
+                Some((symbol, name)),
+                "z = {} did not resolve to REAL_TABLE's index z - 1",
+                i + 1
+            );
+        }
         assert_eq!(
             real_name(witness, 119),
             None,
