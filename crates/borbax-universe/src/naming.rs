@@ -16,7 +16,7 @@
 //! live `Universe` is issue #26's Task 26.1, and changes nothing about what
 //! the blocklist below does today.
 
-use crate::Rung;
+use crate::perturbation::Rung;
 use borbax_rng::Stream;
 
 /// Real element symbols. Exclusion list only (G2).
@@ -341,6 +341,23 @@ pub fn is_real(symbol: &str, name: &str) -> bool {
 /// own, since a public fallible constructor is a public capability
 /// regardless of what the type's internals look like.
 ///
+/// **The type itself is `pub(crate)` too, added in `/review-pr` after that
+/// same fix round.** Sealing only `new` left three routes open, all
+/// reproduced end to end from `borbax-molecule` with `cargo xtask` and
+/// `clippy -D warnings` both green: a `macro_rules!`-forged `Self(())`
+/// (macro token streams are invisible to the `syn::visit`-based confinement
+/// checks below), a `format!("{REAL_TABLE:?}")` table dump, and a plain
+/// `pub fn` inside this file returning either the witness or the names
+/// `real_name` reads. Sealing `IdentityWitness` and [`real_name`] to
+/// `pub(crate)` closes all three the same way `new` closed the first one —
+/// the compiler refuses to compile a crate-external-`pub` item whose
+/// signature names a `pub(crate)` type (`E0446`), and no external crate can
+/// call a `pub(crate)` function regardless of what wraps the call. The
+/// three `xtask` structural checks below stay as defence-in-depth against a
+/// mistake made *inside* this crate (a second reader, a second
+/// construction site); they are no longer the sole enforcement of
+/// confinement from outside it.
+///
 /// **No `PhysicsVersion` field, and that is a known, deliberate gap in this
 /// prerequisite, not an oversight.** A `Rung` alone cannot express "this
 /// version has real-physics constants to reproduce" — under
@@ -353,7 +370,7 @@ pub fn is_real(symbol: &str, name: &str) -> bool {
 /// this crate gains its first real caller of `new` — until then the
 /// `pub(crate)` capability is unused by design, not an oversight either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IdentityWitness(());
+pub(crate) struct IdentityWitness(());
 
 impl IdentityWitness {
     /// A witness, or `None` unless `rung` is the identity rung.
@@ -416,8 +433,30 @@ impl IdentityWitness {
 /// here without ever going through `IdentityWitness::new`'s fallible check.
 /// The witness alone is the capability; `_` is deliberate — this accessor
 /// reads nothing from it but the proof that constructing it succeeded.
+///
+/// **By value, not by reference** — `IdentityWitness` is a zero-sized
+/// `Copy` type, so a `&IdentityWitness` costs a pointer to point at nothing,
+/// strictly worse than moving the value itself. `clippy::trivially_copy_pass_by_ref`
+/// only checks crate-internal signatures, which is why this did not fire
+/// before this accessor became `pub(crate)`.
+///
+/// **`pub(crate)`, not `pub` — added in `/review-pr`, same round and same
+/// reason as [`IdentityWitness`] itself.** See that type's doc for the
+/// three bypass routes this closes. No in-crate caller exists yet, same as
+/// `IdentityWitness::new` — deliberately, until Task 26.1 — so the
+/// `#[expect]` is `cfg_attr`-gated to `not(test)` for the same reason: this
+/// crate's own tests are callers, and an unconditional `#[expect(dead_code)]`
+/// would fire `unfulfilled_lint_expectations` on the test target.
 #[must_use]
-pub fn real_name(_: &IdentityWitness, z: usize) -> Option<(&'static str, &'static str)> {
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "no in-crate caller until Task 26.1 gives Universe a rung and a public \
+                  identity_witness() door, matching IdentityWitness::new's own reason"
+    )
+)]
+pub(crate) fn real_name(_: IdentityWitness, z: usize) -> Option<(&'static str, &'static str)> {
     z.checked_sub(1).and_then(|i| REAL_TABLE.get(i)).copied()
 }
 
@@ -827,27 +866,27 @@ mod tests {
         let witness = IdentityWitness::new(Rung::IDENTITY)
             .unwrap_or_else(|| unreachable!("Rung::IDENTITY always constructs a witness"));
         assert_eq!(
-            real_name(&witness, 0),
+            real_name(witness, 0),
             None,
             "atomic number 0 does not exist"
         );
         assert_eq!(
-            real_name(&witness, 1),
+            real_name(witness, 1),
             Some(("H", "hydrogen")),
             "atomic number 1 is hydrogen"
         );
         assert_eq!(
-            real_name(&witness, 118),
+            real_name(witness, 118),
             Some(("Og", "oganesson")),
             "atomic number 118 is oganesson, the last entry in REAL_TABLE"
         );
         assert_eq!(
-            real_name(&witness, 119),
+            real_name(witness, 119),
             None,
             "atomic number 119 is past REAL_TABLE's end"
         );
         assert_eq!(
-            real_name(&witness, usize::MAX),
+            real_name(witness, usize::MAX),
             None,
             "an absurd atomic number must not panic or wrap into range"
         );
