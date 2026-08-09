@@ -4070,17 +4070,25 @@ fn shipped_readers_of(items: &[syn::Item], name: &str, in_test: bool, out: &mut 
     }
 }
 
-/// Every `IdentUse`-shaped file under [`IDENTITY_GUARD_SCAN_ROOT`], parsed
-/// once and handed to `visit` — the shared traversal all three of this
-/// module's structural checks build on, so "which files were examined"
-/// cannot drift between them.
-fn walk_identity_guard_scan_root(
+/// Every `.rs` file under [`IDENTITY_GUARD_SCAN_ROOT`], parsed once — the
+/// shared corpus all three of this module's structural checks build on, so
+/// "which files were examined" cannot drift between them.
+///
+/// **Returns the corpus rather than streaming it through a callback, found
+/// in `/review-pr` to be the thing standing between these three checks and
+/// a fixture test.** Each check's actual decision logic is now a pure
+/// `..._over(corpus, failures)` function taking `&[(String, syn::File)]` —
+/// the same shape [`scan_closure_predicates`] uses over a `&str` fixture —
+/// so a test can hand-build a corpus from `syn::parse_file` on a string
+/// literal without touching the filesystem, exactly as
+/// `check_no_closure_predicate_branch`'s own tests do.
+fn identity_guard_corpus(
     root: &Path,
     failures: &mut Vec<String>,
-    mut visit: impl FnMut(&str, &syn::File, &mut Vec<String>),
-) -> Result<(), String> {
+) -> Result<Vec<(String, syn::File)>, String> {
     let scan_root = root.join(IDENTITY_GUARD_SCAN_ROOT);
     let mut examined = 0usize;
+    let mut corpus = Vec::new();
     for path in walk(&scan_root)?
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
@@ -4099,7 +4107,7 @@ fn walk_identity_guard_scan_root(
             continue;
         };
         examined += 1;
-        visit(&rel, &file, failures);
+        corpus.push((rel, file));
     }
     // **The corpus filter, asserted rather than assumed** — `check_libm_has_one_home`'s
     // own pattern. If `IDENTITY_GUARD_SCAN_ROOT` moves and `walk` returns
@@ -4111,7 +4119,7 @@ fn walk_identity_guard_scan_root(
              rather than the invariant holding"
         ));
     }
-    Ok(())
+    Ok(corpus)
 }
 
 /// Decision 9 (issue #26), P6's first structural check: `REAL_TABLE` is
@@ -4120,6 +4128,15 @@ fn walk_identity_guard_scan_root(
 /// "can a caller reach this", it counts every declaration and every
 /// shipped reader directly.
 fn check_real_table_confined(root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    let corpus = identity_guard_corpus(root, failures)?;
+    check_real_table_confined_over(&corpus, failures);
+    Ok(())
+}
+
+/// The pure decision logic behind [`check_real_table_confined`], over an
+/// already-parsed corpus — see [`identity_guard_corpus`]'s doc for why this
+/// split exists.
+fn check_real_table_confined_over(corpus: &[(String, syn::File)], failures: &mut Vec<String>) {
     // Recursive, matching `shipped_readers_of`'s own descent into
     // `syn::Item::Mod` — `REAL_TABLE` lives at file scope today, so this is
     // not live, but scanning only the top level would silently miss a
@@ -4138,12 +4155,12 @@ fn check_real_table_confined(root: &Path, failures: &mut Vec<String>) -> Result<
 
     let mut declaring_files: Vec<String> = Vec::new();
     let mut reader_fns: Vec<String> = Vec::new();
-    walk_identity_guard_scan_root(root, failures, |rel, file, _| {
+    for (rel, file) in corpus {
         if declares_real_table(&file.items) {
-            declaring_files.push(rel.to_owned());
+            declaring_files.push(rel.clone());
         }
         shipped_readers_of(&file.items, "REAL_TABLE", false, &mut reader_fns);
-    })?;
+    }
 
     if declaring_files.len() != 1 {
         failures.push(format!(
@@ -4162,7 +4179,6 @@ fn check_real_table_confined(root: &Path, failures: &mut Vec<String>) -> Result<
              configuration's real names could leak into a perturbed universe"
         ));
     }
-    Ok(())
 }
 
 /// Decision 9, P6's second structural check: exactly one construction
@@ -4182,6 +4198,19 @@ fn check_identity_witness_construction_is_singular(
     root: &Path,
     failures: &mut Vec<String>,
 ) -> Result<(), String> {
+    let corpus = identity_guard_corpus(root, failures)?;
+    check_identity_witness_construction_is_singular_over(&corpus, failures);
+    Ok(())
+}
+
+/// The pure decision logic behind
+/// [`check_identity_witness_construction_is_singular`], over an
+/// already-parsed corpus — see [`identity_guard_corpus`]'s doc for why this
+/// split exists.
+fn check_identity_witness_construction_is_singular_over(
+    corpus: &[(String, syn::File)],
+    failures: &mut Vec<String>,
+) {
     struct WitnessConstructions<'a> {
         self_stack: Vec<String>,
         sites: &'a mut Vec<(String, usize)>,
@@ -4250,14 +4279,14 @@ fn check_identity_witness_construction_is_singular(
     }
 
     let mut sites: Vec<(String, usize)> = Vec::new();
-    walk_identity_guard_scan_root(root, failures, |rel, file, _| {
+    for (rel, file) in corpus {
         let mut v = WitnessConstructions {
             self_stack: Vec::new(),
             sites: &mut sites,
-            rel: rel.to_owned(),
+            rel: rel.clone(),
         };
         syn::visit::Visit::visit_file(&mut v, file);
-    })?;
+    }
 
     if sites.len() != 1 {
         failures.push(format!(
@@ -4268,7 +4297,6 @@ fn check_identity_witness_construction_is_singular(
             sites.len()
         ));
     }
-    Ok(())
 }
 
 /// Decision 9, P6's third structural check: `real_name`'s parameter list
@@ -4285,6 +4313,18 @@ fn check_real_name_takes_witness_not_rung(
     root: &Path,
     failures: &mut Vec<String>,
 ) -> Result<(), String> {
+    let corpus = identity_guard_corpus(root, failures)?;
+    check_real_name_takes_witness_not_rung_over(&corpus, failures);
+    Ok(())
+}
+
+/// The pure decision logic behind [`check_real_name_takes_witness_not_rung`],
+/// over an already-parsed corpus — see [`identity_guard_corpus`]'s doc for
+/// why this split exists.
+fn check_real_name_takes_witness_not_rung_over(
+    corpus: &[(String, syn::File)],
+    failures: &mut Vec<String>,
+) {
     fn find_fn_sig<'a>(items: &'a [syn::Item], name: &str) -> Option<&'a syn::Signature> {
         for item in items {
             match item {
@@ -4303,9 +4343,9 @@ fn check_real_name_takes_witness_not_rung(
     }
 
     let mut found = false;
-    walk_identity_guard_scan_root(root, failures, |_, file, out| {
+    for (_, file) in corpus {
         let Some(sig) = find_fn_sig(&file.items, "real_name") else {
-            return;
+            continue;
         };
         found = true;
         let param_idents: Vec<String> = sig
@@ -4317,19 +4357,19 @@ fn check_real_name_takes_witness_not_rung(
             })
             .collect();
         if !param_idents.iter().any(|i| i == "IdentityWitness") {
-            out.push(format!(
+            failures.push(format!(
                 "§5 (G2): real_name's parameter list {param_idents:?} does not name \
                  IdentityWitness — the accessor must be reachable only through the witness"
             ));
         }
         if param_idents.iter().any(|i| i == "Rung") {
-            out.push(format!(
+            failures.push(format!(
                 "§5 (G2): real_name's parameter list {param_idents:?} names Rung — a caller \
                  could construct one directly and bypass IdentityWitness::new's fallible \
                  check entirely"
             ));
         }
-    })?;
+    }
 
     if !found {
         failures.push(format!(
@@ -4337,7 +4377,6 @@ fn check_real_name_takes_witness_not_rung(
              real-name accessor has moved or been renamed, and this check did not follow it"
         ));
     }
-    Ok(())
 }
 
 /// Every crate in the workspace is inside a scanned root.
@@ -5591,10 +5630,33 @@ const CLOSURE_PREDICATE_FILES: &[&str] = &[
 /// — so `closed_shells_have_valence_zero` would read a correct zero while
 /// `contacts_upto` was poisoned.
 ///
+/// **`generate_elements_v1`, `stream` and `new` closed a gap found in
+/// `/review-pr`, three specialists independently.** `generate_elements`
+/// used to be the whole 357-line generation body; a later prerequisite
+/// split it into a dispatcher plus the real body, renamed
+/// `generate_elements_v1`. The name `generate_elements` still resolved, so
+/// [`unmatched_watched_fns`] — built to catch a renamed-or-deleted watched
+/// function — could not see that the watched name now points at five lines
+/// of `match` and the actual frontier arithmetic had gone unwatched.
+/// Mutation-verified: a planted closure-predicate branch inside
+/// `generate_elements_v1` passed `cargo xtask` clean under the prior list.
+/// `stream` and `PackingConsts::new` close the same "every non-test
+/// top-level function" claim this doc comment already made and did not
+/// keep — `new` is an associated fn rather than a literal top-level one,
+/// but it was scanned under the pre-allowlist file-wide denylist (it
+/// derives the shell law's constants, which feed `contacts_upto`), so
+/// dropping it silently narrowed coverage relative to `main`. Bare-name
+/// matching against `"new"` also scans `PeriodicTable::new`, which is
+/// additional coverage, not a false positive — confirmed clean.
+///
 /// **When Task 26.1 lands Decision 8's dedicated gap-based valence function,
 /// add its name here** — the same "the guard's subject doesn't exist yet"
 /// pattern P4 (`crates/borbax-universe/src/element.rs`'s `block()` guard)
-/// uses, landing its own rescoping immediately after Task 26.1 Step 8.
+/// uses, landing its own rescoping immediately after Task 26.1 Step 8. That
+/// work is likely to land inside `generate_elements_v1`'s own per-element
+/// loop, which is exactly the function this list was missing until this
+/// fix — the near-miss is the reason this comment names it explicitly
+/// rather than trusting a future editor to remember.
 /// [`unmatched_watched_fns`] fails loudly, not silently, if an entry here is
 /// ever renamed out from under it.
 const CLOSURE_PREDICATE_WATCHED_FNS: &[&str] = &[
@@ -5608,6 +5670,9 @@ const CLOSURE_PREDICATE_WATCHED_FNS: &[&str] = &[
     "contacts_upto",
     "closures",
     "generate_elements",
+    "generate_elements_v1",
+    "stream",
+    "new",
 ];
 
 /// Every name in [`CLOSURE_PREDICATE_WATCHED_FNS`] that `seen` never reached
@@ -6220,6 +6285,10 @@ mod tests {
     use super::{
         banned_idents_given, code_without_prose, count_outside_tests, viewer_banned_idents,
         viewer_banned_imports,
+    };
+    use super::{
+        check_identity_witness_construction_is_singular_over,
+        check_real_name_takes_witness_not_rung_over, check_real_table_confined_over,
     };
 
     /// A `{` inside a comment between `fn NAME(` and the real body must not be
@@ -9371,6 +9440,168 @@ mod tests {
         assert!(
             !fiction_hits(r#"fn f() -> &'static str { "made of Carbon" }"#).is_empty(),
             "the name tier must still match by word"
+        );
+    }
+
+    /// Builds a corpus for the three identity-guard `_over` checks from
+    /// hand-written fixture source, the same role `closure_hits` plays for
+    /// [`scan_closure_predicates`] — exercise the `syn`-level decision logic
+    /// directly, with no filesystem access.
+    ///
+    /// **Found missing entirely in `/review-pr`.** `check_real_table_confined`,
+    /// `check_identity_witness_construction_is_singular` and
+    /// `check_real_name_takes_witness_not_rung` had zero dedicated tests —
+    /// exercised only implicitly by running against the current, compliant
+    /// `borbax-universe` tree, which proves no false positive today and
+    /// nothing about catching a future regression. `identity_guard_corpus`
+    /// was split out from these checks specifically to make this possible.
+    fn identity_corpus(files: &[(&str, &str)]) -> Vec<(String, syn::File)> {
+        files
+            .iter()
+            .map(|(rel, src)| {
+                let file = syn::parse_file(src)
+                    .unwrap_or_else(|e| unreachable!("fixture {rel} failed to parse: {e}"));
+                ((*rel).to_owned(), file)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_second_real_table_declaration_is_reported() {
+        let corpus = identity_corpus(&[
+            (
+                "naming.rs",
+                "const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n",
+            ),
+            (
+                "leak.rs",
+                "const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n",
+            ),
+        ]);
+        let mut failures = Vec::new();
+        check_real_table_confined_over(&corpus, &mut failures);
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("REAL_TABLE is declared in")),
+            "a second REAL_TABLE declaration went unreported: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn a_second_real_table_reader_is_reported() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n\
+             pub(crate) fn real_name(z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   REAL_TABLE.get(z).copied()\n\
+             }\n\
+             pub fn leaked(z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   REAL_TABLE.get(z).copied()\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_real_table_confined_over(&corpus, &mut failures);
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("REAL_TABLE is read by") && f.contains("leaked")),
+            "a second REAL_TABLE reader went unreported: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn a_confined_real_table_is_accepted() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "const REAL_TABLE: &[(&str, &str)] = &[(\"H\", \"hydrogen\")];\n\
+             pub(crate) fn real_name(z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   REAL_TABLE.get(z).copied()\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_real_table_confined_over(&corpus, &mut failures);
+        assert!(
+            failures.is_empty(),
+            "a legitimately confined REAL_TABLE was flagged: {failures:?}"
+        );
+    }
+
+    /// The exact shape `visit_expr_call` alone cannot see — struct-literal
+    /// construction with a numbered field, `IdentityWitness { 0: () }` —
+    /// which `visit_expr_struct` exists to catch. Reproduces the bypass a
+    /// review found and verified fixed; this pins that verification as a
+    /// test rather than a one-off manual check.
+    #[test]
+    fn a_struct_literal_construction_outside_impl_is_reported() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "pub(crate) struct IdentityWitness(());\n\
+             impl IdentityWitness {\n\
+             \x20   pub(crate) fn new() -> Self { Self(()) }\n\
+             }\n\
+             pub fn sneaky() -> IdentityWitness { IdentityWitness { 0: () } }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_identity_witness_construction_is_singular_over(&corpus, &mut failures);
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("2 `IdentityWitness` construction")),
+            "the struct-literal bypass went unreported: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn exactly_one_witness_construction_is_accepted() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "pub(crate) struct IdentityWitness(());\n\
+             impl IdentityWitness {\n\
+             \x20   pub(crate) fn new() -> Self { Self(()) }\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_identity_witness_construction_is_singular_over(&corpus, &mut failures);
+        assert!(
+            failures.is_empty(),
+            "a legitimate single construction was flagged: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn real_name_taking_rung_instead_of_witness_is_reported() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "pub(crate) fn real_name(rung: Rung, z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   None\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_real_name_takes_witness_not_rung_over(&corpus, &mut failures);
+        assert!(
+            failures.iter().any(|f| f.contains("does not name")),
+            "the missing IdentityWitness parameter went unreported: {failures:?}"
+        );
+        assert!(
+            failures.iter().any(|f| f.contains("names Rung")),
+            "the forbidden Rung parameter went unreported: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn real_name_taking_only_the_witness_is_accepted() {
+        let corpus = identity_corpus(&[(
+            "naming.rs",
+            "pub(crate) fn real_name(_: IdentityWitness, z: usize) -> Option<(&'static str, &'static str)> {\n\
+             \x20   None\n\
+             }\n",
+        )]);
+        let mut failures = Vec::new();
+        check_real_name_takes_witness_not_rung_over(&corpus, &mut failures);
+        assert!(
+            failures.is_empty(),
+            "a legitimate real_name signature was flagged: {failures:?}"
         );
     }
 }

@@ -78,7 +78,23 @@ pub mod naming;
               public with it. The redundancy is the belt to the module's braces"
 )]
 pub(crate) mod packing;
-pub mod perturbation;
+/// **`pub(crate)`, not `pub` — narrow-API hygiene, not a fiction-guarantee
+/// fix.** `Rung` and `Direction` have no consumer outside this crate
+/// today (verified by grep across the whole workspace), and `Rung::draw`
+/// being reachable let any crate compute `Rung::draw(seed).is_identity()`
+/// without ever touching [`naming::IdentityWitness`]. That is worth closing
+/// because it costs nothing, not because G2 is at stake: `Universe::seed` is
+/// already `pub`, so the same predicate is already reconstructible today via
+/// `borbax_rng::Domain::PerturbationRung` regardless of this module's own
+/// visibility, and G2's 2026-08-07 revision does not treat the identity
+/// configuration as a secret in the first place.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "same reasoning as packing, above: the items are `pub(crate)` *and* the module \
+              is, deliberately, so a future widening of the module to `pub` cannot silently \
+              carry its contents public with it"
+)]
+pub(crate) mod perturbation;
 /// A typed phrase in, a seed out — and the phrase goes no further.
 ///
 /// Deliberately **not** part of [`naming`], which is about *generated* element
@@ -91,7 +107,6 @@ pub mod phrase;
 // reach into `bonds::` for one item.
 pub use bonds::{BondEnergyMatrix, BondOrder, NotABondOrder};
 pub use element::{Element, ElementId, PeriodicTable, ShellPattern};
-pub use perturbation::{Direction, Rung};
 pub use phrase::seed_from_phrase;
 
 use borbax_rng::{Domain, Stream};
