@@ -21,9 +21,11 @@ and you have a different element; add or remove electrons instead and it's
 still the same element, just charged (an *ion*).
 
 Borbax writes atomic number as `z` throughout the code (lowercase, since it
-also uses `Z` for other things) and calls the count of protons+electrons
-**`units`** — the two are the same number for a neutral atom, which is what
-Borbax always generates.
+also uses `Z` for other things) and calls this same count **`units`** — the
+proton count, which is also the electron count, since every atom Borbax
+generates is a neutral atom (equal numbers of each). `units` is not a
+proton-plus-electron total; it's `z` itself, spelled differently because
+`Element::units` is what the rest of the codebase reads.
 
 ### Electron shells, subshells, and the `1s`/`2p`/`4f` notation
 
@@ -103,9 +105,13 @@ candidate, 1.00 — full strength — for everything else). It's an
 approximation, not exact physics, and it's specifically known to be weak for
 `d`- and `f`-block elements, because it treats "everything else" as
 screening at a flat 1.00 regardless of how poorly an `f` electron actually
-penetrates (see above). Borbax's `orbital.rs` implements Slater's rule
-faithfully, then adds `sigma_deep` on top specifically to correct that known
-weak spot.
+penetrates (see above). Borbax's `orbital.rs` implements Slater's *inner-
+and outer-shell* rules faithfully — the 0.85/1.00 numbers above — but
+deliberately skips the same-subshell 0.35 term (a partially-filled subshell
+excludes its own already-placed peers from screening itself; the module's
+own doc explains why, a numerical-fill-order detail rather than a chemistry
+one), then adds `sigma_deep` on top specifically to correct the known
+d/f-block weak spot.
 
 ### Valence, groups, and periods
 
@@ -131,12 +137,21 @@ this model, beryllium-like atoms can bond but noble-gas-like atoms can't).
 
 ### Lanthanides and the lanthanide contraction
 
-The **lanthanides** are the block of 14 elements (real ones: Lanthanum
-through Lutetium, abbreviated **La → Lu**) where the `4f` subshell is being
-filled — they sit in their own row, usually drawn below the main periodic
-table for space. Chemically they're famous for being unusually similar to
-each other, because filling an *inner* subshell (`4f`, buried well below the
-outermost `6s` electrons) barely changes an atom's outward-facing chemistry.
+The **lanthanides** are a *position* in the periodic table — the 15 real
+elements Lanthanum through Lutetium (**La → Lu**, Z=57–71), which sit in
+their own row, usually drawn below the main table for space. The **4f-filling
+block** is a related but not identical count: real La's own ground state has
+no 4f electron at all ([Xe]5d¹6s², an exception to the simple rule), so only
+14 of the 15 lanthanides (conventionally Ce through Lu) are actually filling
+`4f`. Borbax's own fold has no such exception — under strict Madelung
+ordering its 4f-analogue block is exactly 14 elements, `z = 57..=70` — so
+"the model's 14-element block" and "the real 15-element La→Lu span" line up
+in *length* by coincidence of convention, not element-for-element; see
+`orbital.rs`'s own doc on `sigma_deep`'s calibration for how that mismatch
+is handled. Chemically the whole La→Lu row is famous for being unusually
+similar element-to-element, because filling an *inner* subshell (`4f`,
+buried well below the outermost `6s` electrons) barely changes an atom's
+outward-facing chemistry.
 
 What it *does* change, slightly, is size — and in the wrong direction from
 naive expectation. Each step across the series adds one proton (which should
@@ -156,10 +171,14 @@ known, documented failure of the plain rule.
 
 **Shannon radii** are a standard, widely used table of measured ionic radii
 (published by R. D. Shannon in 1976), used as the real-world reference
-whenever a model's output needs checking against reality. Borbax's
-`sigma_deep` was calibrated against the real La → Lu contraction using these
-figures: 103.2 pm (picometres) for La³⁺ down to 86.1 pm for Lu³⁺, a 16.6%
-shrink across the series — the target the model's own 14-element
+whenever a model's output needs checking against reality. The table gives a
+different radius for the same ion at different **coordination numbers** (how
+many neighbouring ions surround it in a real crystal) — the figures Borbax
+uses are the six-coordinate ("CN=6") entries, the most commonly quoted set
+and the one `orbital.rs`'s own doc names explicitly. Borbax's `sigma_deep`
+was calibrated against the real La → Lu contraction using these figures:
+103.2 pm (picometres) for La³⁺ down to 86.1 pm for Lu³⁺, a 16.6% shrink
+across the series — the target the model's own 14-element
 lanthanide-analogue block was tuned to reproduce.
 
 ## Borbax's own vocabulary
@@ -176,9 +195,12 @@ folding rules. Two runs with the same seed produce bit-identical results,
 anywhere.
 
 **Shape signature** — the geometric fingerprint Borbax reduces a molecule to:
-for each of 60 directions around a sphere, how far out the molecule's surface
-reaches (its "shape") and how positive or negative that surface is (its
-"character"). Binding is a comparison of two signatures, nothing more.
+for each of `D` sampled directions around a sphere (`D` is 12, 42 or 162,
+depending on resolution — 42 is the default; **not** the same number as the
+60 rotations below, which is a separate, fixed quantity), how far out the
+molecule's surface reaches (its "shape") and how positive or negative that
+surface is (its "character"). Binding is a comparison of two signatures,
+nothing more.
 
 **`affinity(A, B)`** — the single function that decides whether two shapes
 stick together: does molecule A's bump-and-hollow pattern fit molecule B's,
@@ -193,10 +215,14 @@ considered a perfect fit (a "bump" reaching exactly as far as its partner's
 
 **The icosahedral rotation group (the "60 rotations")** — instead of trying
 every possible orientation of one shape against another (infinitely many),
-Borbax samples direction space at the vertices of a subdivided icosahedron,
-which has exactly 60 rotational symmetries. Every geometric comparison in the
-codebase searches this fixed, precomputed set of 60 poses, never a
-continuous space.
+Borbax searches a fixed, precomputed set of 60 poses — the icosahedron's own
+rotational symmetry group, which has exactly 60 elements *regardless of*
+which mesh resolution (`D`, above) is in use. These are two genuinely
+different numbers doing two different jobs: `D` is how finely direction
+space is *sampled* (the shape signature's own resolution); 60 is how many
+*orientations* of one shape against another are searched, at any resolution.
+Every geometric comparison in the codebase searches this fixed set of 60,
+never a continuous space.
 
 **Antipodal mapping / `contact_perms`** — when two shapes touch, a bump
 pointing outward from A meets a hollow pointing *inward* from B at the same
@@ -216,11 +242,14 @@ project claims — and it always falls out of the geometry, never a
 special-cased rule.
 
 **Invented units — `Thermal`, `Quanta`, `Span`, `WorldYear`, `Mass`** —
-Borbax refuses to use real-world units (Kelvin, Joules, metres, seconds) for
-anything, on principle: this is an invented universe, and its temperature,
-energy, distance and time are their own distinct types the Rust compiler
-enforces — mixing a `Thermal` with a `Quanta` in an expression is a compile
-error, not a runtime bug.
+temperature, energy, distance and time are each their own distinct Rust
+type, never a bare `f64` with real-world units (Kelvin, Joules, metres,
+seconds) attached by convention — mixing a `Thermal` with a `Quanta` in an
+expression is a compile error, not a runtime bug that only shows up later.
+This one holds regardless of how "real" any given universe's physics turns
+out to be (see `PhysicsVersion`, below, for a seed that does reproduce real
+physics) — it's a type-safety property the compiler enforces on every
+seed, not a stance about fictionality.
 
 **`PhysicsVersion` (V1 vs V2)** — Borbax originally invented its chemistry
 purely from the seed with no connection to real-world physics at all (`V1`).
@@ -228,10 +257,15 @@ Since issue #26, `V2` instead *approximates real atomic physics* (screened-
 hydrogenic orbital filling, Slater-style screening, and so on — everything
 in the "Real chemistry and physics" section above) and lets the seed perturb
 the physical *constants* away from their real-world values, rather than
-inventing the mechanism itself from scratch. The one seed whose constants are
-left completely unperturbed reproduces the real periodic table exactly,
-including real element names — every other seed produces a plausible,
-fictional variation on real physics.
+inventing the mechanism itself from scratch. The one seed whose constants
+are left completely unperturbed reproduces the real periodic table's
+**structure** — its Madelung fill order and period boundaries, matching the
+real table through `z = 118` — and is *dispensed* the real element names
+under a sanctioned exemption (not derived from the physics; see `naming.rs`).
+It is not exact beyond structure: several real elements' actual anomalies
+(e.g. Nb, Mo, Ru, Rh, Pd each break the simple filling pattern their own way)
+are not captured by this or any version of the model. Every other seed
+produces a plausible, fictional variation on real physics.
 
 **Rung / perturbation strength** — how far a given universe's seed has
 pushed its physical constants away from the real, unperturbed ("our

@@ -845,14 +845,16 @@ mod tests {
                 // computation used `.abs()` where the sign carried the
                 // physical meaning (a negative raw difference is a free
                 // promotion, not an expensive one), giving barium- and
-                // radium-analogues (and z=120/170/218, outside the drawn
+                // radium-analogues (and z=120, reachable at n_elements=120;
+                // 170/218 are the two genuinely outside the drawn 60..=120
                 // range) valence 0 instead of the correct 2 — a deliberate
                 // physics fix, not drift. Moved a fourth time, same day: F3's
                 // own follow-up — `sigma_deep`, a new drawn constant capping
-                // every d/f-block electron's contribution to any candidate's
-                // screening sum, restores a real lanthanide-analogue radius
-                // contraction (calibrated against the real La->Lu Shannon
-                // radii) where the model previously showed none at all.
+                // every d/f-block electron's contribution to any other
+                // candidate's screening sum, restores a real
+                // lanthanide-analogue radius contraction (calibrated against
+                // the real La->Lu Shannon radii) where the model previously
+                // showed none at all.
                 PhysicsVersion::V2 => 0x6322_4e33_d99f_3593,
             };
             assert_eq!(

@@ -1315,7 +1315,7 @@ mod tests {
                     if (next.radius.0 - prev.radius.0).abs() <= tolerance {
                         run += 1;
                         assert!(
-                            run <= 3,
+                            run <= 2,
                             "seed {seed} units ..{}: {run} consecutive near-tied radii within a \
                              period — a plateau, not a legitimate frontier-transition near-tie",
                             next.units

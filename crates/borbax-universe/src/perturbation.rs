@@ -332,14 +332,18 @@ migrated_constants! {
     IonicScale = 11, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
     /// The screened-hydrogenic fold's deep-screener coefficient
     /// (`orbital.rs`) — a ceiling every d/f-block electron's contribution
-    /// to *anyone's* screening sum is capped at, replacing Slater's
-    /// idealised "everything closer screens at exactly 1.00" for d/f
-    /// screeners specifically. **No real physical counterpart tagged**,
-    /// same reasoning as `ScreeningInner`: the *qualitative* principle
-    /// (a d/f electron's poor nuclear penetration also makes it a poor
-    /// screener of everything else, symmetric to it being poorly screened
-    /// itself — established atomic-physics teaching, not this codebase's
-    /// invention) is real, but no citable Slater-style rule set turns it
+    /// to any *other* candidate's `near`/`far` screening sum is capped at,
+    /// replacing Slater's idealised "everything closer screens at exactly
+    /// 1.00" for d/f screeners specifically. Does **not** reach the
+    /// same-shell `t(l)` term (`orbital.rs`'s own doc) — a same-shell peer
+    /// is never routed through `near`/`far` at all, so "anyone's screening
+    /// sum" would overstate the mechanism's reach. **No real physical
+    /// counterpart tagged**, same reasoning as `ScreeningInner`: the
+    /// *qualitative* principle (a d/f electron's poor nuclear penetration
+    /// also makes it a poor screener of everything else, symmetric to it
+    /// being *fully* screened itself — established atomic-physics teaching,
+    /// not this codebase's invention) is real, but no citable Slater-style
+    /// rule set turns it
     /// into a specific coefficient the way `ScreeningInner`'s `0.85` is
     /// Slater's own historical number; see `orbital.rs`'s own doc for the
     /// full accounting and the calibration this constant's base value
