@@ -3127,7 +3127,7 @@ fn viewer_banned_imports(file: &str) -> &'static [&'static str] {
     }
 }
 
-/// The viewer's per-file import seam, and its single `Universe::generate` site.
+/// The viewer's per-file import seam, and its single `Universe::generate_under` site.
 ///
 /// Split out of [`check_the_viewer_stays_a_leaf`] because the combined function
 /// crossed `clippy::too_many_lines`, which is the right instinct here — these
@@ -3140,14 +3140,14 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     // the `crates/` rename that blinded `check_every_member_inherits_the_lints`
     // while eight other guards fired: rename or move `crates/borbax-ui` and the
     // *entire* seam check — every tier, the engine count and the
-    // `Universe::generate` count — passes silently, with nothing in the output
-    // saying it checked nothing.
+    // `Universe::generate_under` count — passes silently, with nothing in the
+    // output saying it checked nothing.
     if !viewer_src.exists() {
         failures.push(format!(
             "viewer seam: {VIEWER}/src does not exist, so the seam was not checked. \
              If the viewer has moved, move this check with it; a silent pass here \
              disables the per-file seam, the engine count and the \
-             `Universe::generate` count at once"
+             `Universe::generate_under` count at once"
         ));
         return Ok(());
     }
@@ -3283,7 +3283,7 @@ fn check_the_viewer_seam_holds(root: &Path, failures: &mut Vec<String>) -> Resul
     Ok(())
 }
 
-/// The viewer's call-site counts: one `Universe::generate`, no `.pattern()`.
+/// The viewer's call-site counts: one `Universe::generate_under`, no `.pattern()`.
 ///
 /// Split from [`check_the_viewer_seam_holds`] when the per-file tiers pushed the
 /// combined function past `clippy::too_many_lines` — the same split, for the
@@ -3327,30 +3327,41 @@ fn check_the_viewer_calls_the_chemistry_once(
         ));
     }
 
-    // Exactly one `Universe::generate` call site.
+    // Exactly one `Universe::generate_under` call site.
     //
     // **This is the half the `regenerations` counter cannot cover, and the
-    // counter's own doc says so.** A `Universe::generate` written directly into
-    // `panel::draw` never touches `reload`, so it never increments the counter:
-    // `an_unchanged_seed_box_does_not_rebuild_the_universe` stays green over a
-    // 141 us call running every frame, which is 0.85% of a frame budget — too
-    // small to see and invisible to every test. The plan deferred this grep to
-    // Step 7; the surface it guards exists now.
+    // counter's own doc says so.** A `Universe::generate_under` written
+    // directly into `panel::draw` never touches `reload`, so it never
+    // increments the counter: `an_unchanged_seed_box_does_not_rebuild_the_universe`
+    // stays green over a 141 us call running every frame, which is 0.85% of a
+    // frame budget — too small to see and invisible to every test. The plan
+    // deferred this grep to Step 7; the surface it guards exists now.
+    //
+    // **`generate_under`, not `generate`, since Step 15's physics-version
+    // selector.** `Universe::generate` always stamps `CURRENT`, which is
+    // exactly wrong for a viewer that can show `V2` without waiting for
+    // `CURRENT` to move — `reload` calls `generate_under(seed, self.physics)`
+    // so the selector can name laws `CURRENT` does not point at. A stray
+    // `Universe::generate` anywhere in shipped code would silently ignore
+    // whatever the selector picked, which is a correctness bug this needle
+    // does not catch — it bounds the *chemistry-generating* door to one site,
+    // not which spelling reaches it. That is `set_physics`'s and `reload`'s
+    // own job.
     let (total, where_) = call_sites_under(
         root,
         viewer_src,
-        GENERATE_CALL,
-        "Universe::generate",
+        GENERATE_UNDER_CALL,
+        "Universe::generate_under",
         failures,
     )?;
     if total != 1 {
         failures.push(format!(
-            "viewer seam: `Universe::generate` has {total} call site(s) in {VIEWER}/src \
-             ({where_}), expected exactly 1 (in state.rs, inside `reload`). A second one \
-             in the paint body would run ~141 us every frame and increment no counter, \
-             so no test would see it. Note this matches the literal spelling: a \
-             `use borbax_universe::Universe as U; U::generate(..)` alias passes, which is \
-             a hole a symbol-aware check would close"
+            "viewer seam: `Universe::generate_under` has {total} call site(s) in \
+             {VIEWER}/src ({where_}), expected exactly 1 (in state.rs, inside `reload`). \
+             A second one in the paint body would run ~141 us every frame and increment \
+             no counter, so no test would see it. Note this matches the literal spelling: \
+             a `use borbax_universe::Universe as U; U::generate_under(..)` alias passes, \
+             which is a hole a symbol-aware check would close"
         ));
     }
 
@@ -5018,7 +5029,27 @@ fn mentions_test_ident(stream: &proc_macro2::TokenStream) -> bool {
 const PATTERN_CALL: &[&str] = &[".", "pattern", "("];
 
 /// The token run that spells a `Universe::generate` call.
+///
+/// **`#[cfg(test)]`, because it now has no production use.** Used only by
+/// [`count_outside_tests`]'s own mechanism tests below — `Universe::generate`
+/// still exists (it delegates to `generate_under(seed, CURRENT)`) and is a
+/// convenient real needle for exercising the test-module-exemption logic, but
+/// it is no longer the viewer's own production seam: see
+/// [`GENERATE_UNDER_CALL`] for that.
+#[cfg(test)]
 const GENERATE_CALL: &[&str] = &["Universe", ":", ":", "generate"];
+
+/// The token run that spells a `Universe::generate_under` call.
+///
+/// **The viewer's actual single door into universe generation, since issue
+/// #26 Task 26.1 Step 15's physics-version selector.** Before the selector
+/// existed, `Universe::generate` (which always stamps `CURRENT`) was the
+/// right thing to bound to one call site; a viewer that can show `V2`
+/// without waiting for `CURRENT` to move has to call `generate_under`
+/// instead, so that is the call this crate's one production site must now
+/// be — checked by [`check_the_viewer_calls_the_chemistry_once`], not merely
+/// asserted here.
+const GENERATE_UNDER_CALL: &[&str] = &["Universe", ":", ":", "generate_under"];
 
 /// The token run that spells an `embed(..)` call.
 ///

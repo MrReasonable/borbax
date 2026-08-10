@@ -275,6 +275,17 @@ pub enum Domain {
     /// carefully — which is reason enough on its own, independent of the
     /// unverified stronger claim.
     PerturbationRung = 10,
+    /// Per-constant perturbation directions (issue #26, Decision 10, P7) —
+    /// one permanently-assigned stream index per migrated constant, indexed
+    /// by `borbax_universe::perturbation::MigratedConstant`'s own
+    /// discriminant. Appended and never renumbered, matching
+    /// [`Domain::PerturbationRung`]'s own precedent: a shared `Domain`
+    /// rather than one per constant, because the set of migrated constants
+    /// grows over time and `Domain::ALL`'s exhaustive-match forcing function
+    /// is the wrong tool to force *every future constant* through — that is
+    /// `MigratedConstant::ALL`'s job, one layer up, in the crate that
+    /// actually knows what a "migrated constant" is.
+    Perturbation = 11,
 }
 
 impl Domain {
@@ -284,7 +295,7 @@ impl Domain {
     /// compiler does not force that — what it does force, via the exhaustive
     /// `match` in `every_domain_stream_is_pinned`, is that a new variant
     /// cannot be added without giving it a pinned stream.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Universe,
         Self::Naming,
         Self::Molecule,
@@ -295,6 +306,7 @@ impl Domain {
         Self::Shadow,
         Self::Hash,
         Self::PerturbationRung,
+        Self::Perturbation,
     ];
 
     /// This domain's permanent discriminant.
@@ -1957,6 +1969,11 @@ mod tests {
                     9_970_090_515_558_423_042,
                     12_728_952_834_155_642_677,
                     16_491_960_438_584_152_858,
+                ],
+                Domain::Perturbation => [
+                    15_387_742_989_477_061_465,
+                    17_350_449_296_573_800_588,
+                    427_435_629_335_868_756,
                 ],
             };
             let mut s = Stream::new(0x5EED, domain, 0);

@@ -762,7 +762,12 @@ fn every_cell_is_on_screen_after_scrolling_at_the_size_the_window_opens_at() {
 ///
 /// Three separate properties, all measured before this was written:
 ///
-/// - **Tab reaches a cell** — the first press lands on the first cell.
+/// - **Tab reaches a cell.** Originally the first press; since issue #26 Task
+///   26.1 Step 15 added the physics selector between the seed box and the
+///   grid, it takes `physics_options().len()` presses to clear those buttons
+///   plus one more to land on the first cell — derived from the shipped
+///   method rather than a hand-counted literal, so this keeps working the day
+///   Task 26.2 lands a third law and a third button.
 /// - **Arrows move within the grid** — `egui` does 2D spatial navigation for
 ///   free, which matters at 74 columns where Tab alone would be unusable.
 /// - **Enter activates the focused cell.**
@@ -801,6 +806,15 @@ fn the_grid_is_operable_from_the_keyboard() {
 
     // **Tab, not `focus()`.** This is the assertion the first version was
     // missing: nothing here reaches into the accessibility tree to place focus.
+    //
+    // **The physics selector's buttons sit between the seed box and the grid
+    // in emission order**, so clearing them first takes `physics_options().len()`
+    // presses — read from the shipped method, not a hand-counted literal, so a
+    // third law (Task 26.2's `V3`) does not go stale here silently.
+    for _ in 0..harness.state().physics_options().len() {
+        harness.key_combination(&[egui::Key::Tab]);
+        harness.step();
+    }
     harness.key_combination(&[egui::Key::Tab]);
     harness.step();
     let focused = |h: &Harness<'_, ViewerState>| -> Option<String> {
@@ -949,5 +963,75 @@ fn clicking_a_view_label_shows_that_view() {
     assert!(
         harness.state().view().draws_sticks(),
         "clicking `sticks` did not return to the sticks view"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #26 Task 26.1 Step 15 — the physics-version selector.
+// ---------------------------------------------------------------------------
+
+/// The status line reflects the new law in the frame the physics button is
+/// clicked in, not the frame after.
+///
+/// **Unlike `clicking_a_view_label_shows_that_view`'s picture-only toggle,
+/// this cannot use `run()`.** Selecting a law regenerates the whole universe
+/// (§6: a universe is `(seed, physics)`), so a real one-frame lag here would
+/// show the status line still naming the old law for sixteen milliseconds —
+/// exactly the class of stale, misattributed text this file's other `step()`
+/// tests exist to catch, and `run()` steps until quiescent, which hides
+/// precisely that.
+#[test]
+fn the_status_line_shows_the_new_law_in_the_frame_the_button_is_clicked() {
+    let mut harness = harness();
+    type_into(&harness, "seed", "7");
+    harness.step();
+
+    harness.get_by_label("v2").click();
+    harness.step();
+
+    let expected = format!(
+        "{} elements · physics v2",
+        borbax_universe::Universe::generate_under(7, borbax_universe::PhysicsVersion::V2)
+            .table
+            .len()
+    );
+    assert!(
+        harness.query_by_label(&expected).is_some(),
+        "the frame the `v2` button was clicked in does not show {expected:?}"
+    );
+
+    harness.get_by_label("v1").click();
+    harness.step();
+
+    let expected_v1 = format!(
+        "{} elements · physics v1",
+        Universe::generate(7).table.len()
+    );
+    assert!(
+        harness.query_by_label(&expected_v1).is_some(),
+        "the frame the `v1` button was clicked in does not show {expected_v1:?}"
+    );
+}
+
+/// Clicking the already-selected physics button costs no regeneration.
+///
+/// The physics-selector twin of `an_idle_table_does_not_rebuild_the_universe`
+/// — without `ViewerState::set_physics`'s own no-op guard, every click on the
+/// button already highlighted would cost a universe nobody asked for.
+#[test]
+fn clicking_the_already_selected_physics_button_does_not_rebuild_the_universe() {
+    let mut harness = harness();
+    type_into(&harness, "seed", "7");
+    harness.step();
+    let after_commit = harness.state().regenerations();
+
+    // `v1` is `PhysicsVersion::CURRENT`, so this is the already-loaded law.
+    harness.get_by_label("v1").click();
+    harness.step();
+
+    assert_eq!(
+        harness.state().regenerations(),
+        after_commit,
+        "clicking the already-selected physics button regenerated the universe"
     );
 }

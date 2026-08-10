@@ -7,7 +7,7 @@ use core::num::IntErrorKind;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borbax_rng::{Domain, Stream};
-use borbax_universe::{Element, ElementId, Universe, seed_from_phrase};
+use borbax_universe::{Element, ElementId, PhysicsVersion, Universe, seed_from_phrase};
 
 use crate::molecule::Demo;
 use thiserror::Error;
@@ -34,9 +34,18 @@ const EMPTY_VALUE: &str = "\u{2014}";
 /// close enough to survive review, which is what makes this worth stating.
 fn property(i: usize, element: &Element, shells: usize) -> (String, &'static str) {
     match i {
-        // The element *is* this number — element N is N copies of one base
-        // unit. Never "atomic number", never "Z", never "protons": there are no
-        // protons in Borbax.
+        // The element *is* this number. **What it counts depends on
+        // `physics`, and this label does not say so — deliberately, on
+        // both sides.** Under V1 it is a shape-derived count with no
+        // correspondence to a proton: element N is N copies of one base
+        // unit, and "there are no protons in Borbax" was true without
+        // qualification. Under V2 (issue #26) it genuinely **is** the atomic
+        // number — `units` is literally proton count, screened-hydrogenic
+        // orbital fill and all. The label stays "base units" and the screen
+        // still never says "atomic number", "Z" or "protons" either way: that
+        // is a plain-language choice held by
+        // `no_explanatory_line_borrows_a_word_from_real_chemistry`, not a
+        // claim about what the number *is* under either law.
         0 => (element.units.to_string(), "base units"),
         1 => (format!("{} of {}", element.period + 1, shells), ""),
         // `group` is the count of units in the incomplete outer shell, not a
@@ -396,6 +405,26 @@ impl ViewMode {
     }
 }
 
+/// One selectable physics-law button: which laws it picks and whether it is
+/// the one currently loaded.
+///
+/// **Built here rather than in `panel.rs`, for the reason `PROPERTY_LABELS`'
+/// module doc gives.** `panel.rs` paints no `format!`; `label` is built once,
+/// from [`PhysicsVersion::ALL`] rather than two hand-written buttons, so a
+/// third law (Task 26.2 lands `PhysicsVersion::V3`) grows this panel with no
+/// edit here or in `panel.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicsOption {
+    /// The laws this button picks.
+    pub version: PhysicsVersion,
+    /// `v1`, `v2`, … — the wire form, [`u8::from`], never a hand-typed digit
+    /// that could drift from the one the digest and the `U-7F3A21C9@N`
+    /// address use.
+    pub label: String,
+    /// Whether this is the universe currently on screen's own laws.
+    pub selected: bool,
+}
+
 /// Everything the window shows, and nothing about how it is drawn.
 #[derive(Debug)]
 pub struct ViewerState {
@@ -406,6 +435,14 @@ pub struct ViewerState {
     /// so committing a seed leaves it alone and flipping it regenerates
     /// nothing.
     view: ViewMode,
+    /// The laws the *next* [`Self::reload`] generates under.
+    ///
+    /// **Never an `env::var` read** — §6 already makes physics part of a
+    /// universe's own address (`@N`), so the viewer is the one place a
+    /// binary-wide environment variable would be the wrong mechanism twice
+    /// over: it cannot be seen on screen, and it cannot vary between one
+    /// seed box and the next the way this field, set from a click, does.
+    physics: PhysicsVersion,
     regenerations: u64,
     re_embeds: u64,
     reloads: u64,
@@ -435,6 +472,11 @@ impl ViewerState {
             // `tests/app.rs` that read `state.view().draws_sticks()` are what
             // keep them in step.
             view: ViewMode::Sticks,
+            // **`CURRENT`, not a hand-written `V1`.** The window opens on
+            // whatever a brand-new `Universe::generate` would have stamped
+            // before this field existed — spelling the discriminant out
+            // would silently stop matching that the day `CURRENT` moves.
+            physics: PhysicsVersion::CURRENT,
             regenerations: 0,
             re_embeds: 0,
             reloads: 0,
@@ -460,6 +502,51 @@ impl ViewerState {
     /// token for exactly that reason.
     pub const fn flip_view(&mut self) {
         self.view = self.view.other();
+    }
+
+    /// The laws the universe on screen was generated under.
+    #[must_use]
+    pub const fn physics(&self) -> PhysicsVersion {
+        self.physics
+    }
+
+    /// Every physics-law button the panel offers, in [`PhysicsVersion::ALL`]
+    /// order, already marked with which one is currently loaded.
+    #[must_use]
+    pub fn physics_options(&self) -> Vec<PhysicsOption> {
+        PhysicsVersion::ALL
+            .into_iter()
+            .map(|version| PhysicsOption {
+                version,
+                label: format!("v{}", u8::from(version)),
+                selected: version == self.physics,
+            })
+            .collect()
+    }
+
+    /// Switch which laws the *next* universe generates under, and regenerate
+    /// the seed box's own universe under them immediately.
+    ///
+    /// **A no-op when `physics` is already what is loaded.** Without this
+    /// guard, clicking the already-highlighted button would cost a
+    /// regeneration nobody asked for and move [`Self::regenerations`] for
+    /// nothing — the same failure `periodic_table`'s own `changed` check in
+    /// `panel.rs` exists to keep a repeat click on one selected cell from
+    /// costing a second layout pass.
+    ///
+    /// **Regenerates rather than only arming the next commit.** A universe
+    /// is `(seed, physics)` (§6), so leaving the old universe on screen under
+    /// a status line that still reads its old `physics v{N}` is exactly the
+    /// class of stale, misattributed number [`Outcome`] exists to make
+    /// unrepresentable one field along — the same reasoning
+    /// [`Self::commit_typed_seed`]'s own doc gives for reloading rather than
+    /// merely recording a change.
+    pub fn set_physics(&mut self, physics: PhysicsVersion) {
+        if physics == self.physics {
+            return;
+        }
+        self.physics = physics;
+        self.reload();
     }
 
     /// The state the window opens in — [`crate::OPENING_SEED`], already
@@ -757,7 +844,7 @@ impl ViewerState {
         self.reloads = self.reloads.saturating_add(1);
         self.outcome = match parse_seed(&self.seed_text) {
             Ok(seed) => {
-                let universe = Universe::generate(seed);
+                let universe = Universe::generate_under(seed, self.physics);
                 // **Boxed**, for the reason `universe` beside it is: an
                 // `Embedding` carries fixed-size arrays for the largest
                 // molecule the graph type allows, so an unboxed one would make

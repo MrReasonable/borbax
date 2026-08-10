@@ -65,7 +65,7 @@
 use crate::canonical::{CanonMol, canonicalise};
 use crate::graph::{MAX_ATOMS, Mol12};
 use borbax_rng::Stream;
-use borbax_universe::{BondOrder, ElementId, PeriodicTable, Universe};
+use borbax_universe::{BondOrder, ElementId, PeriodicTable, PhysicsVersion, Universe};
 
 /// A periodic table and a universe **from the same seed, under the same
 /// physics** — because the table *is* the universe's own, never a second,
@@ -85,6 +85,20 @@ use borbax_universe::{BondOrder, ElementId, PeriodicTable, Universe};
 #[must_use]
 pub(crate) fn fixture(seed: u64) -> (PeriodicTable, Universe) {
     let universe = Universe::generate(seed);
+    (universe.table.clone(), universe)
+}
+
+/// [`fixture`], under `PhysicsVersion::V2` — for tests that need real,
+/// genuinely zero-straddling affinity (issue #26, Decision 4/Task 26.1 Step
+/// 12): the binding kernel's prefilter is unsound-in-spirit-if-not-in-fact
+/// against V1's always-positive affinity, which never exercises the regime
+/// the fix exists for. `fixture` itself stays on `PhysicsVersion::CURRENT`
+/// deliberately — most of this crate's tests are about shape and topology,
+/// not which physics generated the elements, and changing the default would
+/// silently move every one of their pinned digests.
+#[must_use]
+pub(crate) fn fixture_v2(seed: u64) -> (PeriodicTable, Universe) {
+    let universe = Universe::generate_under(seed, PhysicsVersion::V2);
     (universe.table.clone(), universe)
 }
 
