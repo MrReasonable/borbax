@@ -1163,6 +1163,15 @@ const SIGNATURE_SURFACE: &[(&str, &str, SigFacing)] = &[
         "sig",
         SigFacing::Single,
     ),
+    // `sig`'s own generic sibling (finding F1's D-sweep test, 2026-08-10) —
+    // same body, parametrised over the resolution instead of the module's
+    // fixed `const D: usize = 42`. Same category as `sig` for the same
+    // reason: it sees at most one molecule/universe pair per call.
+    (
+        "crates/borbax-molecule/src/binding.rs",
+        "sig_at",
+        SigFacing::Single,
+    ),
     (
         "crates/borbax-molecule/src/binding.rs",
         "from_parts",
@@ -3365,6 +3374,37 @@ fn check_the_viewer_calls_the_chemistry_once(
         ));
     }
 
+    // **Exactly zero bare `Universe::generate` call sites — the check above
+    // never had this half, and a `/review-pr` pass (2026-08-10, three
+    // independent findings: a no-brief reviewer, the emergence-auditor and
+    // the determinism-auditor, the last one by planting the call and
+    // watching this file's own suite stay green) found the gap.**
+    // `Universe::generate` always stamps `CURRENT`, which is exactly wrong
+    // once a selector can show a law `CURRENT` does not point at — a stray
+    // call would silently ignore whatever was picked, run ~141 us every
+    // frame if it landed in the paint body, and increment no counter. The
+    // `total != 1` check above bounds the *`generate_under`* door to one
+    // site; it says nothing about whether the *other* spelling reopened a
+    // second one, which is exactly the shape of gap `.pattern()`'s own
+    // `> 0` check above closes for a different function.
+    let (generate_total, generate_where) = call_sites_under(
+        root,
+        viewer_src,
+        GENERATE_CALL,
+        "Universe::generate",
+        failures,
+    )?;
+    if generate_total > 0 {
+        failures.push(format!(
+            "viewer seam: bare `Universe::generate` is called in {generate_where:?}. It \
+             always stamps `CURRENT` and cannot see the physics-version selector's own \
+             choice — the one legitimate call is `Universe::generate_under(seed, \
+             self.physics)` in state.rs. If this is a new, deliberate use of `CURRENT` \
+             specifically, say why `generate_under(seed, PhysicsVersion::CURRENT)` does \
+             not serve instead"
+        ));
+    }
+
     // Exactly one `embed` and one `canonicalise` call site.
     //
     // **The same argument as `Universe::generate`, at the price that made §8.6
@@ -5030,13 +5070,14 @@ const PATTERN_CALL: &[&str] = &[".", "pattern", "("];
 
 /// The token run that spells a `Universe::generate` call.
 ///
-/// **`#[cfg(test)]`, because it now has no production use.** Used only by
-/// [`count_outside_tests`]'s own mechanism tests below — `Universe::generate`
-/// still exists (it delegates to `generate_under(seed, CURRENT)`) and is a
-/// convenient real needle for exercising the test-module-exemption logic, but
-/// it is no longer the viewer's own production seam: see
-/// [`GENERATE_UNDER_CALL`] for that.
-#[cfg(test)]
+/// **No longer `#[cfg(test)]`-only — a real production use returned
+/// 2026-08-10, `check_the_viewer_calls_the_chemistry_once`'s own "must be
+/// zero" check (finding, three independent reviewers).** `Universe::generate`
+/// still exists (it delegates to `generate_under(seed, CURRENT)`) and is no
+/// longer the viewer's own single production door — see
+/// [`GENERATE_UNDER_CALL`] for that — but a *stray* call to it is exactly
+/// the regression that check exists to catch, so this needle is now used
+/// both there and by [`count_outside_tests`]'s own mechanism tests below.
 const GENERATE_CALL: &[&str] = &["Universe", ":", ":", "generate"];
 
 /// The token run that spells a `Universe::generate_under` call.

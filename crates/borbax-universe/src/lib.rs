@@ -503,7 +503,15 @@ impl Universe {
     /// draws — neither is named in the plan's own P7 migration table.
     fn generate_v2(seed: u64, physics: PhysicsVersion) -> Self {
         let rung = perturbation::Rung::draw(seed);
-        let table = element::generate_elements(seed, physics);
+        // **`generate_elements_v2` directly, not the public `generate_elements`
+        // dispatcher — this `rung` is the one that ends up on `Self.rung`
+        // below, and it must be the same draw the table itself was built
+        // from.** `generate_elements` draws its own for external callers
+        // that have none; calling it here would draw twice from the same
+        // pure function of `seed` (harmless today, a CodeRabbit finding
+        // 2026-08-10: silently no longer harmless the moment the draw needs
+        // anything beyond `seed`).
+        let table = element::generate_elements_v2(seed, physics, rung);
         let bonds = BondEnergyMatrix::generate(
             &table,
             seed,
@@ -824,11 +832,16 @@ mod tests {
             );
             let want = match version {
                 PhysicsVersion::V1 => 0xef29_79c6_1879_20d8,
-                // Measured 2026-08-10, when `PhysicsVersion::ALL` grew to
-                // `[V1, V2]` (issue #26, Task 26.1 Step 15 prerequisite): the
-                // first pinned golden for V2's own generation path, over the
+                // Regenerated 2026-08-10, `/review-pr`'s geometry-numerics
+                // pass (findings F3/F4, issue #26 Task 26.1): V2's electron
+                // configuration moved from an energy-driven fill search
+                // (which could not reach past z~54, this crate's `orbital.rs`
+                // own doc) to Madelung ordering plus Slater-style two-tier
+                // screening — a deliberate physics change, not a bug fix
+                // that happened to move bits. First pinned 2026-08-10 at
+                // `0x3ec3_d54e_6c26_f5f7`; this is its second value, over the
                 // same `seed in 0..64` sweep as V1's.
-                PhysicsVersion::V2 => 0x3ec3_d54e_6c26_f5f7,
+                PhysicsVersion::V2 => 0x2a05_4966_5e8e_6abe,
             };
             assert_eq!(
                 h, want,
@@ -985,5 +998,38 @@ mod tests {
             has_hydrogen,
             "seed {seed}: identity configuration should include the real element H/Hydrogen"
         );
+
+        // **Every real element's own period, not just its name — this is
+        // the `/review-pr` finding (F3, 2026-08-10) the Madelung-order
+        // rewrite (`orbital.rs`'s own doc) closes.** Before that rewrite,
+        // measured: the identity fold's period boundaries diverged from
+        // reality starting at z=55 (period 5 ran 42 elements long instead
+        // of 18, `orbital.rs`'s own doc), so 64 of 118 elements carried a
+        // real name over a period that was not that element's real one —
+        // giving real names a structural correspondence G2's 2026-08-07
+        // revision did not actually establish for most of the table.
+        // Measured after: 118/118. Real period boundaries are §5-permitted
+        // as a computed literal, not a lookup table, per the same reasoning
+        // `IDENTITY_FILL_ORDER` in `orbital.rs` already uses.
+        let real_period_of = |z: usize| -> u8 {
+            match z {
+                1..=2 => 1,
+                3..=10 => 2,
+                11..=18 => 3,
+                19..=36 => 4,
+                37..=54 => 5,
+                55..=86 => 6,
+                _ => 7,
+            }
+        };
+        for (_, e) in u.table.iter() {
+            assert_eq!(
+                e.period,
+                real_period_of(e.units),
+                "seed {seed}: z={} carries a real name but its period does not match the real \
+                 periodic table's",
+                e.units
+            );
+        }
     }
 }

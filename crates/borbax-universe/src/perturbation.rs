@@ -93,7 +93,11 @@ use borbax_rng::{Domain, Stream};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Axis {
     Electronic,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Task 26.2 is this variant's first consumer; see this enum's own doc for why \
+                  #[allow] rather than #[expect]"
+    )]
     Nuclear,
 }
 
@@ -102,12 +106,16 @@ pub(crate) enum Axis {
 /// against (issue #26, P7's round-4 correction, `signature.rs:141-144`'s
 /// existing warning about weights with no physical counterpart).
 ///
-/// **`HasReal` has no constant tagged with it yet** — Steps 6-9's `kappa`/`c`
+/// **`HasReal` has no constant tagged with it yet** — Task 26.2's `kappa`/`c`
 /// (the plan's own P7 migration table) are the first. See [`Axis`]'s own
 /// doc for why this is `#[allow]`, not `#[expect]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Counterpart {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Task 26.2's kappa/c are this variant's first consumer; see Axis's own doc for \
+                  why #[allow] rather than #[expect]"
+    )]
     HasReal,
     DefaultOnly,
 }

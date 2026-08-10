@@ -574,11 +574,21 @@ pub const fn stream(seed: u64) -> Stream {
 /// would already refuse to compile until V2 is handled. `generate_elements`
 /// is `pub`, reachable from any downstream crate, which is exactly where
 /// that gap would bite hardest.
+///
+/// **Draws its own `rung` for the V2 branch — this is the *external*-caller
+/// door, which never already has one.** `Universe::generate_v2` (`lib.rs`)
+/// draws `rung` before it has a table to build and needs that exact draw to
+/// end up on `Universe.rung` and inside the table alike, so it calls
+/// `generate_elements_v2` directly with its own draw rather than through
+/// here — a `CodeRabbit` finding (2026-08-10) caught the earlier version of
+/// this split drawing twice, harmless only because `Rung::draw` is a pure
+/// function of `seed` alone; the moment it needed anything else, `Universe.
+/// rung` and the table's own configuration could have silently disagreed.
 #[must_use]
 pub fn generate_elements(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
     match physics {
         PhysicsVersion::V1 => generate_elements_v1(seed, physics),
-        PhysicsVersion::V2 => generate_elements_v2(seed, physics),
+        PhysicsVersion::V2 => generate_elements_v2(seed, physics, Rung::draw(seed)),
     }
 }
 
@@ -1030,6 +1040,18 @@ fn median_neg_e_homo_and_scale(props: &[ElectronicProperties], n_elements: usize
 /// periodic table's size), so every later draw's stream position is
 /// unaffected by which rung this universe landed on.
 ///
+/// **Not a thirteenth `MigratedConstant`, and that is a considered
+/// rejection, not an oversight.** `draw_symmetric` perturbs continuously
+/// around a base and lands on that base *only* at `rung == 0` — but the
+/// plan's own Decision 9 fixes this constant's non-identity range at a
+/// uniform `60..=120` draw, unrelated to how far the rung sits from
+/// identity, and continuous perturbation around 118 cannot produce a
+/// uniform distribution on that interval at every other rung. Migrating
+/// this constant would either narrow the drawn range or make it
+/// rung-dependent, both of which the plan explicitly forecloses: "Its
+/// drawn range stays `60..=120`, unchanged... this constant does *not* go
+/// through P7's multiplicative mechanism."
+///
 /// **`decay` (feeds `abundance`) and `radius_scale`/`base_mass`/
 /// `contact_defect`'s base values are chosen, not derived — `Counterpart::DefaultOnly`
 /// for all of them.** `decay` is not named in the plan's own P7 migration
@@ -1050,9 +1072,11 @@ fn median_neg_e_homo_and_scale(props: &[ElectronicProperties], n_elements: usize
               function goes to a signed destination wide enough for its bounded input, never \
               float/signed -> unsigned"
 )]
-fn generate_elements_v2(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
-    let rung = Rung::draw(seed);
-
+pub(crate) fn generate_elements_v2(
+    seed: u64,
+    physics: PhysicsVersion,
+    rung: Rung,
+) -> PeriodicTable {
     let mut rng = stream(seed);
     let raw_n_elements = 60 + rng.next_range(61) as usize;
     let n_elements = if rung.is_identity() {
@@ -1064,7 +1088,7 @@ fn generate_elements_v2(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
 
     let orbital_consts = OrbitalConsts::draw(seed, rung);
     let gap_consts = GapConsts::draw(seed, rung);
-    let runs = orbital::fill(orbital_consts);
+    let runs = orbital::fill();
     let props = orbital::electronic_properties(&runs, orbital_consts, gap_consts);
 
     let radius_scale = draw_symmetric(seed, rung, MigratedConstant::RadiusScale, 0.4);
@@ -1084,10 +1108,12 @@ fn generate_elements_v2(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
     let mut fallback_symbols = 0_usize;
 
     let mut out: Vec<Element> = Vec::with_capacity(n_elements);
+    let mut cumulative_e_homo = 0.0_f64;
     for units in 1..=n_elements {
         let p: ElectronicProperties = *props
             .get(units - 1)
             .unwrap_or_else(|| unreachable!("n_elements <= 120, well within ELECTRON_CEILING"));
+        cumulative_e_homo += p.e_homo;
 
         let (symbol, name) = identity_witness.map_or_else(
             || {
@@ -1116,7 +1142,11 @@ fn generate_elements_v2(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
             (f64::from(p.paired_count) * contact_defect * 1024.0).round_ties_even() as i64;
         let mass = Mass::from_raw(units as i64 * base_mass_sub - defect_sub);
 
-        let mean_e: f64 = props.iter().take(units).map(|q| q.e_homo).sum::<f64>() / units as f64;
+        // `cumulative_e_homo` is a running left-fold in ascending-index order --
+        // bit-identical to re-summing `props[0..units]` fresh every iteration,
+        // since both add the same terms in the same order, just without the
+        // O(n) rewalk this loop would otherwise repeat n_elements times.
+        let mean_e = cumulative_e_homo / units as f64;
         let energy_per_unit = Quanta(-mean_e);
 
         let affinity = tanh((-p.e_homo - median_neg_e_homo) / affinity_scale);
@@ -1202,7 +1232,7 @@ mod tests {
     fn period_group_and_valence_come_from_the_same_electronic_properties_entry() {
         for seed in [0u64, 1, 5, 21, 42] {
             let rung = Rung::draw(seed);
-            let runs = orbital::fill(OrbitalConsts::draw(seed, rung));
+            let runs = orbital::fill();
             let props = orbital::electronic_properties(
                 &runs,
                 OrbitalConsts::draw(seed, rung),
@@ -1242,9 +1272,26 @@ mod tests {
             for w in els.windows(2) {
                 let (prev, next) = (&w[0], &w[1]);
                 if next.period == prev.period {
+                    // **A small relative tolerance, not exact `<=`, at
+                    // frontier subshell transitions.** `zeff_outer`'s probe
+                    // changes subshell at an s->p (or d->f, ...) boundary
+                    // within a period (this module's `orbital.rs` doc,
+                    // finding F4's fix), and the +1 electron there can
+                    // near-exactly cancel against the newly-counted
+                    // same-shell screening term — measured, at the identity
+                    // configuration the cancellation is bit-exact, but a
+                    // perturbed universe's own arithmetic can land a few ULP
+                    // on either side of the tie (seed 1, units 67->68:
+                    // 5.0921313321890045 -> 5.092131332189016, a 1.1e-14
+                    // difference). `64 * f64::EPSILON`, relative to the
+                    // magnitude, is generous against that noise floor and
+                    // would still fail on a genuine rise, which is orders of
+                    // magnitude larger everywhere this test has measured one.
+                    let tolerance = 64.0 * f64::EPSILON * prev.radius.0.abs();
                     assert!(
-                        next.radius.0 < prev.radius.0,
-                        "seed {seed} units {}->{}: radius should fall within a period ({} -> {})",
+                        next.radius.0 <= prev.radius.0 + tolerance,
+                        "seed {seed} units {}->{}: radius should not rise within a period ({} -> {}, \
+                         tolerance {tolerance})",
                         prev.units,
                         next.units,
                         prev.radius.0,
@@ -1265,19 +1312,25 @@ mod tests {
     }
 
     /// #31's closure: `affinity` must be periodic in Z, not a monotone
-    /// trend. **The sign-change assertion is the real discriminator** — no
-    /// monotone function can change sign more than once, let alone within
-    /// a single period, which is a strictly stronger claim than a
-    /// correlation bound can express. The correlation bound is
-    /// supplementary and **measured, not guessed**: `-e_homo` genuinely
-    /// trends upward with Z (deeper, more-screened shells still bind more
-    /// tightly on average), so affinity correlates 0.86-0.91 with Z across
-    /// `[0, 1, 5, 21, 42]` — real periodic structure riding on top of a
-    /// real trend, not a flat oscillation. An earlier draft of this bound
-    /// guessed 0.6 before measuring and failed on every seed. `0.95` is
-    /// pre-fixed with real margin above the measured range and stays a
-    /// long way short of the ~1.0 a literal Z-surrogate (what #31's old
-    /// formula effectively was) would hit.
+    /// trend. **The sign-change count is the real discriminator, and it
+    /// must be a count, not a boolean.** A monotone function can cross zero
+    /// at most once — so "at least one sign change" is satisfied by a
+    /// monotone function that happens to cross zero, and proves nothing.
+    /// "At least two" is the actual threshold no monotone function can
+    /// reach, since a second crossing requires a local extremum in
+    /// between. `MIN_SIGN_CHANGES = 3` sits one above that mathematical
+    /// floor and a long way below **measured** counts of 10-17 within a
+    /// period across `[0, 1, 5, 21, 42]` — real margin in both directions,
+    /// not the bare minimum that would merely fail to be wrong. The
+    /// correlation bound is supplementary and **measured, not guessed**:
+    /// `-e_homo` genuinely trends upward with Z (deeper, more-screened
+    /// shells still bind more tightly on average), so affinity correlates
+    /// 0.86-0.91 with Z across the same seeds — real periodic structure
+    /// riding on top of a real trend, not a flat oscillation. An earlier
+    /// draft of this bound guessed 0.6 before measuring and failed on
+    /// every seed. `0.95` is pre-fixed with real margin above the measured
+    /// range and stays a long way short of the ~1.0 a literal Z-surrogate
+    /// (what #31's old formula effectively was) would hit.
     #[expect(
         clippy::indexing_slicing,
         reason = "`windows(2)` yields slices of exactly length 2"
@@ -1290,17 +1343,19 @@ mod tests {
     #[test]
     fn v2_affinity_is_periodic_not_a_monotone_trend_in_z() {
         const CORRELATION_BOUND: f64 = 0.95;
+        const MIN_SIGN_CHANGES: usize = 3;
         for seed in [0u64, 1, 5, 21, 42] {
             let (_, els, _) = table_v2(seed);
-            let mut sign_change_within_a_period = false;
+            let mut sign_changes_within_a_period = 0_usize;
             for w in els.windows(2) {
                 if w[1].period == w[0].period && w[0].affinity.signum() != w[1].affinity.signum() {
-                    sign_change_within_a_period = true;
+                    sign_changes_within_a_period += 1;
                 }
             }
             assert!(
-                sign_change_within_a_period,
-                "seed {seed}: affinity never changes sign within a period"
+                sign_changes_within_a_period >= MIN_SIGN_CHANGES,
+                "seed {seed}: affinity changes sign only {sign_changes_within_a_period} time(s) \
+                 within a period -- too few to rule out a monotone trend that happens to cross zero"
             );
 
             let z: Vec<f64> = (1..=els.len()).map(|u| u as f64).collect();
@@ -1376,7 +1431,7 @@ mod tests {
     /// arbitrary cut.
     #[test]
     fn element_118_completes_its_own_subshell_at_the_identity_configuration() {
-        let runs = orbital::fill(OrbitalConsts::at_identity());
+        let runs = orbital::fill();
         let props = orbital::electronic_properties(
             &runs,
             OrbitalConsts::at_identity(),
@@ -2010,15 +2065,23 @@ mod tests {
             h = h.wrapping_mul(0x0100_0000_01b3);
         };
         for seed in 0..64 {
-            // `_physics`, deliberately: this digest is about the table's
-            // *content* (`ShellPattern`, `Element`), predates
-            // `PhysicsVersion` entirely, and sweeps seeds only, not versions.
-            // Mixing it here would duplicate
-            // `the_assembled_universe_digest_is_pinned`'s job (P2, issue
-            // #26's prerequisites), which pins one golden value *per
-            // version*, exhaustively, in `lib.rs` — the right place for a
-            // per-version pin, since this test's own golden below is a
-            // single value with no version axis to index it by.
+            // `_physics`, deliberately: this test fixes `PhysicsVersion::
+            // CURRENT` (V1) via `table()` and covers V1 only — see
+            // `the_v2_universe_digest_is_pinned` for V2's own coverage.
+            //
+            // **An earlier version of this comment claimed mixing element
+            // content here would duplicate
+            // `the_assembled_universe_digest_is_pinned`'s job — false, and a
+            // `/review-pr` pass (2026-08-10, determinism-auditor) measured
+            // it directly: reversing this test's own `for e in &els`
+            // accumulation order moved 105 of 120 species' hashes with
+            // **zero** test failures anywhere in the workspace, because
+            // `the_assembled_universe_digest_is_pinned` mixes `seed`, the
+            // version discriminant, `UniverseConsts`'s eight fields and bond
+            // cells — never an `Element` field.** This test is the *only*
+            // thing pinning element content, for whichever version it
+            // covers, which is exactly why a V2-covering sibling is
+            // necessary rather than redundant.
             let (sp, els, _physics) = table(seed);
             // **Destructured, for the reason the assembled-universe digest is.**
             // A hand-written field list cannot see a field that is not in it: a
@@ -2114,6 +2177,89 @@ mod tests {
              chemistry — see this file's own header) — the input set narrowed by \
              one field, which moves the hash on its own even though every \
              remaining mixed value is unchanged"
+        );
+    }
+
+    /// V2's own element-content digest — the coverage gap a `/review-pr`
+    /// determinism pass found (2026-08-10): `PhysicsVersion::ALL` grew to
+    /// `[V1, V2]` and pinned an assembled-universe digest for V2, but that
+    /// digest mixes no `Element` field at all (see
+    /// `the_universe_digest_is_pinned`'s own updated doc), so V2's `radius`,
+    /// `instability`, `period`, `group`, `abundance`, `mass` and
+    /// `energy_per_unit` had no pinned value anywhere — `radius` alone
+    /// reaches `embed -> signature -> binding`, a result-affecting path with
+    /// zero determinism coverage. Deliberately a separate test rather than
+    /// a version-parameterised `the_universe_digest_is_pinned`: `ShellLaw`'s
+    /// two variants carry different fields (`V1 { k }` against `V2`'s unit
+    /// variant), so there is no single destructuring that covers both
+    /// without reintroducing the exact silent-narrowing risk this file's own
+    /// header warns about.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_sign_loss,
+        reason = "hashing raw bit patterns and small counts; every value is pinned by \
+                  the assertion itself — same reason as the_universe_digest_is_pinned"
+    )]
+    #[test]
+    fn the_v2_universe_digest_is_pinned() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |x: u64| {
+            h ^= x;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        };
+        for seed in 0..64 {
+            let (sp, els, _physics) = table_v2(seed);
+            let ShellPattern {
+                law,
+                closures,
+                fallback_symbols,
+                peak,
+                eps,
+            } = &sp;
+            let ShellLaw::V2 = law else {
+                unreachable!("table_v2() fixes PhysicsVersion::V2")
+            };
+            mix(*peak as u64);
+            mix(*fallback_symbols as u64);
+            mix(eps.get().to_bits());
+            for c in closures {
+                mix(*c as u64);
+            }
+            for e in &els {
+                let Element {
+                    symbol,
+                    name,
+                    units: _,
+                    period,
+                    group,
+                    mass,
+                    valence,
+                    affinity,
+                    radius,
+                    energy_per_unit,
+                    instability,
+                    abundance,
+                } = e;
+                mix(mass.raw() as u64);
+                mix(u64::from(*valence));
+                mix(u64::from(*period));
+                mix(u64::from(*group));
+                mix(affinity.to_bits());
+                mix(radius.0.to_bits());
+                mix(energy_per_unit.0.to_bits());
+                mix(instability.to_bits());
+                mix(abundance.to_bits());
+                for b in symbol.bytes().chain(name.bytes()) {
+                    mix(u64::from(b));
+                }
+            }
+        }
+        assert_eq!(
+            h, 0x74f0_d6b0_999c_25ab,
+            "the V2 universe digest moved — say which of §18.1's three this is, or the \
+             fourth: the digest's own input set changed shape. This golden was first \
+             measured 2026-08-10, alongside the assembled-universe V2 golden — see this \
+             test's own doc for what it closes"
         );
     }
 

@@ -203,12 +203,15 @@ use core::cmp::Ordering;
 /// own mean atom radius`, computed once per species — [`shell_width`], not
 /// this constant.** The fixed `0.75` above was calibrated against V1's
 /// radius series and measured to move: V2's own drawn range is
-/// meaningfully wider (ratio of max to min radius 11.7x against V1's 6.4x,
-/// measured directly rather than assumed — an earlier revision of this
-/// plan called V2's range "broken under V2's wider range" before that
-/// measurement existed). A single fixed absolute length cannot track a
-/// per-universe, per-species length scale; a per-species multiple of the
-/// molecule's own mean radius does, by construction.
+/// meaningfully wider — max-to-min element radius ratios of 26-45x across
+/// `[0, 1, 5, 21, 42]`, against V1's 3.0-4.0x over the same seeds, measured
+/// directly rather than assumed (re-measured after Task 26.1's later
+/// Madelung/Slater screening fix moved V2's own radius formula; an earlier
+/// revision of this doc cited 11.7x/6.4x from before that fix — the
+/// direction and scale of the gap both survived, the exact figures did
+/// not). A single fixed absolute length cannot track a per-universe,
+/// per-species length scale; a per-species multiple of the molecule's own
+/// mean radius does, by construction.
 ///
 /// **The property F2 owns is scale-equivariance, not "flat across molecule
 /// size" or "flat across seeds".** Both of those already held under the

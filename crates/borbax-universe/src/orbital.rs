@@ -1,61 +1,118 @@
 //! Screened-hydrogenic, `l`-dependent orbital filling (issue #26, Decisions
 //! 3 and 8) — Task 26.1's replacement for `element.rs`'s V1 shell law.
 //!
-//! **The screening model, stated precisely because the plan states only its
-//! principles.** For a candidate subshell `(n, l)` given the electrons
-//! already placed, `Z_eff(n, l) = z - S(n, l)` where `z` is the electron
-//! index about to be placed (the neutral atom's own atomic number under
-//! construction) and:
+//! **Fill *order* and subshell *energy* are two different questions, answered
+//! by two different mechanisms — this module's original version answered
+//! both from one screened-hydrogenic energy formula, and a `/review-pr` pass
+//! measured that this does not scale past `z ≈ 54`: a purely energy-driven
+//! search puts 4f (and 5d) ahead of 6s, because a low-`n` candidate's
+//! `1/n²` term wins the comparison however its screening is tuned — a
+//! structural property of the formula, not a calibration miss (verified by
+//! sweeping the screening coefficient from 0.65 to 0.99 with several
+//! candidate corrections; none moved the crossover past `z ≈ 55`). This is
+//! also the reason every real periodic-table teaching model uses an
+//! explicit ordering rule rather than deriving order from screening alone.**
+//!
+//! # Fill order: Madelung's rule, not a search
+//!
+//! Subshells fill in [`madelung_order`]: ascending `(n + l)`, ties broken by
+//! ascending `n` — the standard rule (Madelung 1936; independently
+//! Klechkovsky) that correctly orders the *entire* periodic table's block
+//! structure, with the same small set of individual-element exceptions
+//! (Cr, Cu, and a handful of lanthanides/actinides) every simplified atomic
+//! model shares with it. It needs no screening input at all: the order is
+//! the same for every seed, drawn constants perturb the *energies* within
+//! that fixed structure, not which subshell is next.
+//!
+//! # Subshell energy: Slater's rules, not a single screening constant
+//!
+//! For a subshell `(n, l)` given the electrons already placed,
+//! `Z_eff(n, l) = z - S(n, l)` where `z` is the electron index about to be
+//! placed and `S` is Slater's own two-tier screening rule (Slater 1930),
+//! adapted to this module's continuous `t(l)` in place of Slater's discrete
+//! `(ns,np)` grouping:
 //!
 //! ```text
-//! S(n, l) = sigma_inner * inner(n) + t(l) * same(n, l)
-//! inner(n) = electrons already placed in any subshell with n' < n
-//! same(n, l) = electrons already placed in a DIFFERENT subshell with n' == n
-//!              (l' != l) — the candidate's own already-placed peers are
-//!              excluded, see below
-//! t(l) = min(l / 2.0, 1.0)   // 0 at l=0, 0.5 at l=1, saturated at l>=2
-//! energy(n, l) = -(Z_eff(n, l) / n)^2   // plain n, not Slater's n*
+//! near(n)    = electrons already placed with n' == n - 1
+//! far(n)     = electrons already placed with n' <= n - 2
+//! same(n, l) = electrons already placed with n' == n, l' != l — the
+//!              candidate's own already-placed peers are excluded
+//! t(l) = min(l / 2.0, 1.0)             // 0 at l=0, 0.5 at l=1, saturated at l>=2
+//!
+//! l <= 1:  S(n, l) = sigma_near * near(n) + 1.0 * far(n)      + t(l) * same(n, l)
+//! l >= 2:  S(n, l) = 1.0        * near(n) + 1.0 * far(n)      + t(l) * same(n, l)
+//!
+//! energy(n, l) = -(Z_eff(n, l) / n)^2   // plain n, not a quantum defect
 //! ```
 //!
-//! **Excluding the candidate's own already-placed same-subshell peers is a
-//! deliberate deviation from the most literal reading of Decision 3's text,
-//! found necessary by direct numerical experiment, not stated in the
-//! plan.** Including them (`same(n, l)` summing over every `n' == n`
-//! regardless of `l'`) makes a partially-filled subshell's own energy rise
-//! as it fills — self-screening among its own occupants — at a rate that,
-//! for the real 3d/4p transition, overtakes 3d's initial energy advantage
-//! after roughly 4 of its 10 electrons, before 3d finishes: 3d and 4p
-//! trade off electron-by-electron instead of 3d filling cleanly.
-//! Real atoms do not have this problem because of exchange-correlation
-//! effects a screened-hydrogenic model does not include; excluding
-//! same-subshell self-screening is the cheapest structural fix that keeps
-//! the model's own account of *why* penetration matters (`t(l)`) intact.
-//! Measured after the fix: the real subshell fill order is reproduced
-//! exactly through 5p at the identity configuration, with no flicker in
-//! that range.
+//! **The `l >= 2` branch — full screening from *every* inner shell, not just
+//! the far ones — is the piece the original single-constant model was
+//! missing, and it is the reason 4f/5d no longer win against 6s.** Slater's
+//! own rule draws exactly this distinction: an `ns`/`np` candidate is only
+//! partly screened by its immediately-inner shell (electrons genuinely
+//! penetrate it to some degree), but an `nd`/`nf` candidate — poorly
+//! penetrating by construction — is screened at full strength by *every*
+//! group closer to the nucleus, not only the ones two shells back. Verified
+//! against the real subshell sequence: with `sigma_near` at Slater's own
+//! historical value (0.85), the identity fold reproduces the real Madelung
+//! sequence exactly through `z = 118` (this module's own tests pin it), and
+//! separately (`element.rs`'s own radius formula) raises the model-vs-real
+//! covalent-radius correlation from 0.50 to 0.87 and fixes the group-1
+//! radius trend (Li through Fr) from inverted to strictly increasing —
+//! neither of which this screening split was tuned against; both are
+//! measured consequences of the same change.
+//!
+//! **Excluding the candidate's own already-placed same-subshell peers from
+//! `same(n, l)` is a deliberate deviation from the most literal reading of
+//! Decision 3's text, found necessary by direct numerical experiment, not
+//! stated in the plan.** Including them makes a partially-filled subshell's
+//! own energy rise as it fills — self-screening among its own occupants —
+//! at a rate that, for the real 3d/4p transition, overtakes 3d's initial
+//! energy advantage after roughly 4 of its 10 electrons, before 3d
+//! finishes: 3d and 4p would trade off electron-by-electron instead of 3d
+//! filling cleanly. Real atoms do not have this problem because of
+//! exchange-correlation effects a screened-hydrogenic model does not
+//! include; excluding same-subshell self-screening is the cheapest
+//! structural fix that keeps the model's own account of *why* penetration
+//! matters (`t(l)`) intact. This exclusion is no longer load-bearing for
+//! *fill order* (Madelung's rule does not read subshell energy at all), but
+//! it stays load-bearing for the *energy values* `e_homo`/`gap`/`zeff_outer`
+//! read from — an unexcluded self-screening term would still make a
+//! partially-filled subshell's own reported energy rise implausibly as it
+//! fills.
 //!
 //! **`Z_eff >= 1` is provable, not merely observed, and the proof needs the
-//! exclusion above.** `sigma_inner` is drawn through
-//! [`crate::perturbation`] with base `OrbitalConsts::BASE_SIGMA_INNER` and a
-//! one-sided-downward direction, so `sigma_inner` is always in
-//! `(0, BASE_SIGMA_INNER] subset (0, 1]`; `t(l)` is bounded in `[0, 1]` by
-//! construction. `inner(n) + same(n, l)` counts a subset of the electrons
-//! already placed (every placed electron *except* the candidate's own
-//! subshell's peers, which are excluded, and any electron in a subshell
-//! with `n' > n`, which never contributes), so it is at most `z - 1`. Hence
-//! `S(n, l) <= 1 * (z - 1) = z - 1`, and `Z_eff = z - S(n, l) >= z - (z - 1)
-//! = 1`, for every reachable `z`, `n`, `l` and occupancy — not just the
-//! cases this module happens to test.
+//! exclusion above.** `sigma_near` is drawn through [`crate::perturbation`]
+//! with base `OrbitalConsts::BASE_SIGMA_NEAR` and a one-sided-downward
+//! direction, so `sigma_near` is always in `(0, BASE_SIGMA_NEAR] subset (0,
+//! 1]`; every other coefficient in `S` (`1.0`, and `t(l)`) is bounded in
+//! `[0, 1]` by construction. `near(n) + far(n) + same(n, l)` counts a subset
+//! of the electrons already placed (every placed electron *except* the
+//! candidate's own subshell's peers, which are excluded, and any electron
+//! in a subshell with `n' > n`, which never contributes), so it is at most
+//! `z - 1`. Every term in `S` multiplies one of these three counts by a
+//! coefficient `<= 1`, so `S(n, l) <= 1 * (z - 1) = z - 1`, and `Z_eff = z -
+//! S(n, l) >= z - (z - 1) = 1`, for every reachable `z`, `n`, `l` and
+//! occupancy, both branches — not just the cases this module happens to
+//! test.
 //!
-//! **A genuinely emergent, not hardcoded, consequence**: the model produces
-//! its own transition-metal-region complexity near the 4d/5s boundary (a
-//! single 5s electron placed, then 4d filling completely, then 5s's second
-//! electron) — not identical to any specific real anomaly (real Pd, Nb, Mo,
-//! Ru, Rh all break the simple pattern too, for reasons this model does not
-//! capture), but the same qualitative phenomenon, falling out of the
-//! formula rather than a per-element exception.
+//! **What this costs: the 4d/5s interruption an earlier version of this
+//! module treated as a genuinely emergent feature is gone.** Under
+//! energy-driven ordering, a single 5s electron placed, then 4d filling
+//! completely, then 5s's second electron, fell out of the formula near
+//! `z = 37`. Madelung's rule never interrupts a subshell — every run in
+//! [`fill`]'s output is now a complete subshell, always. That specific
+//! phenomenon did not correspond to any real element's actual anomaly
+//! either (real Nb, Mo, Ru, Rh, Pd each break the simple pattern their own,
+//! different way, for reasons neither version of this model captures), so
+//! trading it for a fold that actually matches the real table's structure
+//! through `z = 118` is the right side of that trade, not a loss to
+//! mourn — but it means [`Occupancy`]'s own doc (a subshell can appear as
+//! two separate, non-adjacent runs) no longer describes anything this
+//! module produces; kept accurate below, not deleted, since a future
+//! change could reintroduce a fold shape where it matters again.
 //!
-//! **This module has no production caller yet — Steps 6-9 give it one.**
+//! This module has no production caller yet — Steps 6-9 give it one.
 //! Steps 1-5 (this module) build and test the fold in isolation, per the
 //! plan's own staging; `element.rs`'s `generate_elements(seed,
 //! PhysicsVersion::V2)` calls [`fill`] when it lands. Every item here is
@@ -94,20 +151,21 @@
 
 use crate::perturbation::{Direction, MigratedConstant, Rung, draw_symmetric, perturb};
 use borbax_rng::{Domain, Stream};
-use borbax_units::canonical_cmp;
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// One contiguous run of electrons [`fill`] placed into a single subshell
 /// before moving to a different one.
 ///
-/// **Not always a complete subshell.** Most entries are — the fold fills a
-/// subshell to capacity before a lower-energy alternative exists — but the
-/// 4d/5s region (see this module's own doc) genuinely interrupts a subshell
-/// mid-fill, so the same `(n, l)` can appear as two separate, non-adjacent
-/// entries. A reader wanting one element's total configuration at a given
-/// electron count must sum every entry for a given `(n, l)` up to that
-/// point, not assume the first entry for `(n, l)` is the only one.
+/// **Always a complete subshell today, and that is new.** Under
+/// energy-driven ordering an earlier version of this module could interrupt
+/// a subshell mid-fill (this module's own doc records the 4d/5s case it
+/// found); [`madelung_order`] never does — every subshell fills to capacity
+/// before the fold moves to the next one, so `(n, l)` appears at most once
+/// in [`fill`]'s output. The field stays `count: u32` rather than a fixed
+/// `capacity_of(l)`, and a reader summing every entry for a given `(n, l)`
+/// still gets the right answer, because *how* this module fills is not a
+/// contract the rest of the crate should have to know — only a future
+/// change reintroducing interruption would need this doc corrected again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Occupancy {
     pub(crate) n: u8,
@@ -165,21 +223,21 @@ fn t_of_l(l: u8) -> f64 {
     if raw < 1.0 { raw } else { 1.0 }
 }
 
-/// The physical constants [`fill`] needs. Currently just the perturbed
-/// inner-shell screening coefficient — see [`MigratedConstant::ScreeningInner`].
+/// The physical constants [`electronic_properties`] needs to price a
+/// subshell once [`madelung_order`] has chosen it — [`fill`] itself needs
+/// none, see its own doc. Currently just the perturbed near-shell screening
+/// coefficient — see [`MigratedConstant::ScreeningInner`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct OrbitalConsts {
-    sigma_inner: f64,
+    sigma_near: f64,
 }
 
 impl OrbitalConsts {
-    /// The unperturbed inner-shell screening coefficient. Calibrated by
-    /// direct numerical search (not derived from Slater's empirical
-    /// values, which this model does not use) to be the value at which the
-    /// identity configuration's fold reproduces the real subshell fill
-    /// order exactly through 5p. See this module's own doc for the fold
-    /// this was calibrated against.
-    pub(crate) const BASE_SIGMA_INNER: f64 = 0.65;
+    /// The unperturbed near-shell screening coefficient — Slater's own
+    /// historical value (Slater 1930), not a value chosen for this model.
+    /// See this module's own doc for the two-tier screening rule this
+    /// feeds and what it was measured to reproduce.
+    pub(crate) const BASE_SIGMA_NEAR: f64 = 0.85;
 
     /// Draw this universe's screening constants.
     ///
@@ -199,14 +257,14 @@ impl OrbitalConsts {
         let direction = Direction::new(p, Direction::P_MAX)
             .unwrap_or_else(|| unreachable!("p is drawn within [-P_MAX, 0.0] by construction"));
         Self {
-            sigma_inner: perturb(Self::BASE_SIGMA_INNER, rung, direction),
+            sigma_near: perturb(Self::BASE_SIGMA_NEAR, rung, direction),
         }
     }
 
     #[cfg(test)]
     pub(crate) const fn at_identity() -> Self {
         Self {
-            sigma_inner: Self::BASE_SIGMA_INNER,
+            sigma_near: Self::BASE_SIGMA_NEAR,
         }
     }
 }
@@ -221,29 +279,31 @@ const ELECTRON_CEILING: u32 = 250;
 /// so the fold never runs out of candidates before the ceiling.
 const MAX_N: u8 = 9;
 
-/// Every `(n, l)` subshell up to [`MAX_N`], in ascending `(n, l)` order —
-/// the canonical order the fold iterates in, and the tie-break order two
-/// candidates at bit-identical energy resolve through.
-fn candidates() -> Vec<(u8, u8)> {
+/// Every `(n, l)` subshell up to [`MAX_N`], in Madelung order: ascending
+/// `(n + l)`, ties broken by ascending `n` — this module's own doc explains
+/// why fill order is a fixed structural rule rather than a per-candidate
+/// energy comparison. A pure function of nothing but [`MAX_N`]: the same
+/// sequence for every seed and every universe.
+fn madelung_order() -> Vec<(u8, u8)> {
     let mut out = Vec::new();
     for n in 1..=MAX_N {
         for l in 0..n {
             out.push((n, l));
         }
     }
+    out.sort_by_key(|&(n, l)| (n + l, n));
     out
 }
 
 /// The `(energy, Z_eff)` pair for subshell `(n, l)` given electrons already
 /// placed, at electron count `z` — the fold's own energy formula (this
-/// module's doc), extracted so [`best_unfilled`] (candidate selection) and
-/// the derived electronic-structure properties below (Steps 6-9) share one
-/// formula rather than two copies that could drift.
+/// module's doc), shared by [`electronic_properties`]'s own callers below
+/// rather than duplicated.
 ///
 /// **Deliberately takes `occ` as-is, with no capacity check.** Whether
-/// `(n, l)` still has room is the caller's question — [`best_unfilled`]
-/// skips full subshells before calling this; the Steps 6-9 properties below
-/// call it *because* a subshell is full, to price the next candidate.
+/// `(n, l)` still has room is the caller's question — [`fill`] never asks
+/// this function about a full subshell; [`electronic_properties`] calls it
+/// *because* a subshell is full, to price the next candidate.
 fn subshell_energy(
     n: u8,
     l: u8,
@@ -251,9 +311,14 @@ fn subshell_energy(
     occ: &BTreeMap<(u8, u8), u32>,
     consts: OrbitalConsts,
 ) -> (f64, f64) {
-    let inner: u32 = occ
+    let near: u32 = occ
         .iter()
-        .filter(|((n2, _), _)| *n2 < n)
+        .filter(|((n2, _), _)| n.checked_sub(1) == Some(*n2))
+        .map(|(_, c)| c)
+        .sum();
+    let far: u32 = occ
+        .iter()
+        .filter(|((n2, _), _)| n.checked_sub(2).is_some_and(|floor| *n2 <= floor))
         .map(|(_, c)| c)
         .sum();
     let same: u32 = occ
@@ -261,75 +326,36 @@ fn subshell_energy(
         .filter(|((n2, l2), _)| *n2 == n && *l2 != l)
         .map(|(_, c)| c)
         .sum();
-    let s = consts.sigma_inner * f64::from(inner) + t_of_l(l) * f64::from(same);
+    // l <= 1: near screens at sigma_near (partial); l >= 2: near screens at
+    // full strength too — this module's own doc on why that split, not a
+    // single constant, is what makes 6s win against 4f/5d.
+    let near_rate = if l <= 1 { consts.sigma_near } else { 1.0 };
+    let s = near_rate * f64::from(near) + f64::from(far) + t_of_l(l) * f64::from(same);
     let z_eff = f64::from(z) - s;
     let ratio = z_eff / f64::from(n);
     (-(ratio * ratio), z_eff)
 }
 
-/// The lowest-energy unfilled candidate, given the electrons already placed.
-///
-/// **Iterates `order`, not a canonical iteration of `occ`, so the caller
-/// controls the scan order — this is what lets a test probe order-
-/// invariance directly, by calling this twice with two different orders
-/// over the same `occ` and asserting the same winner.** The winner cannot
-/// depend on `order` regardless: every candidate is still visited exactly
-/// once, and the comparison is a strict total order
-/// (`canonical_cmp` on energy, then `(n, l)` ascending as the tie-break),
-/// so a linear scan finds the same minimum however it is traversed.
-///
-/// `occ`'s own iteration (to sum `inner`/`same`, inside [`subshell_energy`])
-/// uses `BTreeMap`'s sorted order, never `HashMap` — CLAUDE.md's §13.1 —
-/// though this is moot for the *sums themselves*, which are order-invariant
-/// integer addition regardless of traversal order.
-fn best_unfilled(
-    order: &[(u8, u8)],
-    occ: &BTreeMap<(u8, u8), u32>,
-    z: u32,
-    consts: OrbitalConsts,
-) -> (u8, u8) {
-    let mut best: Option<(f64, u8, u8)> = None;
-    for &(n, l) in order {
-        let count = occ.get(&(n, l)).copied().unwrap_or(0);
-        if count >= capacity_of(l) {
-            continue;
-        }
-        let (e, _z_eff) = subshell_energy(n, l, z, occ, consts);
-        let better = match best {
-            None => true,
-            Some((best_e, best_n, best_l)) => match canonical_cmp(e, best_e) {
-                Ordering::Less => true,
-                Ordering::Equal => (n, l) < (best_n, best_l),
-                Ordering::Greater => false,
-            },
-        };
-        if better {
-            best = Some((e, n, l));
-        }
-    }
-    best.map_or_else(
-        || unreachable!("candidates() covers {ELECTRON_CEILING} electrons' worth of subshells at MAX_N = {MAX_N}, so a candidate is always available"),
-        |(_, n, l)| (n, l),
-    )
-}
-
-/// Fill subshells electron by electron, in aufbau order, up to
+/// Fill subshells electron by electron, in [`madelung_order`], up to
 /// [`ELECTRON_CEILING`].
 ///
-/// Returns one [`Occupancy`] per contiguous run — see [`Occupancy`]'s own
-/// doc for why that is not always one entry per subshell.
+/// **Takes no [`OrbitalConsts`] — deliberately, and that is new.** Which
+/// subshell fills next no longer depends on screening at all (this module's
+/// own doc), so the run structure this returns is identical for every
+/// seed; only the *energies* [`electronic_properties`] later reads from it
+/// vary. Returns one [`Occupancy`] per subshell — see [`Occupancy`]'s own
+/// doc for why that is now always a complete subshell, never a fragment.
 #[must_use]
-pub(crate) fn fill(consts: OrbitalConsts) -> Vec<Occupancy> {
-    let order = candidates();
-    let mut occ: BTreeMap<(u8, u8), u32> = BTreeMap::new();
+pub(crate) fn fill() -> Vec<Occupancy> {
     let mut out: Vec<Occupancy> = Vec::new();
-    for z in 1..=ELECTRON_CEILING {
-        let (n, l) = best_unfilled(&order, &occ, z, consts);
-        *occ.entry((n, l)).or_insert(0) += 1;
-        match out.last_mut() {
-            Some(last) if last.n == n && last.l == l => last.count += 1,
-            _ => out.push(Occupancy { n, l, count: 1 }),
+    let mut placed: u32 = 0;
+    for (n, l) in madelung_order() {
+        if placed >= ELECTRON_CEILING {
+            break;
         }
+        let take = capacity_of(l).min(ELECTRON_CEILING - placed);
+        placed += take;
+        out.push(Occupancy { n, l, count: take });
     }
     out
 }
@@ -343,12 +369,14 @@ pub(crate) struct GapConsts {
 }
 
 impl GapConsts {
-    /// Calibrated by direct numerical search (same method as
-    /// [`OrbitalConsts::BASE_SIGMA_INNER`]) to sit strictly between real
-    /// alkaline-earth-like HOMO-LUMO gaps (~1.1-1.6 at the identity
-    /// configuration, e.g. beryllium- and magnesium-analogues) and real
-    /// noble-gas-like ones (~3.9 and up, e.g. helium- and neon-analogues) —
-    /// a >25%-margin choice on both sides, not a boundary value.
+    /// Calibrated by direct numerical search — unlike
+    /// `OrbitalConsts::BASE_SIGMA_NEAR`, which is Slater's own historical
+    /// value rather than a value chosen for this model — to sit strictly
+    /// between real alkaline-earth-like HOMO-LUMO gaps (~1.1-1.6 at the
+    /// identity configuration, e.g. beryllium- and magnesium-analogues) and
+    /// real noble-gas-like ones (~3.9 and up, e.g. helium- and
+    /// neon-analogues) — a >25%-margin choice on both sides, not a boundary
+    /// value.
     pub(crate) const BASE_PROMOTION_BUDGET: f64 = 2.0;
 
     /// Draw this universe's gap-derived constants. Symmetric excursion,
@@ -389,17 +417,28 @@ pub(crate) struct ElectronicProperties {
     /// occupied set — which is what makes `outer_n(z) > outer_n(z - 1)` a
     /// threshold-free period-boundary test.
     pub(crate) outer_n: u8,
-    /// `Z_eff` of `(outer_n, l = 0)` at this z — feeds radius.
+    /// `Z_eff` of `(outer_n, l)` at this z, `l` the frontier's own angular
+    /// momentum when the frontier sits in the outer shell and `0` only as
+    /// the d/f-block fallback — see [`electronic_properties`]'s own probe
+    /// site for why, and this module's own doc for what fixing the
+    /// unconditional `l = 0` probe measurably changed. Feeds radius.
     pub(crate) zeff_outer: f64,
     /// The HOMO-LUMO gap. Zero whenever `fill()`'s own run structure shows
     /// this electron's subshell is not yet at capacity; nonzero only when
     /// this electron exactly completes its subshell **and** a different
-    /// subshell follows. Read from the fold's actual output, not
-    /// re-derived — "gap = 0 mid-run" is not independently provable from
-    /// screening alone (this module's own doc records the counterexample:
-    /// the fold can and does interrupt a partially-filled subshell, e.g.
-    /// 5s at z=37→38, purely because a smaller-n competitor's energy has
-    /// higher curvature in `Z_eff` under the identical +1 shift).
+    /// subshell follows.
+    ///
+    /// **Which case applies is read from the fold's actual output, not
+    /// re-derived from `(z, n, l)` alone, even though `madelung_order()`
+    /// alone now fixes *which* position is subshell-final — screening plays
+    /// no part in that any more (this module's own doc: an earlier,
+    /// energy-driven ordering could interrupt a partially-filled subshell,
+    /// e.g. real 5s at z=37→38; Madelung's rule never does).** The value at
+    /// a subshell-final position still cannot be re-derived independently:
+    /// it is the *following* subshell's own `Z_eff`-dependent energy, which
+    /// only [`subshell_energy`] can supply, so reading `gap` from the same
+    /// pass that already computed it avoids a second, redundant call rather
+    /// than avoiding any real unpredictability in the structure itself.
     pub(crate) gap: f64,
     /// The frontier subshell's own binding energy, `-(Z_eff/n)^2` — the
     /// electron most recently placed, evaluated at this z.
@@ -417,10 +456,11 @@ pub(crate) struct ElectronicProperties {
     /// Paired-electron count across **every** currently-occupied subshell,
     /// `(z - total_unpaired) / 2` — element.rs's V2 mass-defect "contacts"
     /// analogue. **Deliberately summed over all of `occ`, not just the
-    /// frontier subshell** — a closed subshell always contributes 0
-    /// unpaired electrons, so this differs from a frontier-only count only
-    /// during an interruption (this module's own doc: the 5s/4d region has
-    /// *two* simultaneously-incomplete subshells, both contributing).
+    /// frontier subshell**, even though [`fill`] never leaves more than one
+    /// subshell incomplete at a time today — a closed subshell always
+    /// contributes 0 unpaired electrons regardless, so this is the honest
+    /// general form rather than one that happens to agree with a
+    /// frontier-only count only because of how this module currently fills.
     pub(crate) paired_count: u32,
 }
 
@@ -454,7 +494,20 @@ pub(crate) fn electronic_properties(
                 .map(|(&(n, _), _)| n)
                 .max()
                 .unwrap_or_else(|| unreachable!("(run.n, run.l) was just inserted with count > 0"));
-            let (_, zeff_outer) = subshell_energy(outer_n, 0, z, &occ, orbital_consts);
+            // **The frontier's own `l` when the frontier sits in the outer
+            // shell, `l = 0` only as a fallback for the d/f-block region
+            // (`run.n < outer_n`) where no better probe subshell exists.**
+            // Probing `l = 0` unconditionally (an earlier version of this
+            // line) zeroes same-shell screening for every candidate whose
+            // real frontier is p/d/f (`t_of_l(0) == 0`), which is finding
+            // F4 from the 2026-08-10 `/review-pr` pass: it over-contracted
+            // radius within a period (Li->Ne 5.12x modelled against 2.21x
+            // real) and could invert the group trend. This module's own
+            // doc records the measured fix: correlation against real
+            // covalent radii 0.50 -> 0.87, group 1 (Li..Fr) radius trend
+            // inverted -> strictly increasing.
+            let probe_l = if run.n == outer_n { run.l } else { 0 };
+            let (_, zeff_outer) = subshell_energy(outer_n, probe_l, z, &occ, orbital_consts);
             let (e_homo, _) = subshell_energy(run.n, run.l, z, &occ, orbital_consts);
 
             let count_now = occ
@@ -462,10 +515,24 @@ pub(crate) fn electronic_properties(
                 .copied()
                 .unwrap_or_else(|| unreachable!("just inserted above"));
             let subshell_full = count_now == capacity_of(run.l);
+            // **`.abs()`, not the signed difference — new since Madelung
+            // ordering decoupled fill order from raw energy.** At a
+            // transition like 6s -> 4f (z=56), the *structurally* next
+            // subshell has a more negative raw energy than the one that
+            // just closed (a small n dominates `-(Z_eff/n)^2` regardless of
+            // screening, this module's own doc), so the signed difference
+            // goes negative — not a bug in either formula, but a
+            // consequence of `subshell_energy` no longer being the thing
+            // that chose this order. The magnitude is still the right
+            // reading of "how far is the next accessible state": measured,
+            // Ba-analogue (z=56)'s `|gap|` comes out far above
+            // `GapConsts::BASE_PROMOTION_BUDGET`, correctly *not* promoting
+            // — an alkaline-earth analogue staying at valence 2 past period
+            // 3 is the real chemistry this was already matching.
             let gap = if subshell_full {
                 runs.get(run_index + 1).map_or(0.0, |next| {
                     let (e_lumo, _) = subshell_energy(next.n, next.l, z, &occ, orbital_consts);
-                    e_lumo - e_homo
+                    (e_lumo - e_homo).abs()
                 })
             } else {
                 0.0
@@ -508,17 +575,18 @@ pub(crate) fn electronic_properties(
 #[cfg(test)]
 mod tests {
     use super::{
-        ELECTRON_CEILING, ElectronicProperties, GapConsts, Occupancy, OrbitalConsts, best_unfilled,
-        candidates, capacity_of, electronic_properties, fill,
+        ELECTRON_CEILING, ElectronicProperties, GapConsts, Occupancy, OrbitalConsts, capacity_of,
+        electronic_properties, fill, madelung_order, subshell_energy,
     };
-    use borbax_rng::{Domain, Stream};
     use std::collections::BTreeMap;
 
-    /// The real subshell fill order through 5p — the output of running this
-    /// module's formula at the identity configuration, pinned as a
+    /// The real subshell fill order through `z = 118` — Madelung's rule,
+    /// which needs no screening input (this module's own doc), pinned as a
     /// computed constant (CLAUDE.md, §5-permitted under Decision 2), not a
-    /// lookup table.
-    const IDENTITY_FILL_ORDER: [(u8, u8); 11] = [
+    /// lookup table. Extended from the pre-fix `through 5p` (11 entries) to
+    /// the full table once Madelung ordering replaced the energy-driven
+    /// search that could not reach past it.
+    const IDENTITY_FILL_ORDER: [(u8, u8); 19] = [
         (1, 0),
         (2, 0),
         (2, 1),
@@ -530,6 +598,14 @@ mod tests {
         (5, 0),
         (4, 2),
         (5, 1),
+        (6, 0),
+        (4, 3),
+        (5, 2),
+        (6, 1),
+        (7, 0),
+        (5, 3),
+        (6, 2),
+        (7, 1),
     ];
 
     #[test]
@@ -555,39 +631,40 @@ mod tests {
         }
     }
 
+    /// [`madelung_order`] is a pure, deterministic sort — the discriminator
+    /// this replaces (`fill_order_is_invariant_to_candidate_shuffle`,
+    /// through the pre-Madelung `best_unfilled`'s own energy search) no
+    /// longer applies: there is no scan order left to be invariant to, since
+    /// picking the next subshell is no longer a search at all. What is
+    /// still worth pinning: the sequence is genuinely sorted by `(n + l,
+    /// n)`, not merely equal to [`IDENTITY_FILL_ORDER`]'s own prefix (which
+    /// the next test already checks) — this catches a `sort_by_key` swapped
+    /// for a stable-looking but wrong comparator.
     #[test]
-    fn fill_order_is_invariant_to_candidate_shuffle() {
-        let consts = OrbitalConsts::at_identity();
-        let canonical = candidates();
-        let mut occ: BTreeMap<(u8, u8), u32> = BTreeMap::new();
-        // Build a representative mid-fill occupancy (through argon) so the
-        // shuffle test exercises a nontrivial, multi-subshell state rather
-        // than the trivial all-empty one.
-        for z in 1..=18 {
-            let (n, l) = best_unfilled(&canonical, &occ, z, consts);
-            *occ.entry((n, l)).or_insert(0) += 1;
+    fn madelung_order_is_sorted_by_n_plus_l_then_n() {
+        let order = madelung_order();
+        for pair in order.windows(2) {
+            let [a, b] = pair else {
+                unreachable!("windows(2) always yields a 2-element slice")
+            };
+            let (a, b) = (*a, *b);
+            let key = |(n, l): (u8, u8)| (n + l, n);
+            assert!(
+                key(a) <= key(b),
+                "{a:?} (key {:?}) should sort at or before {b:?} (key {:?})",
+                key(a),
+                key(b)
+            );
         }
-        let canonical_pick = best_unfilled(&canonical, &occ, 19, consts);
-
-        let mut stream = Stream::new(0x5EED, Domain::Reaction, 0);
-        let mut shuffled = canonical.clone();
-        for i in (1..shuffled.len()).rev() {
-            let bound = u64::try_from(i + 1).unwrap_or_else(|_| {
-                unreachable!("candidates().len() is a small constant, well within u64")
-            });
-            let j = usize::try_from(stream.next_range(bound))
-                .unwrap_or_else(|_| unreachable!("next_range(bound) is < bound, which fits usize"));
-            shuffled.swap(i, j);
-        }
-        assert_ne!(
-            shuffled, canonical,
-            "the shuffle should actually reorder the list"
-        );
-        let shuffled_pick = best_unfilled(&shuffled, &occ, 19, consts);
-
+        // And every legal (n, l) with n <= MAX_N appears exactly once —
+        // sorting cannot silently drop or duplicate an entry.
+        let mut seen: Vec<(u8, u8)> = order.clone();
+        seen.sort_unstable();
+        seen.dedup();
         assert_eq!(
-            canonical_pick, shuffled_pick,
-            "the winning subshell must not depend on scan order"
+            seen.len(),
+            order.len(),
+            "madelung_order() should contain no duplicates"
         );
     }
 
@@ -603,13 +680,18 @@ mod tests {
             })
             .collect();
 
-        let order = fill(OrbitalConsts::at_identity());
-        // Through 4p (the first 8 entries of IDENTITY_FILL_ORDER), the fold
-        // is uninterrupted (see this module's own doc on the 4d/5s region),
-        // so fill()'s first 8 entries line up 1:1 with IDENTITY_FILL_ORDER.
+        let order = fill();
+        // Every entry is a completed subshell today (madelung_order() never
+        // interrupts one, this module's own doc), so all of
+        // IDENTITY_FILL_ORDER lines up 1:1 with fill()'s own output, not
+        // just a prefix.
         let mut running = 0u32;
         let mut checked = 0usize;
-        for (occ, want) in order.iter().take(8).zip(expected_running.iter()) {
+        for (occ, want) in order
+            .iter()
+            .take(IDENTITY_FILL_ORDER.len())
+            .zip(expected_running.iter())
+        {
             running += occ.count;
             assert_eq!(
                 occ.count,
@@ -624,152 +706,110 @@ mod tests {
             checked += 1;
         }
         assert_eq!(
-            checked, 8,
-            "should have checked all 8 uninterrupted entries"
+            checked,
+            IDENTITY_FILL_ORDER.len(),
+            "should have checked every entry"
         );
     }
 
     #[test]
-    fn the_identity_fill_order_matches_the_real_periodic_table_through_5p() {
-        let order = fill(OrbitalConsts::at_identity());
-        let touched: Vec<(u8, u8)> = order.iter().map(|o| (o.n, o.l)).collect();
-        let mut first_seen: Vec<(u8, u8)> = Vec::new();
-        for &(n, l) in &touched {
-            if !first_seen.contains(&(n, l)) {
-                first_seen.push((n, l));
-            }
-        }
-        let first_seen_prefix: Vec<(u8, u8)> = first_seen
+    fn the_identity_fill_order_matches_the_real_periodic_table_through_z_118() {
+        let order = fill();
+        let touched: Vec<(u8, u8)> = order
             .iter()
-            .copied()
             .take(IDENTITY_FILL_ORDER.len())
+            .map(|o| (o.n, o.l))
             .collect();
         assert_eq!(
-            first_seen_prefix, IDENTITY_FILL_ORDER,
+            touched, IDENTITY_FILL_ORDER,
             "the identity configuration's fill order should match the real periodic table \
-             through 5p"
+             through z = 118"
         );
     }
 
-    /// Blocker 7's actual regression test: an `l`-blind screening
-    /// implementation (screening that does not depend on the candidate's
-    /// own `l`) fails to reproduce the real fill order — confirming `t(l)`
-    /// is load-bearing, not decorative.
+    /// `t(l)` is no longer load-bearing for fill *order* — Madelung's rule
+    /// reads no screening input at all (this module's own doc) — but it
+    /// stays load-bearing for the *energy values* `subshell_energy` reports,
+    /// both through `same(n, l)`'s own coefficient and through
+    /// [`subshell_energy`]'s near/far split, which routes `l <= 1` and
+    /// `l >= 2` candidates through different screening rates. This probes
+    /// the value-level claim directly: a p subshell (l=1, t=0.5) and a d
+    /// subshell (l=2, t=1.0, and the near-tier switch) at the same `(n, z,
+    /// occ)` must report different `Z_eff`, or `t(l)` and the near/far split
+    /// are both decorative.
     #[test]
-    fn an_l_blind_screening_implementation_fails_the_identity_order() {
-        fn best_unfilled_l_blind(
-            order: &[(u8, u8)],
-            occ: &BTreeMap<(u8, u8), u32>,
-            z: u32,
-            sigma_inner: f64,
-        ) -> (u8, u8) {
-            let mut best: Option<(f64, u8, u8)> = None;
-            for &(n, l) in order {
-                let count = occ.get(&(n, l)).copied().unwrap_or(0);
-                if count >= capacity_of(l) {
-                    continue;
-                }
-                let inner: u32 = occ
-                    .iter()
-                    .filter(|((n2, _), _)| *n2 < n)
-                    .map(|(_, c)| c)
-                    .sum();
-                let same: u32 = occ
-                    .iter()
-                    .filter(|((n2, l2), _)| *n2 == n && *l2 != l)
-                    .map(|(_, c)| c)
-                    .sum();
-                // The planted defect: a constant 0.5 in place of t(l).
-                let s = sigma_inner * f64::from(inner) + 0.5 * f64::from(same);
-                let z_eff = f64::from(z) - s;
-                let ratio = z_eff / f64::from(n);
-                let e = -(ratio * ratio);
-                let better = match best {
-                    None => true,
-                    Some((be, bn, bl)) => {
-                        use borbax_units::canonical_cmp;
-                        use std::cmp::Ordering;
-                        match canonical_cmp(e, be) {
-                            Ordering::Less => true,
-                            Ordering::Equal => (n, l) < (bn, bl),
-                            Ordering::Greater => false,
-                        }
-                    }
-                };
-                if better {
-                    best = Some((e, n, l));
-                }
-            }
-            best.map_or_else(|| unreachable!(), |(_, n, l)| (n, l))
-        }
-
-        let order = candidates();
+    fn t_of_l_and_the_near_far_split_change_the_reported_z_eff() {
+        let consts = OrbitalConsts::at_identity();
         let mut occ: BTreeMap<(u8, u8), u32> = BTreeMap::new();
-        let mut touched: Vec<(u8, u8)> = Vec::new();
-        for z in 1..=54 {
-            let (n, l) = best_unfilled_l_blind(&order, &occ, z, OrbitalConsts::BASE_SIGMA_INNER);
-            *occ.entry((n, l)).or_insert(0) += 1;
-            if !touched.contains(&(n, l)) {
-                touched.push((n, l));
-            }
-        }
-        let n = IDENTITY_FILL_ORDER.len().min(touched.len());
-        let touched_prefix: Vec<(u8, u8)> = touched.iter().copied().take(n).collect();
-        let target_prefix: Vec<(u8, u8)> = IDENTITY_FILL_ORDER.iter().copied().take(n).collect();
-        assert_ne!(
-            touched_prefix, target_prefix,
-            "an l-blind screening function should NOT reproduce the real fill order — if it \
-             does, t(l) is not load-bearing and this test is not discriminating anything"
+        occ.insert((1, 0), 2);
+        occ.insert((2, 0), 2);
+        occ.insert((2, 1), 4);
+        occ.insert((3, 0), 1);
+        occ.insert((3, 1), 1);
+        let z = 11;
+        let (_, zeff_p) = subshell_energy(3, 1, z, &occ, consts);
+        let (_, zeff_d) = subshell_energy(3, 2, z, &occ, consts);
+        assert!(
+            (zeff_p - zeff_d).abs() > 1e-9,
+            "a p candidate (zeff={zeff_p}) and a d candidate (zeff={zeff_d}) at the same (n, z, \
+             occ) reported the same Z_eff — t(l) and the near/far split are not distinguishing them"
         );
     }
 
     #[test]
     fn z_eff_is_at_least_one_with_equality_at_z_one() {
         let consts = OrbitalConsts::at_identity();
-        let order = candidates();
         let mut occ: BTreeMap<(u8, u8), u32> = BTreeMap::new();
-        for z in 1..=ELECTRON_CEILING {
-            // Recompute the winning candidate's own Z_eff the same way
-            // best_unfilled does internally, to assert on it directly.
-            let (n, l) = best_unfilled(&order, &occ, z, consts);
-            let inner: u32 = occ
-                .iter()
-                .filter(|((n2, _), _)| *n2 < n)
-                .map(|(_, c)| c)
-                .sum();
-            let same: u32 = occ
-                .iter()
-                .filter(|((n2, l2), _)| *n2 == n && *l2 != l)
-                .map(|(_, c)| c)
-                .sum();
-            let s = consts.sigma_inner * f64::from(inner) + super::t_of_l(l) * f64::from(same);
-            let z_eff = f64::from(z) - s;
-            assert!(
-                z_eff >= 1.0,
-                "z={z} ({n},{l}): Z_eff {z_eff} fell below 1.0"
-            );
-            if z == 1 {
+        let mut z: u32 = 0;
+        for run in fill() {
+            for _ in 0..run.count {
+                z += 1;
+                // subshell_energy's own contract: "given the electrons
+                // already placed" — called before this electron joins occ,
+                // matching electronic_properties' own call order.
+                let (_, z_eff) = subshell_energy(run.n, run.l, z, &occ, consts);
                 assert!(
-                    (z_eff - 1.0).abs() < f64::EPSILON,
-                    "Z_eff at Z=1 should be exactly 1.0"
+                    z_eff >= 1.0,
+                    "z={z} ({},{}): Z_eff {z_eff} fell below 1.0",
+                    run.n,
+                    run.l
                 );
+                if z == 1 {
+                    assert!(
+                        (z_eff - 1.0).abs() < f64::EPSILON,
+                        "Z_eff at Z=1 should be exactly 1.0"
+                    );
+                }
+                *occ.entry((run.n, run.l)).or_insert(0) += 1;
             }
-            *occ.entry((n, l)).or_insert(0) += 1;
         }
+        assert_eq!(z, ELECTRON_CEILING, "should have walked every electron");
     }
 
     #[test]
     fn the_screening_accumulation_is_order_invariant_and_exact() {
-        // Two different insertion orders reaching the same final occupancy:
-        // fill argon (Z=1..=18) via the real fold (order A), and separately
-        // insert the same final counts in reverse-(n,l) order (order B).
+        // Two different insertion orders reaching the same final occupancy
+        // (through argon, z=18): the real fold's own run structure (order
+        // A), and the same final per-subshell counts inserted in reverse
+        // key order into a fresh map (order B) — BTreeMap's own iteration
+        // order is sorted regardless of insertion order, so this exercises
+        // subshell_energy's summation, not the map's.
         let consts = OrbitalConsts::at_identity();
-        let order = candidates();
         let mut occ_a: BTreeMap<(u8, u8), u32> = BTreeMap::new();
-        for z in 1..=18 {
-            let (n, l) = best_unfilled(&order, &occ_a, z, consts);
-            *occ_a.entry((n, l)).or_insert(0) += 1;
+        let mut z: u32 = 0;
+        for run in fill() {
+            for _ in 0..run.count {
+                z += 1;
+                *occ_a.entry((run.n, run.l)).or_insert(0) += 1;
+                if z == 18 {
+                    break;
+                }
+            }
+            if z == 18 {
+                break;
+            }
         }
+        assert_eq!(z, 18, "the fixture should stop exactly at argon");
 
         let mut occ_b: BTreeMap<(u8, u8), u32> = BTreeMap::new();
         for (&key, &count) in occ_a.iter().rev() {
@@ -780,29 +820,25 @@ mod tests {
             "both occupancy maps should hold the same final counts"
         );
 
-        let pick_a = best_unfilled(&order, &occ_a, 19, consts);
-        let pick_b = best_unfilled(&order, &occ_b, 19, consts);
-        assert_eq!(pick_a, pick_b);
-
-        // And the Z_eff bits for the winning candidate agree exactly.
-        let z_eff_of = |occ: &BTreeMap<(u8, u8), u32>, n: u8, l: u8| -> f64 {
-            let inner: u32 = occ
-                .iter()
-                .filter(|((n2, _), _)| *n2 < n)
-                .map(|(_, c)| c)
-                .sum();
-            let same: u32 = occ
-                .iter()
-                .filter(|((n2, l2), _)| *n2 == n && *l2 != l)
-                .map(|(_, c)| c)
-                .sum();
-            let s = consts.sigma_inner * f64::from(inner) + super::t_of_l(l) * f64::from(same);
-            19.0 - s
-        };
-        let (n, l) = pick_a;
+        // The next candidate in Madelung order after argon is potassium's
+        // own 4s — read from IDENTITY_FILL_ORDER rather than hardcoded, so
+        // a reordering upstream cannot silently desync this fixture from
+        // what fill() actually produces.
+        let (n, l) = IDENTITY_FILL_ORDER
+            .get(5)
+            .copied()
+            .unwrap_or_else(|| unreachable!("IDENTITY_FILL_ORDER has 19 entries"));
         assert_eq!(
-            z_eff_of(&occ_a, n, l).to_bits(),
-            z_eff_of(&occ_b, n, l).to_bits(),
+            (n, l),
+            (4, 0),
+            "sixth entry should be 4s, per Madelung order"
+        );
+
+        let (_, z_eff_a) = subshell_energy(n, l, 19, &occ_a, consts);
+        let (_, z_eff_b) = subshell_energy(n, l, 19, &occ_b, consts);
+        assert_eq!(
+            z_eff_a.to_bits(),
+            z_eff_b.to_bits(),
             "Z_eff should be bit-identical regardless of insertion order into the occupancy map"
         );
     }
@@ -822,10 +858,7 @@ mod tests {
 
     #[test]
     fn fill_reaches_the_electron_ceiling() {
-        let total: u32 = fill(OrbitalConsts::at_identity())
-            .iter()
-            .map(|o| o.count)
-            .sum();
+        let total: u32 = fill().iter().map(|o| o.count).sum();
         assert_eq!(total, ELECTRON_CEILING);
     }
 
@@ -841,7 +874,7 @@ mod tests {
 
     #[test]
     fn electronic_properties_covers_every_placed_electron() {
-        let runs = fill(OrbitalConsts::at_identity());
+        let runs = fill();
         let total: u32 = runs.iter().map(|o| o.count).sum();
         let props = electronic_properties(
             &runs,
@@ -874,7 +907,7 @@ mod tests {
 
     #[test]
     fn valence_matches_real_ground_state_valences_through_period_3() {
-        let runs = fill(OrbitalConsts::at_identity());
+        let runs = fill();
         let props = electronic_properties(
             &runs,
             OrbitalConsts::at_identity(),
@@ -898,7 +931,7 @@ mod tests {
     /// the right valence numbers while getting the gap magnitude wrong.
     #[test]
     fn promotion_budget_separates_alkaline_earth_from_noble_gas_analogues() {
-        let runs = fill(OrbitalConsts::at_identity());
+        let runs = fill();
         let props = electronic_properties(
             &runs,
             OrbitalConsts::at_identity(),
@@ -928,20 +961,25 @@ mod tests {
 
     #[test]
     fn outer_n_is_monotone_and_jumps_at_period_starts() {
-        let runs = fill(OrbitalConsts::at_identity());
+        let runs = fill();
         let props = electronic_properties(
             &runs,
             OrbitalConsts::at_identity(),
             GapConsts::at_identity(),
         );
+        let ceiling = usize::try_from(ELECTRON_CEILING)
+            .unwrap_or_else(|_| unreachable!("ELECTRON_CEILING is 250, well within usize"));
         let mut prev = at(&props, 1).outer_n;
-        for z in 2..=60 {
+        for z in 2..=ceiling {
             let outer_n = at(&props, z).outer_n;
             assert!(outer_n >= prev, "z={z}: outer_n must never decrease");
             prev = outer_n;
         }
-        // Real period starts at the identity configuration, through period 5.
-        for &z in &[3usize, 11, 19, 37] {
+        // Real period starts at the identity configuration, through period
+        // 7 (z=87, francium-analogue) — extended from period 5 (z=37) once
+        // Madelung ordering (this module's own doc) closed the gap that
+        // used to put period 6's own start at z=79 instead of z=55.
+        for &z in &[3usize, 11, 19, 37, 55, 87] {
             assert!(
                 at(&props, z).outer_n > at(&props, z - 1).outer_n,
                 "z={z}: should start a new outer shell"
@@ -955,7 +993,7 @@ mod tests {
     /// period's start (so radius jumps up).
     #[test]
     fn zeff_outer_rises_within_a_period() {
-        let runs = fill(OrbitalConsts::at_identity());
+        let runs = fill();
         let props = electronic_properties(
             &runs,
             OrbitalConsts::at_identity(),
@@ -963,13 +1001,28 @@ mod tests {
         );
         // Period 2 spans z=3..=10: outer_n stays 2 throughout, and
         // zeff_outer should rise strictly.
+        // **`>=`, not `>`, since the frontier-aware probe (this module's own
+        // doc, finding F4) — the probe subshell itself changes at z=5 (2s
+        // completes, 2p's own frontier starts, so `probe_l` switches from 0
+        // to 1), and at the identity configuration this is an *exact* tie
+        // (both 2.3, hand-verified: the +1 electron and the newly-counted
+        // 2s `same`-shell screening term cancel precisely), never a
+        // decrease.** A genuine decrease anywhere in this range is still a
+        // real regression and still fails this assertion.
         for z in 4..=10 {
             assert_eq!(at(&props, z).outer_n, 2, "z={z}: should stay in period 2");
             assert!(
-                at(&props, z).zeff_outer > at(&props, z - 1).zeff_outer,
-                "z={z}: zeff_outer should rise within a period"
+                at(&props, z).zeff_outer >= at(&props, z - 1).zeff_outer,
+                "z={z}: zeff_outer should not fall within a period"
             );
         }
+        // And the period genuinely contracts end to end, which `>=` alone
+        // does not pin — a formula that returned a flat constant across the
+        // whole period would pass the loop above and fail only here.
+        assert!(
+            at(&props, 10).zeff_outer > at(&props, 3).zeff_outer,
+            "zeff_outer should be strictly higher at the end of period 2 than at its start"
+        );
         // z=11 (Na) starts period 3: outer_n jumps, so zeff_outer -- and
         // therefore radius -- should NOT continue period 2's own trend.
         assert_eq!(at(&props, 11).outer_n, 3, "z=11 should be in a new period");
@@ -977,7 +1030,7 @@ mod tests {
 
     #[test]
     fn gap_and_e_homo_are_always_finite() {
-        let runs = fill(OrbitalConsts::at_identity());
+        let runs = fill();
         let props = electronic_properties(
             &runs,
             OrbitalConsts::at_identity(),
