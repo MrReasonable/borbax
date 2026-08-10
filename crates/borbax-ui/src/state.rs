@@ -826,10 +826,11 @@ impl ViewerState {
     /// does.
     ///
     /// **Called only when the seed text actually changes**, never once per
-    /// frame. `Universe::generate` is ~146 µs; at 60 Hz an unconditional call
-    /// would spend most of the frame budget regenerating a universe nobody
-    /// asked for again, and by Step 2 there are 120 element cells behind it.
-    /// [`Self::regenerations`] is what makes that claim testable.
+    /// frame. `Universe::generate_under` is ~146 µs (the same cost as
+    /// `Universe::generate`, which delegates to it); at 60 Hz an unconditional
+    /// call would spend most of the frame budget regenerating a universe
+    /// nobody asked for again, and by Step 2 there are 120 element cells
+    /// behind it. [`Self::regenerations`] is what makes that claim testable.
     fn reload(&mut self) {
         // **At the entry, deliberately, and this is the one counter here that
         // should be.** Its job is to tell the scene that what it is drawing is
@@ -897,10 +898,10 @@ impl ViewerState {
     ///
     /// **What it does and does not catch.** It catches `reload`
     /// migrating into the per-frame body. It does **not** catch a direct
-    /// `Universe::generate` call added to [`crate::panel::draw`], which never
-    /// touches `reload` and so never touches this counter — that variant is
-    /// held by the seam rule instead: `Universe::generate` has exactly one call
-    /// site in this crate, and it is in this file.
+    /// `Universe::generate_under` call added to [`crate::panel::draw`], which
+    /// never touches `reload` and so never touches this counter — that
+    /// variant is held by the seam rule instead: `Universe::generate_under`
+    /// has exactly one call site in this crate, and it is in this file.
     #[must_use]
     pub const fn regenerations(&self) -> u64 {
         self.regenerations

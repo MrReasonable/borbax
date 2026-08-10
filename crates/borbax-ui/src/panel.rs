@@ -188,9 +188,10 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
         let response = ui
             .text_edit_singleline(state.seed_text_mut())
             .labelled_by(seed_label.id);
-        // Gated on `changed()`, not called unconditionally. `Universe::generate`
-        // is ~146 us and this body runs at the display's refresh rate — the
-        // per-frame shape **§8.6** forbids, one layer above the simulation.
+        // Gated on `changed()`, not called unconditionally.
+        // `Universe::generate_under` is ~146 us and this body runs at the
+        // display's refresh rate — the per-frame shape **§8.6** forbids, one
+        // layer above the simulation.
         //
         // `commit_typed_seed` rather than `reload`, which is the Step 1
         // spelling: a seed typed by hand was not produced by whatever is in the
