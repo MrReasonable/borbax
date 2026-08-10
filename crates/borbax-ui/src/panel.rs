@@ -250,24 +250,23 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
 /// 26.2 lands a third (`V3`, nuclear structure). Iterating the options this
 /// file did not build keeps a future law from needing an edit here.
 ///
-/// **The click is applied after the loop, not inside it** — the same deferred
-/// apply `periodic_table`'s grid uses, and for the same reason: this loop
-/// borrows `state` immutably through `physics_options()`, so `set_physics`
-/// cannot be called until the borrow ends.
+/// **The click is applied inside the loop, unlike `periodic_table`'s grid —
+/// `physics_options()` returns an owned `Vec<PhysicsOption>` with no
+/// borrow into `state` (unlike `rows()`'s `Vec<PeriodRow<'_>>`), so nothing
+/// stops `set_physics` from being called immediately.** No comparison is
+/// needed either: `set_physics` already no-ops a re-click on the
+/// already-selected law (its own doc), so there is no repeat-click cost
+/// and no discard-timing subtlety here for a deferred apply to buy.
 fn physics_switch(state: &mut ViewerState, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.label("physics");
-        let mut chosen = None;
         for option in state.physics_options() {
             if ui
                 .selectable_label(option.selected, &option.label)
                 .clicked()
             {
-                chosen = Some(option.version);
+                state.set_physics(option.version);
             }
-        }
-        if let Some(version) = chosen {
-            state.set_physics(version);
         }
     });
 }

@@ -684,6 +684,13 @@ impl BondEnergyMatrix {
             // `capacity[a]` load out of the inner loop — one redundant load per
             // cell across ~4560 pairs. Legibility and one load, not speed; the
             // measured effect is nil at 4.4 us.
+            // `unwrap_or(0.0)`, not `unwrap_or_else(|| unreachable!(..))`: both
+            // this and `cb` below are provably unreachable (`capacity.len() ==
+            // n`, and `a, b < n`), but `0.0` is not an arbitrary sentinel for
+            // either — under contact density it is the value a non-bonding
+            // element genuinely scores. An early version used `1.0`, the
+            // *maximum*, thirty lines from a comment arguing the conservative
+            // default at the other unreachable site.
             let ca = capacity.get(a).copied().unwrap_or(0.0);
             for b in a..n {
                 // Geometric mean, so the pair is symmetric bit-for-bit
@@ -691,12 +698,6 @@ impl BondEnergyMatrix {
                 // bond down rather than being rescued by a strong one the way a
                 // sum would allow — a bond needs both ends to hold. `sqrt` is
                 // exactly specified by IEEE-754 and stays native (§13.1).
-                // Both fallbacks are unreachable (`capacity.len() == n`, and
-                // `a, b < n`) and both are `0.0` — which under contact density
-                // is not an arbitrary sentinel but the value a non-bonding
-                // element genuinely scores. An early version used `1.0`, the
-                // *maximum*, thirty lines from a comment arguing the
-                // conservative default at the other unreachable site.
                 let cb = capacity.get(b).copied().unwrap_or(0.0);
                 // **The association here is load-bearing and pinned (§13.4).**
                 // It reads `base * (ca * cb).sqrt()`. Distributing it to
@@ -774,6 +775,11 @@ impl BondEnergyMatrix {
 
         let mut e = vec![Quanta::ZERO; n * n];
         for a in 0..n {
+            // Same reasoning as the V1 path above for `capacity`'s
+            // `unwrap_or(0.0)` — provably unreachable (`a, b < n`), `0.0` not
+            // an arbitrary sentinel. `affinity` gets the same fallback for
+            // its own reason: `0.0` is the neutral, no-ionic-character value,
+            // the natural default for a species this table does not have.
             let ca = capacity.get(a).copied().unwrap_or(0.0);
             let aff_a = affinity.get(a).copied().unwrap_or(0.0);
             for b in a..n {

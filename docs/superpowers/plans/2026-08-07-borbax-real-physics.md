@@ -1145,16 +1145,23 @@ plan named a file (`testkit.rs`) that does not exist.
   is updated to reflect that under V2, `units` genuinely is the atomic
   number — that shipped test needs a deliberate edit, not silent survival.
 - [x] **Step 16: Rewrite `binding.rs`'s RAF-specificity comment properly,
-  with an actual citation, not one sentence.** The literature (Hordijk,
-  Wills & Steel 2014) proves RAF closure *robust* with size-dependent
-  binding — it doesn't *require* it, and the paper's core theorems were
-  proven in the fully scale-free case. State what RAF closure actually is
-  sensitive to (the mean catalysis level crossing a required threshold,
-  linear in polymer length) and that the size signal here is a *retained,
-  reviewed carrier of catalytic specificity*, not a literature mandate.
-  State the good news too: closing #31 moves this codebase's binding kernel
-  into the independence regime those theorems assume, out of the
-  size-degenerate regime it was in before.
+  with an actual citation, not one sentence.** **Correction to this bullet's
+  own first draft, made during implementation and verified against both
+  papers directly:** the "same bound whether catalysis is flat or scales
+  with length" result is Mossel & Steel (2005)'s Theorem 4.1(ii), not
+  Hordijk, Wills & Steel (2014)'s — HWS extends *that* result to catalysis
+  depending on the reaction too, and separately studies their own extreme
+  case (MLEN, only maximum-length molecules catalyse) as a still-RAF-viable
+  but measurably costly degenerate case. Neither paper requires size-free
+  binding; neither paper's core theorems are confined to the fully
+  scale-free case — Mossel & Steel's own theorem covers both the flat and
+  the length-proportional case with one bound. State what RAF closure
+  actually is sensitive to (the mean catalysis level crossing a required
+  threshold) and that the size signal here is a *retained, reviewed carrier
+  of catalytic specificity*, not a literature mandate. State the good news
+  too: closing #31 moves this codebase's binding kernel into the
+  independence regime those theorems assume, out of the size-degenerate
+  regime it was in before.
 - [x] **Step 17: Run the full six-leg gate and commit.** State explicitly:
   `borbax-universe` V1 goldens unchanged; `borbax-molecule` goldens
   regenerated deliberately (Step 13 — affects V1 chemistry too, this is
