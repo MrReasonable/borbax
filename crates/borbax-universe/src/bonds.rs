@@ -736,7 +736,7 @@ impl BondEnergyMatrix {
     /// affinity vector with itself. See [`MigratedConstant::IonicScale`]
     /// for the full derivation (Pauling-motivated, numerically verified
     /// rank-2 and residual-correlation properties, and the worst-case
-    /// positivity proof `bond_energy_stays_non_negative_at_every_reachable_rung`,
+    /// positivity proof `bond_energy_stays_finite_and_non_negative_at_every_reachable_rung`,
     /// below, checks directly).
     ///
     /// **`scale`/`order_scale`/`ionic_scale` are now P7-migrated too**

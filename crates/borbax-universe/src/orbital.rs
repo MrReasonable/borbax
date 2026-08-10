@@ -30,37 +30,104 @@
 //! `Z_eff(n, l) = z - S(n, l)` where `z` is the electron index about to be
 //! placed and `S` is Slater's own two-tier screening rule (Slater 1930),
 //! adapted to this module's continuous `t(l)` in place of Slater's discrete
-//! `(ns,np)` grouping:
+//! `(ns,np)` grouping, and further split by the *screener's* own subshell
+//! type via `sigma_deep` (this module's own extension — see below):
 //!
 //! ```text
-//! near(n)    = electrons already placed with n' == n - 1
-//! far(n)     = electrons already placed with n' <= n - 2
+//! near_sp(n) = electrons already placed with n' == n - 1, l' <= 1
+//! near_df(n) = electrons already placed with n' == n - 1, l' >= 2
+//! far_sp(n)  = electrons already placed with n' <= n - 2, l' <= 1
+//! far_df(n)  = electrons already placed with n' <= n - 2, l' >= 2
 //! same(n, l) = electrons already placed with n' == n, l' != l — the
 //!              candidate's own already-placed peers are excluded
 //! t(l) = min(l / 2.0, 1.0)             // 0 at l=0, 0.5 at l=1, saturated at l>=2
 //!
-//! l <= 1:  S(n, l) = sigma_near * near(n) + 1.0 * far(n)      + t(l) * same(n, l)
-//! l >= 2:  S(n, l) = 1.0        * near(n) + 1.0 * far(n)      + t(l) * same(n, l)
+//! near_rate(l) = if l <= 1 { sigma_near } else { 1.0 }   // by CANDIDATE's l
+//! deep_rate    = min(1.0, sigma_deep)                     // by SCREENER's l
+//!
+//! S(n, l) = near_rate(l)          * near_sp(n)
+//!         + min(near_rate(l), deep_rate) * near_df(n)
+//!         +                          far_sp(n)
+//!         + deep_rate              * far_df(n)
+//!         + t(l) * same(n, l)
 //!
 //! energy(n, l) = -(Z_eff(n, l) / n)^2   // plain n, not a quantum defect
 //! ```
 //!
-//! **The `l >= 2` branch — full screening from *every* inner shell, not just
-//! the far ones — is the piece the original single-constant model was
-//! missing, and it is the reason 4f/5d no longer win against 6s.** Slater's
-//! own rule draws exactly this distinction: an `ns`/`np` candidate is only
-//! partly screened by its immediately-inner shell (electrons genuinely
-//! penetrate it to some degree), but an `nd`/`nf` candidate — poorly
-//! penetrating by construction — is screened at full strength by *every*
-//! group closer to the nucleus, not only the ones two shells back. Verified
-//! against the real subshell sequence: with `sigma_near` at Slater's own
-//! historical value (0.85), the identity fold reproduces the real Madelung
-//! sequence exactly through `z = 118` (this module's own tests pin it), and
-//! separately (`element.rs`'s own radius formula) raises the model-vs-real
-//! covalent-radius correlation from 0.50 to 0.87 and fixes the group-1
-//! radius trend (Li through Fr) from inverted to strictly increasing —
-//! neither of which this screening split was tuned against; both are
-//! measured consequences of the same change.
+//! **The candidate-side split (`near_rate(l)`) — full screening from every
+//! inner shell, not just the far ones, when the *candidate itself* is d/f —
+//! is the piece the original single-constant model was missing, and it is
+//! the reason 4f/5d no longer win against 6s.** Slater's own rule draws
+//! exactly this distinction: an `ns`/`np` candidate is only partly screened
+//! by its immediately-inner shell (electrons genuinely penetrate it to some
+//! degree), but an `nd`/`nf` candidate — poorly penetrating by construction
+//! — is screened at full strength by *every* group closer to the nucleus,
+//! not only the ones two shells back. Verified against the real subshell
+//! sequence: with `sigma_near` at Slater's own historical value (0.85), the
+//! identity fold reproduces the real Madelung sequence exactly through
+//! `z = 118` (this module's own tests pin it), and separately (`element.rs`'s
+//! own radius formula) raises the model-vs-real covalent-radius correlation
+//! from 0.50 to 0.87 and fixes the group-1 radius trend (Li through Fr) from
+//! inverted to strictly increasing — neither of which this screening split
+//! was tuned against; both are measured consequences of the same change.
+//!
+//! # The screener-side split: `sigma_deep`, and what it fixes
+//!
+//! **A `/review-pr` pass (2026-08-10, finding F3) measured that the
+//! candidate-side split above leaves d/f-block `Z_eff` a pure integer
+//! count, with zero dependence on any drawn constant, for every one of the
+//! 68 d/f-block elements in a real generated table — and that this is also
+//! the reason the model showed no lanthanide contraction at all: a flat,
+//! bit-identical radius across the entire 14-element 4f-analogue block.**
+//! This is not a bug in the candidate-side split — verified directly (see
+//! this module's own doc's citation trail, and the two research passes
+//! recorded in this task's own history): literal Slater 1930, applied
+//! faithfully to a d/f *candidate*, gives exactly `near = far = 1.0`, no
+//! partial tier of any kind. The model was already correct Slater; Slater
+//! itself doesn't parameterise d/f screening the way it parameterises s/p
+//! screening, and famously fails to predict any lanthanide contraction for
+//! exactly this reason (a documented, textbook-known weakness of the rule,
+//! not an oversight in this implementation of it).
+//!
+//! **The fix reads screening imperfection off the *screener's* subshell,
+//! not the candidate's — the standard atomic-physics teaching that
+//! penetration ability runs symmetrically both ways.** A d/f electron is
+//! not only poorly screened *itself* (the candidate-side fact above); it is
+//! also, by the same poor-penetration property, a poor screener *of
+//! everything else* — "the order of electron penetration from greatest to
+//! least is s, p, d, f; the order of the amount of shielding done is also
+//! in the order s, p, d, f" (standard teaching, e.g. `LibreTexts`' "Penetration
+//! and Shielding"). `sigma_deep` is a ceiling every d/f electron's own
+//! contribution to *any* candidate's screening sum is capped at — the
+//! `far_df`/`near_df` split above. It is what actually restores a
+//! lanthanide-analogue contraction: during the 4f fill, the outer 6s probe
+//! (see `zeff_outer`'s d/f-block fallback) reads `far(6)`, which counts the
+//! newly-placed 4f electrons at `n' = 4 <= 6 - 2`; capping their
+//! contribution below `1.0` stops each added proton from being exactly
+//! cancelled by its accompanying 4f electron.
+//!
+//! **`sigma_deep` is a real, citable *qualitative* principle wearing an
+//! uncitable *quantitative* coefficient — stated plainly, not disguised as
+//! a Slater number.** No Slater-style rule set (checked: Slater's own 1960
+//! revision, Clementi & Raimondi 1963/1967, Burns 1964, Bessis & Bessis
+//! 1981) keys a screening coefficient on the screener's own angular
+//! momentum; the one refinement that does key on angular momentum (Bessis &
+//! Bessis) predicts the opposite sign for this effect. `BASE_SIGMA_DEEP`'s
+//! own doc records how its value was found — numerical search against a
+//! real, measured target (the Shannon-radius lanthanide contraction), the
+//! same category of calibration `GapConsts::BASE_PROMOTION_BUDGET` already
+//! uses, not a value copied from a source.
+//!
+//! **Independently perturbed from `sigma_near`, on its own stream
+//! position** — the two constants model different physical uncertainties
+//! (s/p near-shell partial screening; d/f screener penetration) with no
+//! structural reason to move together. `min(near_rate(l), deep_rate)` in
+//! `near_df`'s coefficient (rather than always applying `deep_rate` there)
+//! matters only for a d/f *candidate* with a d/f *screener* in its own
+//! `near` bucket — e.g. 5d priced with already-placed 4f electrons in
+//! `near(5)` — where both splits could otherwise apply inconsistently; the
+//! `min` keeps the tighter (smaller) of the two, never double-counting the
+//! deficit upward past either bound alone.
 //!
 //! **Excluding the candidate's own already-placed same-subshell peers from
 //! `same(n, l)` is a deliberate deviation from the most literal reading of
@@ -82,35 +149,92 @@
 //! fills.
 //!
 //! **`Z_eff >= 1` is provable, not merely observed, and the proof needs the
-//! exclusion above.** `sigma_near` is drawn through [`crate::perturbation`]
-//! with base `OrbitalConsts::BASE_SIGMA_NEAR` and a one-sided-downward
-//! direction, so `sigma_near` is always in `(0, BASE_SIGMA_NEAR] subset (0,
-//! 1]`; every other coefficient in `S` (`1.0`, and `t(l)`) is bounded in
-//! `[0, 1]` by construction. `near(n) + far(n) + same(n, l)` counts a subset
-//! of the electrons already placed (every placed electron *except* the
-//! candidate's own subshell's peers, which are excluded, and any electron
-//! in a subshell with `n' > n`, which never contributes), so it is at most
-//! `z - 1`. Every term in `S` multiplies one of these three counts by a
-//! coefficient `<= 1`, so `S(n, l) <= 1 * (z - 1) = z - 1`, and `Z_eff = z -
-//! S(n, l) >= z - (z - 1) = 1`, for every reachable `z`, `n`, `l` and
-//! occupancy, both branches — not just the cases this module happens to
-//! test.
+//! exclusion above — stated against `electronic_properties`'s real call
+//! order, where the electron being placed joins `occ` *before* either probe
+//! runs, not after.** Both `sigma_near` and `sigma_deep` are drawn through
+//! [`crate::perturbation`] with a one-sided-downward direction, so each is
+//! always in `(0, BASE] subset (0, 1]` for its own base; every other
+//! coefficient in `S` (`near_rate_sp` when it resolves to `1.0`, `far_sp`'s
+//! fixed `1.0`, and `t(l)`) is bounded in `[0, 1]` by construction, and
+//! `min(...)` of two such bounded coefficients (`near_rate_df`,
+//! `far_rate_df`) is bounded the same way — a `min` cannot exceed either
+//! operand. So it is enough to show `near_sp(n) + near_df(n) + far_sp(n) +
+//! far_df(n) + same(n, l) <= z - 1` for whichever subshell `(n, l)` is
+//! being probed — i.e. that the original, undivided `near(n) + far(n) +
+//! same(n, l) <= z - 1` argument still holds, since `near_sp + near_df =
+//! near` and `far_sp + far_df = far` are exact partitions of the same
+//! counts by the screener's `l'`, not a different set of electrons —
+//! because every term in `S` multiplies one of these five counts by a
+//! coefficient `<= 1`.
+//!
+//! **Two probes, two different arguments for the same bound.**
+//!
+//! The first, `e_homo`'s probe, evaluates the electron's own subshell,
+//! `(n, l) = (run.n, run.l)`. Both `near` and `far` require `n' != n`, and
+//! `same` requires `l' != l`, so no electron in bucket `(run.n, run.l)` —
+//! including the one just placed there — can appear in any of the three
+//! counts, whatever order `occ` was updated in. The sum is therefore at
+//! most `z` minus everything in that bucket, which is at least `1` (the
+//! electron just placed), giving `S(n, l) <= z - 1`.
+//!
+//! The second, `zeff_outer`'s probe, can evaluate a *different* subshell,
+//! `(outer_n, 0)`, in the d/f-block fallback (`run.n < outer_n`). There the
+//! just-placed electron sits in a genuinely different bucket, and is *not*
+//! excluded from `far(outer_n)` — legitimately counted as screening. The
+//! bound still holds, for a Madelung-order reason rather than a screening
+//! one: `(n, 0)` is always the first subshell to fill at a given `n`
+//! (smallest `n + l` there), so whenever any subshell at `n = outer_n` is
+//! occupied, `(outer_n, 0)` itself already holds at least one electron —
+//! excluded from `near`, `far` and `same` for `(outer_n, 0)` by
+//! construction, the same way the first case excludes the electron just
+//! placed.
+//!
+//! Either way the probed bucket contributes at least `1` to `z` and `0` to
+//! the sum, so `S(n, l) <= z - 1` and `Z_eff >= 1`, for both of these two
+//! probes and both screening branches — not just the cases this module
+//! happens to test.
+//!
+//! **A third probe is deliberately outside this bound, and `>= 1` is not
+//! claimed for it.** `gap`'s LUMO probe, `subshell_energy(next.n, next.l, z,
+//! &occ, ..)`, evaluates a subshell that has *no* electrons in `occ` yet —
+//! neither probe's argument above applies, since nothing excludes it from
+//! `near`/`far`/`same`, and the bound weakens to `S(n, l) <= z`, giving only
+//! `Z_eff >= 0`. Measured, not merely possible: at z=2 the LUMO probe for
+//! (2, 0) sees `near(2) = 2` (both 1s electrons) with nothing excluded,
+//! `Z_eff = 2 - 2 * sigma_near = 0.3` at identity. Harmless where it is
+//! read — `gap` only ever squares `e_lumo` inside a difference, never
+//! divides by it — but a proof claiming `>= 1` "for every reachable z, n,
+//! l" without this carve-out would be describing a stronger property than
+//! the code actually has.
+//!
+//! Verified exhaustively for the frontier-subshell probe (`e_homo`'s shape)
+//! by `z_eff_is_at_least_one_with_equality_at_z_one`, which mirrors
+//! `electronic_properties`'s insert-then-call order rather than calling it
+//! directly, and for `zeff_outer`'s own probe — including every d/f-block
+//! fallback call — by `zeff_outer_is_at_least_one_through_the_real_call_path`,
+//! which does call `electronic_properties` itself, across several drawn
+//! `sigma_near` values, not only identity's.
 //!
 //! **What this costs: the 4d/5s interruption an earlier version of this
 //! module treated as a genuinely emergent feature is gone.** Under
 //! energy-driven ordering, a single 5s electron placed, then 4d filling
 //! completely, then 5s's second electron, fell out of the formula near
 //! `z = 37`. Madelung's rule never interrupts a subshell — every run in
-//! [`fill`]'s output is now a complete subshell, always. That specific
-//! phenomenon did not correspond to any real element's actual anomaly
-//! either (real Nb, Mo, Ru, Rh, Pd each break the simple pattern their own,
-//! different way, for reasons neither version of this model captures), so
-//! trading it for a fold that actually matches the real table's structure
-//! through `z = 118` is the right side of that trade, not a loss to
-//! mourn — but it means [`Occupancy`]'s own doc (a subshell can appear as
-//! two separate, non-adjacent runs) no longer describes anything this
-//! module produces; kept accurate below, not deleted, since a future
-//! change could reintroduce a fold shape where it matters again.
+//! [`fill`]'s output is a complete subshell, except possibly the very last
+//! (`ELECTRON_CEILING` can and does cut the fold off mid-subshell: it lands
+//! at `z = 250`, inside `(7, 4)`'s 18-slot capacity, with only 10 placed —
+//! never observed in practice, since `n_elements`'s drawn range tops out at
+//! 120, 130 electrons short of where that truncation first becomes
+//! possible). That specific phenomenon did not correspond to any real
+//! element's actual anomaly either (real Nb, Mo, Ru, Rh, Pd each break the
+//! simple pattern their own, different way, for reasons neither version of
+//! this model captures), so trading it for a fold that actually matches the
+//! real table's structure through `z = 118` is the right side of that
+//! trade, not a loss to mourn — but it means [`Occupancy`]'s own doc (a
+//! subshell can appear as two separate, non-adjacent runs) no longer
+//! describes anything this module produces within the reachable range;
+//! kept accurate below, not deleted, since a future change could
+//! reintroduce a fold shape where it matters again.
 //!
 //! This module has no production caller yet — Steps 6-9 give it one.
 //! Steps 1-5 (this module) build and test the fold in isolation, per the
@@ -156,15 +280,19 @@ use std::collections::BTreeMap;
 /// One contiguous run of electrons [`fill`] placed into a single subshell
 /// before moving to a different one.
 ///
-/// **Always a complete subshell today, and that is new.** Under
-/// energy-driven ordering an earlier version of this module could interrupt
-/// a subshell mid-fill (this module's own doc records the 4d/5s case it
-/// found); [`madelung_order`] never does — every subshell fills to capacity
-/// before the fold moves to the next one, so `(n, l)` appears at most once
-/// in [`fill`]'s output. The field stays `count: u32` rather than a fixed
-/// `capacity_of(l)`, and a reader summing every entry for a given `(n, l)`
-/// still gets the right answer, because *how* this module fills is not a
-/// contract the rest of the crate should have to know — only a future
+/// **A complete subshell today, except possibly the very last entry — and
+/// that is new.** Under energy-driven ordering an earlier version of this
+/// module could interrupt a subshell mid-fill (this module's own doc
+/// records the 4d/5s case it found); [`madelung_order`] never does — every
+/// subshell fills to capacity before the fold moves to the next one, so
+/// `(n, l)` appears at most once in [`fill`]'s output, and every entry but
+/// possibly the last is complete (`ELECTRON_CEILING` can cut the very last
+/// one off mid-subshell — see this module's own doc for where, and why it
+/// never surfaces in a real generated table). The field stays `count: u32`
+/// rather than a fixed `capacity_of(l)`, and a reader summing every entry
+/// for a given `(n, l)` still gets the right answer, because *how* this
+/// module fills is not a contract the rest of the crate should have to
+/// know — only a future
 /// change reintroducing interruption would need this doc corrected again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Occupancy {
@@ -230,6 +358,7 @@ fn t_of_l(l: u8) -> f64 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct OrbitalConsts {
     sigma_near: f64,
+    sigma_deep: f64,
 }
 
 impl OrbitalConsts {
@@ -239,25 +368,54 @@ impl OrbitalConsts {
     /// feeds and what it was measured to reproduce.
     pub(crate) const BASE_SIGMA_NEAR: f64 = 0.85;
 
+    /// The unperturbed deep-screener ceiling — **calibrated by numerical
+    /// search, not a citable literature value** (see
+    /// [`MigratedConstant::ScreeningDeep`]'s own doc for why no such value
+    /// exists to adopt). Searched against the real lanthanide contraction's
+    /// measured Shannon radii, La³⁺ 103.2 pm → Lu³⁺ 86.1 pm — a 16.57%
+    /// contraction. `0.928` reproduces that ratio to within 0.002
+    /// percentage points across the identity fold's own lanthanide-analogue
+    /// block (z = 57..=70), against a swept range `0.85..=1.00`; nearby
+    /// values move the reproduced contraction by roughly 0.13 percentage
+    /// points per `0.001` of `sigma_deep`, so this is a genuine optimum, not
+    /// a coincidence of the sweep's granularity.
+    pub(crate) const BASE_SIGMA_DEEP: f64 = 0.928;
+
     /// Draw this universe's screening constants.
     ///
-    /// **One-sided downward, per the plan's own text — `p` is sampled from
-    /// `[-Direction::P_MAX, 0.0]`, never the symmetric range.** This is a
-    /// draw-site decision, not a [`MigratedConstant`] classification tag:
-    /// see [`MigratedConstant::ScreeningInner`]'s own doc for why it is not
-    /// generalised into a fourth tag.
+    /// **Both one-sided downward, per the plan's own text for
+    /// `sigma_near` and the same reasoning extended to `sigma_deep`** — `p`
+    /// sampled from `[-Direction::P_MAX, 0.0]`, never the symmetric range.
+    /// This is a draw-site decision, not a [`MigratedConstant`]
+    /// classification tag: see [`MigratedConstant::ScreeningInner`]'s own
+    /// doc for why it is not generalised into a fourth tag. Two independent
+    /// draws, two independent stream positions — `sigma_near` and
+    /// `sigma_deep` model different physical uncertainties (s/p near-shell
+    /// screening versus d/f screener penetration) and are not assumed to
+    /// move together.
     #[must_use]
     pub(crate) fn draw(seed: u64, rung: Rung) -> Self {
-        let mut stream = Stream::new(
+        let mut near_stream = Stream::new(
             seed,
             Domain::Perturbation,
             MigratedConstant::ScreeningInner.index(),
         );
-        let p = stream.next_f64_range(-Direction::P_MAX, 0.0);
-        let direction = Direction::new(p, Direction::P_MAX)
+        let near_p = near_stream.next_f64_range(-Direction::P_MAX, 0.0);
+        let near_direction = Direction::new(near_p, Direction::P_MAX)
             .unwrap_or_else(|| unreachable!("p is drawn within [-P_MAX, 0.0] by construction"));
+
+        let mut deep_stream = Stream::new(
+            seed,
+            Domain::Perturbation,
+            MigratedConstant::ScreeningDeep.index(),
+        );
+        let deep_p = deep_stream.next_f64_range(-Direction::P_MAX, 0.0);
+        let deep_direction = Direction::new(deep_p, Direction::P_MAX)
+            .unwrap_or_else(|| unreachable!("p is drawn within [-P_MAX, 0.0] by construction"));
+
         Self {
-            sigma_near: perturb(Self::BASE_SIGMA_NEAR, rung, direction),
+            sigma_near: perturb(Self::BASE_SIGMA_NEAR, rung, near_direction),
+            sigma_deep: perturb(Self::BASE_SIGMA_DEEP, rung, deep_direction),
         }
     }
 
@@ -265,6 +423,7 @@ impl OrbitalConsts {
     pub(crate) const fn at_identity() -> Self {
         Self {
             sigma_near: Self::BASE_SIGMA_NEAR,
+            sigma_deep: Self::BASE_SIGMA_DEEP,
         }
     }
 }
@@ -311,14 +470,24 @@ fn subshell_energy(
     occ: &BTreeMap<(u8, u8), u32>,
     consts: OrbitalConsts,
 ) -> (f64, f64) {
-    let near: u32 = occ
+    let near_sp: u32 = occ
         .iter()
-        .filter(|((n2, _), _)| n.checked_sub(1) == Some(*n2))
+        .filter(|((n2, l2), _)| n.checked_sub(1) == Some(*n2) && *l2 <= 1)
         .map(|(_, c)| c)
         .sum();
-    let far: u32 = occ
+    let near_df: u32 = occ
         .iter()
-        .filter(|((n2, _), _)| n.checked_sub(2).is_some_and(|floor| *n2 <= floor))
+        .filter(|((n2, l2), _)| n.checked_sub(1) == Some(*n2) && *l2 >= 2)
+        .map(|(_, c)| c)
+        .sum();
+    let far_sp: u32 = occ
+        .iter()
+        .filter(|((n2, l2), _)| n.checked_sub(2).is_some_and(|floor| *n2 <= floor) && *l2 <= 1)
+        .map(|(_, c)| c)
+        .sum();
+    let far_df: u32 = occ
+        .iter()
+        .filter(|((n2, l2), _)| n.checked_sub(2).is_some_and(|floor| *n2 <= floor) && *l2 >= 2)
         .map(|(_, c)| c)
         .sum();
     let same: u32 = occ
@@ -329,8 +498,34 @@ fn subshell_energy(
     // l <= 1: near screens at sigma_near (partial); l >= 2: near screens at
     // full strength too — this module's own doc on why that split, not a
     // single constant, is what makes 6s win against 4f/5d.
-    let near_rate = if l <= 1 { consts.sigma_near } else { 1.0 };
-    let s = near_rate * f64::from(near) + f64::from(far) + t_of_l(l) * f64::from(same);
+    let near_rate_sp = if l <= 1 { consts.sigma_near } else { 1.0 };
+    // **`sigma_deep` caps every coefficient a d/f SCREENER contributes,
+    // regardless of the CANDIDATE's own l — this module's own doc on why
+    // the imperfection belongs on the screener's side, not the candidate's.**
+    // `sigma_deep`'s own one-sided-downward draw, base `BASE_SIGMA_DEEP <
+    // 1.0`, guarantees `sigma_deep < 1.0` always (perturbation only ever
+    // multiplies the base by a factor `<= 1`) — so `far_rate_df` is
+    // unconditionally `sigma_deep`, not a real comparison against `1.0`.
+    // `near_rate_df` genuinely does compare two independently-drawn
+    // constants for an `l <= 1` candidate (`sigma_near` versus
+    // `sigma_deep`, neither bounded relative to the other), which is why
+    // it, unlike `far_rate_df`, needs the comparison written out. The
+    // comparison form, not `f64::min` — §13.1 bans the method as
+    // non-deterministic for ±0.0; not reachable here (both operands are
+    // always finite and strictly positive), but the crate-wide rule
+    // applies regardless of whether a given call site can hit the case it
+    // guards against.
+    let near_rate_df = if near_rate_sp < consts.sigma_deep {
+        near_rate_sp
+    } else {
+        consts.sigma_deep
+    };
+    let far_rate_df = consts.sigma_deep;
+    let s = near_rate_sp * f64::from(near_sp)
+        + near_rate_df * f64::from(near_df)
+        + f64::from(far_sp)
+        + far_rate_df * f64::from(far_df)
+        + t_of_l(l) * f64::from(same);
     let z_eff = f64::from(z) - s;
     let ratio = z_eff / f64::from(n);
     (-(ratio * ratio), z_eff)
@@ -515,24 +710,34 @@ pub(crate) fn electronic_properties(
                 .copied()
                 .unwrap_or_else(|| unreachable!("just inserted above"));
             let subshell_full = count_now == capacity_of(run.l);
-            // **`.abs()`, not the signed difference — new since Madelung
-            // ordering decoupled fill order from raw energy.** At a
+            // **Clamped at zero, not `.abs()` — `.abs()` was a `/review-pr`
+            // finding (2026-08-10): it reads as a distance but is used as a
+            // cost, and those disagree exactly where it matters.** At a
             // transition like 6s -> 4f (z=56), the *structurally* next
             // subshell has a more negative raw energy than the one that
             // just closed (a small n dominates `-(Z_eff/n)^2` regardless of
-            // screening, this module's own doc), so the signed difference
-            // goes negative — not a bug in either formula, but a
-            // consequence of `subshell_energy` no longer being the thing
-            // that chose this order. The magnitude is still the right
-            // reading of "how far is the next accessible state": measured,
-            // Ba-analogue (z=56)'s `|gap|` comes out far above
-            // `GapConsts::BASE_PROMOTION_BUDGET`, correctly *not* promoting
-            // — an alkaline-earth analogue staying at valence 2 past period
-            // 3 is the real chemistry this was already matching.
+            // screening, this module's own doc) — not a bug in either
+            // formula, but a consequence of `subshell_energy` no longer
+            // being the thing that chose this order. `gap` is read
+            // downstream as the energy *cost* of promoting an electron out
+            // of a just-closed subshell (`valence = 2 if gap <=
+            // promotion_budget`): a negative raw difference means the next
+            // state is *lower*, so the promotion is free, and the correct
+            // cost is `0.0`, not `|raw difference|`. `.abs()` read "free" as
+            // "maximally expensive" instead, and did so at exactly five
+            // positions in `1..=250` (z = 56, 88, 120, 170, 218 — measured):
+            // every one is a closed `s^2` whose Madelung-next subshell is a
+            // low-n, high-l state, and every one is where the fold's fixed
+            // order and `subshell_energy`'s raw energies structurally
+            // disagree. Barium- and radium-analogues are the two that land
+            // inside `1..=118`, and `.abs()` gave both valence 0 instead of
+            // the physically correct 2 — noble-gas-inert alkaline earths, in
+            // every V2 universe, unconditionally.
             let gap = if subshell_full {
                 runs.get(run_index + 1).map_or(0.0, |next| {
                     let (e_lumo, _) = subshell_energy(next.n, next.l, z, &occ, orbital_consts);
-                    (e_lumo - e_homo).abs()
+                    let d = e_lumo - e_homo;
+                    if d > 0.0 { d } else { 0.0 }
                 })
             } else {
                 0.0
@@ -575,8 +780,8 @@ pub(crate) fn electronic_properties(
 #[cfg(test)]
 mod tests {
     use super::{
-        ELECTRON_CEILING, ElectronicProperties, GapConsts, Occupancy, OrbitalConsts, capacity_of,
-        electronic_properties, fill, madelung_order, subshell_energy,
+        ELECTRON_CEILING, ElectronicProperties, GapConsts, MAX_N, Occupancy, OrbitalConsts,
+        capacity_of, electronic_properties, fill, madelung_order, subshell_energy,
     };
     use std::collections::BTreeMap;
 
@@ -657,13 +862,22 @@ mod tests {
             );
         }
         // And every legal (n, l) with n <= MAX_N appears exactly once —
-        // sorting cannot silently drop or duplicate an entry.
-        let mut seen: Vec<(u8, u8)> = order.clone();
-        seen.sort_unstable();
-        seen.dedup();
+        // sorting cannot silently drop, duplicate or substitute an entry.
+        // Comparing lengths before and after dedup only catches duplicates:
+        // a *missing* entry shrinks both sides equally and passes silently.
+        // Comparing the actual set against the pairs the definition of
+        // legal (n, l) generates catches all three at once.
+        let expected: std::collections::BTreeSet<(u8, u8)> = (1..=MAX_N)
+            .flat_map(|n| (0..n).map(move |l| (n, l)))
+            .collect();
+        let seen: std::collections::BTreeSet<(u8, u8)> = order.iter().copied().collect();
         assert_eq!(
-            seen.len(),
+            seen, expected,
+            "madelung_order() should contain exactly every (n, l) with 1 <= n <= MAX_N, 0 <= l < n"
+        );
+        assert_eq!(
             order.len(),
+            seen.len(),
             "madelung_order() should contain no duplicates"
         );
     }
@@ -709,6 +923,42 @@ mod tests {
             checked,
             IDENTITY_FILL_ORDER.len(),
             "should have checked every entry"
+        );
+    }
+
+    /// **Every run but possibly the last is a complete subshell — the claim
+    /// `Occupancy`'s own doc makes, settled directly rather than left as an
+    /// assertion nobody checks.** `ELECTRON_CEILING` (250) lands inside
+    /// `(7, 4)`'s 18-slot capacity with only 10 placed, so the fold's full
+    /// output genuinely has one partial entry; this pins that it is exactly
+    /// one, and exactly the last.
+    #[test]
+    fn every_run_but_possibly_the_last_is_a_complete_subshell() {
+        let runs = fill();
+        let (last, rest) = runs
+            .split_last()
+            .unwrap_or_else(|| unreachable!("fill() always places at least one electron"));
+        for r in rest {
+            assert_eq!(
+                r.count,
+                r.capacity(),
+                "({}, {}) should be a completed subshell",
+                r.n,
+                r.l
+            );
+        }
+        assert!(
+            last.count <= last.capacity(),
+            "({}, {}): count {} exceeds capacity {}",
+            last.n,
+            last.l,
+            last.count,
+            last.capacity()
+        );
+        assert!(
+            last.count < last.capacity(),
+            "the last run is exactly complete at this ELECTRON_CEILING — update this test's \
+             own doc, which claims it is genuinely partial"
         );
     }
 
@@ -764,9 +1014,12 @@ mod tests {
         for run in fill() {
             for _ in 0..run.count {
                 z += 1;
-                // subshell_energy's own contract: "given the electrons
-                // already placed" — called before this electron joins occ,
-                // matching electronic_properties' own call order.
+                // PRODUCTION'S REAL ORDER (`electronic_properties`): the
+                // current electron joins `occ` *before* `subshell_energy` is
+                // called, for both the frontier probe and the outer-shell
+                // probe. Testing the call-before-insert order here would not
+                // discriminate anything real.
+                *occ.entry((run.n, run.l)).or_insert(0) += 1;
                 let (_, z_eff) = subshell_energy(run.n, run.l, z, &occ, consts);
                 assert!(
                     z_eff >= 1.0,
@@ -780,7 +1033,6 @@ mod tests {
                         "Z_eff at Z=1 should be exactly 1.0"
                     );
                 }
-                *occ.entry((run.n, run.l)).or_insert(0) += 1;
             }
         }
         assert_eq!(z, ELECTRON_CEILING, "should have walked every electron");
@@ -1039,12 +1291,138 @@ mod tests {
         for (i, p) in props.iter().enumerate() {
             assert!(p.gap.is_finite(), "z={}: gap should be finite", i + 1);
             assert!(p.e_homo.is_finite(), "z={}: e_homo should be finite", i + 1);
-            assert!(
-                p.zeff_outer.is_finite() && p.zeff_outer > 0.0,
-                "z={}: zeff_outer should be finite and positive",
-                i + 1
-            );
             assert!(p.gap >= 0.0, "z={}: gap should never be negative", i + 1);
         }
+    }
+
+    /// **`zeff_outer >= 1.0` through `electronic_properties`'s real call
+    /// path, not just `e_homo`'s.** This module's own `Z_eff >= 1` proof
+    /// (module doc) covers both probes with one argument, but they are not
+    /// the same call: `zeff_outer` can probe a *different* subshell than
+    /// the electron just placed, in the d/f-block fallback (`run.n <
+    /// outer_n`, `probe_l = 0`) — `occ` already contains the just-placed
+    /// electron in bucket `(run.n, run.l)` at that point, a different
+    /// bucket than the one being probed, `(outer_n, 0)`. The proof's bound
+    /// still holds there for a Madelung-order reason, not a screening one:
+    /// `(n, 0)` always fills before `(n, l>0)` for a fixed `n` (smallest
+    /// `n + l` at that `n`), so whenever any subshell at `n = outer_n` is
+    /// occupied, `(outer_n, 0)` specifically already has at least one
+    /// electron in it — which is exactly the placed electron the sum needs
+    /// excluded to stay at or below `z - 1`. `> 0.0`, the bound an earlier
+    /// version of `gap_and_e_homo_are_always_finite` checked, is weaker
+    /// than what the module doc claims to prove; this checks the real one.
+    /// **Swept across seeds, not just identity** — `sigma_near`'s value is
+    /// what the proof bounds, not something identity happens to pick, so
+    /// the check needs to see it vary. [`OrbitalConsts::draw`]'s one-sided
+    /// direction keeps every drawn `sigma_near` in the same `(0,
+    /// BASE_SIGMA_NEAR]` interval the proof assumes, at every rung.
+    #[test]
+    fn zeff_outer_is_at_least_one_through_the_real_call_path() {
+        let runs = fill();
+        for seed in [0u64, 1, 5, 21, 42] {
+            let rung = crate::perturbation::Rung::draw(seed);
+            let props = electronic_properties(
+                &runs,
+                OrbitalConsts::draw(seed, rung),
+                GapConsts::draw(seed, rung),
+            );
+            for (i, p) in props.iter().enumerate() {
+                assert!(
+                    p.zeff_outer.is_finite() && p.zeff_outer >= 1.0,
+                    "seed {seed} z={}: zeff_outer {} fell below 1.0",
+                    i + 1,
+                    p.zeff_outer
+                );
+            }
+        }
+    }
+
+    /// **Every closed-`s^2` position with a same-shell `p` subshell to
+    /// promote into promotes, and every closed-`p^6` position does not, for
+    /// every z a real generated table can actually contain** — not the three
+    /// hand-picked z values
+    /// `promotion_budget_separates_alkaline_earth_from_noble_gas_analogues`
+    /// checks. This is the guard the `.abs()` -> clamp fix (2026-08-10
+    /// `/review-pr`) needed and did not have: with `.abs()`, z=56 (Ba
+    /// analogue) and z=88 (Ra analogue) — both closed `s^2` — reported
+    /// valence 0, and this property would have failed on both from the day
+    /// `.abs()` shipped. Threshold-free within its range: reads the closures
+    /// out of `fill()`'s own run structure, never a literal list of z.
+    ///
+    /// **Bounded at `z = 120`, not the fold's full reach to `z = 250`.**
+    /// `n_elements` draws `60..=120` (Decision 9) — no `PeriodicTable` this
+    /// crate ever generates contains an element past 120, so a property
+    /// beyond it is a claim about electrons no universe can show. It is not
+    /// vacuous even so: `z = 168` (a closed `p^6`) is past the bound and
+    /// already promotes, from the same calibration this doc's `z = 118`
+    /// exception names — narrowing the range keeps that separate, unrelated
+    /// calibration question out of the property this test was written to
+    /// guard.
+    ///
+    /// **`n = 1` is excluded from the `s^2` case, not an oversight.** `l < n`
+    /// means `n = 1` has no `l = 1` at all — there is no same-shell `p`
+    /// subshell for a 1s electron to promote into, structurally, not as a
+    /// matter of energy. Real helium's valence is 0 for the same reason; see
+    /// `valence_matches_real_ground_state_valences_through_period_3`'s own
+    /// `z = 2` entry.
+    ///
+    /// **`(7, 1)` — z=118, the Oganesson analogue — is excluded from the
+    /// `p^6` case, and this is unrelated to the `.abs()` -> clamp fix.** Its
+    /// gap (1.8977) sits just under `BASE_PROMOTION_BUDGET` (2.0): the real
+    /// noble-gas series narrows going down the periods (13.16, 7.38, 5.82,
+    /// 3.72, 2.58, 1.90 for periods 1-6), and this constant's own
+    /// calibration doc, written against periods 1-3 only, does not carry
+    /// that trend forward to where it crosses. The raw signed difference at
+    /// z=118 is positive, so `.abs()` and the clamp give the identical
+    /// result — z=118 promoted before this fix too. Whether the budget
+    /// should be recalibrated against the full real series is a separate
+    /// question from the one this test guards.
+    #[expect(
+        clippy::as_conversions,
+        reason = "run.count is at most 18 (capacity_of(l)'s max), well within usize's exact \
+                  integer range"
+    )]
+    #[test]
+    fn closed_s2_positions_promote_and_closed_p6_positions_do_not() {
+        let runs = fill();
+        let props = electronic_properties(
+            &runs,
+            OrbitalConsts::at_identity(),
+            GapConsts::at_identity(),
+        );
+        let (mut s2_checked, mut p6_checked) = (0u32, 0u32);
+        let mut z = 0usize;
+        for run in &runs {
+            z += run.count as usize;
+            if z > 120 {
+                break;
+            }
+            if run.count != run.capacity() {
+                continue;
+            }
+            let want = match (run.n, run.l) {
+                (1, 0) | (7, 1) => continue,
+                (_, 0) => 2u32,
+                (_, 1) => 0u32,
+                _ => continue,
+            };
+            assert_eq!(
+                at(&props, z).valence,
+                want,
+                "z={z} ({},{}): a closed subshell of this type should have valence {want}",
+                run.n,
+                run.l
+            );
+            if run.l == 0 {
+                s2_checked += 1;
+            } else {
+                p6_checked += 1;
+            }
+        }
+        assert!(
+            s2_checked >= 6 && p6_checked >= 5,
+            "corpus filter selected too few positions to be a real property check: \
+             s2={s2_checked} p6={p6_checked}"
+        );
     }
 }

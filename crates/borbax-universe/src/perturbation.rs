@@ -330,6 +330,25 @@ migrated_constants! {
     /// term, not a measured quantity, same tagging as `w_shape`/`w_charge`.
     /// Symmetric `p` bound: no structural reason to favour one direction.
     IonicScale = 11, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// The screened-hydrogenic fold's deep-screener coefficient
+    /// (`orbital.rs`) — a ceiling every d/f-block electron's contribution
+    /// to *anyone's* screening sum is capped at, replacing Slater's
+    /// idealised "everything closer screens at exactly 1.00" for d/f
+    /// screeners specifically. **No real physical counterpart tagged**,
+    /// same reasoning as `ScreeningInner`: the *qualitative* principle
+    /// (a d/f electron's poor nuclear penetration also makes it a poor
+    /// screener of everything else, symmetric to it being poorly screened
+    /// itself — established atomic-physics teaching, not this codebase's
+    /// invention) is real, but no citable Slater-style rule set turns it
+    /// into a specific coefficient the way `ScreeningInner`'s `0.85` is
+    /// Slater's own historical number; see `orbital.rs`'s own doc for the
+    /// full accounting and the calibration this constant's base value
+    /// comes from. **Drawn one-sided downward, same shape and same reason
+    /// as `ScreeningInner`** — `p` sampled from `[-Direction::P_MAX, 0.0]`,
+    /// at the draw call site in `orbital.rs`, not read from
+    /// [`MigratedConstant::p_bound`]. `p_bound` is still set here (to the
+    /// crate-wide default) so the fourth tag stays total.
+    ScreeningDeep = 12, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
 }
 
 /// How far a universe's constants sit from the identity configuration —
@@ -594,6 +613,7 @@ mod tests {
                 MigratedConstant::Scale,
                 MigratedConstant::Gamma,
                 MigratedConstant::IonicScale,
+                MigratedConstant::ScreeningDeep,
             ]
         );
         for (i, constant) in MigratedConstant::ALL.iter().enumerate() {
