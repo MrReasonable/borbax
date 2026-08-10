@@ -96,6 +96,7 @@ crates/            the simulation, in dependency order — ✅ exists, ○ plann
 experiments/       measurement harnesses that answer a question and then stay as evidence
 xtask/             the fiction-guarantee gate
 docs/
+  glossary.md           real chemistry terms and Borbax's own vocabulary, explained from zero
   superpowers/specs/    the PRD — numbered sections (§n) are cited everywhere
   superpowers/plans/    the V0 implementation plan, Tasks 1–21
   experiments/          measured results, with their methods and near-misses
@@ -121,6 +122,10 @@ background and cite sources.
 
 ## Reading order
 
+0. [`docs/glossary.md`](docs/glossary.md) — if a term anywhere else on this
+   page or in the docs below is unfamiliar (real chemistry vocabulary like
+   *Slater's rules* and *lanthanide contraction*, or Borbax's own like
+   `affinity` and `IDEAL_GAP`), it's explained there from zero background.
 1. `docs/superpowers/specs/2026-07-26-borbax-prd.md` — the design, and why each
    decision is the way it is. §3 is the principles; §8 is the chemistry; §13 is
    the determinism contract.
