@@ -65,11 +65,22 @@
 //! not only the ones two shells back. Verified against the real subshell
 //! sequence: with `sigma_near` at Slater's own historical value (0.85), the
 //! identity fold reproduces the real Madelung sequence exactly through
-//! `z = 118` (this module's own tests pin it), and separately (`element.rs`'s
-//! own radius formula) raises the model-vs-real covalent-radius correlation
-//! from 0.50 to 0.87 and fixes the group-1 radius trend (Li through Fr) from
+//! `z = 118` (this module's own tests pin it). **The candidate-side split
+//! alone** (`element.rs`'s own radius formula, before `sigma_deep` below)
+//! separately raised the model-vs-real covalent-radius correlation from
+//! 0.50 to 0.87 and fixed the group-1 radius trend (Li through Fr) from
 //! inverted to strictly increasing — neither of which this screening split
-//! was tuned against; both are measured consequences of the same change.
+//! was tuned against; both were measured consequences of the same change,
+//! at the time they were measured. **`sigma_deep` below moves both figures
+//! again** (it changes `zeff_outer` for every `z >= 37`, which the group-1
+//! trend reads directly) and neither has been re-measured since: `/review-pr`
+//! round 3 (2026-08-10) found the group-1 trend is no longer strictly
+//! increasing at HEAD (Cs-analogue to Fr-analogue now decreases), and found
+//! no reproducible harness anywhere in this repository for the correlation
+//! figure, so that one could not be re-checked at all rather than merely
+//! being stale. Re-measuring both against the shipped `sigma_deep` physics,
+//! with a real harness for the correlation figure, is follow-up work, not
+//! restated here as fact.
 //!
 //! # The screener-side split: `sigma_deep`, and what it fixes
 //!
@@ -85,21 +96,33 @@
 //! faithfully to a d/f *candidate*, gives exactly `near = far = 1.0`, no
 //! partial tier of any kind. The model was already correct Slater; Slater
 //! itself doesn't parameterise d/f screening the way it parameterises s/p
-//! screening, and famously fails to predict any lanthanide contraction for
-//! exactly this reason (a documented, textbook-known weakness of the rule,
-//! not an oversight in this implementation of it).
+//! screening, and famously fails to predict any lanthanide contraction **for
+//! the outermost-shell probe this module's radius reads** — the `zeff_outer`
+//! quantity `element.rs`'s radius formula uses is exactly flat under literal
+//! Slater, verified directly (a documented, textbook-known weakness of the
+//! rule for that quantity, not an oversight in this implementation of it).
+//! The claim is narrower than "Slater predicts no lanthanide contraction at
+//! all": for the inner 5s/5p electrons that set the real Ln³⁺ *ionic*
+//! radius `sigma_deep`'s own calibration target measures, 4f sits in
+//! Slater's own `n-1` tier (partial screening, 0.85), so literal Slater
+//! *does* contract that quantity — it is specifically the outer-probe
+//! radius this module computes where the rule goes flat.
 //!
 //! **The fix reads screening imperfection off the *screener's* subshell,
 //! not the candidate's — the standard atomic-physics teaching that
 //! penetration ability runs symmetrically both ways.** A d/f electron is
-//! not only poorly screened *itself* (the candidate-side fact above); it is
-//! also, by the same poor-penetration property, a poor screener *of
-//! everything else* — "the order of electron penetration from greatest to
-//! least is s, p, d, f; the order of the amount of shielding done is also
-//! in the order s, p, d, f" (standard teaching, e.g. `LibreTexts`' "Penetration
-//! and Shielding"). `sigma_deep` is a ceiling every d/f electron's own
-//! contribution to *any* candidate's screening sum is capped at — the
-//! `far_df`/`near_df` split above. It is what actually restores a
+//! not only *fully* screened *itself* (the candidate-side fact above — poor
+//! penetration means every inner group screens it at full strength, not
+//! partially); it is also, by that same poor-penetration property, a poor
+//! screener *of everything else* — "the order of electron penetration from
+//! greatest to least is s, p, d, f; the order of the amount of shielding
+//! done is also in the order s, p, d, f" (standard teaching, e.g.
+//! `LibreTexts`' "Penetration and Shielding"). `sigma_deep` is a ceiling
+//! every d/f electron's own contribution to any *other* candidate's
+//! `near_df`/`far_df` screening sum is capped at — the same-shell `t(l)`
+//! term below is a separate mechanism `sigma_deep` does not reach, since a
+//! same-shell peer is never routed through `near`/`far` at all. It is what
+//! actually restores a
 //! lanthanide-analogue contraction: during the 4f fill, the outer 6s probe
 //! (see `zeff_outer`'s d/f-block fallback) reads `far(6)`, which counts the
 //! newly-placed 4f electrons at `n' = 4 <= 6 - 2`; capping their
@@ -122,12 +145,18 @@
 //! position** — the two constants model different physical uncertainties
 //! (s/p near-shell partial screening; d/f screener penetration) with no
 //! structural reason to move together. `min(near_rate(l), deep_rate)` in
-//! `near_df`'s coefficient (rather than always applying `deep_rate` there)
-//! matters only for a d/f *candidate* with a d/f *screener* in its own
-//! `near` bucket — e.g. 5d priced with already-placed 4f electrons in
-//! `near(5)` — where both splits could otherwise apply inconsistently; the
-//! `min` keeps the tighter (smaller) of the two, never double-counting the
-//! deficit upward past either bound alone.
+//! `near_df`'s coefficient only ever differs from unconditionally applying
+//! `deep_rate` there when the *candidate* is s/p (`l <= 1`): a d/f
+//! candidate already has `near_rate(l) = 1.0`, and `deep_rate < 1.0`
+//! always, so `min` collapses to `deep_rate` unconditionally there — the
+//! same no-comparison shortcut `far_rate_df` uses below, just not written
+//! that way for this term. The `min` genuinely compares two independent
+//! constants only for an **s/p candidate with a d/f screener in its own
+//! `near` bucket** — e.g. 6p priced with already-placed 5d electrons in
+//! `near(6)` (5d fills before 6p under Madelung's `(n, n+l)` tie-break) —
+//! where `sigma_near` and `sigma_deep` are unrelated and the `min` keeps
+//! the tighter (smaller) of the two, never double-counting the deficit
+//! upward past either bound alone.
 //!
 //! **Excluding the candidate's own already-placed same-subshell peers from
 //! `same(n, l)` is a deliberate deviation from the most literal reading of
@@ -155,10 +184,16 @@
 //! [`crate::perturbation`] with a one-sided-downward direction, so each is
 //! always in `(0, BASE] subset (0, 1]` for its own base; every other
 //! coefficient in `S` (`near_rate_sp` when it resolves to `1.0`, `far_sp`'s
-//! fixed `1.0`, and `t(l)`) is bounded in `[0, 1]` by construction, and
-//! `min(...)` of two such bounded coefficients (`near_rate_df`,
-//! `far_rate_df`) is bounded the same way — a `min` cannot exceed either
-//! operand. So it is enough to show `near_sp(n) + near_df(n) + far_sp(n) +
+//! fixed `1.0`, and `t(l)`) is bounded in `[0, 1]` by construction.
+//! `near_rate_df` is `min(near_rate_sp, sigma_deep)` and inherits the bound
+//! the same way a `min` of two already-bounded operands always does —
+//! `min` cannot exceed either. `far_rate_df` is unconditionally
+//! `sigma_deep` with no runtime `min` at all (`subshell_energy`'s own
+//! comment), which needs `sigma_deep < 1.0` to hold *unconditionally*
+//! rather than by comparison — true because `BASE_SIGMA_DEEP < 1.0` and
+//! perturbation only multiplies by a factor `<= 1`, pinned as a compile-time
+//! assertion right after `OrbitalConsts`. So it is enough to show
+//! `near_sp(n) + near_df(n) + far_sp(n) +
 //! far_df(n) + same(n, l) <= z - 1` for whichever subshell `(n, l)` is
 //! being probed — i.e. that the original, undivided `near(n) + far(n) +
 //! same(n, l) <= z - 1` argument still holds, since `near_sp + near_df =
@@ -353,8 +388,9 @@ fn t_of_l(l: u8) -> f64 {
 
 /// The physical constants [`electronic_properties`] needs to price a
 /// subshell once [`madelung_order`] has chosen it — [`fill`] itself needs
-/// none, see its own doc. Currently just the perturbed near-shell screening
-/// coefficient — see [`MigratedConstant::ScreeningInner`].
+/// none, see its own doc. The perturbed near-shell and deep-screener
+/// screening coefficients — see [`MigratedConstant::ScreeningInner`] and
+/// [`MigratedConstant::ScreeningDeep`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct OrbitalConsts {
     sigma_near: f64,
@@ -373,12 +409,33 @@ impl OrbitalConsts {
     /// [`MigratedConstant::ScreeningDeep`]'s own doc for why no such value
     /// exists to adopt). Searched against the real lanthanide contraction's
     /// measured Shannon radii, La³⁺ 103.2 pm → Lu³⁺ 86.1 pm — a 16.57%
-    /// contraction. `0.928` reproduces that ratio to within 0.002
+    /// contraction. `0.928` reproduces that ratio to within 0.0025
     /// percentage points across the identity fold's own lanthanide-analogue
     /// block (z = 57..=70), against a swept range `0.85..=1.00`; nearby
     /// values move the reproduced contraction by roughly 0.13 percentage
     /// points per `0.001` of `sigma_deep`, so this is a genuine optimum, not
     /// a coincidence of the sweep's granularity.
+    ///
+    /// **The comparison is between spans of different lengths, honestly,
+    /// not silently.** The model's own 4f-filling block under this fold's
+    /// strict Madelung order is 14 elements, `z = 57..=70` (5d starts at
+    /// `z = 71`). The real La(57)→Lu(71) span quoted above is 15 *elements*
+    /// — real La's own ground state has no 4f electron at all (`[Xe]5d¹6s²`),
+    /// an anomaly this fold's idealised order does not and should not
+    /// reproduce. So the target is the real span's *overall* contraction
+    /// magnitude, applied as an analogue to this model's own 4f-filling
+    /// block, not a claim that `z = 57` in this fold corresponds element-
+    /// for-element to real La. `/review-pr` round 3 measured the
+    /// alternative framings this ambiguity admits: fitting the model's
+    /// `57..=71` span (extending one element to match the real range
+    /// length) against the same 16.57% target gives `sigma_deep ≈ 0.945`;
+    /// fitting `57..=70` against the real La→Yb span's own 15.89%
+    /// contraction instead gives `≈ 0.933`. Both are within the same
+    /// single-digit-percent neighbourhood as `0.928` and do not change
+    /// which qualitative conclusion this constant supports (real,
+    /// non-trivial lanthanide-analogue contraction where none existed
+    /// before); the shipped value is not re-derived from either alternative
+    /// mapping, since nothing here turns on the third decimal place.
     pub(crate) const BASE_SIGMA_DEEP: f64 = 0.928;
 
     /// Draw this universe's screening constants.
@@ -427,6 +484,20 @@ impl OrbitalConsts {
         }
     }
 }
+
+// `subshell_energy`'s `far_rate_df` is unconditionally `consts.sigma_deep`,
+// with no runtime comparison against `1.0` — that shortcut, and the
+// `Z_eff >= 1` proof this module's own doc makes, both depend on
+// `BASE_SIGMA_DEEP < 1.0` holding for every possible perturbed value, which
+// only holds because the *base* itself is `< 1.0` (perturbation multiplies
+// by a factor `<= 1` for a one-sided-downward draw). Nothing else in the
+// type system pins that; a future recalibration of `BASE_SIGMA_DEEP` to
+// `>= 1.0` would silently break both without this failing to compile.
+const _: () = assert!(
+    OrbitalConsts::BASE_SIGMA_DEEP < 1.0,
+    "far_rate_df (subshell_energy) and this module's Z_eff >= 1 proof both rely on \
+     BASE_SIGMA_DEEP < 1.0 holding unconditionally"
+);
 
 /// The highest electron count [`fill`] computes to. Comfortably above the
 /// naming grammar's 165-element symbol-space ceiling (`naming.rs`), so
@@ -729,9 +800,12 @@ pub(crate) fn electronic_properties(
             // every one is a closed `s^2` whose Madelung-next subshell is a
             // low-n, high-l state, and every one is where the fold's fixed
             // order and `subshell_energy`'s raw energies structurally
-            // disagree. Barium- and radium-analogues are the two that land
-            // inside `1..=118`, and `.abs()` gave both valence 0 instead of
-            // the physically correct 2 — noble-gas-inert alkaline earths, in
+            // disagree. Barium-, radium- and (at `n_elements = 120`
+            // specifically) the z=120 analogue are the three reachable in a
+            // real generated table (`n_elements` draws `60..=120`, not
+            // `1..=118` — 170 and 218 are the two genuinely unreachable
+            // ones), and `.abs()` gave all three valence 0 instead of the
+            // physically correct 2 — noble-gas-inert alkaline earths, in
             // every V2 universe, unconditionally.
             let gap = if subshell_full {
                 runs.get(run_index + 1).map_or(0.0, |next| {
@@ -959,6 +1033,12 @@ mod tests {
             last.count < last.capacity(),
             "the last run is exactly complete at this ELECTRON_CEILING — update this test's \
              own doc, which claims it is genuinely partial"
+        );
+        assert_eq!(
+            (last.n, last.l, last.count),
+            (7, 4, 10),
+            "the truncated run moved — ELECTRON_CEILING or MAX_N changed, or the fold's \
+             structure did; update this test's own doc to match"
         );
     }
 
@@ -1352,12 +1432,10 @@ mod tests {
     /// **Bounded at `z = 120`, not the fold's full reach to `z = 250`.**
     /// `n_elements` draws `60..=120` (Decision 9) — no `PeriodicTable` this
     /// crate ever generates contains an element past 120, so a property
-    /// beyond it is a claim about electrons no universe can show. It is not
-    /// vacuous even so: `z = 168` (a closed `p^6`) is past the bound and
-    /// already promotes, from the same calibration this doc's `z = 118`
-    /// exception names — narrowing the range keeps that separate, unrelated
-    /// calibration question out of the property this test was written to
-    /// guard.
+    /// beyond it is a claim about electrons no universe can show. Narrowing
+    /// the range keeps any calibration question about the fold's reach past
+    /// `z = 120` — a real question, but a separate one — out of the
+    /// property this test was written to guard.
     ///
     /// **`n = 1` is excluded from the `s^2` case, not an oversight.** `l < n`
     /// means `n = 1` has no `l = 1` at all — there is no same-shell `p`
@@ -1366,17 +1444,6 @@ mod tests {
     /// `valence_matches_real_ground_state_valences_through_period_3`'s own
     /// `z = 2` entry.
     ///
-    /// **`(7, 1)` — z=118, the Oganesson analogue — is excluded from the
-    /// `p^6` case, and this is unrelated to the `.abs()` -> clamp fix.** Its
-    /// gap (1.8977) sits just under `BASE_PROMOTION_BUDGET` (2.0): the real
-    /// noble-gas series narrows going down the periods (13.16, 7.38, 5.82,
-    /// 3.72, 2.58, 1.90 for periods 1-6), and this constant's own
-    /// calibration doc, written against periods 1-3 only, does not carry
-    /// that trend forward to where it crosses. The raw signed difference at
-    /// z=118 is positive, so `.abs()` and the clamp give the identical
-    /// result — z=118 promoted before this fix too. Whether the budget
-    /// should be recalibrated against the full real series is a separate
-    /// question from the one this test guards.
     #[expect(
         clippy::as_conversions,
         reason = "run.count is at most 18 (capacity_of(l)'s max), well within usize's exact \
@@ -1401,7 +1468,7 @@ mod tests {
                 continue;
             }
             let want = match (run.n, run.l) {
-                (1, 0) | (7, 1) => continue,
+                (1, 0) => continue,
                 (_, 0) => 2u32,
                 (_, 1) => 0u32,
                 _ => continue,
@@ -1420,7 +1487,7 @@ mod tests {
             }
         }
         assert!(
-            s2_checked >= 6 && p6_checked >= 5,
+            s2_checked >= 6 && p6_checked >= 6,
             "corpus filter selected too few positions to be a real property check: \
              s2={s2_checked} p6={p6_checked}"
         );
