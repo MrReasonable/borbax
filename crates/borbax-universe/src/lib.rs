@@ -27,7 +27,7 @@
 //! use borbax_universe::{
 //!     Universe,
 //!     bonds::BondOrder,
-//!     element::{ElementId, PeriodicTable, generate_elements},
+//!     element::{ElementId, PeriodicTable, ShellLaw, generate_elements},
 //! };
 //! use borbax_units::{Quanta, Span};
 //!
@@ -42,8 +42,9 @@
 //! assert!(table.get(id).is_some());
 //! assert!(table.iter().count() >= 1);
 //! // `pattern()` is public; `eps` on it is not — it is the bond scale's input
-//! // and lives inside the crate. `k`, `closures` and `peak` are the public part.
-//! assert!(table.pattern().k >= 1);
+//! // and lives inside the crate. `law`, `closures` and `peak` are the public
+//! // part. `Universe::generate` stamps `CURRENT`, which is still V1.
+//! assert!(matches!(table.pattern().law, ShellLaw::V1 { k } if k >= 1));
 //!
 //! // `u.element(id)` answers `Option`, never a neighbouring element.
 //! let el = u.element(id).expect("seed 7 has at least four elements");
@@ -65,6 +66,7 @@
 pub mod bonds;
 pub mod element;
 pub mod naming;
+pub(crate) mod orbital;
 /// **`pub(crate)`, not `pub`, and that is §8.6 enforced by the compiler rather
 /// than by discipline.** Everything here runs at intern time and its results are
 /// already materialised on [`element::Element`]; a step loop has no reason to
@@ -221,6 +223,14 @@ pub struct UniverseConsts {
 pub enum PhysicsVersion {
     /// Shape and surface character, per spec §8.3. Everything in V0 and V1.
     V1 = 1,
+    /// Approximated real physics, issue #26 — screened-hydrogenic electron
+    /// configuration (Task 26.1) replaces the shell-packing model. **Not
+    /// `CURRENT`.** V2 is reachable only via [`Universe::generate_under`]
+    /// and, once Step 15 lands, the viewer's own seed selector — never the
+    /// default a new [`Universe::generate`] stamps, per this enum's own doc
+    /// on the admission criterion (a new law is added, not promoted, until
+    /// deliberately decided).
+    V2 = 2,
 }
 
 /// The wire form of a version, for digests and for `U-7F3A21C9@1` addresses.
@@ -273,7 +283,7 @@ impl PhysicsVersion {
     /// pinned digest for its own laws is the failure that actually matters;
     /// "V2 exists, CURRENT is still V1, and V2 is missing from ALL" is not
     /// closed by anything here, and is not closed by `Domain::ALL` either.
-    pub const ALL: [Self; 1] = [Self::V1];
+    pub const ALL: [Self; 2] = [Self::V1, Self::V2];
 
     /// The single place the discriminant cast is written. `From<Self> for
     /// u8` delegates here rather than carrying its own second copy of the
@@ -296,6 +306,7 @@ impl PhysicsVersion {
     const fn discriminant(self) -> u8 {
         match self {
             Self::V1 => Self::V1 as u8,
+            Self::V2 => Self::V2 as u8,
         }
     }
 }
@@ -350,6 +361,20 @@ pub struct Universe {
     pub bonds: BondEnergyMatrix,
     /// The drawn constants of this universe.
     pub consts: UniverseConsts,
+    /// How far this universe's migrated constants sit from the identity
+    /// configuration (issue #26, Decision 10). Drawn for every universe
+    /// regardless of version — `Rung::draw` uses its own dedicated
+    /// `Domain::PerturbationRung` stream, entirely separate from
+    /// `Domain::Universe`'s own indices, so drawing it costs V1 nothing and
+    /// changes no V1 value.
+    ///
+    /// **`pub(crate)`, not `pub` — the field's own visibility is the
+    /// decision that actually matters, per `crate::perturbation`'s own
+    /// module doc.** `Rung` itself is `pub(crate)`, so a `pub` field here
+    /// would not even compile (E0446) — but the narrower visibility is also
+    /// the right call on its own terms: only V2-aware, in-crate code (element
+    /// generation, the eventual real-name gate) has a reason to read it.
+    pub(crate) rung: perturbation::Rung,
 }
 
 impl Universe {
@@ -375,10 +400,12 @@ impl Universe {
         // so a new law cannot be added without deciding what old worlds do.
         match physics {
             PhysicsVersion::V1 => Self::generate_v1(seed, physics),
+            PhysicsVersion::V2 => Self::generate_v2(seed, physics),
         }
     }
 
     fn generate_v1(seed: u64, physics: PhysicsVersion) -> Self {
+        let rung = perturbation::Rung::draw(seed);
         // `generate_elements` returns the shell it actually used. An earlier
         // draft re-derived it by rebuilding the same stream and replaying —
         // which agreed by luck, and would silently stop agreeing the moment
@@ -406,7 +433,12 @@ impl Universe {
         // band — downstream of these temperatures — as the most sensitive
         // parameter in the system, so the next person to add a bond constant
         // would have spent a week on a dead run.
-        let bonds = BondEnergyMatrix::generate(&table, &mut Stream::new(seed, Domain::Universe, 2));
+        let bonds = BondEnergyMatrix::generate(
+            &table,
+            seed,
+            rung,
+            &mut Stream::new(seed, Domain::Universe, 2),
+        );
         let mut rng = Stream::new(seed, Domain::Universe, 1);
 
         // Solvent: drawn uniformly from the lightest third of the table.
@@ -450,6 +482,67 @@ impl Universe {
             table,
             bonds,
             consts,
+            rung,
+        }
+    }
+
+    /// V2's generator (issue #26, Task 26.1 Steps 6-9). Draws `rung` first,
+    /// same as V1, then everything downstream — the table, the bonds, and
+    /// `UniverseConsts` — through `PhysicsVersion::V2`'s own dispatch in
+    /// `element.rs`/`bonds.rs`.
+    ///
+    /// **`UniverseConsts`'s `ideal_gap`/`w_shape`/`w_charge` are drawn
+    /// through P7** (`MigratedConstant::IdealGap`/`WShape`/`WCharge`),
+    /// replacing V1's plain continuous draws — the base values are V1's own
+    /// range midpoints (`ideal_gap` 2.2, `w_shape`/`w_charge` 1.0), so the
+    /// identity configuration reproduces V1's own centre point exactly, and
+    /// `w_shape`/`w_charge`'s tighter `1/3` bound keeps the perturbed ratio
+    /// close to V1's own reachable range (`[0.667, 1.333]` against V1's
+    /// `[3/7, 7/3]`) rather than reopening the size-comparison pathology
+    /// the bound exists to close. `rate_prefactor`/`decay_scale` stay plain
+    /// draws — neither is named in the plan's own P7 migration table.
+    fn generate_v2(seed: u64, physics: PhysicsVersion) -> Self {
+        let rung = perturbation::Rung::draw(seed);
+        let table = element::generate_elements(seed, physics);
+        let bonds = BondEnergyMatrix::generate(
+            &table,
+            seed,
+            rung,
+            &mut Stream::new(seed, Domain::Universe, 2),
+        );
+        let mut rng = Stream::new(seed, Domain::Universe, 1);
+
+        let solvent_pool = u64::try_from((table.len() / 3).max(1)).unwrap_or(1);
+        let solvent = u8::try_from(rng.next_range(solvent_pool)).map_or(ElementId::ZERO, ElementId);
+
+        let temp_min = Thermal(rng.next_f64_range(180.0, 260.0));
+        let temp_max = temp_min + Thermal(rng.next_f64_range(200.0, 500.0));
+
+        let ideal_gap =
+            perturbation::draw_symmetric(seed, rung, perturbation::MigratedConstant::IdealGap, 2.2);
+        let w_shape =
+            perturbation::draw_symmetric(seed, rung, perturbation::MigratedConstant::WShape, 1.0);
+        let w_charge =
+            perturbation::draw_symmetric(seed, rung, perturbation::MigratedConstant::WCharge, 1.0);
+
+        let consts = UniverseConsts {
+            ideal_gap: Span(ideal_gap),
+            w_shape,
+            w_charge,
+            rate_prefactor: rng.next_f64_range(1e3, 1e5),
+            decay_scale: rng.next_f64_range(1e-6, 1e-4),
+            solvent,
+            temp_min,
+            temp_max,
+        };
+
+        Self {
+            seed,
+            physics,
+            table,
+            bonds,
+            consts,
+            rung,
         }
     }
 
@@ -463,6 +556,22 @@ impl Universe {
     #[must_use]
     pub fn solvent(&self) -> Option<&Element> {
         self.element(self.consts.solvent)
+    }
+
+    /// Whether this universe's migrated constants sit at the identity
+    /// configuration (issue #26, Decision 9/10) — the one seed-equivalent
+    /// coordinate G2's 2026-08-07 revision permits real element names at.
+    ///
+    /// **The integer `rung == 0` coordinate, not a float
+    /// `perturbation_strength` comparison** — `Rung::is_identity` is exact
+    /// by construction (`self.0 == 0`), and this delegates to it rather
+    /// than re-deriving the check from a magnitude that only approaches
+    /// zero in the limit. `rung` is drawn for every universe regardless of
+    /// [`PhysicsVersion`], so this answers the same question under V1 too,
+    /// even though V1 has no real-name exception to gate.
+    #[must_use]
+    pub const fn is_identity(&self) -> bool {
+        self.rung.is_identity()
     }
 }
 
@@ -616,6 +725,17 @@ mod tests {
                     table,
                     bonds,
                     consts,
+                    // `rung` is deliberately not mixed into this digest.
+                    // Every migrated constant it scales is already covered
+                    // through its own downstream effect on `table`/`bonds`/
+                    // `consts` — `rung` itself carries no information beyond
+                    // that (it is purely a magnitude dial on constants
+                    // already digested), and mixing it in would move V1's
+                    // pinned hash below for a field V1's own physics does
+                    // not read at all. A `_` here is the same deliberate,
+                    // reasoned act `element.rs`'s own digest test already
+                    // documents for its one omission.
+                    rung: _,
                 } = &u;
                 let UniverseConsts {
                     ideal_gap,
@@ -704,6 +824,11 @@ mod tests {
             );
             let want = match version {
                 PhysicsVersion::V1 => 0xef29_79c6_1879_20d8,
+                // Measured 2026-08-10, when `PhysicsVersion::ALL` grew to
+                // `[V1, V2]` (issue #26, Task 26.1 Step 15 prerequisite): the
+                // first pinned golden for V2's own generation path, over the
+                // same `seed in 0..64` sweep as V1's.
+                PhysicsVersion::V2 => 0x3ec3_d54e_6c26_f5f7,
             };
             assert_eq!(
                 h, want,
@@ -760,5 +885,105 @@ mod tests {
             let u = Universe::generate(seed);
             assert!(u.solvent().is_some(), "seed {seed} has no solvent");
         }
+    }
+
+    /// The first end-to-end exercise of `PhysicsVersion::V2` anywhere in
+    /// this crate's test suite — every other passing test up to and
+    /// including this one only ever runs V1, via `PhysicsVersion::CURRENT`.
+    /// Not a Step 6 acceptance test (those need their own dedicated pass);
+    /// this is the minimal "does the whole pipeline run without panicking
+    /// and produce finite, sane values" smoke test that should have existed
+    /// before any of Steps 6-9's other pieces were trusted.
+    #[test]
+    fn generate_under_v2_produces_a_finite_sane_universe() {
+        for seed in 0..30 {
+            let u = Universe::generate_under(seed, PhysicsVersion::V2);
+            assert_eq!(u.physics, PhysicsVersion::V2, "seed {seed}");
+            assert!(
+                u.table.len() >= 60 && u.table.len() <= 120,
+                "seed {seed}: table size {} outside 60..=120",
+                u.table.len()
+            );
+            for (id, e) in u.table.iter() {
+                assert!(
+                    e.mass.raw() > 0,
+                    "seed {seed} id {id:?}: mass should be positive"
+                );
+                assert!(
+                    e.radius.0.is_finite() && e.radius.0 > 0.0,
+                    "seed {seed} id {id:?}: radius {} should be finite and positive",
+                    e.radius.0
+                );
+                assert!(
+                    e.affinity.is_finite() && (-1.0..=1.0).contains(&e.affinity),
+                    "seed {seed} id {id:?}: affinity {} should be finite and within [-1, 1]",
+                    e.affinity
+                );
+                assert!(
+                    e.energy_per_unit.0.is_finite(),
+                    "seed {seed} id {id:?}: energy_per_unit should be finite"
+                );
+                assert!(
+                    e.abundance.is_finite() && e.abundance >= 0.0,
+                    "seed {seed} id {id:?}: abundance {} should be finite and non-negative",
+                    e.abundance
+                );
+                assert!(
+                    e.instability.is_finite() && (0.0..=1.0).contains(&e.instability),
+                    "seed {seed} id {id:?}: instability {} should be finite and within [0, 1]",
+                    e.instability
+                );
+            }
+            for (a, _) in u.table.iter() {
+                for (b, _) in u.table.iter() {
+                    let v = u.bonds.energy(a, b, BondOrder::SINGLE).get();
+                    assert!(
+                        v.is_finite(),
+                        "seed {seed} {a:?}-{b:?}: bond energy should be finite"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The identity configuration (`rung == 0`) is reachable, and real names
+    /// appear only there — the same G2-revision property the identity-seed
+    /// naming mechanism exists to provide, checked end-to-end through
+    /// `Universe::generate_under` for the first time.
+    ///
+    /// **Seed 21, not a `find()` over a small sample.** An earlier version
+    /// of this test searched `[1, 2, 3]` for an identity seed and silently
+    /// `return`ed if none matched — since `P(identity) = 1/(MAX+1) = 1/9`,
+    /// that early return fired on this exact draw (none of 1/2/3 are
+    /// identity) every time, so the test always passed without ever
+    /// reaching either assertion below. Caught by checking, not by the
+    /// suite: seeds 21/27/43/44 were found identity by direct probe over
+    /// 0..50 and 21 is pinned here so the test always exercises its own
+    /// claim rather than sometimes skipping it.
+    #[test]
+    fn identity_seeds_get_real_names_and_exactly_118_elements() {
+        let seed = 21;
+        let u = Universe::generate_under(seed, PhysicsVersion::V2);
+        assert!(
+            u.rung.is_identity(),
+            "seed {seed} was identity when this test was written -- if this fires, either \
+             the fold or the rung draw changed and this pin needs re-deriving, not silently \
+             widening back to a `find()` over a sample"
+        );
+        assert_eq!(
+            u.table.len(),
+            118,
+            "seed {seed}: identity configuration should have exactly 118 elements"
+        );
+        // `REAL_TABLE` stores lowercase names ("hydrogen", not "Hydrogen") --
+        // matching its own literal entries, not a title-cased convention.
+        let has_hydrogen = u
+            .table
+            .iter()
+            .any(|(_, e)| e.symbol == "H" && e.name == "hydrogen");
+        assert!(
+            has_hydrogen,
+            "seed {seed}: identity configuration should include the real element H/Hydrogen"
+        );
     }
 }

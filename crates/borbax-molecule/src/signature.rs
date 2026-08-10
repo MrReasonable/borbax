@@ -193,13 +193,61 @@ use core::cmp::Ordering;
 /// *outside* the bracket `the_character_averages_only_the_atoms_facing_that_way`
 /// admits, so the two criteria disagree and Task 20 must say which wins.
 ///
-/// A further property worth keeping: `SHELL` is an absolute length while the
-/// embedding scales with the drawn radius series, so it means somewhat
-/// different things in different universes (1.24 atoms admitted at seed 10
-/// against 1.78 at seed 11, a 1.43x spread). Within a universe it is
-/// size-*stable* — 1.64 atoms at n = 2 against 1.57 at n = 12 while max extent
-/// grows 1.72 -> 7.90 — so it does not leak molecule size into the descriptor.
-const SHELL: Span = Span(0.75);
+/// A further property worth keeping: the fixed `0.75` this constant used to
+/// be was an absolute length while the embedding scales with the drawn
+/// radius series, so it meant somewhat different things in different
+/// universes (1.24 atoms admitted at seed 10 against 1.78 at seed 11, a
+/// 1.43x spread) — see [`shell_width`] for F2's fix.
+///
+/// **F2 (issue #26, Task 26.1 Step 12): this is now `0.9 * this molecule's
+/// own mean atom radius`, computed once per species — [`shell_width`], not
+/// this constant.** The fixed `0.75` above was calibrated against V1's
+/// radius series and measured to move: V2's own drawn range is
+/// meaningfully wider (ratio of max to min radius 11.7x against V1's 6.4x,
+/// measured directly rather than assumed — an earlier revision of this
+/// plan called V2's range "broken under V2's wider range" before that
+/// measurement existed). A single fixed absolute length cannot track a
+/// per-universe, per-species length scale; a per-species multiple of the
+/// molecule's own mean radius does, by construction.
+///
+/// **The property F2 owns is scale-equivariance, not "flat across molecule
+/// size" or "flat across seeds".** Both of those already held under the
+/// fixed constant (the note above records size-stability directly) and are
+/// unrelated to what F2 fixes. What F2 actually buys: rescaling every
+/// radius in a universe by a constant leaves the character channel's
+/// per-direction weights unchanged, because `shell_width` scales with the
+/// same radii the extents do — `the_character_channel_is_scale_equivariant`
+/// is the test that owns this claim, and it would fail under the fixed
+/// constant (a fixed `SHELL` does not rescale, so a rescaled universe would
+/// admit a different fraction of each molecule).
+///
+/// `f < 2` is the geometric requirement this multiplier must respect: at
+/// `f >= 2` the shell reaches through the near side of the atom facing a
+/// direction and starts admitting the atom facing the *opposite* direction,
+/// which is the "sees through the atom facing it" failure mode a surface
+/// descriptor cannot tolerate. `0.9` sits comfortably inside that bound.
+#[must_use]
+fn shell_width(e: &Embedding) -> Span {
+    let radii = e.radii();
+    if radii.is_empty() {
+        return Span::ZERO;
+    }
+    let mut sum = Span::ZERO;
+    for r in radii {
+        sum += *r;
+    }
+    // **`sum * inv_n`, then `* 0.9` — three possible orderings, one pinned.**
+    // Matches `binding.rs`'s `mean_extent` and `Embedding::radius_of_gyration`,
+    // whose own doc deferred this exact choice "until it acquires a
+    // consumer" — this is that consumer (§13.1).
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::as_conversions,
+        reason = "radii.len() <= MAX_ATOMS = 12, so the widening is exact"
+    )]
+    let inv_n = 1.0 / radii.len() as f64;
+    (sum * inv_n) * 0.9
+}
 
 /// A molecule's shape, as §8.3's binding kernel sees it.
 ///
@@ -458,6 +506,10 @@ pub fn signature<const D: usize>(e: &Embedding, g: &Geodesic<D>) -> Signature<D>
         return out;
     }
     let characters = e.characters();
+    // F2 (issue #26, Task 26.1 Step 12): per-species, computed once here --
+    // never per direction, never per pair (§8.6). See `shell_width`'s own
+    // doc for why this replaced a fixed universe-wide constant.
+    let shell = shell_width(e);
 
     for (d, dir) in g.dirs().iter().enumerate() {
         let reaches = e.reaches(*dir);
@@ -473,10 +525,10 @@ pub fn signature<const D: usize>(e: &Embedding, g: &Geodesic<D>) -> Signature<D>
             }
         }
 
-        // Surface character: atoms within SHELL of the supporting plane,
+        // Surface character: atoms within `shell` of the supporting plane,
         // weighted by how close they are to it. Fixed iteration order, so the
         // summation order is fixed (§13.1).
-        let floor = extent - SHELL;
+        let floor = extent - shell;
         let (mut num, mut den) = (0.0f64, 0.0f64);
         for (reach, character) in live.iter().zip(characters) {
             let above = (*reach - floor).get();
@@ -490,10 +542,13 @@ pub fn signature<const D: usize>(e: &Embedding, g: &Geodesic<D>) -> Signature<D>
         if let (Some(extent_slot), Some(character_slot)) = (out.r.get_mut(d), out.a.get_mut(d)) {
             *extent_slot = extent;
             // `den > 0.0` cannot be false for `n >= 1`: the extremal atom has
-            // `reach == extent`, so its weight is SHELL. Kept as a guard rather
-            // than an assertion because the alternative is a division whose
-            // failure mode is a silent NaN that then wins every downstream
-            // selection.
+            // `reach == extent`, so its weight is exactly `shell` -- positive
+            // because it is `0.9 * a mean of atom radii`, and a radius is
+            // positive by construction (F2 changed the premise from "SHELL is
+            // a positive constant" to this, but not the conclusion). Kept as
+            // a guard rather than an assertion because the alternative is a
+            // division whose failure mode is a silent NaN that then wins
+            // every downstream selection.
             //
             // **There is deliberately no clamp to `[-1, 1]` here**, and the
             // reason is measured rather than stylistic. `num / den` is a convex
@@ -759,9 +814,13 @@ mod tests {
         );
     }
 
-    /// The surface character reads **only** the atoms within [`SHELL`] of the
-    /// supporting plane, weighted linearly by how close they sit to it.
-    /// Hand-computed against the same weights rather than against another call.
+    /// The surface character reads **only** the atoms within [`shell_width`]
+    /// of the supporting plane, weighted linearly by how close they sit to
+    /// it. Hand-computed against the same weights rather than against
+    /// another call -- and against the same per-species `shell_width(&emb)`
+    /// `signature()` itself reads, not a module constant (F2 removed the
+    /// constant; recomputing against a stale fixed value would compare
+    /// `signature()` against a different formula while staying green).
     #[test]
     fn the_character_averages_only_the_atoms_facing_that_way() {
         let (tbl, uni) = fixture(6);
@@ -771,6 +830,7 @@ mod tests {
         let species = canon(&random_tree(&mut rng, 10, &tbl, &ids));
         let emb = embed(&species, &uni);
         let s = signature(&emb, &g);
+        let shell = shell_width(&emb);
 
         let mut excluded_seen = 0u32;
         for i in 0..D {
@@ -779,7 +839,7 @@ mod tests {
             let extent = s.extents()[i];
             let (mut num, mut den) = (0.0f64, 0.0f64);
             for (reach, character) in reaches.iter().zip(emb.characters()) {
-                let raw = (*reach - (extent - SHELL)).get();
+                let raw = (*reach - (extent - shell)).get();
                 let w = if raw > 0.0 { raw } else { 0.0 };
                 if w == 0.0 {
                     excluded_seen += 1;
@@ -798,19 +858,65 @@ mod tests {
         // A shell that admitted every atom would make this a plain average and
         // the weighting inert. Counted over (direction, atom) pairs, which is
         // what the loop above increments.
-        // **The bar is set from a sweep, not by eye.** Exclusions on this
-        // fixture against the shell width: 0.75 -> 355 of 420 (shipped),
-        // 1.5 -> 307, 2.0 -> 257, 3.0 -> 180, 6.0 -> 12, 1000 -> 0. So 250
-        // trips at roughly SHELL >= 2.1 — the shell having grown past the
-        // scale it was chosen at — while leaving 30% headroom below the
-        // measured value. The corpus is seed-fixed, so this is exact and no
-        // flakiness budget is being spent.
+        // **The bar is re-measured for F2, not inherited from the fixed
+        // constant's own sweep.** F2's `shell = 0.9 * mean atom radius` on
+        // this fixture measures to a different width than the old fixed
+        // `0.75`, so the old sweep's exclusion counts do not transfer.
+        // Measured directly on this exact corpus with the per-species
+        // `shell_width`: `excluded_seen` = 356 of 420. The bar is set with
+        // real headroom below that, on the same reasoning as before -- catch
+        // the shell growing past the scale where it stops discriminating,
+        // not a specific number chosen to just barely pass.
         assert!(
             excluded_seen > 250,
             "only {excluded_seen} of 420 (direction, atom) pairs fell outside the shell; \
-             SHELL is admitting effectively everything, so the character channel has \
+             shell_width is admitting effectively everything, so the character channel has \
              become a composition average with no geometry in it"
         );
+    }
+
+    /// F2's own property (issue #26, Task 26.1 Step 12, `shell_width`'s own
+    /// doc): rescaling every position and radius in a molecule by a
+    /// constant leaves the character channel's per-direction weights
+    /// unchanged. **Not** "flat across molecule size" (already true under
+    /// the old fixed `SHELL`, and unrelated to this fix) and **not** "flat
+    /// across seeds" (a property of radius normalisation elsewhere,
+    /// likewise unrelated) — this is specifically about `shell_width`
+    /// scaling with the same radii the extents do, so the fraction of the
+    /// molecule each direction admits is scale-invariant.
+    ///
+    /// **This is the test that would have failed under the fixed `SHELL`
+    /// this replaced.** A fixed absolute length does not rescale with `k`,
+    /// so a rescaled molecule would admit a different fraction of its own
+    /// atoms per direction and the character channel would move. Extents
+    /// scale by `k` too (support functions are 1-homogeneous), which is why
+    /// only the character channel — the dimensionless one — is asserted
+    /// invariant here.
+    #[test]
+    fn the_character_channel_is_scale_equivariant() {
+        let (tbl, uni) = fixture(6);
+        let g = geo();
+        let ids = chain_capable(&tbl);
+        for seed in [0u64, 1, 2] {
+            let mut rng = Stream::new(905 + seed, Domain::Molecule, 0);
+            let species = canon(&random_tree(&mut rng, 8, &tbl, &ids));
+            let emb = embed(&species, &uni);
+            let base = signature(&emb, &g);
+            for &k in &[0.1, 2.0, 17.3] {
+                let scaled_emb = emb.scaled(k);
+                let scaled = signature(&scaled_emb, &g);
+                for i in 0..D {
+                    let want = base.characters()[i];
+                    let got = scaled.characters()[i];
+                    assert!(
+                        (want - got).abs() < 1e-9,
+                        "seed {seed} k={k} direction {i}: character {got} != {want} at base \
+                         scale -- shell_width should scale with the molecule, keeping the \
+                         admitted fraction (and so the weights) unchanged"
+                    );
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -1621,13 +1727,19 @@ mod tests {
             "the group_distance leg of the digest did not run"
         );
         assert_eq!(
-            hash, 0x08b4_7660_88a4_09f5,
+            hash, 0xa6ff_6b8c_51ac_acb7,
             "the shape signature moved. If you meant to change the physics, \
              regenerate this constant and say so in the commit message; if you did \
              not, suspect an accumulation order — `reaches`, `targets` and \
              `group_distance` each carry a pinned association that is \
              algebraically invariant under the obvious tidy-up and moves 11-22% of \
-             values in their last bits."
+             values in their last bits. **Regenerated deliberately for issue #26, \
+             Task 26.1 Step 13 (2026-08-10): F2 replaced the fixed `SHELL = 0.75` \
+             with a per-species `0.9 * mean atom radius`, which changes the \
+             character channel for every molecule in every universe (F2 cannot \
+             be version-gated — `signature()` takes no `PhysicsVersion`) — a \
+             real, deliberate physics-adjacent change, not a bug. Previous value \
+             `0x08b4_7660_88a4_09f5`.**"
         );
     }
 

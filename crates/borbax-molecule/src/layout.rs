@@ -256,6 +256,29 @@ impl Embedding {
         out
     }
 
+    /// This embedding with every position and radius scaled by `k`,
+    /// character left untouched.
+    ///
+    /// **Test-only, for the same reason [`Self::rotated`] is** — this exists
+    /// for F2's scale-equivariance test (issue #26, Task 26.1 Step 12), which
+    /// needs "the same molecule at a different length scale" as a real
+    /// `Embedding` rather than as a hand-built fixture, since `shell_width`
+    /// reads `Self::radii` directly. Character is dimensionless (§7.1) and is
+    /// deliberately not touched — scale-equivariance is a claim about the
+    /// extent/character *weights*, not about redrawing the affinity itself.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn scaled(&self, k: f64) -> Self {
+        let mut out = self.clone();
+        for (slot, point) in out.pos.iter_mut().zip(self.pos.iter()).take(self.n) {
+            *slot = [point[0] * k, point[1] * k, point[2] * k];
+        }
+        for (slot, r) in out.radius.iter_mut().zip(self.radius.iter()).take(self.n) {
+            *slot = *r * k;
+        }
+        out
+    }
+
     /// RMS distance from the centroid — the molecule's own length scale.
     ///
     /// The embedding is centred, so this is taken about the origin.

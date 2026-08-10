@@ -218,6 +218,7 @@
 
 use crate::PhysicsVersion;
 use crate::element::{ElementId, PeriodicTable};
+use crate::perturbation::{MigratedConstant, Rung, draw_symmetric};
 use borbax_rng::Stream;
 use borbax_units::{Quanta, det_math};
 
@@ -546,6 +547,22 @@ impl BondEnergyMatrix {
     /// this is one definition rather than two.
     pub(crate) const GAMMA_RANGE: (f64, f64) = (0.68, 1.0);
 
+    /// V2's bond-capacity floor (issue #26, Task 26.1 Steps 6-9, Decision 8)
+    /// — `capacity(el) = BASE_CAPACITY_SCALE + valence(el)`, drawn through
+    /// P7 as [`MigratedConstant::CapacityScale`]. Chosen, not derived, on
+    /// the same order of magnitude as the valence values it sits alongside
+    /// (typically 0-4 for a main-group element) — large enough that a
+    /// zero-valence (noble-gas-analogue) element still prices a small
+    /// positive capacity rather than exactly zero, small enough that
+    /// valence differences still dominate the signal.
+    pub(crate) const BASE_CAPACITY_SCALE: f64 = 0.5;
+
+    /// V2's rank-2 ionic-excess scale (issue #26, Task 26.1 Step 6/8) — see
+    /// [`MigratedConstant::IonicScale`]'s own doc for the full derivation,
+    /// the worst-case positivity proof, and why this is `2.0` rather than
+    /// the naive `4.0`.
+    pub(crate) const BASE_IONIC_SCALE: f64 = 2.0;
+
     /// Derive the matrix from a table's binding energies.
     ///
     /// **Two constants are drawn and both are dimensionless** — the multiple of
@@ -577,9 +594,15 @@ impl BondEnergyMatrix {
     /// despite `#[non_exhaustive]` not binding in-crate — so a second variant
     /// with no arm here is `E0004` at compile time, the same forcing function
     /// [`crate::Universe::generate_under`] already uses.
-    pub(crate) fn generate(table: &PeriodicTable, rng: &mut Stream) -> Self {
+    ///
+    /// **`seed` and `rung` are only consumed by the V2 arm** — V1's own
+    /// energy-scale and order-exponent draws stay on `rng` unchanged,
+    /// exactly as before this pair was added. Passed unconditionally rather
+    /// than threaded in only for V2 so this stays one signature, not two.
+    pub(crate) fn generate(table: &PeriodicTable, seed: u64, rung: Rung, rng: &mut Stream) -> Self {
         match table.physics() {
             PhysicsVersion::V1 => Self::generate_v1(table, rng),
+            PhysicsVersion::V2 => Self::generate_v2(table, seed, rung, rng),
         }
     }
 
@@ -637,7 +660,14 @@ impl BondEnergyMatrix {
         // correct by meaning: no frontier, `valence == 0`, forms no bonds. It
         // does collide with the unknown-id sentinel, which is one more reason
         // Task 14 must retire that.
-        let pack = crate::packing::PackingConsts::new(pattern.k);
+        let crate::element::ShellLaw::V1 { k } = pattern.law else {
+            unreachable!(
+                "generate_v1 is only called for a V1 table — table.physics() and \
+                          the universe's own physics agree by construction, per generate_v1's \
+                          own header comment in lib.rs"
+            )
+        };
+        let pack = crate::packing::PackingConsts::new(k);
         let capacity: Vec<f64> = table
             .iter()
             .map(|(_, el)| contact_density(pack, el.units))
@@ -682,6 +712,81 @@ impl BondEnergyMatrix {
                 // `the_assembled_universe_digest_is_pinned` catches it.
                 // Nobody tidies this later.
                 let v = base * (ca * cb).sqrt();
+                if let Some(cell) = e.get_mut(a * n + b) {
+                    *cell = v;
+                }
+                if let Some(cell) = e.get_mut(b * n + a) {
+                    *cell = v;
+                }
+            }
+        }
+
+        Self { n, e, order_scale }
+    }
+
+    /// V2's path (issue #26, Task 26.1 Steps 6-9, Decision 8): a rank-2
+    /// construction, not V1's rank-1 `base * sqrt(ca * cb)`. The rank-1
+    /// term is unchanged — `ca`/`cb` come from `capacity_scale +
+    /// valence(el)`, the gap-derived quantity `orbital.rs` already
+    /// computes and `element.rs`'s V2 path stores on
+    /// [`crate::element::Element::valence`] — but a second, additive
+    /// **ionic-excess** term now rides alongside it:
+    /// `-ionic_base * affinity[a] * affinity[b]`, an outer product of the
+    /// affinity vector with itself. See [`MigratedConstant::IonicScale`]
+    /// for the full derivation (Pauling-motivated, numerically verified
+    /// rank-2 and residual-correlation properties, and the worst-case
+    /// positivity proof `bond_energy_stays_non_negative_at_every_reachable_rung`,
+    /// below, checks directly).
+    ///
+    /// **`scale`/`order_scale`/`ionic_scale` are now P7-migrated too**
+    /// (`MigratedConstant::Scale`/`Gamma`/`IonicScale`), so `rng` (the
+    /// shared per-universe stream V1's own draws still use) has no reader
+    /// left in this function — kept in the signature only because
+    /// [`Self::generate`] passes it unconditionally to both version arms,
+    /// per that function's own doc.
+    fn generate_v2(table: &PeriodicTable, seed: u64, rung: Rung, _rng: &mut Stream) -> Self {
+        let n = table.len();
+        let pattern = table.pattern();
+
+        let scale = draw_symmetric(seed, rung, MigratedConstant::Scale, 56.0);
+        let base = pattern.eps * scale;
+        let order_scale = OrderScale::new(draw_symmetric(seed, rung, MigratedConstant::Gamma, 0.6));
+
+        let capacity_scale = draw_symmetric(
+            seed,
+            rung,
+            MigratedConstant::CapacityScale,
+            Self::BASE_CAPACITY_SCALE,
+        );
+        let ionic_scale = draw_symmetric(
+            seed,
+            rung,
+            MigratedConstant::IonicScale,
+            Self::BASE_IONIC_SCALE,
+        );
+        let ionic_base = pattern.eps * ionic_scale;
+
+        let capacity: Vec<f64> = table
+            .iter()
+            .map(|(_, el)| capacity_scale + f64::from(el.valence))
+            .collect();
+        let affinity: Vec<f64> = table.iter().map(|(_, el)| el.affinity).collect();
+
+        let mut e = vec![Quanta::ZERO; n * n];
+        for a in 0..n {
+            let ca = capacity.get(a).copied().unwrap_or(0.0);
+            let aff_a = affinity.get(a).copied().unwrap_or(0.0);
+            for b in a..n {
+                let cb = capacity.get(b).copied().unwrap_or(0.0);
+                let aff_b = affinity.get(b).copied().unwrap_or(0.0);
+                // Rank-1 covalent term, plus the rank-2-completing ionic
+                // term: opposite-signed (complementary) affinities ADD
+                // energy, same-signed affinities SUBTRACT it, matching
+                // Principle 1 ("bumps must meet hollows"). See
+                // `MigratedConstant::IonicScale` for why this specific
+                // additive form (not `(aff_a - aff_b)^2`) is what keeps
+                // the whole matrix exactly rank 2.
+                let v = base * (ca * cb).sqrt() - ionic_base * (aff_a * aff_b);
                 if let Some(cell) = e.get_mut(a * n + b) {
                     *cell = v;
                 }
@@ -803,14 +908,25 @@ mod tests {
     use super::*;
     use crate::PhysicsVersion;
     use crate::element::{ElementId, PeriodicTable, generate_elements};
+    use crate::perturbation::Rung;
     use borbax_rng::{Domain, Stream};
+
+    /// V2's own table and bond matrix, for Task 26.1 Step 6's acceptance
+    /// tests below -- `universe(seed)` deliberately fixes
+    /// `PhysicsVersion::CURRENT`, which is V1.
+    fn universe_v2(seed: u64) -> (PeriodicTable, BondEnergyMatrix) {
+        let table = generate_elements(seed, PhysicsVersion::V2);
+        let mut rng = Stream::new(seed, Domain::Universe, 2);
+        let bonds = BondEnergyMatrix::generate(&table, seed, Rung::draw(seed), &mut rng);
+        (table, bonds)
+    }
 
     /// One universe's table and its bond matrix, drawn the way
     /// [`crate::Universe::generate`] draws them.
     fn universe(seed: u64) -> (PeriodicTable, BondEnergyMatrix) {
         let table = generate_elements(seed, PhysicsVersion::CURRENT);
         let mut rng = Stream::new(seed, Domain::Universe, 2);
-        let bonds = BondEnergyMatrix::generate(&table, &mut rng);
+        let bonds = BondEnergyMatrix::generate(&table, seed, Rung::draw(seed), &mut rng);
         (table, bonds)
     }
 
@@ -955,7 +1071,10 @@ mod tests {
             // `energy_per_unit` subtracts is about a cluster's own packing. The
             // anti-dilution property this test exists for is unchanged — it
             // still fails the moment anything else reaches the capacity scale.
-            let pack = crate::packing::PackingConsts::new(table.pattern().k);
+            let crate::element::ShellLaw::V1 { k } = table.pattern().law else {
+                unreachable!("this test targets V1")
+            };
+            let pack = crate::packing::PackingConsts::new(k);
             let all: Vec<(ElementId, f64)> = table
                 .iter()
                 .map(|(id, e)| (id, contact_density(pack, e.units)))
@@ -998,7 +1117,10 @@ mod tests {
     fn the_bondable_spread_is_exactly_the_capacity_ratio() {
         for seed in 0..16 {
             let (table, m) = universe(seed);
-            let pack = crate::packing::PackingConsts::new(table.pattern().k);
+            let crate::element::ShellLaw::V1 { k } = table.pattern().law else {
+                unreachable!("this test targets V1")
+            };
+            let pack = crate::packing::PackingConsts::new(k);
             let bondable: Vec<(ElementId, f64)> = table
                 .iter()
                 .filter(|(_, e)| e.valence >= 1)
@@ -1236,7 +1358,10 @@ mod tests {
             // stated justification was false anyway — no test in the workspace
             // asserts `energy_per_unit` is finite, and the nearest one asserts a
             // different quantity on seed 9 while this ran seeds 0..20.
-            let pack = crate::packing::PackingConsts::new(table.pattern().k);
+            let crate::element::ShellLaw::V1 { k } = table.pattern().law else {
+                unreachable!("this test targets V1")
+            };
+            let pack = crate::packing::PackingConsts::new(k);
             let density = |id: ElementId| {
                 table
                     .get(id)
@@ -1313,7 +1438,10 @@ mod tests {
         for seed in 0..24 {
             let u = crate::Universe::generate(seed);
             let (table, m) = (&u.table, &u.bonds);
-            let pack = crate::packing::PackingConsts::new(table.pattern().k);
+            let crate::element::ShellLaw::V1 { k } = table.pattern().law else {
+                unreachable!("this test targets V1")
+            };
+            let pack = crate::packing::PackingConsts::new(k);
             // Same stream, same index, same order — and the index is the
             // production one, because `Universe::generate` above is what chose
             // it. A reordered draw or an inserted one fails here; a *retuned
@@ -1652,7 +1780,10 @@ mod tests {
     fn capacity_enters_bond_energy_as_an_exact_ratio() {
         for seed in 0..16 {
             let (table, m) = universe(seed);
-            let pack = crate::packing::PackingConsts::new(table.pattern().k);
+            let crate::element::ShellLaw::V1 { k } = table.pattern().law else {
+                unreachable!("this test targets V1")
+            };
+            let pack = crate::packing::PackingConsts::new(k);
             let cells: Vec<(ElementId, f64, f64)> = table
                 .iter()
                 .map(|(id, e)| {
@@ -1716,9 +1847,10 @@ mod tests {
 
             let mut r0 = Stream::new(seed, Domain::Universe, 2);
             let mut r1 = Stream::new(seed, Domain::Universe, 2);
+            let rung = Rung::draw(seed);
             let (m0, m1) = (
-                BondEnergyMatrix::generate(&table, &mut r0),
-                BondEnergyMatrix::generate(&scaled_table, &mut r1),
+                BondEnergyMatrix::generate(&table, seed, rung, &mut r0),
+                BondEnergyMatrix::generate(&scaled_table, seed, rung, &mut r1),
             );
             for &a in ids(&table).iter().take(24) {
                 for &b in ids(&table).iter().take(24) {
@@ -1839,5 +1971,209 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Decision 8's "one shared computation" claim, for bond capacity
+    /// specifically: `capacity(el) = capacity_scale + valence(el)` must be
+    /// an exact function of `Element::valence` (itself gap-derived) and
+    /// nothing else -- checked by replaying the production draw and
+    /// recomputing the whole V2 formula bit-for-bit, the same discipline
+    /// `both_bond_constants_are_this_universes_own_draws` uses for V1.
+    #[test]
+    fn v2_bond_energy_is_exactly_derived_from_valence_and_affinity() {
+        for seed in [0u64, 1, 5, 21, 42] {
+            let (table, bonds) = universe_v2(seed);
+            let rung = Rung::draw(seed);
+            let pattern = table.pattern();
+
+            let scale = draw_symmetric(seed, rung, MigratedConstant::Scale, 56.0);
+            let base = pattern.eps * scale;
+            let capacity_scale = draw_symmetric(
+                seed,
+                rung,
+                MigratedConstant::CapacityScale,
+                BondEnergyMatrix::BASE_CAPACITY_SCALE,
+            );
+            let ionic_scale = draw_symmetric(
+                seed,
+                rung,
+                MigratedConstant::IonicScale,
+                BondEnergyMatrix::BASE_IONIC_SCALE,
+            );
+            let ionic_base = pattern.eps * ionic_scale;
+
+            let ids = ids(&table);
+            for &a in ids.iter().step_by(7) {
+                for &b in ids.iter().step_by(11) {
+                    let ea = table
+                        .get(a)
+                        .unwrap_or_else(|| unreachable!("id from this table"));
+                    let eb = table
+                        .get(b)
+                        .unwrap_or_else(|| unreachable!("id from this table"));
+                    let ca = capacity_scale + f64::from(ea.valence);
+                    let cb = capacity_scale + f64::from(eb.valence);
+                    let want = base * (ca * cb).sqrt() - ionic_base * (ea.affinity * eb.affinity);
+                    let got = bonds.energy(a, b, BondOrder::SINGLE);
+                    assert!(
+                        (got.get() - want.get()).abs() < 1e-9,
+                        "seed {seed} {a:?}-{b:?}: bond energy {} != replayed formula {} -- \
+                         capacity/ionic terms are not exactly derived from valence/affinity",
+                        got.get(),
+                        want.get()
+                    );
+                }
+            }
+        }
+    }
+
+    /// The worst-case positivity proof `MigratedConstant::IonicScale`'s own
+    /// doc states, checked directly rather than trusted: the ionic term
+    /// can only drive a bond negative when both elements' affinities are
+    /// near-saturated same-signed *and* `Scale`/`CapacityScale` are both at
+    /// their perturbed floor simultaneously. Sweep every reachable rung
+    /// (not just the seed's own drawn rung) with `Universe::generate_under`
+    /// unavailable at arbitrary rungs, so this drives `BondEnergyMatrix::generate`
+    /// directly the way `gamma_stays_a_diminishing_series_at_every_reachable_rung`
+    /// drives `draw_symmetric` directly.
+    #[test]
+    fn bond_energy_stays_finite_and_non_negative_at_every_reachable_rung() {
+        for seed in [0u64, 1, 7, 42, 1000] {
+            let table = generate_elements(seed, PhysicsVersion::V2);
+            for r in 0..=Rung::MAX {
+                let rung = Rung::new(r).unwrap_or_else(|| unreachable!("r <= Rung::MAX"));
+                let mut rng = Stream::new(seed, Domain::Universe, 2);
+                let bonds = BondEnergyMatrix::generate(&table, seed, rung, &mut rng);
+                for (a, _) in table.iter() {
+                    for (b, _) in table.iter() {
+                        let v = bonds.energy(a, b, BondOrder::SINGLE);
+                        assert!(
+                            v.get().is_finite(),
+                            "seed {seed} rung {r} {a:?}-{b:?}: bond energy should be finite"
+                        );
+                        assert!(
+                            v.get() >= 0.0,
+                            "seed {seed} rung {r} {a:?}-{b:?}: bond energy {} went negative -- \
+                             the ionic term's worst-case margin was not what \
+                             MigratedConstant::IonicScale's doc claims",
+                            v.get()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Power iteration for a symmetric matrix's dominant eigenpair --
+    /// test-only, no external linear-algebra dependency: `M v` repeated
+    /// and renormalised converges to the eigenvector of largest-magnitude
+    /// eigenvalue for a symmetric matrix, which is exactly the rank-1
+    /// approximation `bond_matrix_rank2_residual_correlates_with_affinity_difference_squared`
+    /// needs to subtract off.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "every index is < n by loop construction: m is n*n, v/next/mv are all built at \
+                  length n"
+    )]
+    fn dominant_eigenpair(m: &[f64], n: usize) -> (f64, Vec<f64>) {
+        let mut v = vec![1.0; n];
+        for _ in 0..300 {
+            let mut next = vec![0.0; n];
+            for (i, slot) in next.iter_mut().enumerate() {
+                *slot = (0..n).map(|j| m[i * n + j] * v[j]).sum();
+            }
+            let norm = next.iter().map(|x| x * x).sum::<f64>().sqrt();
+            for x in &mut next {
+                *x /= norm;
+            }
+            v = next;
+        }
+        let mv: Vec<f64> = (0..n)
+            .map(|i| (0..n).map(|j| m[i * n + j] * v[j]).sum())
+            .collect();
+        let lambda: f64 = (0..n).map(|i| v[i] * mv[i]).sum();
+        (lambda, v)
+    }
+
+    /// Task 26.1 Step 6's headline discriminator: the bond matrix's
+    /// rank-1-removed residual must correlate with the affinity
+    /// *difference*, checked directly against the constructed
+    /// `BondEnergyMatrix` output rather than by recomputing the source
+    /// formula (which `v2_bond_energy_is_exactly_derived_from_valence_and_affinity`
+    /// already does) -- this is what actually discriminates "the ionic
+    /// term is present and doing its job" from "the matrix is still
+    /// rank-1", the way the plan's own acceptance criterion demands.
+    ///
+    /// **`(affinity[a]-affinity[b])^2`, not the raw signed difference.**
+    /// `BondEnergyMatrix` is symmetric by construction, so a residual
+    /// correlated against an antisymmetric quantity averaged over the
+    /// off-diagonal is not the meaningful comparison; the squared
+    /// difference is the symmetric analogue and is what a Pauling-style
+    /// ionic-excess term is actually shaped like.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a, b < n by loop construction; v is built at length n and m at length n*n"
+    )]
+    #[test]
+    fn bond_matrix_rank2_residual_correlates_with_affinity_difference_squared() {
+        const CORRELATION_FLOOR: f64 = 0.5;
+        for seed in [0u64, 1, 5, 21, 42] {
+            let (table, bonds) = universe_v2(seed);
+            let n = table.len();
+            let ids = ids(&table);
+
+            let mut m: Vec<f64> = Vec::with_capacity(n * n);
+            for &a in &ids {
+                for &b in &ids {
+                    m.push(bonds.energy(a, b, BondOrder::SINGLE).get());
+                }
+            }
+            let (lambda, v) = dominant_eigenpair(&m, n);
+
+            let affinity: Vec<f64> = table.iter().map(|(_, e)| e.affinity).collect();
+            let mut residual = Vec::with_capacity(n * (n - 1) / 2);
+            let mut diffsq = Vec::with_capacity(n * (n - 1) / 2);
+            for a in 0..n {
+                for b in (a + 1)..n {
+                    let fit = lambda * v[a] * v[b];
+                    residual.push(m[a * n + b] - fit);
+                    let d = affinity.get(a).unwrap_or_else(|| unreachable!("a < n"))
+                        - affinity.get(b).unwrap_or_else(|| unreachable!("b < n"));
+                    diffsq.push(d * d);
+                }
+            }
+            let corr = pearson_correlation(&residual, &diffsq);
+            assert!(
+                corr > CORRELATION_FLOOR,
+                "seed {seed}: rank-1-removed residual correlates {corr:.4} with \
+                 (affinity_diff)^2 -- below the floor, so the matrix is not \
+                 discriminably rank-2"
+            );
+        }
+    }
+
+    /// Pearson correlation, hand-rolled -- see `element.rs`'s own copy of
+    /// this helper (same reasoning: a test-only ~10-line helper is a lower
+    /// bar than even a dev-dependency).
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "x.len() is a small test-fixture size, well within f64's exact integer range"
+    )]
+    fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
+        let n = x.len() as f64;
+        let mean_x = x.iter().sum::<f64>() / n;
+        let mean_y = y.iter().sum::<f64>() / n;
+        let mut cov = 0.0;
+        let mut var_x = 0.0;
+        let mut var_y = 0.0;
+        for (&xi, &yi) in x.iter().zip(y) {
+            let dx = xi - mean_x;
+            let dy = yi - mean_y;
+            cov += dx * dy;
+            var_x += dx * dx;
+            var_y += dy * dy;
+        }
+        cov / (var_x.sqrt() * var_y.sqrt())
     }
 }

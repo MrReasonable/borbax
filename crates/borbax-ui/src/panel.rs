@@ -211,6 +211,15 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
         }
     });
 
+    // **After the seed row, before `status_line`, and that is the frame-order
+    // rule again.** `set_physics` regenerates the universe on screen (§6: a
+    // universe is `(seed, physics)`, so a status line still reading the old
+    // law would be exactly the stale, misattributed number `Outcome` exists to
+    // make unrepresentable). Painting this before `status_line`/
+    // `periodic_table` means both read the new universe in the same frame a
+    // button is clicked, the same guarantee the seed and name boxes give.
+    physics_switch(state, ui);
+
     // Not built here — see the module note. `status_line` is in `state.rs` so
     // that a test asserting on it is asserting on what the window shows.
     ui.label(state.status_line());
@@ -230,6 +239,36 @@ pub fn draw(state: &mut ViewerState, ui: &mut egui::Ui) {
     ui.label(state.scene_caption());
 
     view_switch(state, ui);
+}
+
+/// Which laws the universe on screen is generated under.
+///
+/// **Built from [`ViewerState::physics_options`] rather than two hand-written
+/// buttons**, unlike [`view_switch`] below — `ViewMode` has exactly two
+/// variants forever, while `PhysicsVersion` is `#[non_exhaustive]` and Task
+/// 26.2 lands a third (`V3`, nuclear structure). Iterating the options this
+/// file did not build keeps a future law from needing an edit here.
+///
+/// **The click is applied after the loop, not inside it** — the same deferred
+/// apply `periodic_table`'s grid uses, and for the same reason: this loop
+/// borrows `state` immutably through `physics_options()`, so `set_physics`
+/// cannot be called until the borrow ends.
+fn physics_switch(state: &mut ViewerState, ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.label("physics");
+        let mut chosen = None;
+        for option in state.physics_options() {
+            if ui
+                .selectable_label(option.selected, &option.label)
+                .clicked()
+            {
+                chosen = Some(option.version);
+            }
+        }
+        if let Some(version) = chosen {
+            state.set_physics(version);
+        }
+    });
 }
 
 /// The two ways of looking at the molecule.

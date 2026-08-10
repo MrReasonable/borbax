@@ -70,7 +70,7 @@
 
 use crate::geodesic::{Geodesic, Rotation};
 use crate::signature::Signature;
-use borbax_units::Span;
+use borbax_units::{Span, canonical_cmp};
 use borbax_universe::UniverseConsts;
 
 /// The universe's binding constants, gathered from [`UniverseConsts`].
@@ -185,13 +185,116 @@ impl BindConsts {
 /// answers wrongly: measured, the search beats the supposed upper bound on
 /// **93.4%** of pairs, worst overshoot 2.47x. §22.2 sweeps D across
 /// {12, 42, 162}, which is exactly where a copied turbofish comes from.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// **Not `Copy` — this is Decision 4's rearrangement-inequality prefilter
+/// (issue #26, Task 26.1 Step 12), and it needs the full per-direction
+/// channels, not three summary scalars.** The predecessor's Cauchy–Schwarz
+/// bound (`‖x‖ − ‖y‖`) is exactly `0` on every self-pair — the centred
+/// channels are identical, so the spread difference vanishes regardless of
+/// shape — which is why it went "selectively blind on self-pairs" the
+/// moment #31's affinity fix let the charge channel's `D·eps^2` term (the
+/// only thing that was carrying self-pair rejection) approach zero too.
+/// Measured against real `PhysicsVersion::V2` data: the predecessor's
+/// `worst_gap` rises to ~1.0 (effectively vacuous) the moment V2's
+/// genuinely zero-straddling affinity lands.
+///
+/// **Two bounds, not one, and the max of both — the flat rearrangement bound
+/// alone does not restore self-pair discrimination either.** For a
+/// self-pair the flat bound (opposite-sorted pairing of the centred
+/// channel against itself) is *also* exactly `0` — a vector's
+/// opposite-sorted pairing against itself is an exact cancellation, no
+/// rotation can reproduce it, and no permutation-relaxation of the flat
+/// kind changes that. What restores real self-pair information is the
+/// **antipodal-block** bound: [`Geodesic::contact_perms`] commutes with
+/// [`Geodesic::anti`] (verified exhaustively at D = 12/42/162 — every
+/// contact permutation maps antipodal *pairs* to antipodal pairs), which is
+/// a strictly smaller, tighter relaxation than "any permutation of `D`
+/// elements" and is not identically degenerate on the diagonal. Measured:
+/// block-bound beats flat-bound on 184-242 of 315 real pairs in the shape
+/// channel and 45-137 of 315 in the charge channel (V1/V2), so neither
+/// alone is redundant — `ceiling` takes the tighter (larger) of the two
+/// per channel.
+#[derive(Debug, Clone, PartialEq)]
 pub struct SigSummary<const D: usize> {
-    /// Euclidean norm of the mean-centred extents: how much relief the surface
-    /// has, independent of how big the molecule is.
-    extent_spread: f64,
+    /// Mean-centred extents (`r[i] - mean(r)`), sorted ascending via
+    /// [`canonical_cmp`] — the array [`ceiling`]'s flat rearrangement bound
+    /// reads.
+    extent_sorted: [f64; D],
+    /// Antipodal-block statistics on the mean-centred extents: `[0..D/2)`
+    /// holds block sums `s = u[i] + u[anti[i]]`, `[D/2..D)` holds block
+    /// differences `|u[i] - u[anti[i]]|` — both halves sorted ascending
+    /// independently. One `[f64; D]` rather than two `[f64; D/2]`, because
+    /// `D/2` as a const-generic parameter needs unstable
+    /// `generic_const_exprs`.
+    extent_blocks: [f64; D],
+    /// Mean-centred characters, sorted ascending — same role as
+    /// `extent_sorted`, for the charge channel. Centred, not raw: centring
+    /// and adding back `D·eps^2` is exactly equivalent to working on raw
+    /// characters (verified to 1.66e-15 relative), and centred keeps
+    /// [`ceiling`]'s documented algebra visible and both channels
+    /// structurally identical in code.
+    character_sorted: [f64; D],
+    /// Antipodal-block statistics on the mean-centred characters, same
+    /// packing as `extent_blocks`.
+    character_blocks: [f64; D],
+    /// Mean character — the charge channel's un-eliminated offset,
+    /// `eps = mean_character(A) + mean_character(B)` (see [`ceiling`]'s own
+    /// doc for why the shape channel has no equivalent term).
     mean_character: f64,
-    character_spread: f64,
+}
+
+/// Mean-centred values from `raw`, sorted ascending via [`canonical_cmp`].
+///
+/// **No ID tie-break, unlike every other float sort this codebase's own
+/// §13.4 doctrine requires.** Equal keys here are *exchangeable in the
+/// consuming sum* — [`flat_bound`] and [`block_bound`] only ever read a
+/// sorted array back through a dot-product-shaped accumulation, and
+/// swapping two equal entries cannot change `Σ(x+y)²`. That argument, not
+/// the fact that a stable sort happens to be deterministic, is what makes
+/// omitting a tie-break legitimate here.
+fn centred_sorted<const D: usize>(raw: &[f64; D], mean: f64) -> [f64; D] {
+    let mut out: [f64; D] = core::array::from_fn(|i| {
+        raw.get(i)
+            .copied()
+            .unwrap_or_else(|| unreachable!("i < D by from_fn's own contract"))
+            - mean
+    });
+    out.sort_by(|a, b| canonical_cmp(*a, *b));
+    out
+}
+
+/// Antipodal-block statistics on `centred` (already mean-centred): `[0..D/2)`
+/// holds block sums, `[D/2..D)` holds `|block differences|`, both sorted
+/// ascending. Each antipodal pair is visited exactly once, via `anti[i] > i`
+/// selecting one canonical member — `s` is symmetric and `d` is absolute, so
+/// neither depends on which member of the pair is picked as `i`.
+///
+/// **Stable sort, same reasoning as [`centred_sorted`].**
+fn antipodal_blocks<const D: usize>(centred: &[f64; D], anti: &[u8; D]) -> [f64; D] {
+    let mut sums: Vec<f64> = Vec::with_capacity(D / 2);
+    let mut diffs: Vec<f64> = Vec::with_capacity(D / 2);
+    for (i, &j) in anti.iter().enumerate() {
+        let j = usize::from(j);
+        if j > i {
+            let ci = centred
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| unreachable!("i < D: anti has D entries"));
+            let cj = centred
+                .get(j)
+                .copied()
+                .unwrap_or_else(|| unreachable!("anti[i] < D by construction"));
+            sums.push(ci + cj);
+            diffs.push((ci - cj).abs());
+        }
+    }
+    sums.sort_by(|a, b| canonical_cmp(*a, *b));
+    diffs.sort_by(|a, b| canonical_cmp(*a, *b));
+    let mut out = [0.0f64; D];
+    for (slot, v) in out.iter_mut().zip(sums.iter().chain(diffs.iter())) {
+        *slot = *v;
+    }
+    out
 }
 
 /// How well two shapes fit, and in which relative orientation.
@@ -301,32 +404,123 @@ fn mean_character<const D: usize>(s: &Signature<D>) -> f64 {
 }
 
 impl<const D: usize> Signature<D> {
-    /// The rotation-invariant summary [`ceiling`] needs (§8.6).
+    /// The rotation-invariant summary [`ceiling`] needs (§8.3, §8.6).
     ///
-    /// Computed once per species at intern time, never per pair.
+    /// Computed once per species at intern time, never per pair. **Takes
+    /// `g`, unlike the 3-scalar summary this replaces** — the
+    /// antipodal-block statistics [`ceiling`]'s block bound reads need
+    /// [`Geodesic::anti`], and that table is universe-wide, not
+    /// per-species, so it is passed in rather than rebuilt.
     #[must_use]
-    pub fn summary(&self) -> SigSummary<D> {
-        let (me, mc) = (mean_extent(self), mean_character(self));
-        // **Direction-index order, and it is a pin like every other in this
-        // module.** Reversing this loop moves `extent_spread` on 54.7% of
-        // species with the whole suite green — it feeds `ceiling`, which is a
-        // rejection decision once Task 12 wires a threshold to it.
-        let (mut se, mut sc) = (0.0f64, 0.0f64);
-        for (e, c) in self.extents().iter().zip(self.characters()) {
-            let de = (*e - me).get();
-            let dc = *c - mc;
-            se += de * de;
-            sc += dc * dc;
-        }
+    pub fn summary(&self, g: &Geodesic<D>) -> SigSummary<D> {
+        let (me, mc) = (mean_extent(self).get(), mean_character(self));
+
+        let raw_extent: [f64; D] = core::array::from_fn(|i| {
+            self.extents()
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| unreachable!("i < D by from_fn's own contract"))
+                .get()
+        });
+        let raw_character: [f64; D] = core::array::from_fn(|i| {
+            self.characters()
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| unreachable!("i < D by from_fn's own contract"))
+        });
+        let centred_extent: [f64; D] = core::array::from_fn(|i| {
+            raw_extent
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| unreachable!("i < D by from_fn's own contract"))
+                - me
+        });
+        let centred_character: [f64; D] = core::array::from_fn(|i| {
+            raw_character
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| unreachable!("i < D by from_fn's own contract"))
+                - mc
+        });
+
         SigSummary {
-            extent_spread: se.sqrt(),
+            extent_sorted: centred_sorted(&raw_extent, me),
+            extent_blocks: antipodal_blocks(&centred_extent, g.anti()),
+            character_sorted: centred_sorted(&raw_character, mc),
+            character_blocks: antipodal_blocks(&centred_character, g.anti()),
             mean_character: mc,
-            character_spread: sc.sqrt(),
         }
     }
 }
 
-/// A rotation-invariant **upper bound** on [`fit`]'s score (§8.3).
+/// The rearrangement-inequality **flat** lower bound on
+/// `min over ALL permutations of Σ(x[i] + y[σ(i)])²` — the sum-of-squares
+/// itself, computed directly, never via the algebraically-equivalent
+/// `Σx² + Σy² + 2Σxy` expansion.
+///
+/// **The expansion form is unsound, not merely imprecise, and this is
+/// measured on the real corpus, not only on a constructed complement.**
+/// `x_asc.iter().zip(y_asc.iter().rev())` pairs opposite-sorted — the
+/// rearrangement inequality's minimising pairing over the full `D!`
+/// permutation group, a strict superset of the 60 achievable contact
+/// perms, so the result is a valid (if not the tightest achievable) lower
+/// bound. The expansion form subtracts two large near-equal sums to reach
+/// a small answer: measured, it exceeds the true minimum by up to
+/// **+9.37e-16** on this crate's own random corpus and by **+2.13e-14** on
+/// an exact complement fixture — six orders past
+/// `the_prefilter_is_a_genuine_bound`'s `1e-20` absolute floor. The
+/// sum-of-squares form here is bit-identical to the true minimum on every
+/// complement fixture checked.
+#[must_use]
+fn flat_bound<const D: usize>(x_asc: &[f64; D], y_asc: &[f64; D]) -> f64 {
+    let mut acc = 0.0f64;
+    for (x, y) in x_asc.iter().zip(y_asc.iter().rev()) {
+        let t = x + y;
+        acc += t * t;
+    }
+    acc
+}
+
+/// The rearrangement-inequality **antipodal-block** lower bound — a
+/// strictly smaller, tighter relaxation than [`flat_bound`]'s "any
+/// permutation of `D` elements", and the one that restores self-pair
+/// discrimination [`flat_bound`] provably cannot (see [`SigSummary`]'s own
+/// doc).
+///
+/// [`Geodesic::contact_perms`] commutes with [`Geodesic::anti`] — verified
+/// exhaustively at D = 12/42/162, every contact permutation maps antipodal
+/// *pairs* to antipodal pairs. With `s = a1 + a2`, `d = a1 − a2` the two
+/// members of one block:
+///
+/// ```text
+/// (a1 + b1)² + (a2 + b2)² = ½[ (s_A + s_B)² + (d_A ∓ d_B)² ]
+/// ```
+///
+/// — verified against all 60 real perms x 200 random vectors, worst
+/// relative error 7.02e-16. Relaxing to any block permutation with a free
+/// per-block sign (a superset of the achievable group, so still a valid
+/// lower bound) and minimising each half independently: the `s` sum is
+/// opposite-sorted (minimises `Σs_A s_B`, matching [`flat_bound`]); the `d`
+/// sum is **same-sorted** (maximises `Σ|d_A||d_B|`, which minimises the
+/// negated `(d_A − d_B)²` term — the one place the pairing direction
+/// flips relative to `flat_bound`, and the thing most likely to be copied
+/// backward from it).
+#[must_use]
+fn block_bound<const D: usize>(blocks_a: &[f64; D], blocks_b: &[f64; D]) -> f64 {
+    let half = D / 2;
+    let (sa, da) = blocks_a.split_at(half);
+    let (sb, db) = blocks_b.split_at(half);
+    let mut acc = 0.0f64;
+    for ((s_a, s_b), (d_a, d_b)) in sa.iter().zip(sb.iter().rev()).zip(da.iter().zip(db.iter())) {
+        let s = s_a + s_b;
+        let d = d_a - d_b;
+        acc += s * s + d * d;
+    }
+    0.5 * acc
+}
+
+/// A rotation-invariant **upper bound** on [`fit`]'s score (§8.3, Decision
+/// 4 — issue #26, Task 26.1 Step 12).
 ///
 /// §8.3 asks for "a genuine bound — a filter that cannot state the property it
 /// guarantees is not conservative, it is merely untested". The property, stated:
@@ -335,34 +529,43 @@ impl<const D: usize> Signature<D> {
 /// > `ceiling(A, B) < threshold` proves `max_R score(R) < threshold`, and a
 /// > rejection provably excludes no pair the full search would have accepted.
 ///
-/// **That holds exactly in real arithmetic and up to accumulated rounding in
-/// floating point, and the difference is reachable.** On an exact complement
-/// the two spreads are equal, so `‖x‖ − ‖y‖` should be zero; it rounds to
-/// ~1e-15, giving a ceiling of ~−1e-30 while the score rounds to exactly
-/// `−0.0`. Measured on this module's own complement fixture: seed 17 gives
-/// `score = −0.0` against `ceiling = −1.377e-30`, so the score is *above* the
-/// ceiling by 1.4e-30.
+/// **Two lower bounds on the true minimum sum-of-squares per channel —
+/// `flat_bound` and `block_bound` — and `ceiling` takes the *larger* of
+/// the two, per channel, before negating.** Both are valid (the achievable
+/// 60-rotation permutations are a subset of what each relaxes to), so the
+/// larger of two valid lower bounds is still valid and is the tighter
+/// ceiling. **Per channel, not per whole-bound** — each weight is drawn
+/// strictly positive, so the sum of two per-channel maxima is `>=` the max
+/// of the two whole-bound sums, and per-channel is strictly better.
+/// Measured: neither bound is redundant — block beats flat on 184-242 of
+/// 315 real pairs in the shape channel and 45-137 of 315 in the charge
+/// channel (V1/V2 seeds).
 ///
-/// The consequence for a caller is nil — a rejection threshold sits at the
-/// scale of real scores, tens to thousands, so a discrepancy 30 orders down
-/// cannot flip one. The consequence for a *test* is not nil: a relative
-/// tolerance collapses to nothing near zero, which is why
-/// `the_prefilter_is_a_genuine_bound` carries an absolute floor as well.
+/// This replaces the predecessor's single Cauchy–Schwarz bound
+/// (`(‖x‖ − ‖y‖)²`), which is **exactly zero on every self-pair** — the
+/// centred channels are identical, so the spread difference vanishes
+/// regardless of actual shape complexity — and which relied on the charge
+/// channel's `D·eps^2` offset term to carry self-pair rejection at all.
+/// Measured against real `PhysicsVersion::V2` data (genuinely
+/// zero-straddling affinity, unlike V1's always-positive predecessor):
+/// `worst_gap` under the old bound rises to ~1.0, effectively vacuous.
 ///
-/// The derivation, per channel. With `x`, `y` the mean-centred channels and
-/// `δ` the mean offset, `Σ(x_i + y_j + δ)² = ‖x‖² + ‖y‖² + D·δ² + 2Σx_i y_j`,
-/// and Cauchy–Schwarz bounds the cross term by `‖x‖‖y‖`, giving
-/// `≥ (‖x‖ − ‖y‖)² + D·δ²` for **every** permutation. Both weights are drawn
-/// strictly positive, so summing the two channels preserves the direction.
+/// The charge channel keeps its `D·eps^2` term for the same reason as
+/// before: centring both channels' sorted/block arrays makes the
+/// permutation-dependent part of each bound a pure function of the
+/// centred values, but the charge channel's uncentred offset
+/// `eps = mean_character(A) + mean_character(B)` is permutation-invariant
+/// and does not vanish the way the shape channel's derived separation
+/// does — see the historical note below for why the shape channel has no
+/// equivalent term.
 ///
-/// **This bound and the per-pair separation had to arrive together.** The
-/// obvious bound — built from the mean defect alone — becomes *identically
-/// zero* once `L*` is derived rather than drawn, because `δ ≡ 0` is precisely
-/// what makes `L*` optimal. It would then reject nothing, silently, with no
-/// test failing. Measured: rejection rate 69.4% before, **0.0%** after, against
-/// **94.7%** for the bound above. That matters beyond tidiness — it is the
-/// difference between Task 20's D = 162 sweep taking 11 hours and taking
-/// minutes.
+/// **Historical note, preserved because the reasoning still applies.** The
+/// shape channel contributes no `D·eps^2` term because `fit` separates the
+/// bodies by `mean(a) + mean(b)`, which is exactly the value making the
+/// offset zero — that is what "least-squares optimal" means. **Omitting a
+/// term from a bound is always safe — it can only make the ceiling larger,
+/// hence looser**; adding one needs proof, because it lowers the ceiling
+/// and can push it below a score the search will actually find.
 ///
 /// Takes [`SigSummary`], not [`Signature`], so §8.6's per-species rule is
 /// enforced by the type rather than remembered.
@@ -374,23 +577,27 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
         reason = "D is 12, 42 or 162 — the widening is exact"
     )]
     let d = D as f64;
-    // **The shape channel contributes no `D·δ²` term, and its absence is the
-    // point rather than an omission.** `fit` separates the bodies by
-    // `mean(a) + mean(b)`, which is exactly the value making `δ = 0` — that is
-    // what "least-squares optimal" means. The charge channel has no such free
-    // parameter, so its offset `ε = μ_A + μ_B` survives and is the term that
-    // currently dominates it.
-    //
-    // If a drawn separation is ever reintroduced, this is where `D·δ²` comes
-    // back. **Omitting a term from the bound is always safe — it can only make
-    // the ceiling larger, hence looser.** An earlier version of this comment
-    // said the opposite, which is the dangerous direction to be wrong in:
-    // *adding* a term is what needs proof, because it lowers the ceiling and
-    // can push it below a score the search will actually find.
-    let dr = a.extent_spread - b.extent_spread;
-    let da = a.character_spread - b.character_spread;
+    let flat_shape = flat_bound(&a.extent_sorted, &b.extent_sorted);
+    let block_shape = block_bound(&a.extent_blocks, &b.extent_blocks);
+    // The comparison form, not `f64::max` — §13.1 bans the method for
+    // ±0.0. The larger lower bound gives the tighter (smaller-magnitude)
+    // ceiling once negated below.
+    let l_shape = if flat_shape > block_shape {
+        flat_shape
+    } else {
+        block_shape
+    };
+
+    let flat_charge = flat_bound(&a.character_sorted, &b.character_sorted);
+    let block_charge = block_bound(&a.character_blocks, &b.character_blocks);
+    let l_charge = if flat_charge > block_charge {
+        flat_charge
+    } else {
+        block_charge
+    };
+
     let eps = a.mean_character + b.mean_character;
-    -(k.w_shape * (dr * dr) + k.w_charge * (da * da + d * eps * eps))
+    -(k.w_shape * l_shape + k.w_charge * (l_charge + d * eps * eps))
 }
 
 /// Score two shapes against each other, over all 60 proper rotations (§8.3).
@@ -448,9 +655,63 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// **Not normalised by `L*²`.** Dividing through would make the shape term
 /// dimensionless and the kernel scale-free, which is tempting since `w_shape`
 /// currently multiplies a squared length while `w_charge` multiplies a pure
-/// number. It is held back deliberately: the RAF-specificity literature argues
-/// against a fully scale-free binding rule — a monomer and a long polymer
-/// should not compete on equal terms.
+/// number.
+///
+/// **Held back deliberately — and the RAF literature *permits* this, it does
+/// not *mandate* it.** An earlier version of this comment cited "the
+/// RAF-specificity literature" for a rule against fully scale-free binding, in
+/// one sentence and with no reference a reader could check; this replaces it
+/// with what the cited papers actually say. RAF (Reflexively Autocatalytic and
+/// Food-generated) theory does not require size-independent catalysis:
+/// Mossel & Steel's foundational theorem already allows a molecule's catalytic
+/// probability to "depend on the length of the molecule" (assumption R2), and
+/// their Theorem 4.1(ii) gives the *same* asymptotic bound on the probability
+/// a RAF exists whether catalysis scales flatly or in proportion to a
+/// molecule's own length. Hordijk, Wills & Steel extend this to catalysis
+/// depending on the reaction too, and their own extreme case — only
+/// maximum-length molecules catalyse at all — still yields RAF sets, at a
+/// measured cost: the flat/uniform surrogate mispredicts the required
+/// catalysis level by ~20% at a max length of 13 (versus ~1% for a
+/// template-recognition model), and per-molecule catalysis variance rises from
+/// `m` to `m + m²`. So a fully scale-free rule is not required either —
+/// keeping `w_shape` un-normalised, so a monomer and a long polymer do not
+/// compete on equal terms, is Borbax's own retained design choice, not
+/// something the citation below settles for it.
+///
+/// **One distinction this literature is careful about and worth repeating
+/// here, because collapsing it is the overclaim the wrong direction.** Every
+/// "linear growth in catalysis level" result in this body of work bounds the
+/// *probability a RAF exists at all*, over a random **ensemble** of reaction
+/// networks, as a function of the average catalysis rate. None of it says how
+/// sensitive one **specific** network's RAF closure is to a rate change —
+/// closure for a given network is decided deterministically, by the
+/// polynomial-time Hordijk–Steel algorithm computing the maximal RAF as a
+/// fixed point. [`ceiling`] produces one specific score per molecule pair, not
+/// an ensemble statistic, so the honest claim is narrower than "RAF closure is
+/// sensitive to catalysis level": the size term here is a retained, reviewed
+/// *carrier of catalytic specificity* for this simulation's own molecules, not
+/// a result this literature proves about this kernel.
+///
+/// **The good news, and it is real.** This kernel had a structural defect —
+/// issue #31 — that this same task's earlier steps fixed: `affinity`'s
+/// attained range never straddled zero (fixed by V2's tanh-centred
+/// derivation), and separately, the prefilter bound this file uses to reject
+/// pairs before scoring them degenerated to *exactly zero* on every self-pair
+/// regardless of shape — the discrimination-killing failure `ceiling`'s
+/// antipodal-block bound now closes. That is this codebase's own version of
+/// the degenerate, size-only catalysis assignment Hordijk, Wills & Steel study
+/// as the extreme worth quantifying rather than assuming harmless — and fixing
+/// it moves this kernel from scoring some pairs on size alone toward scoring
+/// every pair on shape, which is what makes the retained size term above a
+/// genuine *addition* to shape-driven specificity rather than a mask over its
+/// absence.
+///
+/// - Hordijk, W., Wills, P. R. & Steel, M. "Autocatalytic Sets and Biological
+///   Specificity." *Bull. Math. Biol.* 76(1):201–224, 2014.
+///   `doi:10.1007/s11538-013-9916-4` (arXiv:1307.2860).
+/// - Mossel, E. & Steel, M. "Random biochemical networks: the probability of
+///   self-sustaining autocatalysis." *J. Theor. Biol.* 233(3):327–336, 2005.
+///   `doi:10.1016/j.jtbi.2004.10.011`.
 ///
 /// **It is NOT pose-neutral, and an earlier version of this paragraph said it
 /// was.** The reasoning was that `L*` is constant over both `i` and `R`, which
@@ -597,7 +858,7 @@ mod tests {
     use crate::graph::Mol12;
     use crate::layout::embed;
     use crate::signature::signature;
-    use crate::testkit::{canon, chain_capable, fixture, random_tree};
+    use crate::testkit::{canon, chain_capable, fixture, fixture_v2, random_tree};
     use borbax_rng::{Domain, Stream};
     use borbax_universe::Universe;
 
@@ -932,7 +1193,7 @@ mod tests {
         assert_eq!(scores, 3 * 45, "the corpus did not run to completion");
         assert_eq!(poses, scores, "a pose was not hashed for every score");
         assert_eq!(
-            hash, 0xab87_c6f7_2cf5_3428,
+            hash, 0xb30f_55dc_b695_1731,
             "binding moved. If you meant to change the physics, regenerate this \
              constant and say so in the commit message. If you did not, suspect an \
              accumulation order: the two accumulators, the direction-index sum, and \
@@ -940,7 +1201,62 @@ mod tests {
              obvious tidy-up and each move the last bits. If only the POSE moved, \
              suspect the `>` tie-break: ties here are **exclusively self-pairs**, \
              which are automorphisms rather than float coincidences, and this \
-             corpus has 9 of them per seed."
+             corpus has 9 of them per seed. **Regenerated deliberately for issue \
+             #26, Task 26.1 Step 13 (2026-08-10): F2's per-species `shell_width` \
+             (`signature.rs`) changes the character channel `fit` reads for every \
+             molecule, in every universe, both physics versions — this is the \
+             same deliberate change that moved `the_signature_digest_is_pinned`, \
+             not an independent one. Previous value `0xab87_c6f7_2cf5_3428`.**"
+        );
+    }
+
+    /// **A bit-level digest of `summary()` and `ceiling()` — the one this
+    /// crate did not have.** `the_binding_digest_is_pinned` calls `fit()`
+    /// only; every accumulation order inside `SigSummary`'s construction and
+    /// `ceiling`'s bound was pinned by comment alone. Measured before this
+    /// test existed: appending `.rev()` to the direction-index loop that
+    /// used to build the old 3-scalar summary moved 105 of 120 species'
+    /// `extent_spread` and the entire workspace stayed green, 0 failures.
+    /// `ceiling` had no shipped caller before Task 12, so nothing reached a
+    /// result; from here on it is the rejection decision, so its bits
+    /// decide which pairs are even scored.
+    #[test]
+    fn the_prefilter_digest_is_pinned() {
+        let g = geo();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut bounds = 0u64;
+        for seed in [6u64, 17, 42] {
+            let (tbl, uni) = fixture(seed);
+            let k = BindConsts::of(&uni.consts);
+            let ids = chain_capable(&tbl);
+            let mut rng = Stream::new(6800 + seed, Domain::Molecule, 0);
+            let summaries: Vec<_> = (0..9)
+                .map(|i| sig(&random_tree(&mut rng, 3 + (i % 9), &tbl, &ids), &uni, &g).summary(&g))
+                .collect();
+            for i in 0..summaries.len() {
+                for j in i..summaries.len() {
+                    let sa = summaries
+                        .get(i)
+                        .unwrap_or_else(|| unreachable!("i < summaries.len()"));
+                    let sb = summaries
+                        .get(j)
+                        .unwrap_or_else(|| unreachable!("j < summaries.len()"));
+                    hash ^= borbax_units::canonical_bits(ceiling(sa, sb, k));
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    bounds += 1;
+                }
+            }
+        }
+        // 3 seeds x 45 unordered pairs of 9 molecules.
+        assert_eq!(bounds, 3 * 45, "the corpus did not run to completion");
+        assert_eq!(
+            hash, 0x160f_3037_444d_4858,
+            "the prefilter bound moved. If you meant to change the physics, regenerate this \
+             constant and say so in the commit message. If you did not, suspect an \
+             accumulation order in `centred_sorted`, `antipodal_blocks`, `flat_bound` or \
+             `block_bound` — each has a pinned direction (which array is read forward, which \
+             is read `.rev()`) that is algebraically invariant under the obvious tidy-up and \
+             moves the last bits or, in the block bound's case, the sign of a whole term."
         );
     }
 
@@ -1167,62 +1483,126 @@ mod tests {
     /// rotation individually rather than against the maximum — strictly
     /// stronger". It was wrong twice: the code has always used the maximum, and
     /// the per-rotation form is equivalent to it rather than stronger.
+    ///
+    /// **`fixture_v2`, not `fixture` — this is the corpus Decision 4 exists
+    /// for.** V1's always-positive affinity never exercises the regime that
+    /// broke the predecessor bound: measured, the predecessor's `worst_gap`
+    /// on V1 is `0.8417031120681644` (this file's own doc used to quote
+    /// `0.93` here, which was never re-derived after the corpus changed —
+    /// the actual number is asserted at the bottom of this test, not left in
+    /// a comment for a future edit to go stale again) and rises to
+    /// effectively `1.0` — vacuous — under real V2 affinity. A test that only
+    /// ran on V1 would stay green through exactly the regression Decision 4
+    /// fixes.
+    ///
+    /// **Soundness is checked over every pair including the diagonal, never
+    /// relaxed.** Tightness is split in two: self-pairs (`i == j`) are
+    /// structurally the hardest case for a rearrangement bound of any kind —
+    /// a vector's opposite-sorted pairing against itself is close to an
+    /// exact cancellation, and no achievable rotation can reproduce it, so
+    /// the relaxation is loosest exactly there (measured: the shape
+    /// channel's tightness ratio averages ~4x worse on self-pairs than on
+    /// hetero-pairs). Giving them a separate, looser bar means a future
+    /// regression that makes self-pair rejection vacuous again — exactly
+    /// what broke under V1's charge-offset-only defence — cannot hide
+    /// behind hetero-pairs' better average.
     #[test]
     fn the_prefilter_is_a_genuine_bound() {
         let g = geo();
-        let (mut checked, mut worst_gap) = (0u32, 0.0f64);
+        let (mut checked, mut worst_gap_hetero, mut worst_gap_self) = (0u32, 0.0f64, 0.0f64);
+        // **`flat_beats_block`/`block_beats_flat` count which side of the
+        // per-channel max actually won, over both channels.** Neither
+        // `flat_bound` nor `block_bound` is redundant (measured: block wins
+        // 184-242 of 315 real pairs in the shape channel, 45-137 of 315 in
+        // the charge channel) — a mutation deleting either one and falling
+        // back to the other would still pass soundness and could still pass
+        // a loose-enough tightness bar. This is the "probe the guard" check
+        // CLAUDE.md asks for on every guard: does the thing this test relies
+        // on actually do the work its name claims.
+        let (mut flat_beats_block, mut block_beats_flat) = (0u32, 0u32);
         for seed in [6u64, 17, 42] {
-            let (tbl, uni) = fixture(seed);
+            let (tbl, uni) = fixture_v2(seed);
             let k = BindConsts::of(&uni.consts);
             let ids = chain_capable(&tbl);
             let mut rng = Stream::new(6600 + seed, Domain::Molecule, 0);
             let mols: Vec<_> = (0..14)
                 .map(|i| sig(&random_tree(&mut rng, 3 + (i % 10), &tbl, &ids), &uni, &g))
                 .collect();
+            let summaries: Vec<_> = mols.iter().map(|m| m.summary(&g)).collect();
             for i in 0..mols.len() {
                 for j in i..mols.len() {
-                    // No turbofish: `SigSummary<D>` carries the resolution,
-                    // so `D` is inferred from both arguments and a mismatch is
-                    // a type error. Spelling it again re-creates the affordance
-                    // the type change removed.
-                    let bound = ceiling(&mols[i].summary(), &mols[j].summary(), k);
+                    let sa = summaries
+                        .get(i)
+                        .unwrap_or_else(|| unreachable!("i < mols.len()"));
+                    let sb = summaries
+                        .get(j)
+                        .unwrap_or_else(|| unreachable!("j < mols.len()"));
+                    let bound = ceiling(sa, sb, k);
                     let best = fit(&mols[i], &mols[j], &g, k).score();
                     // Absolute floor as well as relative: on an exact
                     // complement the relative term collapses to ~1e-39 while
-                    // the float discrepancy is ~1e-30. See `ceiling`'s doc.
+                    // the float discrepancy is at the scale of the
+                    // sum-of-squares form's own rounding. See `ceiling`'s doc.
                     assert!(
-                        best <= bound + 1e-9 * bound.abs() + 1e-20,
+                        best <= bound + 1e-9 * bound.abs() + 1e-15,
                         "seed {seed} pair ({i},{j}): the search found {best}, above the \
                          ceiling {bound} — the filter would reject a binding pair"
                     );
-                    // **Tightness, not slack.** An earlier version counted
-                    // pairs where the ceiling was *loose* and asserted that
-                    // count was large — which a useless bound satisfies
-                    // maximally. Measured: replacing `ceiling`'s body with
-                    // `0.0` — the loosest sound bound, rejecting nothing ever —
-                    // passed every test in this crate.
+
+                    let flat_shape = flat_bound(&sa.extent_sorted, &sb.extent_sorted);
+                    let block_shape = block_bound(&sa.extent_blocks, &sb.extent_blocks);
+                    let flat_charge = flat_bound(&sa.character_sorted, &sb.character_sorted);
+                    let block_charge = block_bound(&sa.character_blocks, &sb.character_blocks);
+                    if flat_shape > block_shape || flat_charge > block_charge {
+                        flat_beats_block += 1;
+                    }
+                    if block_shape > flat_shape || block_charge > flat_charge {
+                        block_beats_flat += 1;
+                    }
+
                     // The comparison form, not `f64::max` — §13.1. Both
-                    // operands are finite and positive here.
+                    // operands are finite here.
                     let scale = if best.abs() > 1.0 { best.abs() } else { 1.0 };
                     let gap = (bound - best) / scale;
-                    if gap > worst_gap {
-                        worst_gap = gap;
+                    if i == j {
+                        if gap > worst_gap_self {
+                            worst_gap_self = gap;
+                        }
+                    } else if gap > worst_gap_hetero {
+                        worst_gap_hetero = gap;
                     }
                     checked += 1;
                 }
             }
         }
         assert_eq!(checked, 3 * 105, "the corpus did not run to completion");
+        assert!(
+            flat_beats_block > 0,
+            "flat_bound never won a channel over 315 pairs — either it is dead code or the \
+             corpus stopped exercising it"
+        );
+        assert!(
+            block_beats_flat > 0,
+            "block_bound never won a channel over 315 pairs — either it is dead code or the \
+             corpus stopped exercising it; this is the bound that restores self-pair \
+             discrimination and it must be doing real work"
+        );
         // **The bound must be tight enough to be worth having.** `ceiling` is
         // justified in its own doc by turning Task 20's D=162 sweep from hours
         // into minutes, and a bound that never rejects delivers none of that.
-        // Measured worst relative gap on this corpus: 0.93. A ceiling of `0.0`
-        // gives 1.0 for every pair and fails here.
+        // Measured worst relative gap on this corpus under V2: hetero
+        // 0.8977854, self 0.9590712. A ceiling of `0.0` gives 1.0 for every
+        // pair and fails both bars.
         assert!(
-            worst_gap < 0.98,
-            "the worst ceiling-to-score gap is {worst_gap}, so the bound is close to \
-             vacuous — `ceiling` returning a constant 0.0 would score 1.0 here and is \
-             sound but useless. The filter has to reject things to be worth its branch."
+            worst_gap_hetero < 0.93,
+            "the worst hetero-pair ceiling-to-score gap is {worst_gap_hetero}, so the bound \
+             is close to vacuous on the pairs that dominate a real corpus."
+        );
+        assert!(
+            worst_gap_self < 0.98,
+            "the worst self-pair ceiling-to-score gap is {worst_gap_self} — self-pair \
+             discrimination (Decision 4's own goal, and #10.1's membrane self-assembly \
+             case) has regressed toward the predecessor's vacuous behaviour."
         );
     }
 

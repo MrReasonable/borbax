@@ -25,10 +25,15 @@
 //! | the seed, when typed | the user |
 //! | the seed, after "surprise me" | `borbax_rng::Stream::next_range` |
 //! | the seed, after a name is typed | [`borbax_universe::seed_from_phrase`] |
+//! | the physics selector's own button labels (`v1`, `v2`, …) | [`borbax_universe::PhysicsVersion::ALL`] + `u8::from` |
 //!
 //! and the universe behind the first two comes from
-//! [`borbax_universe::Universe::generate`], which has **exactly one call site**
-//! in this crate — checked by `cargo xtask`, not merely asserted here.
+//! [`borbax_universe::Universe::generate_under`], fed the physics-version
+//! selector's own choice (issue #26 Task 26.1 Step 15 — before it, this named
+//! [`borbax_universe::Universe::generate`], which always stamps `CURRENT` and
+//! could not have shown a law `CURRENT` does not point at). Still **exactly
+//! one call site** in this crate — checked by `cargo xtask`, not merely
+//! asserted here.
 //!
 //! An early version of this list also named
 //! `Universe::table()` (a method that does not exist), omitted the seed, and

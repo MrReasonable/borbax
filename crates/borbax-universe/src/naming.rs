@@ -364,17 +364,22 @@ pub fn is_real(symbol: &str, name: &str) -> bool {
 /// construction site); they are no longer the sole enforcement of
 /// confinement from outside it.
 ///
-/// **No `PhysicsVersion` field, and that is a known, deliberate gap in this
-/// prerequisite, not an oversight.** A `Rung` alone cannot express "this
-/// version has real-physics constants to reproduce" — under
+/// **Still no `PhysicsVersion` field — resolved by *where* `new` is called
+/// from, not by widening its signature.** A `Rung` alone cannot express
+/// "this version has real-physics constants to reproduce" — under
 /// `PhysicsVersion::V1`, which has none, `rung == 0` is not meaningfully
-/// "the real periodic table" at all. Wiring a version-aware witness (and the
-/// `Rung` field on `Universe` this needs to be checked against a live
-/// universe) is Task 26.1's job, deliberately deferred — see
-/// `crate::perturbation`'s own module doc for the full reasoning and the
-/// determinism-auditor finding that produced it. Task 26.1 is also where
-/// this crate gains its first real caller of `new` — until then the
-/// `pub(crate)` capability is unused by design, not an oversight either.
+/// "the real periodic table" at all. Task 26.1 Steps 6-9 resolved this
+/// structurally rather than by adding a parameter here: `IdentityWitness::new`
+/// is called from exactly one place in the crate, `element.rs`'s
+/// `generate_elements_v2` — a function only ever invoked when
+/// `physics == PhysicsVersion::V2` (`generate_elements`'s own exhaustive
+/// match dispatches on the version before either generator runs). V1's own
+/// generator, `generate_elements_v1`, never calls `new` at all, so no V1
+/// table can ever hold a witness regardless of its `rung` — the confinement
+/// is "which function can reach this constructor," not a runtime check on
+/// an added field. See `crate::perturbation`'s own module doc for the
+/// broader reasoning and the determinism-auditor finding that first raised
+/// this hazard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct IdentityWitness(());
 
@@ -383,17 +388,18 @@ impl IdentityWitness {
     ///
     /// **`pub(crate)`, not `pub` — see [`Self`]'s own doc for why a public
     /// fallible constructor over a public, always-succeeding `Rung::IDENTITY`
-    /// is not actually a capability restriction at all.** `Universe::identity_witness`
-    /// (Task 26.1, not yet built) is meant to be the single public door,
-    /// checking a *live* universe's own rung rather than a caller-supplied
-    /// one.
-    ///
-    /// **No in-crate caller exists yet — deliberately, until Task 26.1 —
-    /// which `dead_code` would otherwise report.** The `#[expect]` is
-    /// `cfg_attr`-gated to `not(test)` because this crate's own tests *are*
-    /// callers, and an unconditional `#[expect(dead_code)]` fires
-    /// `unfulfilled_lint_expectations` on the test target for exactly that
-    /// reason — verified.
+    /// is not actually a capability restriction at all.** Task 26.1 Steps
+    /// 6-9 gave this its first real caller — `element.rs`'s
+    /// `generate_elements_v2`, constructing the witness directly from the
+    /// `rung` it already holds, at the one point in the generation pipeline
+    /// where a witness is actually needed (naming elements). A
+    /// `Universe`-level `identity_witness()` accessor was considered and
+    /// deliberately not built in this pass: element generation runs
+    /// *before* `Universe` itself exists (`generate_v2` builds the table
+    /// first), so such a method could not have served this call site
+    /// regardless — it would only matter for a downstream consumer (the
+    /// viewer's own "is this universe at identity" display, Step 15) that
+    /// does not exist yet either.
     ///
     /// **The one place this type may be constructed in the crate — `xtask`
     /// checks it, at the `syn` level.** Written as `Self(())`, not
@@ -408,17 +414,6 @@ impl IdentityWitness {
     /// inside it as a construction of this type, which is the one place
     /// AST-level structure can do what a textual scan cannot.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no in-crate caller until Task 26.1 gives Universe a rung and a public \
-                      identity_witness() door. Held pub(crate) rather than pub so a \
-                      downstream crate cannot mint the capability from Rung::IDENTITY; this \
-                      attribute pays for the deferral visibly instead of paying for it with \
-                      public API surface"
-        )
-    )]
     pub(crate) const fn new(rung: Rung) -> Option<Self> {
         if rung.is_identity() {
             Some(Self(()))
@@ -448,20 +443,10 @@ impl IdentityWitness {
 ///
 /// **`pub(crate)`, not `pub` — added in `/review-pr`, same round and same
 /// reason as [`IdentityWitness`] itself.** See that type's doc for the
-/// three bypass routes this closes. No in-crate caller exists yet, same as
-/// `IdentityWitness::new` — deliberately, until Task 26.1 — so the
-/// `#[expect]` is `cfg_attr`-gated to `not(test)` for the same reason: this
-/// crate's own tests are callers, and an unconditional `#[expect(dead_code)]`
-/// would fire `unfulfilled_lint_expectations` on the test target.
+/// three bypass routes this closes. Task 26.1 Steps 6-9 gave this its first
+/// real caller, same call site and same reasoning as `IdentityWitness::new`'s
+/// own doc records.
 #[must_use]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "no in-crate caller until Task 26.1 gives Universe a rung and a public \
-                  identity_witness() door, matching IdentityWitness::new's own reason"
-    )
-)]
 pub(crate) fn real_name(_: IdentityWitness, z: usize) -> Option<(&'static str, &'static str)> {
     z.checked_sub(1).and_then(|i| REAL_TABLE.get(i)).copied()
 }

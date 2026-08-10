@@ -996,7 +996,7 @@ plan named a file (`testkit.rs`) that does not exist.
 
 ### Orbital fill, screened-hydrogenic with `l`-dependent screening
 
-- [ ] **Step 1: Write the failing tests.** Subshell capacity `2(2l+1)`,
+- [x] **Step 1: Write the failing tests.** Subshell capacity `2(2l+1)`,
   answering correctly for `l` up to 6 so it can't be faked as a lookup table.
   Hund's-rule unpaired count spanning `l ≥ 1`. Order-invariance under a
   shuffled candidate list, sourced from a `borbax_rng::Stream`. The full
@@ -1018,8 +1018,8 @@ plan named a file (`testkit.rs`) that does not exist.
   equality (the shuffled-candidate test above does *not* exercise this,
   since the argmin is unique under the tie-break and the fill order doesn't
   change under a shuffle).
-- [ ] **Step 2: Verify each test fails for the stated reason.**
-- [ ] **Step 3: Implement the fold — explicit, not a sort — with an exact,
+- [x] **Step 2: Verify each test fails for the stated reason.**
+- [x] **Step 3: Implement the fold — explicit, not a sort — with an exact,
   order-free screening accumulation.** `Z_eff` depends on current occupancy,
   built via a repeated argmin over unfilled subshells given occupancy so far
   (`canonical_cmp(e, best_e).then_with(|| (n,l).cmp(&best))`, never
@@ -1037,7 +1037,7 @@ plan named a file (`testkit.rs`) that does not exist.
   **Ban incremental `z_eff -= sigma` update.** No `HashMap` anywhere in this
   path. Draw the screening coefficients through P7's `perturbation_strength`
   mechanism, one-sided downward on the inner-shell coefficient.
-- [ ] **Step 4: Digest the derived quantities with the raw bit function, not
+- [x] **Step 4: Digest the derived quantities with the raw bit function, not
   the canonicalised one.** `Z_eff` and `radius` (both float) must be hashed
   via raw `to_bits()`, matching this crate's own existing documented
   rationale for its detector digests — canonicalisation is lossy by design
@@ -1046,11 +1046,11 @@ plan named a file (`testkit.rs`) that does not exist.
   as-is (it's lossless by construction — `i64` has one representation per
   value). Also hash the emitted fill order itself, since `block`/`period`/
   `group` are functions of it.
-- [ ] **Step 5: Run all Step 1 tests.**
+- [x] **Step 5: Run all Step 1 tests.**
 
 ### Wiring: `Element`, `PeriodicTable`, `PhysicsVersion::V2`, and the shared "gap" derivation
 
-- [ ] **Step 6: Write the failing tests.** All four of `valence`,
+- [x] **Step 6: Write the failing tests.** All four of `valence`,
   `affinity`, period boundaries, and V2's bond capacity derive from the
   HOMO-LUMO-analogue gap (Decision 8) — assert this as a shared computation
   with one call site each, not four independently-tuned formulas. `radius`
@@ -1069,8 +1069,8 @@ plan named a file (`testkit.rs`) that does not exist.
   atomic number, never redefined as a composition sum** (the plan's first
   revision used it both ways; Task 26.2 uses a distinct field for total
   composition size, never overloading `units`).
-- [ ] **Step 7: Verify failure for the stated reasons.**
-- [ ] **Step 8: Implement the wiring.** `Element`'s stored fields:
+- [x] **Step 7: Verify failure for the stated reasons.**
+- [x] **Step 8: Implement the wiring.** `Element`'s stored fields:
   `symbol, name, units, period, group, mass, valence, affinity, radius,
   energy_per_unit, instability, abundance` (dropping `outer_fill_band`
   entirely — no replacement stored field; `block()` is a method on `l`).
@@ -1082,7 +1082,7 @@ plan named a file (`testkit.rs`) that does not exist.
   gains a V2 path keyed on the gap-derived bond capacity from Decision 8 —
   this is what makes bond strength correlate with the same structure #31's
   fix uses, rather than an independently invented capacity model.
-- [ ] **Step 9: Run all tests from Steps 1 and 6. Add one binding test that
+- [x] **Step 9: Run all tests from Steps 1 and 6. Add one binding test that
   actually runs on a V2 table** (not just V1, which every existing fixture
   currently pins to via P3) — `worst_shape < 0.90`, `worst_gap < 0.98`
   (post-prefilter-fix), `score <= 0 && is_finite`, so the shape/charge
@@ -1091,7 +1091,7 @@ plan named a file (`testkit.rs`) that does not exist.
 
 ### The prefilter fix (Decision 4) and F2
 
-- [ ] **Step 10: Write the failing tests.** The rearrangement-inequality
+- [x] **Step 10: Write the failing tests.** The rearrangement-inequality
   prefilter: sound (bound ≥ actual score) on the full existing corpus;
   strictly tighter than the current bound; `worst_gap < 0.98` restored on a
   table where affinity has been fixed to straddle zero; self-pair
@@ -1108,14 +1108,14 @@ plan named a file (`testkit.rs`) that does not exist.
   owns. **Before writing this test, measure the V2 table's actual radius
   max/min** — "broken under V2's wider range" was an assumption in the first
   revision, not yet a measurement.
-- [ ] **Step 11: Verify failure.**
-- [ ] **Step 12: Implement.** Rearrangement-inequality prefilter in
+- [x] **Step 11: Verify failure.**
+- [x] **Step 12: Implement.** Rearrangement-inequality prefilter in
   `binding.rs` (sort each side's shape/charge channels via `canonical_cmp`,
   dot the sorted sequences — `SigSummary` stops being trivially `Copy` at
   this size). Per-species `SHELL` in `signature.rs`, computed once at intern
   time from the molecule's own atoms (§8.6-compliant — no per-pair or
   per-step recomputation).
-- [ ] **Step 13: Run all `borbax-molecule` tests. This step DOES regenerate
+- [x] **Step 13: Run all `borbax-molecule` tests. This step DOES regenerate
   `borbax-molecule` goldens — say so, and say why.** The prefilter change and
   F2 both touch `borbax-molecule` directly (F2 specifically **cannot** be
   version-gated: `signature()` takes no `Universe`/`PhysicsVersion` by a
@@ -1130,10 +1130,10 @@ plan named a file (`testkit.rs`) that does not exist.
 
 ### Verification and commit
 
-- [ ] **Step 14: Confirm `borbax-universe`'s V1 digests are unchanged**,
+- [x] **Step 14: Confirm `borbax-universe`'s V1 digests are unchanged**,
   under `generate_under(seed, PhysicsVersion::V1)`, using P2's name-pinned
   digest.
-- [ ] **Step 15: Point the viewer at a V2 seed** via a visible on-screen
+- [x] **Step 15: Point the viewer at a V2 seed** via a visible on-screen
   selector (the physics version already travels in the universe address as
   `@2`) — never an `env::var`. Confirm the row count matches the gap-derived
   period boundaries as a *consistency* check, not "does it look like 7 rows."
@@ -1144,7 +1144,7 @@ plan named a file (`testkit.rs`) that does not exist.
   `borbax-ui`'s existing "never atomic number, never Z, never protons" string
   is updated to reflect that under V2, `units` genuinely is the atomic
   number — that shipped test needs a deliberate edit, not silent survival.
-- [ ] **Step 16: Rewrite `binding.rs`'s RAF-specificity comment properly,
+- [x] **Step 16: Rewrite `binding.rs`'s RAF-specificity comment properly,
   with an actual citation, not one sentence.** The literature (Hordijk,
   Wills & Steel 2014) proves RAF closure *robust* with size-dependent
   binding — it doesn't *require* it, and the paper's core theorems were
@@ -1155,7 +1155,7 @@ plan named a file (`testkit.rs`) that does not exist.
   State the good news too: closing #31 moves this codebase's binding kernel
   into the independence regime those theorems assume, out of the
   size-degenerate regime it was in before.
-- [ ] **Step 17: Run the full six-leg gate and commit.** State explicitly:
+- [x] **Step 17: Run the full six-leg gate and commit.** State explicitly:
   `borbax-universe` V1 goldens unchanged; `borbax-molecule` goldens
   regenerated deliberately (Step 13 — affects V1 chemistry too, this is
   intentional); #31 closed structurally via the gap-derived `affinity`; the

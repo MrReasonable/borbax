@@ -2,28 +2,21 @@
 //! rung per universe, and a bounded per-constant direction, composed as
 //! `base * (1.0 + strength * p)`.
 //!
-//! **Scope note, and why this module has no consumer yet.** `Rung` and
-//! `Direction` are complete, independently tested types, and `perturb`
-//! is the mechanism's whole formula. What this module deliberately does
-//! *not* do is touch [`crate::Universe`] or [`crate::element::generate_elements`]:
-//! every constant the plan actually migrates through this mechanism
-//! (`w_shape`, `w_charge`, `contact_defect`, `base_mass`, `bonds.rs`'s rate
-//! constants) is tagged "V2+ only" or "V3 only" in the plan's own migration
-//! table, and `PhysicsVersion::V2` does not exist in this crate yet. Wiring
-//! a `rung` field onto `Universe` today, ahead of a real consumer, was
-//! measured (by the determinism-auditor, before this landed) to be safe
-//! against `PhysicsVersion::V1`'s two pinned goldens *only* by discarding
-//! the field — but Decision 9's `n_elements` gate, which the real-name guard
-//! (P6, `naming.rs`) needs `Rung` for, has no `PhysicsVersion` qualifier in
-//! the plan's own text, and wiring it into V1's actual generation path would
-//! let *any* V1 universe — which has no real-physics correspondence at all,
-//! being "shape and surface character" per `PhysicsVersion::V1`'s own doc —
-//! claim `IdentityWitness` and dispense real element names. That is a G2
-//! breach, not a golden-stability question, and it is the same shape of
-//! problem P1's `CLOSURE_PREDICATE_WATCHED_FNS` redesign and P4's explicit
-//! "lands after Task 26.1 Step 8" both exist to avoid: a mechanism whose
-//! real subject does not exist yet. Task 26.1 is where `Universe` gains a
-//! `rung` field and Decision 9's gate gains a consumer, together.
+//! **`Rung` and `Direction` landed with zero in-crate callers; Task 26.1
+//! gave them real ones, in two stages.** Steps 1-5:
+//! [`MigratedConstant::ScreeningInner`](crate::perturbation::MigratedConstant::ScreeningInner),
+//! `orbital.rs`'s screened-hydrogenic fill drawing its inner-shell screening
+//! coefficient one-sided downward (see [`MigratedConstant`](crate::perturbation::MigratedConstant)'s own doc for
+//! why only this one direction is legal for that particular constant). Steps
+//! 6-9: `Universe.rung` itself, drawn for every physics version (costs V1
+//! nothing — `Rung::draw` uses its own dedicated `Domain::PerturbationRung`,
+//! entirely separate from `Domain::Universe`'s own indices), plus the rest
+//! of the plan's migration table — `PromotionBudget`, `RadiusScale`,
+//! `CapacityScale`, `BaseMass`, `ContactDefect`, `WShape`, `WCharge`,
+//! `IdealGap`, `Scale`, `Gamma` — each landing only once its own real
+//! consumer existed, never ahead of it (the "mechanism ahead of its
+//! subject" shape this module's own earlier history, and P1's, and P4's,
+//! already exist to avoid).
 //!
 //! **`Rung`'s own visibility, corrected in `/review-pr` — an earlier version
 //! of this paragraph got both of its claims wrong.** It said `Rung` "has
@@ -35,7 +28,11 @@
 //! `Rung::draw` is a pure function of the seed, so `Rung::draw(seed).is_identity()`
 //! already recovered the identity predicate from `borbax-molecule` with no
 //! field and no witness, while `Rung` was still `pub`. Narrowing this module
-//! closes that route today, not merely at some future field.
+//! closes that route today, not merely at some future field. Now that
+//! `Universe.rung` exists (`pub(crate)`, per this module's own guidance
+//! below), it is held no more visible than `generate_elements_v2` and the
+//! bond generator's V2 path — the code that actually needs to read it —
+//! require.
 //!
 //! **This is narrow-API hygiene (CLAUDE.md's idiom tier), not a G2 fix, and
 //! the distinction is worth keeping straight.** No fiction guarantee is at
@@ -48,32 +45,284 @@
 //! configuration needs protecting, which contradicts the ruling that
 //! unblocked issue #26 in the first place.
 //!
-//! When Task 26.1 gives `Universe` a `rung` field, that field's own
-//! visibility is the decision that actually matters — it must be held no
-//! more visible than the code that needs to read it requires, not given
-//! `pub` by the struct's house-style convention.
-//!
-//! **Every item below is `dead_code` in a `not(test)` build, module-wide,
-//! for the reason this whole module doc has already given at length: no
-//! in-crate caller exists until Task 26.1.** One blanket `#[expect]` rather
-//! than thirteen individually-reasoned ones, because the reason is one fact
-//! ("this module's real consumer does not exist yet"), not thirteen —
-//! `cfg_attr`-gated to `not(test)` for the same reason every other such
-//! attribute in this crate is: this module's own tests are callers, and an
-//! unconditional `#[expect(dead_code)]` would fire `unfulfilled_lint_expectations`
-//! on the test target.
+//! **A blanket `#[expect(dead_code)]` still covers this module — narrower
+//! again than before, not gone.** `Rung::new`/`draw`/`is_identity`/`strength`
+//! and `Direction::get` are all live now, reached transitively from
+//! `Universe::generate_v1`/`generate_v2` through
+//! [`perturb`](crate::perturbation::perturb) and
+//! [`draw_symmetric`](crate::perturbation::draw_symmetric)
+//! — an earlier version of this doc listed them as still dead, which stopped
+//! being true the moment those generators became real callers. What
+//! genuinely remains dead outside this module's own tests:
+//! `Rung::all_off_identity` (only `naming.rs`'s own exhaustive test walks
+//! it) and `MigratedConstant::ALL`/`.axis()`/`.counterpart()` (nothing in
+//! production branches on a constant's classification tags yet — Task
+//! 26.2's independence test is the first thing that will). One blanket
+//! `#[expect]` rather than four individually-reasoned ones, because the
+//! reason is one fact ("these four are read only by tests today"), not
+//! four — `cfg_attr`-gated to `not(test)` for the same reason every other
+//! such attribute in this crate is: this module's own tests are callers,
+//! and an unconditional `#[expect(dead_code)]` would fire
+//! `unfulfilled_lint_expectations` on the test target.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "Rung, Direction and perturb have no in-crate caller until Task 26.1 gives \
-                  Universe a rung field and wires the first migrated constant through this \
-                  mechanism — see this module's own doc for why landing the mechanism ahead \
-                  of its consumer is deliberate"
+        reason = "Rung::all_off_identity and MigratedConstant::ALL/.axis()/.counterpart() have \
+                  no in-crate caller outside this module's own tests — see this module's own \
+                  doc for what used to be on this list and is now genuinely live"
     )
 )]
 
 use borbax_rng::{Domain, Stream};
+
+/// Which physics axis a migrated constant belongs to (issue #26, P7's
+/// round-4 correction) — electronic constants are Task 26.1's, nuclear
+/// constants are Task 26.2's. `orbital.rs`'s independence from Task 26.2's
+/// nuclear model depends on this being right: a constant tagged on the
+/// wrong axis would let one task's perturbation silently affect the other's
+/// physics.
+///
+/// **`Nuclear` has no constant tagged with it yet** — Task 26.2 adds the
+/// first. Plain `#[allow(dead_code)]`, not `#[expect(dead_code)]`: measured
+/// this flipping between fulfilled and unfulfilled across otherwise-identical
+/// clean rebuilds while investigating it, which is not a property a
+/// self-verifying `#[expect]` can be trusted to have — `#[allow]` makes no
+/// claim about whether the lint would fire, only that it should be
+/// suppressed either way, which is the honest thing to assert here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Axis {
+    Electronic,
+    #[allow(dead_code)]
+    Nuclear,
+}
+
+/// Whether a migrated constant's base value is pinned to its real physical
+/// counterpart, or is a chosen constant with no real analogue to measure
+/// against (issue #26, P7's round-4 correction, `signature.rs:141-144`'s
+/// existing warning about weights with no physical counterpart).
+///
+/// **`HasReal` has no constant tagged with it yet** — Steps 6-9's `kappa`/`c`
+/// (the plan's own P7 migration table) are the first. See [`Axis`]'s own
+/// doc for why this is `#[allow]`, not `#[expect]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Counterpart {
+    #[allow(dead_code)]
+    HasReal,
+    DefaultOnly,
+}
+
+/// One migrated constant's permanently-assigned stream index, plus its four
+/// independent classification tags — generated from one macro-driven table
+/// rather than four prose lists, per issue #26 P7's round-4 correction: a
+/// constant added later to only some of the tags is a defect nothing
+/// catches when the tags are separate lists, and is not representable at
+/// all when they are arms of one exhaustive match on one enum.
+///
+/// **Grows one variant at a time, discriminants never renumbered — the same
+/// discipline [`Domain`]'s own variants follow.**
+macro_rules! migrated_constants {
+    ($($(#[$doc:meta])* $variant:ident = $index:literal, $axis:expr, $counterpart:expr, $p_bound:expr;)+) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[repr(u64)]
+        pub(crate) enum MigratedConstant {
+            $($(#[$doc])* $variant = $index,)+
+        }
+
+        impl MigratedConstant {
+            /// Every variant, in discriminant order — generated from the same
+            /// token list that defines the enum itself, so (unlike
+            /// `Domain::ALL` or `PhysicsVersion::ALL`, both hand-written) a
+            /// variant cannot be added to the enum without also being added
+            /// here: there is only one list to edit.
+            pub(crate) const ALL: &'static [Self] = &[$(Self::$variant,)+];
+
+            /// This constant's permanent index within
+            /// `Domain::Perturbation` — see [`Domain::Perturbation`]'s own
+            /// doc for why a shared `Domain` rather than one per constant.
+            #[expect(
+                clippy::as_conversions,
+                reason = "the enum is #[repr(u64)] with explicit small literal discriminants, \
+                          matching Domain::discriminant's own justification"
+            )]
+            pub(crate) const fn index(self) -> u64 {
+                self as u64
+            }
+
+            pub(crate) const fn axis(self) -> Axis {
+                match self { $(Self::$variant => $axis,)+ }
+            }
+
+            pub(crate) const fn counterpart(self) -> Counterpart {
+                match self { $(Self::$variant => $counterpart,)+ }
+            }
+
+            /// The legal `|p|` excursion bound for this constant's symmetric
+            /// draw (used by [`draw_symmetric`]; `ScreeningInner`'s bespoke
+            /// one-sided draw does not read this). **Fourth tag, added when
+            /// `w_shape`/`w_charge` gave it a real consumer** — every other
+            /// variant uses the crate-wide default, [`Direction::P_MAX`].
+            pub(crate) const fn p_bound(self) -> f64 {
+                match self { $(Self::$variant => $p_bound,)+ }
+            }
+        }
+    };
+}
+
+migrated_constants! {
+    /// The screened-hydrogenic fold's inner-shell screening coefficient
+    /// (`orbital.rs`, Decision 3). **Drawn one-sided downward — `p` is
+    /// sampled from `[-Direction::P_MAX, 0.0]`, never the symmetric range
+    /// most migrated constants use — at the draw call site in `orbital.rs`,
+    /// not read from [`MigratedConstant::p_bound`].** The plan states this
+    /// as a specific, one-off decision about this one constant ("draw the
+    /// screening coefficients through P7's mechanism, one-sided downward on
+    /// the inner-shell coefficient"), not a general dimension every
+    /// migrated constant needs an opinion on. `p_bound` is still set here
+    /// (to the crate-wide default) so the fourth tag stays total even for a
+    /// variant whose own draw site ignores it.
+    ScreeningInner = 0, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// Task 26.1 Steps 6-9's valence-promotion energy budget — `orbital.rs`'s
+    /// [`crate::orbital::GapConsts`], not named in the plan's own P7
+    /// migration table (same gap `ScreeningInner` was in until it gained a
+    /// real consumer). A closed-subshell element promotes (gains a nonzero
+    /// valence) iff its own HOMO-LUMO gap sits at or below this budget —
+    /// see `orbital.rs`'s own doc for the numerical calibration that
+    /// separates real alkaline-earth-like gaps (~1.1-1.6) from real
+    /// noble-gas-like ones (~3.9+) by more than 2x. **No real physical
+    /// counterpart** — this model's own promotion threshold, not a
+    /// measured ionisation-energy cutoff, same tagging as `w_shape`/
+    /// `w_charge`. Symmetric `p` bound (no one-sided restriction, unlike
+    /// `ScreeningInner`): there is no structural reason to favour a
+    /// downward-only excursion here.
+    PromotionBudget = 1, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// Task 26.1 Steps 6-9's radius scale — `element.rs`'s V2 `radius(z) =
+    /// radius_scale * outer_n^2 / Z_eff(outer_n, l=0)`, the Bohr-radius-like
+    /// formula `orbital.rs`'s `ElectronicProperties::zeff_outer` feeds.
+    /// **No real physical counterpart tagged** — a real Bohr radius
+    /// (`a_0 ≈ 0.529` Å) exists, but this crate has no length scale to
+    /// compare it against (G4: `radius` is `Span`, an invented unit with no
+    /// real-world correspondence pinned anywhere else in this crate), so
+    /// pinning `base` to `a_0`'s bare number would be a unit-free numerology
+    /// match, not the kind of real correspondence `contact_defect`/
+    /// `base_mass` have. Symmetric `p` bound, same reasoning as
+    /// `PromotionBudget`.
+    RadiusScale = 2, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// Task 26.1 Steps 6-9's bond-capacity scale — `bonds.rs`'s V2 path,
+    /// `capacity(el) = capacity_scale + valence(el)`, replacing V1's
+    /// packing-derived `contact_density`. **No real physical counterpart**
+    /// — this model's own bonding-capacity floor, not a measured quantity,
+    /// same tagging as `w_shape`/`w_charge`. Symmetric `p` bound.
+    CapacityScale = 3, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// Task 26.1 Steps 6-9's V2 base-mass constant — `element.rs`'s
+    /// `mass = units * base_mass_sub - defect_sub`, the same formula shape
+    /// V1 uses with V2's own `paired_count` standing in for V1's
+    /// `contacts`. **Tagged `DefaultOnly` for now, though the plan's own P7
+    /// migration table calls this constant "has a real counterpart in
+    /// principle" — this document does not pin a real value for it, and
+    /// the plan's own text says to tag it `default only` explicitly rather
+    /// than leave it silently untagged in that case.** Re-tag `HasReal`
+    /// only once a real value is actually pinned. Re-quantised to the
+    /// `1/1024` grid after perturbation — see `element.rs`'s own doc on why
+    /// `base_mass` must stay dyadic.
+    BaseMass = 4, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// Task 26.1 Steps 6-9's V2 contact-defect constant — same caveat as
+    /// [`Self::BaseMass`]: the plan calls this "has a real counterpart in
+    /// principle" but pins no value, so it stays `DefaultOnly` until one is.
+    ContactDefect = 5, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// `UniverseConsts::w_shape`, §8.3's shape-complementarity weight.
+    /// **The plan's own reason this pair (see [`Self::WCharge`]) gets the
+    /// tighter `1/3` bound rather than the crate-wide default**: the
+    /// prefilter's relative-gap function is a monotone Möbius transform of
+    /// the shape/charge ratio `w_shape / w_charge`, verified over 200,000
+    /// random draws with 0 monotonicity violations — a bound degenerating
+    /// at its extremes needs its extremes kept away from, on pure
+    /// numerical-soundness grounds, independent of what chemistry results.
+    /// `|p| <= 1/3` gives a reachable ratio range of `[0.5, 2.0]` — tighter
+    /// than V1's own independent-draw ratio (`[3/7, 7/3]`), not a
+    /// reproduction of it. **No real physical counterpart** — a weight in
+    /// this crate's own shape-complementarity kernel, not a measured
+    /// quantity.
+    WShape = 6, Axis::Electronic, Counterpart::DefaultOnly, 1.0 / 3.0;
+    /// `UniverseConsts::w_charge` — see [`Self::WShape`] for the shared
+    /// derivation of the `1/3` bound; only the ratio the prefilter reads is
+    /// bounded, so both constants need the same tighter excursion.
+    WCharge = 7, Axis::Electronic, Counterpart::DefaultOnly, 1.0 / 3.0;
+    /// `UniverseConsts::ideal_gap` — **migrated for stream-layout
+    /// uniformity, not because it is used.** Zero production consumers
+    /// anywhere in the workspace (verified by search, matching the plan's
+    /// own note). Migrating it costs one more permanently-assigned index
+    /// and keeps every `UniverseConsts` field on one mechanism rather than
+    /// one migrated and one not — not because anything downstream needs it
+    /// identity-reachable. **No real physical counterpart** — G1 already
+    /// flags its value as "on the wrong length scale", so nothing here
+    /// changes that.
+    IdealGap = 8, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// `bonds.rs`'s energy-scale multiple of `eps` (`BondEnergyMatrix`'s V2
+    /// path) — V1's own `SCALE_RANGE = (28.0, 84.0)`, replaced by a
+    /// perturbed base. `BASE_SCALE = 56.0` (V1's own range midpoint) at the
+    /// crate-wide default `P_MAX = 0.5` reproduces exactly V1's own reachable
+    /// range at the perturbed extremes (`56*(1-0.5) = 28`, `56*(1+0.5) = 84`)
+    /// — a deliberate match, not a coincidence the constant depends on.
+    /// **No real physical counterpart** — a chosen energy-scale multiplier,
+    /// same tagging as `w_shape`/`w_charge`.
+    Scale = 9, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// `bonds.rs`'s bond-order exponent `gamma` (`OrderScale`) — V1's own
+    /// `GAMMA_RANGE = (0.68, 1.0)`. **`BASE_GAMMA = 0.6`, deliberately below
+    /// V1's own range, not its midpoint** — `gamma <= 1` is "CHOSEN, not
+    /// derived, and load-bearing" (this file's own header: it is what makes
+    /// the bond-order series diminishing), and `OrderScale::new` performs
+    /// **no clamping or validation** on its input, so a base chosen without
+    /// checking the perturbed range against that ceiling could silently
+    /// produce a non-diminishing series. At the crate-wide default
+    /// `P_MAX = 0.5`, `0.6` keeps every reachable value in `[0.3, 0.9]`, a
+    /// comfortable margin inside `(0, 1]` at both ends — not `0.84` (V1's
+    /// own range midpoint), which would reach `1.26` at the worst-case
+    /// corner and silently invert the series. **No real physical
+    /// counterpart** — chosen to keep the series diminishing, not measured.
+    Gamma = 10, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// `bonds.rs`'s ionic-excess scale (`BondEnergyMatrix`'s V2 path) —
+    /// the rank-2 term the plan's scope section and Task 26.1 Step 6 both
+    /// call for and V1 has no analogue of. **Pauling-motivated, found by
+    /// direct numerical experiment, not stated in the plan**: real bond
+    /// energy exceeds the geometric mean of the two homonuclear bond
+    /// energies by an amount proportional to `(chi_A - chi_B)^2`
+    /// (electronegativity difference squared) — the mechanism Pauling
+    /// originally used to *derive* electronegativity from bond energies.
+    /// The Borbax analogue adds `-ionic_base * affinity[a] * affinity[b]`
+    /// to the existing rank-1 `base * sqrt(ca * cb)` term: a pure
+    /// affinity-outer-product addition, which makes the *whole* matrix
+    /// exactly rank 2 (verified: 2 nonzero singular values, the rest
+    /// exactly 0, over 5 seeds' worth of V2 tables) rather than the
+    /// higher-rank `(affinity[a]-affinity[b])^2` form, whose expansion
+    /// contains two more rank-1 terms this project has no separate
+    /// mechanism for. **Sign matches Principle 1** (`-x*y` is positive
+    /// when `x`, `y` are opposite-signed): elements with complementary
+    /// affinity bond *more* strongly, same-signed affinity bonds *less*
+    /// strongly. Measured: a rank-1-removed residual of the resulting
+    /// matrix correlates 0.86-0.89 (Pearson) with `(affinity[a] -
+    /// affinity[b])^2` across those same 5 seeds — the discriminator Step
+    /// 6 names.
+    ///
+    /// **`BASE_IONIC_SCALE = 2.0`, chosen against a proven worst-case
+    /// corner, not observed over samples.** The term can only drive the
+    /// bond energy negative when `affinity[a] * affinity[b]` is at its
+    /// most positive (both elements' affinities near-saturated
+    /// same-signed) simultaneously with `Scale` and `CapacityScale` both
+    /// at their perturbed floor — `28 * 0.25 = 7.0` in eps-relative units
+    /// (`Scale`'s base 56.0 and `CapacityScale`'s base 0.5, each at the
+    /// crate-wide `P_MAX = 0.5` worst corner). Against that floor,
+    /// `IonicScale`'s own worst-case ceiling (`2.0 * 1.5 = 3.0`) leaves a
+    /// provable `4.0` margin — not the `1.0` a naive `BASE_IONIC_SCALE =
+    /// 4.0` would leave, and not merely "unobserved over the seeds this
+    /// was checked against": across seeds `[0, 1, 7, 42, 1000, 999_999]`
+    /// and every reachable rung, the actual worst margin measured was
+    /// `>16`, corroborating the analytic bound without depending on it.
+    /// **No real physical counterpart** — Borbax's own invented ionic
+    /// term, not a measured quantity, same tagging as `w_shape`/`w_charge`.
+    /// Symmetric `p` bound: no structural reason to favour one direction.
+    IonicScale = 11, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+}
 
 /// How far a universe's constants sit from the identity configuration —
 /// `0..=MAX`, drawn once per universe.
@@ -286,9 +535,160 @@ pub(crate) fn perturb(base: f64, rung: Rung, p: Direction) -> f64 {
     base * (1.0 + rung.strength() * p.get())
 }
 
+/// Draw and apply a migrated constant's symmetric excursion — `p` sampled
+/// from `[-constant.p_bound(), constant.p_bound()]`, the shape every
+/// migrated constant except [`MigratedConstant::ScreeningInner`] uses.
+///
+/// **Extracted once this shape reached its fifth call site** (`orbital.rs`'s
+/// `GapConsts::draw`, `bonds.rs`'s V2 capacity draw, and `element.rs`'s
+/// `radius_scale`/`base_mass`/`contact_defect` draws), so there is one
+/// `Stream::new(seed, Domain::Perturbation, index)` → `Direction::new` →
+/// [`perturb`] chain to keep correct rather than five copies that could
+/// drift. `ScreeningInner`'s one-sided-downward draw stays bespoke at its
+/// own call site — see [`MigratedConstant`]'s own doc for why that is a
+/// draw-site decision, not a general shape.
+///
+/// **Reads the bound from `constant` itself, not a hardcoded
+/// `Direction::P_MAX`** — added when `w_shape`/`w_charge` gave `p_bound`
+/// its first non-default value.
+#[must_use]
+pub(crate) fn draw_symmetric(seed: u64, rung: Rung, constant: MigratedConstant, base: f64) -> f64 {
+    let bound = constant.p_bound();
+    let mut stream = Stream::new(seed, Domain::Perturbation, constant.index());
+    let p = stream.next_f64_range(-bound, bound);
+    let direction = Direction::new(p, bound)
+        .unwrap_or_else(|| unreachable!("p is drawn within [-bound, bound] by construction"));
+    perturb(base, rung, direction)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Direction, Rung, perturb};
+    use super::{Axis, Counterpart, Direction, MigratedConstant, Rung, draw_symmetric, perturb};
+
+    #[test]
+    fn migrated_constant_all_contains_every_variant_with_its_own_index() {
+        // Generated from the same macro token list that defines the enum
+        // itself (see MigratedConstant's own doc), so this is really a
+        // regression test on the macro's own correctness, not on any one
+        // variant.
+        assert_eq!(
+            MigratedConstant::ALL,
+            &[
+                MigratedConstant::ScreeningInner,
+                MigratedConstant::PromotionBudget,
+                MigratedConstant::RadiusScale,
+                MigratedConstant::CapacityScale,
+                MigratedConstant::BaseMass,
+                MigratedConstant::ContactDefect,
+                MigratedConstant::WShape,
+                MigratedConstant::WCharge,
+                MigratedConstant::IdealGap,
+                MigratedConstant::Scale,
+                MigratedConstant::Gamma,
+                MigratedConstant::IonicScale,
+            ]
+        );
+        for (i, constant) in MigratedConstant::ALL.iter().enumerate() {
+            assert_eq!(
+                constant.index(),
+                u64::try_from(i).unwrap_or_else(|_| unreachable!("ALL.len() is a small constant")),
+                "{constant:?}: index should match its position in ALL"
+            );
+        }
+    }
+
+    #[test]
+    fn every_migrated_constant_is_electronic_and_default_only() {
+        // Every variant today belongs to Task 26.1's own electronic axis
+        // and has no real physical counterpart pinned -- Task 26.2 is what
+        // gives Axis::Nuclear and Counterpart::HasReal their first real
+        // variants (kappa/c, per the plan's own P7 migration table).
+        for &constant in MigratedConstant::ALL {
+            assert_eq!(
+                constant.axis(),
+                Axis::Electronic,
+                "{constant:?}: should be Axis::Electronic"
+            );
+            assert_eq!(
+                constant.counterpart(),
+                Counterpart::DefaultOnly,
+                "{constant:?}: should be Counterpart::DefaultOnly"
+            );
+        }
+    }
+
+    #[test]
+    fn most_migrated_constants_use_the_default_p_bound() {
+        for &constant in MigratedConstant::ALL {
+            if matches!(
+                constant,
+                MigratedConstant::WShape | MigratedConstant::WCharge
+            ) {
+                continue;
+            }
+            assert_eq!(
+                constant.p_bound().to_bits(),
+                Direction::P_MAX.to_bits(),
+                "{constant:?}: should use the crate-wide default p_bound"
+            );
+        }
+    }
+
+    /// The one place `p_bound` actually varies — checked directly, not just
+    /// via the "everything else is default" sweep above, since a planted
+    /// defect setting `WShape`/`WCharge` to the default would still pass
+    /// that sweep (it explicitly skips them) but silently reopen exactly
+    /// the size-comparison pathology the tighter bound exists to close.
+    #[test]
+    fn w_shape_and_w_charge_use_the_tighter_third_bound() {
+        assert!((MigratedConstant::WShape.p_bound() - 1.0 / 3.0).abs() < f64::EPSILON);
+        assert!((MigratedConstant::WCharge.p_bound() - 1.0 / 3.0).abs() < f64::EPSILON);
+        assert!(
+            MigratedConstant::WShape.p_bound() < Direction::P_MAX,
+            "the whole point of this tag is that it's tighter than the default"
+        );
+    }
+
+    /// `Gamma`'s base (0.6) was chosen specifically to keep the perturbed
+    /// range inside `OrderScale`'s unvalidated `(0, 1]` requirement — this
+    /// test is the actual guard against a future edit widening `BASE_GAMMA`
+    /// (in `bonds.rs`'s `generate_v2`) back toward V1's own range midpoint
+    /// without re-checking the worst-case corner, since `OrderScale::new`
+    /// itself performs no clamping and would silently accept a broken
+    /// value.
+    #[test]
+    fn gamma_stays_a_diminishing_series_at_every_reachable_rung() {
+        const BASE_GAMMA: f64 = 0.6;
+        for seed in [0_u64, 7, 42, 1000] {
+            for r in 0..=Rung::MAX {
+                let rung = Rung::new(r).unwrap_or_else(|| unreachable!("r <= Rung::MAX"));
+                let gamma = draw_symmetric(seed, rung, MigratedConstant::Gamma, BASE_GAMMA);
+                assert!(
+                    gamma > 0.0 && gamma <= 1.0,
+                    "seed {seed} rung {r}: gamma {gamma} left (0, 1], OrderScale::new performs \
+                     no clamping so this would silently invert the bond-order series"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn draw_symmetric_round_trips_at_identity() {
+        // At rung == 0, every migrated constant lands on exactly its base
+        // value, regardless of which constant or which seed -- the same
+        // property `OrbitalConsts::draw`/`GapConsts::draw`'s own round-trip
+        // tests check for their bespoke draws.
+        for seed in [0, 7, 42] {
+            for constant in MigratedConstant::ALL {
+                let base = 1.375;
+                assert_eq!(
+                    draw_symmetric(seed, Rung::IDENTITY, *constant, base).to_bits(),
+                    base.to_bits(),
+                    "seed {seed}, {constant:?}: should equal base exactly at rung == 0"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_rung_past_max_is_rejected() {

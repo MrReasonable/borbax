@@ -5,11 +5,14 @@
 //! of that packing rather than curves chosen because they looked plausible —
 //! principle 2, applied to the file that defines what an atom is.
 //!
-//! Two properties are **not** functions of the packing, and an earlier version
+//! One property is **not** a function of the packing, and an earlier version
 //! of this header claimed "every property below" was, which the file's own
-//! later text contradicts: `abundance` is a function of the fusion *process*
-//! (one drawn constant and the unit count, with no packing quantity in it), and
-//! `outer_fill_band` is not derived at all.
+//! later text contradicted: `abundance` is a function of the fusion *process*
+//! (one drawn constant and the unit count, with no packing quantity in it).
+//! A second exception, `outer_fill_band`, existed for the same reason and was
+//! removed entirely in Task 26.1 Step 8 — a rebinning of `(period, group)`
+//! that never carried chemistry (see the git history for its own header,
+//! which documented three successive incorrect claims about what it meant).
 //!
 //! See Task 4's preamble in the plan for what is claimed and, more importantly,
 //! what is not: there is no shape-diversity advantage, only the measured
@@ -22,9 +25,11 @@
 
 use crate::PhysicsVersion;
 use crate::naming;
+use crate::orbital::{self, ElectronicProperties, GapConsts, OrbitalConsts};
 use crate::packing::{self, PackingConsts};
+use crate::perturbation::{MigratedConstant, Rung, draw_symmetric};
 use borbax_rng::{Domain, Stream};
-use borbax_units::{Mass, Quanta, Span, det_math};
+use borbax_units::{Mass, Quanta, Span, canonical_cmp, det_math};
 
 /// Index into a universe's element table.
 ///
@@ -90,7 +95,7 @@ impl ElementId {
 /// **`#[non_exhaustive]`, so every field stays readable and none of it is
 /// constructible outside this crate.** The coupling here is tighter than
 /// `PackingConsts`'s — given `k`, all of `period`, `group`, `valence`, `radius`,
-/// `affinity`, `outer_fill_band` and `mass` are functions of `units` alone, so
+/// `affinity` and `mass` are functions of `units` alone, so
 /// `Element { units: 3, valence: 4, .. }` is geometrically impossible and would
 /// compile. Thirteen accessors on a record read field-by-field is boilerplate
 /// that loses an argument later; this is the stdlib answer to "read freely,
@@ -127,8 +132,21 @@ pub struct Element {
     /// Base units in this element's cluster. The element *is* this number.
     pub units: usize,
     /// Which shell is filling. The period index, derived rather than drawn.
+    ///
+    /// **V1**: the shell index (0-based). **V2**: the outermost occupied
+    /// principal quantum number `outer_n` (1-based) — the two versions do
+    /// not share an indexing convention, since each is self-consistent
+    /// within its own table and nothing compares a period number across
+    /// versions.
     pub period: u8,
     /// Units in the incomplete outer shell. The group index.
+    ///
+    /// **V1**: fill-fraction position, `outer` (a function of `(period,
+    /// group)`, not of `group` alone — see the historical note this field's
+    /// predecessor `outer_fill_band` carried, now removed). **V2**: the
+    /// frontier subshell's own angular momentum `l` directly (`0` = s, `1` =
+    /// p, `2` = d, `3` = f, ...) — a structural readout, not a fitted
+    /// quantity. See [`Block`].
     pub group: u8,
     /// Cluster mass: units carried, less the mass defect of made contacts.
     pub mass: Mass,
@@ -214,28 +232,89 @@ pub struct Element {
     pub instability: f64,
     /// Relative abundance. **The gel lever** (§7.2) — see [`generate_elements`].
     pub abundance: f64,
-    /// Which band of outer-shell occupancy this element exposes — `floor(fill ×
-    /// n_bands)`.
-    ///
-    /// **Renamed from `catalytic_class`, and the rename is the point.** §7.1
-    /// calls the field *reserved*, but a `pub` field named for catalysis on a
-    /// `pub` struct is not reserved, it is available — and the only thing
-    /// standing between it and a rate bonus keyed on a species label was a doc
-    /// comment saying "do not". §8.5 says catalysis is two cavities and nothing
-    /// else; §8.3 says one mechanism. A name that promises chemistry the value
-    /// does not carry is the standing invitation for a second one, so the name
-    /// now says what the value is.
-    ///
-    /// **Not derived, and this doc is what `cargo doc` renders.** An earlier
-    /// version said "coordination class of the frontier sites"; no coordination
-    /// mix is computed anywhere. It takes exactly one value per `(outer, cap)`
-    /// pair, and since `cap = shell_size(k, period + 1)` it is a function of
-    /// **`(period, group)`** within a universe — *not* of `group` alone, which
-    /// is what an earlier version of this sentence and of §7.1 both said.
-    /// Measured over 2000 universes: 54161 collisions keyed on `group` alone,
-    /// **0** keyed on `(period, group)`. Nothing downstream may branch on it as
-    /// though it carried chemistry.
-    pub outer_fill_band: u8,
+}
+
+/// Which subshell block an element's frontier sits in (Task 26.1, issue #26's
+/// Step 8).
+///
+/// **`V2` only**; V1 has no orbital picture for this to describe.
+/// Derived from [`Element::group`], which under V2 stores the frontier
+/// subshell's own `l` directly (a structural readout of `orbital.rs`'s own
+/// fold state, not a fitted or calibrated quantity — see the free function
+/// `block` in this module).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Block {
+    /// `l == 0`.
+    S,
+    /// `l == 1`.
+    P,
+    /// `l == 2`.
+    D,
+    /// `l == 3`.
+    F,
+    /// `l >= 4` — reachable in principle (`orbital.rs`'s `MAX_N = 9` allows
+    /// up to `l = 8`) but not observed within any table's drawn `n_elements`
+    /// range (`60..=120`) at the identity configuration; kept rather than
+    /// treated as unreachable because a perturbed universe's screening
+    /// coefficients are not proven to keep it that way.
+    Other(u8),
+}
+
+/// Which block an angular momentum `l` sits in — **a function on `l`
+/// directly, not on `Element`** (Step 8's own text: "`block()` is a method
+/// on `l`"), so a V1 caller cannot silently misread `Element::group` — which
+/// means something else entirely for V1 — as though it were a V2 `l` value.
+/// A caller must already know it holds a V2 element's `group`.
+///
+/// **`pub(crate)`, narrower than P4's eventual call-site guard needs to
+/// restrict — safe to widen once P4 lands, never to narrow.** P4 itself
+/// (the block-field read guard) lands right after this exists, not before,
+/// per the plan's own sequencing; this function existing is what P4 has
+/// something to guard.
+///
+/// **No in-crate caller yet — deliberately, until P4 gives it one.** The
+/// `#[expect]` is `cfg_attr`-gated to `not(test)` for the same reason every
+/// other such attribute in this crate is: this module's own tests are
+/// callers, and an unconditional `#[expect(dead_code)]` fires
+/// `unfulfilled_lint_expectations` on the test target.
+#[must_use]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "no in-crate caller until P4's block-field read guard lands with its own \
+                  allowlisted call sites — see this function's own doc"
+    )
+)]
+pub(crate) const fn block(l: u8) -> Block {
+    match l {
+        0 => Block::S,
+        1 => Block::P,
+        2 => Block::D,
+        3 => Block::F,
+        other => Block::Other(other),
+    }
+}
+
+/// Which shell/orbital law a table follows (Task 26.1, issue #26's Step 8).
+///
+/// The one member of [`ShellPattern`] that is genuinely version-specific.
+/// `closures`, `fallback_symbols`, `peak` and `eps` describe both laws
+/// equally, since each version populates its own values for those from its
+/// own mechanism; only `k` has no V2 equivalent at all — V2's law is the
+/// whole orbital fold (`orbital.rs`), not a single constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ShellLaw {
+    /// V1's packing shell law: shell `n` holds `k*n^2 + 2` units.
+    V1 {
+        /// The drawn shell-law constant.
+        k: usize,
+    },
+    /// V2's screened-hydrogenic orbital fill — see `orbital.rs` (`pub(crate)`,
+    /// so not linkable from this public doc comment).
+    V2,
 }
 
 /// The derived shape of one universe's table.
@@ -246,10 +325,12 @@ pub struct Element {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ShellPattern {
-    /// The drawn part of the shell law: shell `n` holds `k*n^2 + 2` units.
-    pub k: usize,
-    /// Cumulative unit counts at which a shell closes. Derived from `k`, not
-    /// drawn — this replaces the predecessor's drawn table of period lengths.
+    /// Which shell/orbital law this table follows, and that law's own
+    /// version-specific constant (`k` for V1; none for V2). See
+    /// [`ShellLaw`]'s own doc for why only this one thing splits.
+    pub law: ShellLaw,
+    /// Cumulative unit counts at which a shell closes. Derived from `k` (V1)
+    /// or from period boundaries (V2), never drawn directly.
     pub closures: Vec<usize>,
     /// How many symbols came from `naming::mint`'s exhaustion fallback rather
     /// than its grammar.
@@ -497,7 +578,60 @@ pub const fn stream(seed: u64) -> Stream {
 pub fn generate_elements(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
     match physics {
         PhysicsVersion::V1 => generate_elements_v1(seed, physics),
+        PhysicsVersion::V2 => generate_elements_v2(seed, physics),
     }
+}
+
+/// Find the peak-energy element and set every element's `instability` as its
+/// distance below it, in units of the peak's own magnitude. Returns the
+/// peak's own `units`.
+///
+/// **Shared by both physics versions, extracted once the mechanism was
+/// copied verbatim into `generate_elements_v2`.** Neither `energy_per_unit`'s
+/// formula (version-specific) nor this consequence of it (version-
+/// independent: "read the table's own maximum, measure distance from it")
+/// belongs to one version — see each generator's own call site for what,
+/// if anything, has been separately measured about *its* `energy_per_unit`
+/// distribution; this function makes no claim about either.
+fn find_peak_and_set_instability(out: &mut [Element]) -> usize {
+    let peak = out
+        .iter()
+        .fold((1_usize, Quanta(f64::MIN)), |(bn, be), e| {
+            if e.energy_per_unit > be {
+                (e.units, e.energy_per_unit)
+            } else {
+                (bn, be)
+            }
+        })
+        .0;
+    let peak_energy = out
+        .get(peak - 1)
+        .map_or(Quanta::ZERO, |e| e.energy_per_unit);
+    for e in out.iter_mut() {
+        // `f64::max` is disallowed — it returns either input on a tie and
+        // measured `(+0.0).max(-0.0)` differs between aarch64 and x86-64.
+        // `f64::EPSILON` is the *relative* spacing at 1.0, not an absolute
+        // magnitude, so using it bare as a floor on an energy is a category
+        // error. Harmless here only because `peak_energy` is the series
+        // maximum and is O(1) over the drawn grid — named so the guard says
+        // what scale it is relative to rather than leaving the next reader
+        // to assume.
+        const MIN_ENERGY_SCALE: Quanta = Quanta(f64::EPSILON);
+        let scale = Quanta(peak_energy.get().abs());
+        let scale = if scale > MIN_ENERGY_SCALE {
+            scale
+        } else {
+            MIN_ENERGY_SCALE
+        };
+        // `Quanta / Quanta` is `f64` by construction in `borbax-units`, so
+        // the dimensionlessness of a decay rate is checked rather than
+        // assumed. Capped at 1.0 — Task 15 owns the fix to that cap; see
+        // `Element::instability`'s own doc for why it is a category error
+        // against a Gillespie propensity, deferred rather than overlooked.
+        let deficit = (peak_energy - e.energy_per_unit) / scale;
+        e.instability = if deficit > 1.0 { 1.0 } else { deficit };
+    }
+    peak
 }
 
 /// **There is no `peak` parameter and there must never be one.** The
@@ -523,7 +657,7 @@ pub fn generate_elements(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
               than asserted here — three clauses of an earlier version of this string \
               were wrong, which is what a bound stated only in prose is worth. \
               Measured over k in 6..=14, units 1..=120: `period` <= 3, `group` <= 73, \
-              `cap` <= 130, `valence` in 0..=6, `outer_fill_band` <= 5, mass sub-units \
+              `cap` <= 130, `valence` in 0..=6, mass sub-units \
               in 1024..=215040. `out.len()` and `units` are <= `n_elements` <= 120"
 )]
 fn generate_elements_v1(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
@@ -555,7 +689,15 @@ fn generate_elements_v1(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
     let sigma = 0.02 + 0.01 * rng.next_range(12) as f64;
     let decay = 0.04 + 0.01 * rng.next_range(13) as f64;
     let n_elements = 60 + rng.next_range(61) as usize; // 60..=120
-    let n_bands = 3 + rng.next_range(4) as u8;
+    // `n_bands` (fed `outer_fill_band`, removed per Task 26.1 Step 8 -- see
+    // this file's own header) drew here and nothing else reads further from
+    // this stream in this function, so removing the draw outright (not
+    // draw-and-discard) shifts nothing downstream: it was the *last* use of
+    // `stream(seed)`, and `UniverseConsts`/bonds draw from their own,
+    // separate `Domain::Universe` indices (1 and 2). This permanently
+    // changes V1's stream shape and its pinned digest -- a deliberate,
+    // one-time removal, not the conditional per-seed skip Decision 9's own
+    // draw-and-discard fix exists to avoid.
 
     let mut naming_rng = Stream::new(seed, Domain::Naming, 0);
     let mut taken = Vec::new();
@@ -716,31 +858,6 @@ fn generate_elements_v1(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
         // battery, on `p_ss / p_c`.
         let abundance = det_math::exp(-(units as f64) * decay);
 
-        // Catalytic class: which band of outer-shell occupancy this element
-        // exposes.
-        //
-        // **This is a rebinning of `(period, group)`, and both the claim and the
-        // field name are narrowed to say so.** A draft's comment here said Euler's twelve five-coordinate sites
-        // mean a sparsely-filled shell exposes a different coordination mix from
-        // a nearly-full one, "and that mix is what a mineral surface presents".
-        // The code computed no such mix. It takes exactly one value per
-        // `(outer, cap)` pair, and `cap` follows the period — so it is a
-        // function of `(period, group)`, not of `group` alone. The "zero
-        // information beyond `group`" gloss was itself wrong, measured: 54161
-        // collisions keyed on `group`, 0 keyed on `(period, group)`. That is
-        // the third incorrect claim to stand in this block, which is the
-        // signal — two earlier reviewers found a "coordination mix" the code
-        // never computed.
-        //
-        // So Task 4's headline is five §7.1 properties derived, plus
-        // `abundance` — and this one honest rebinning, named as such.
-        // Until it means something, nothing downstream may branch on it as
-        // though it carried chemistry.
-        //
-        // `outer < cap` by loop construction and `cap >= 8`, so this lands in
-        // `0..n_bands` with neither a `max(1)` nor a trailing modulo.
-        let outer_fill_band = ((outer * usize::from(n_bands)) / cap) as u8;
-
         out.push(Element {
             symbol,
             name,
@@ -754,7 +871,6 @@ fn generate_elements_v1(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
             energy_per_unit,
             instability: 0.0, // filled below, once the peak is known
             abundance,
-            outer_fill_band,
         });
     }
 
@@ -786,96 +902,268 @@ fn generate_elements_v1(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
     // coincidence rate, and its correction called it structural without
     // qualification. Neither is right, which is why the census is reported
     // rather than asserted.
-    let peak = out
-        .iter()
-        .fold((1_usize, Quanta(f64::MIN)), |(bn, be), e| {
-            if e.energy_per_unit > be {
-                (e.units, e.energy_per_unit)
-            } else {
-                (bn, be)
-            }
-        })
-        .0;
-
     // Decay rate: distance below the peak, so the most tightly bound elements
     // persist and the extremes decay. One quantity, two consequences — which
     // is what the predecessor's two unlinked encodings could not give.
+    //
+    // **Cap at 1.0 — and the reason this comment used to give was wrong.
+    // Left standing deliberately; Task 15 owns the fix.** It said
+    // `instability` is a probability per world-year (§7.1), so 1.0 "is the
+    // value the type implies and needs no defence". §7.1 does say that —
+    // and Task 15 hands this quantity to the scheduler as a **Gillespie
+    // propensity**, which is a rate constant: inverse time, defined on an
+    // infinitesimal interval, and *unbounded above* (Gillespie 2007, Eq. 2,
+    // `a_j(x) = c_j x_1` for the unimolecular case). Against that consumer a
+    // ceiling is not a saturation but a category error, and 200 summed
+    // per-interval probabilities for a `MAX_POLYMER` chain is not a
+    // probability of anything.
+    //
+    // **Deferred, not overlooked.** Deleting the cap costs 0.7% of the
+    // abundance-weighted mean decay and *gains* 2.1% of the table's
+    // max/median ratio spread — which is the quantity §9.4's differential
+    // persistence is actually about. It is not applied here because it
+    // shares a fix with two larger items now written into Task 15 as
+    // requirements 4 and 5: the radiogenic channel carries no scale constant
+    // and so dominates cleave by 10^3..10^7, and §7.1's documented *type* is
+    // what has to change. One golden regeneration, not three.
+    //
+    // **The cause is upstream of the cap.** `contacts_upto` returns 0 at
+    // `units <= 1`, so `energy_per_unit(1) = -sigma` exactly and
+    // `deficit(1) = 1 + sigma/peak_energy > 1` in **every** universe —
+    // measured, the monomer's `instability` takes exactly one value across
+    // 20 000 universes. The strain term charges a lone unit the full
+    // per-site penalty of a lattice whose own comment above says "each shell
+    // is stretched over a larger radius than the one below", and at N = 1
+    // there is no shell below. Same root cause as the open `N^(2/3)` item.
+    //
+    // **The 0.9 this replaced was still worse, and that measurement
+    // stands** —
+    // measured over the 2916-universe grid it binds on 1.19% of elements
+    // but on **at least one element in every universe**, and those elements
+    // sit at median position N/n_elements = 0.011: it is the monomer, the
+    // feedstock, the most abundant species. So a bare 0.9 systematically
+    // slowed the decay of the one species whose persistence matters most,
+    // by up to 26%, as a side effect of a guard nobody described. The raw
+    // deficit does exceed 1 (max measured 1.218), so a cap is genuinely
+    // needed — it is the value that was wrong, not the clamp.
+    //
+    // If a future measurement wants the monomer to persist longer, that is
+    // a physics claim about feedstock and belongs in §9.4 with the
+    // measurement attached, not in a magic number here. And the feedstock
+    // defence does not hold in V0 regardless: there is no inflow — the
+    // `Beaker` API is `{new, step, time, counts, species_count}` and §11's
+    // open boundaries are V1 — so a closed beaker losing its most abundant
+    // element does not turn over, it empties.
+    let peak = find_peak_and_set_instability(&mut out);
+
+    let shell = ShellPattern {
+        law: ShellLaw::V1 { k },
+        eps,
+        closures: packing::closures(k, n_elements),
+        fallback_symbols,
+        peak,
+    };
+    PeriodicTable::new(shell, out, physics)
+}
+
+/// `tanh`, built from [`det_math::exp`] rather than a native `f64::tanh` —
+/// §13.1 routes every transcendental through `det_math`, and `tanh` is not
+/// one of the primitives it exposes yet, so this is the one caller building
+/// it from a primitive that *is* covered rather than reaching for a
+/// platform tanh. **Branches on the sign of `x` for numerical safety, not
+/// style**: the naive `(exp(2x)-1)/(exp(2x)+1)` overflows to `inf/inf` =
+/// `NaN` for large positive `x` (`exp` saturates to `f64::INFINITY`); using
+/// `exp(-2*|x|)` on whichever side keeps the exponent non-positive, so the
+/// exponential only ever underflows harmlessly toward `0.0`, never
+/// overflows.
+fn tanh(x: f64) -> f64 {
+    if x >= 0.0 {
+        let e = det_math::exp(-2.0 * x);
+        (1.0 - e) / (1.0 + e)
+    } else {
+        let e = det_math::exp(2.0 * x);
+        (e - 1.0) / (e + 1.0)
+    }
+}
+
+/// Decision 8's affinity centring: the table's own median of `-e_homo` (an
+/// ionisation-energy-like, always-positive quantity), read off the finished
+/// series — the same "computed constant" principle `peak` already follows,
+/// never passed in — plus a self-scaling denominator (the median itself,
+/// floored near zero the same way `find_peak_and_set_instability` guards
+/// `peak_energy`). Deterministic median: sort via `canonical_cmp`, never
+/// `partial_cmp().unwrap()`, then index `n/2`.
+fn median_neg_e_homo_and_scale(props: &[ElectronicProperties], n_elements: usize) -> (f64, f64) {
+    const MIN_AFFINITY_SCALE: f64 = f64::EPSILON;
+    let mut neg_e_homo: Vec<f64> = (0..n_elements)
+        .map(|i| {
+            -props
+                .get(i)
+                .unwrap_or_else(|| unreachable!("n_elements <= 120, well within ELECTRON_CEILING"))
+                .e_homo
+        })
+        .collect();
+    neg_e_homo.sort_by(|a, b| canonical_cmp(*a, *b));
+    let median = neg_e_homo
+        .get(n_elements / 2)
+        .copied()
+        .unwrap_or_else(|| unreachable!("n_elements >= 60, so n_elements / 2 is in bounds"));
+    let scale = if median.abs() > MIN_AFFINITY_SCALE {
+        median.abs()
+    } else {
+        MIN_AFFINITY_SCALE
+    };
+    (median, scale)
+}
+
+/// V2's element generator (issue #26, Task 26.1 Steps 6-9, Decision 8) —
+/// screened-hydrogenic orbital fill (`orbital.rs`) replaces V1's
+/// shell-packing model entirely. `symbol`/`name`/`units`/`mass`/`valence`/
+/// `affinity`/`radius`/`energy_per_unit`/`instability`/`abundance` name the
+/// same *kind* of quantity as V1's; `period`/`group` do not share an
+/// indexing or value convention across versions — see their own field docs
+/// on [`Element`].
+///
+/// **`n_elements` is Decision 9's draw-and-discard, not a new mechanism.**
+/// The word is drawn off the stream identically at every rung; only at
+/// `rung == 0` is its *result* discarded in favour of 118 (the real
+/// periodic table's size), so every later draw's stream position is
+/// unaffected by which rung this universe landed on.
+///
+/// **`decay` (feeds `abundance`) and `radius_scale`/`base_mass`/
+/// `contact_defect`'s base values are chosen, not derived — `Counterpart::DefaultOnly`
+/// for all of them.** `decay` is not named in the plan's own P7 migration
+/// table at all, so it stays a plain per-universe draw, same mechanism and
+/// shape V1 already uses, just V2's own value on V2's own stream position.
+#[must_use]
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "every narrowing here is bounded by construction: `n_elements` is 60..=120 \
+              (Decision 9), `outer_n`/`frontier_l` are small quantum numbers bounded by \
+              orbital.rs's own MAX_N = 9, `valence` is a Hund's-rule unpaired count or the \
+              promotion bonus (2), never large, and mass sub-units follow the same \
+              round_ties_even -> i64 pattern generate_elements_v1 already uses. No \
+              cast_sign_loss here (unlike generate_elements_v1): every narrowing in this \
+              function goes to a signed destination wide enough for its bounded input, never \
+              float/signed -> unsigned"
+)]
+fn generate_elements_v2(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
+    let rung = Rung::draw(seed);
+
+    let mut rng = stream(seed);
+    let raw_n_elements = 60 + rng.next_range(61) as usize;
+    let n_elements = if rung.is_identity() {
+        118
+    } else {
+        raw_n_elements
+    };
+    let decay = 0.04 + 0.01 * rng.next_range(13) as f64;
+
+    let orbital_consts = OrbitalConsts::draw(seed, rung);
+    let gap_consts = GapConsts::draw(seed, rung);
+    let runs = orbital::fill(orbital_consts);
+    let props = orbital::electronic_properties(&runs, orbital_consts, gap_consts);
+
+    let radius_scale = draw_symmetric(seed, rung, MigratedConstant::RadiusScale, 0.4);
+    let base_mass = draw_symmetric(seed, rung, MigratedConstant::BaseMass, 1.375);
+    // Re-quantised to the 1/1024 grid immediately after perturbation -- the
+    // continuous P7 multiply does not itself land on the grid, and only the
+    // quantised value may reach `Mass::from_raw` (see element.rs:486-494's
+    // own note on why `base_mass` must stay dyadic, restated for V2 here).
+    let base_mass_sub = (base_mass * 1024.0).round_ties_even() as i64;
+    let contact_defect = draw_symmetric(seed, rung, MigratedConstant::ContactDefect, 0.005);
+
+    let (median_neg_e_homo, affinity_scale) = median_neg_e_homo_and_scale(&props, n_elements);
+
+    let identity_witness = naming::IdentityWitness::new(rung);
+    let mut naming_rng = Stream::new(seed, Domain::Naming, 0);
+    let mut taken = Vec::new();
+    let mut fallback_symbols = 0_usize;
+
+    let mut out: Vec<Element> = Vec::with_capacity(n_elements);
+    for units in 1..=n_elements {
+        let p: ElectronicProperties = *props
+            .get(units - 1)
+            .unwrap_or_else(|| unreachable!("n_elements <= 120, well within ELECTRON_CEILING"));
+
+        let (symbol, name) = identity_witness.map_or_else(
+            || {
+                let (symbol, name, provenance) = naming::mint(&mut naming_rng, &mut taken);
+                if provenance == naming::Provenance::Fallback {
+                    fallback_symbols += 1;
+                }
+                (symbol, name)
+            },
+            |witness| {
+                let (s, nm) = naming::real_name(witness, units).unwrap_or_else(|| {
+                    unreachable!(
+                        "units <= n_elements == 118 at identity, within REAL_TABLE's 1..=118 range"
+                    )
+                });
+                (s.to_string(), nm.to_string())
+            },
+        );
+
+        let period = p.outer_n;
+        let group = p.frontier_l;
+
+        let radius = radius_scale * f64::from(p.outer_n) * f64::from(p.outer_n) / p.zeff_outer;
+
+        let defect_sub =
+            (f64::from(p.paired_count) * contact_defect * 1024.0).round_ties_even() as i64;
+        let mass = Mass::from_raw(units as i64 * base_mass_sub - defect_sub);
+
+        let mean_e: f64 = props.iter().take(units).map(|q| q.e_homo).sum::<f64>() / units as f64;
+        let energy_per_unit = Quanta(-mean_e);
+
+        let affinity = tanh((-p.e_homo - median_neg_e_homo) / affinity_scale);
+
+        let abundance = det_math::exp(-(units as f64) * decay);
+
+        out.push(Element {
+            symbol,
+            name,
+            units,
+            period,
+            group,
+            mass,
+            valence: p.valence as u8,
+            affinity,
+            radius: Span(radius),
+            energy_per_unit,
+            instability: 0.0, // filled below, once the peak is known
+            abundance,
+        });
+    }
+
+    // Peak-finding and deficit: shared with V1 via `find_peak_and_set_instability`
+    // -- the "table's own energy scale, read off the finished series"
+    // principle is version-independent, only what feeds `energy_per_unit`
+    // differs. Neither the 19-of-24-closures census nor the monomer/0.9-cap
+    // measurements V1's own call site documents have been separately
+    // re-measured for V2's own `energy_per_unit` distribution.
+    let peak = find_peak_and_set_instability(&mut out);
     let peak_energy = out
         .get(peak - 1)
         .map_or(Quanta::ZERO, |e| e.energy_per_unit);
-    for e in &mut out {
-        // `f64::max` is disallowed — it returns either input on a tie and
-        // measured `(+0.0).max(-0.0)` differs between aarch64 and x86-64.
-        // `f64::EPSILON` is the *relative* spacing at 1.0, not an absolute
-        // magnitude, so using it bare as a floor on an energy is a category
-        // error. Harmless here only because `peak_energy` is the series maximum
-        // and is O(1) over the drawn grid — named so the guard says what scale
-        // it is relative to rather than leaving the next reader to assume.
-        const MIN_ENERGY_SCALE: Quanta = Quanta(f64::EPSILON);
-        let scale = Quanta(peak_energy.get().abs());
-        let scale = if scale > MIN_ENERGY_SCALE {
-            scale
-        } else {
-            MIN_ENERGY_SCALE
-        };
-        // `Quanta / Quanta` is `f64` by construction in `borbax-units`, so the
-        // dimensionlessness of a decay rate is now checked rather than assumed.
-        let deficit = (peak_energy - e.energy_per_unit) / scale;
-        // **Cap at 1.0 — and the reason this comment used to give was wrong.
-        // Left standing deliberately; Task 15 owns the fix.** It said
-        // `instability` is a probability per world-year (§7.1), so 1.0 "is the
-        // value the type implies and needs no defence". §7.1 does say that —
-        // and Task 15 hands this quantity to the scheduler as a **Gillespie
-        // propensity**, which is a rate constant: inverse time, defined on an
-        // infinitesimal interval, and *unbounded above* (Gillespie 2007, Eq. 2,
-        // `a_j(x) = c_j x_1` for the unimolecular case). Against that consumer a
-        // ceiling is not a saturation but a category error, and 200 summed
-        // per-interval probabilities for a `MAX_POLYMER` chain is not a
-        // probability of anything.
-        //
-        // **Deferred, not overlooked.** Deleting the cap costs 0.7% of the
-        // abundance-weighted mean decay and *gains* 2.1% of the table's
-        // max/median ratio spread — which is the quantity §9.4's differential
-        // persistence is actually about. It is not applied here because it
-        // shares a fix with two larger items now written into Task 15 as
-        // requirements 4 and 5: the radiogenic channel carries no scale constant
-        // and so dominates cleave by 10^3..10^7, and §7.1's documented *type* is
-        // what has to change. One golden regeneration, not three.
-        //
-        // **The cause is upstream of the cap.** `contacts_upto` returns 0 at
-        // `units <= 1`, so `energy_per_unit(1) = -sigma` exactly and
-        // `deficit(1) = 1 + sigma/peak_energy > 1` in **every** universe —
-        // measured, the monomer's `instability` takes exactly one value across
-        // 20 000 universes. The strain term charges a lone unit the full
-        // per-site penalty of a lattice whose own comment above says "each shell
-        // is stretched over a larger radius than the one below", and at N = 1
-        // there is no shell below. Same root cause as the open `N^(2/3)` item.
-        //
-        // **The 0.9 this replaced was still worse, and that measurement
-        // stands** —
-        // measured over the 2916-universe grid it binds on 1.19% of elements
-        // but on **at least one element in every universe**, and those elements
-        // sit at median position N/n_elements = 0.011: it is the monomer, the
-        // feedstock, the most abundant species. So a bare 0.9 systematically
-        // slowed the decay of the one species whose persistence matters most,
-        // by up to 26%, as a side effect of a guard nobody described. The raw
-        // deficit does exceed 1 (max measured 1.218), so a cap is genuinely
-        // needed — it is the value that was wrong, not the clamp.
-        //
-        // If a future measurement wants the monomer to persist longer, that is
-        // a physics claim about feedstock and belongs in §9.4 with the
-        // measurement attached, not in a magic number here. And the feedstock
-        // defence does not hold in V0 regardless: there is no inflow — the
-        // `Beaker` API is `{new, step, time, counts, species_count}` and §11's
-        // open boundaries are V1 — so a closed beaker losing its most abundant
-        // element does not turn over, it empties.
-        e.instability = if deficit > 1.0 { 1.0 } else { deficit };
-    }
+
+    // Period boundaries: every z whose outer_n differs from z+1's -- z is
+    // the LAST element of the closing period, matching V1's own "closures
+    // are the last element of a completed shell" convention. No test reads
+    // V2's `closures` yet (this crate's own tests only read it through
+    // `table()`, which fixes `PhysicsVersion::CURRENT` == V1), so this is a
+    // straightforward, not yet independently scrutinised, derivation.
+    let closures: Vec<usize> = (1..n_elements)
+        .filter(|&z| props.get(z - 1).map(|q| q.outer_n) != props.get(z).map(|q| q.outer_n))
+        .collect();
 
     let shell = ShellPattern {
-        k,
-        eps,
-        closures: packing::closures(k, n_elements),
+        law: ShellLaw::V2,
+        eps: peak_energy,
+        closures,
         fallback_symbols,
         peak,
     };
@@ -894,6 +1182,223 @@ mod tests {
     /// intent [`crate::Universe::generate`] follows.
     fn table(seed: u64) -> (ShellPattern, Vec<Element>, PhysicsVersion) {
         generate_elements(seed, PhysicsVersion::CURRENT).into_parts()
+    }
+
+    /// V2's own table, for Task 26.1 Step 6's acceptance tests below --
+    /// `table(seed)` deliberately fixes `PhysicsVersion::CURRENT`, which is
+    /// V1, so every V2-specific assertion needs this instead.
+    fn table_v2(seed: u64) -> (ShellPattern, Vec<Element>, PhysicsVersion) {
+        generate_elements(seed, PhysicsVersion::V2).into_parts()
+    }
+
+    /// Decision 8's "one shared computation" claim, checked directly rather
+    /// than trusted: `period`, `group` and `valence` must come from the
+    /// *same* [`ElectronicProperties`] entry per `z`, not four
+    /// independently-tuned formulas that happen to agree on this input. A
+    /// version wiring `period` from a stale or re-derived quantity would
+    /// pass every range/shape test above while still failing this one,
+    /// since it compares against the source computation directly.
+    #[test]
+    fn period_group_and_valence_come_from_the_same_electronic_properties_entry() {
+        for seed in [0u64, 1, 5, 21, 42] {
+            let rung = Rung::draw(seed);
+            let runs = orbital::fill(OrbitalConsts::draw(seed, rung));
+            let props = orbital::electronic_properties(
+                &runs,
+                OrbitalConsts::draw(seed, rung),
+                GapConsts::draw(seed, rung),
+            );
+            let (_, els, _) = table_v2(seed);
+            for (i, e) in els.iter().enumerate() {
+                let p = props
+                    .get(i)
+                    .unwrap_or_else(|| unreachable!("els.len() <= n_elements <= props.len()"));
+                assert_eq!(e.period, p.outer_n, "seed {seed} z={}: period", i + 1);
+                assert_eq!(e.group, p.frontier_l, "seed {seed} z={}: group", i + 1);
+                assert_eq!(
+                    e.valence,
+                    u8::try_from(p.valence)
+                        .unwrap_or_else(|_| unreachable!("valence is a small unpaired count")),
+                    "seed {seed} z={}: valence",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    /// `radius(z) = radius_scale * outer_n^2 / zeff_outer` falls within a
+    /// period (since `zeff_outer` rises there — `orbital.rs`'s own
+    /// `zeff_outer_rises_within_a_period` pins the mechanism) and jumps up
+    /// at every period start, with the boundary read from `period` itself
+    /// (`outer_n`), never a literal list of z values.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`windows(2)` yields slices of exactly length 2"
+    )]
+    #[test]
+    fn v2_radius_falls_within_a_period_and_jumps_at_period_starts() {
+        for seed in [0u64, 1, 5, 21, 42] {
+            let (_, els, _) = table_v2(seed);
+            for w in els.windows(2) {
+                let (prev, next) = (&w[0], &w[1]);
+                if next.period == prev.period {
+                    assert!(
+                        next.radius.0 < prev.radius.0,
+                        "seed {seed} units {}->{}: radius should fall within a period ({} -> {})",
+                        prev.units,
+                        next.units,
+                        prev.radius.0,
+                        next.radius.0
+                    );
+                } else {
+                    assert!(
+                        next.radius.0 > prev.radius.0,
+                        "seed {seed} units {}->{}: radius should jump up at a new period ({} -> {})",
+                        prev.units,
+                        next.units,
+                        prev.radius.0,
+                        next.radius.0
+                    );
+                }
+            }
+        }
+    }
+
+    /// #31's closure: `affinity` must be periodic in Z, not a monotone
+    /// trend. **The sign-change assertion is the real discriminator** — no
+    /// monotone function can change sign more than once, let alone within
+    /// a single period, which is a strictly stronger claim than a
+    /// correlation bound can express. The correlation bound is
+    /// supplementary and **measured, not guessed**: `-e_homo` genuinely
+    /// trends upward with Z (deeper, more-screened shells still bind more
+    /// tightly on average), so affinity correlates 0.86-0.91 with Z across
+    /// `[0, 1, 5, 21, 42]` — real periodic structure riding on top of a
+    /// real trend, not a flat oscillation. An earlier draft of this bound
+    /// guessed 0.6 before measuring and failed on every seed. `0.95` is
+    /// pre-fixed with real margin above the measured range and stays a
+    /// long way short of the ~1.0 a literal Z-surrogate (what #31's old
+    /// formula effectively was) would hit.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`windows(2)` yields slices of exactly length 2"
+    )]
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "`els.len()` is at most 120, well within f64's exact integer range"
+    )]
+    #[test]
+    fn v2_affinity_is_periodic_not_a_monotone_trend_in_z() {
+        const CORRELATION_BOUND: f64 = 0.95;
+        for seed in [0u64, 1, 5, 21, 42] {
+            let (_, els, _) = table_v2(seed);
+            let mut sign_change_within_a_period = false;
+            for w in els.windows(2) {
+                if w[1].period == w[0].period && w[0].affinity.signum() != w[1].affinity.signum() {
+                    sign_change_within_a_period = true;
+                }
+            }
+            assert!(
+                sign_change_within_a_period,
+                "seed {seed}: affinity never changes sign within a period"
+            );
+
+            let z: Vec<f64> = (1..=els.len()).map(|u| u as f64).collect();
+            let a: Vec<f64> = els.iter().map(|e| e.affinity).collect();
+            let corr = pearson_correlation(&z, &a);
+            assert!(
+                corr.abs() < CORRELATION_BOUND,
+                "seed {seed}: affinity correlates {corr:.4} with Z -- too close to a monotone \
+                 trend for a periodic quantity"
+            );
+        }
+    }
+
+    /// Pearson correlation, hand-rolled: this file's own established
+    /// precedent for small numeric helpers (`tanh`, above) is to write the
+    /// ~10 lines rather than reach for a dependency, and a test-only
+    /// helper is an even lower bar than that (dev-dependencies are cheap,
+    /// but this needs nothing a crate would give beyond what fits here).
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "x.len() is a small test-fixture size, well within f64's exact integer range"
+    )]
+    fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
+        let n = x.len() as f64;
+        let mean_x = x.iter().sum::<f64>() / n;
+        let mean_y = y.iter().sum::<f64>() / n;
+        let mut cov = 0.0;
+        let mut var_x = 0.0;
+        let mut var_y = 0.0;
+        for (&xi, &yi) in x.iter().zip(y) {
+            let dx = xi - mean_x;
+            let dy = yi - mean_y;
+            cov += dx * dy;
+            var_x += dx * dx;
+            var_y += dy * dy;
+        }
+        cov / (var_x.sqrt() * var_y.sqrt())
+    }
+
+    /// Decision 8's headline valence-promotion claim, checked again at the
+    /// level the wiring actually ships -- `orbital.rs`'s own
+    /// `valence_matches_real_ground_state_valences_through_period_3` checks
+    /// the *unwired* `ElectronicProperties`; this checks `Element::valence`
+    /// as `generate_elements_v2` actually stores it, at the identity
+    /// configuration where the real analogues are nameable.
+    #[test]
+    fn v2_valence_promotion_matches_beryllium_and_helium_analogues_through_the_wired_element() {
+        let (_, els, _) = table_v2(21); // identity configuration (see lib.rs's own pinned seed)
+        let helium = els
+            .get(1)
+            .unwrap_or_else(|| unreachable!("z=2 exists in any 60..=120 table"));
+        assert_eq!(
+            helium.valence, 0,
+            "z=2 (helium-analogue) should not promote"
+        );
+        let beryllium = els
+            .get(3)
+            .unwrap_or_else(|| unreachable!("z=4 exists in any 60..=120 table"));
+        assert_eq!(
+            beryllium.valence, 2,
+            "z=4 (beryllium-analogue) should promote to valence 2"
+        );
+    }
+
+    /// The `n_elements`-at-a-boundary property this file's own design memo
+    /// resolved as identity-only, not a general per-seed guarantee (every
+    /// `MigratedConstant` lands on its base value at `rung == 0`, so the
+    /// fold itself is seed-independent at identity): real element 118
+    /// (Oganesson-analogue) completes its own subshell -- `gap > 0` at
+    /// z=118 -- rather than sitting mid-fill, which is what makes 118 a
+    /// structurally sound table size to have pinned rather than an
+    /// arbitrary cut.
+    #[test]
+    fn element_118_completes_its_own_subshell_at_the_identity_configuration() {
+        let runs = orbital::fill(OrbitalConsts::at_identity());
+        let props = orbital::electronic_properties(
+            &runs,
+            OrbitalConsts::at_identity(),
+            GapConsts::at_identity(),
+        );
+        let last = props
+            .get(117) // z=118, 0-indexed
+            .unwrap_or_else(|| unreachable!("the identity fold reaches well past z=118"));
+        assert!(
+            last.gap > 0.0,
+            "z=118 should complete its own subshell (gap > 0), not sit mid-fill"
+        );
+    }
+
+    #[test]
+    fn block_maps_l_to_the_named_blocks_and_falls_back_past_f() {
+        assert_eq!(block(0), Block::S);
+        assert_eq!(block(1), Block::P);
+        assert_eq!(block(2), Block::D);
+        assert_eq!(block(3), Block::F);
+        assert_eq!(block(4), Block::Other(4));
+        assert_eq!(block(8), Block::Other(8));
     }
 
     /// The maximum valence of a table at an explicit `(k, n_elements)`.
@@ -1180,7 +1685,10 @@ mod tests {
     fn closed_shells_have_valence_zero() {
         for seed in 0..24 {
             let (sp, els, _physics) = table(seed);
-            for n in packing::closures(sp.k, els.len()) {
+            let ShellLaw::V1 { k } = sp.law else {
+                unreachable!("table() fixes PhysicsVersion::CURRENT, which is V1")
+            };
+            for n in packing::closures(k, els.len()) {
                 if let Some(e) = els.get(n - 1) {
                     assert_eq!(e.valence, 0, "seed {seed}: N={n} is a closure");
                 }
@@ -1422,19 +1930,13 @@ mod tests {
             "the fourth shell's first fill moved"
         );
 
-        let mut max_class = 0_u8;
         let (mut min_raw, mut max_raw) = (i64::MAX, i64::MIN);
         for seed in 0..400 {
             for e in &table(seed).1 {
-                max_class = max_class.max(e.outer_fill_band);
                 min_raw = min_raw.min(e.mass.raw());
                 max_raw = max_raw.max(e.mass.raw());
             }
         }
-        assert!(
-            max_class <= 5,
-            "`outer_fill_band` exceeded n_bands - 1: {max_class}"
-        );
         assert!(
             (1024..=215_040).contains(&min_raw) && (1024..=215_040).contains(&max_raw),
             "mass sub-units {min_raw}..={max_raw} left the stated range"
@@ -1533,12 +2035,20 @@ mod tests {
             // A `_` here is therefore a deliberate act and a review finding —
             // there is exactly one below, and it carries its reason.
             let ShellPattern {
-                k,
+                law,
                 closures,
                 fallback_symbols,
                 peak,
                 eps,
             } = &sp;
+            // `table()` fixes `PhysicsVersion::CURRENT`, which is V1 — this
+            // digest predates `PhysicsVersion` and has no version axis to mix
+            // `law` itself into (see this test's own doc, above), so the
+            // V1-only extraction below reproduces exactly what `mix(*k as
+            // u64)` mixed before `k` moved into `ShellLaw`.
+            let ShellLaw::V1 { k } = law else {
+                unreachable!("table() fixes PhysicsVersion::CURRENT, which is V1")
+            };
             mix(*k as u64);
             mix(*peak as u64);
             mix(*fallback_symbols as u64);
@@ -1570,13 +2080,11 @@ mod tests {
                     energy_per_unit,
                     instability,
                     abundance,
-                    outer_fill_band,
                 } = e;
                 mix(mass.raw() as u64);
                 mix(u64::from(*valence));
                 mix(u64::from(*period));
                 mix(u64::from(*group));
-                mix(u64::from(*outer_fill_band));
                 mix(affinity.to_bits());
                 mix(radius.0.to_bits());
                 // `.0.to_bits()`, matching the `radius` line above rather than
@@ -1593,14 +2101,19 @@ mod tests {
             }
         }
         assert_eq!(
-            h, 0x2643_2a8a_5584_a577,
+            h, 0x4e79_4d66_eee9_ca47,
             "the universe digest moved — say which of §18.1's three this is, or \
-             the fourth: the digest's own input set widened. Recomputing without \
-             the newest mixed field distinguishes them. This constant has moved \
-             twice deliberately and no element value has ever changed: once when \
-             `eps` joined `ShellPattern` so `bonds.rs` could derive its energy \
-             scale from the table's own, and once when a companion `sigma` was \
-             removed again for having no reader outside a test"
+             the fourth: the digest's own input set changed shape. Recomputing \
+             with the changed field distinguishes them. This constant has moved \
+             three times deliberately and no *value* this digest still covers has \
+             ever changed: once when `eps` joined `ShellPattern` so `bonds.rs` \
+             could derive its energy scale from the table's own; once when a \
+             companion `sigma` was removed again for having no reader outside a \
+             test; and once when Task 26.1 Step 8 removed `outer_fill_band` \
+             entirely (a rebinning of `(period, group)` that never carried \
+             chemistry — see this file's own header) — the input set narrowed by \
+             one field, which moves the hash on its own even though every \
+             remaining mixed value is unchanged"
         );
     }
 

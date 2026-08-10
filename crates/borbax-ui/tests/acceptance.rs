@@ -61,20 +61,35 @@ fn the_viewer_opens_on_a_universe_rather_than_an_instruction() {
     );
 }
 
-/// **This test is vacuous today and is kept anyway. Read the reason before
-/// trusting it.**
+/// **This test was vacuous at Step 1 and is kept anyway. Read the reason
+/// before trusting it — and read the "still" carefully, because what makes it
+/// vacuous has narrowed, not gone.**
 ///
 /// `status_line` is supposed to read the physics version out of the universe
 /// (`u8::from(universe.physics)`) rather than type `v1` into the format string,
 /// because §6 says a universe is `(seed, physics)` and a viewer that hardcodes
-/// the version becomes a liar on the day `V2` ships — silently, on a screen
-/// somebody has been reading for a year.
+/// the version becomes a liar the moment it shows anything `CURRENT` does not
+/// point at — silently, on a screen somebody has been reading for a year.
 ///
-/// **Measured: substituting the literal `1` for `u8::from(universe.physics)`
-/// passes every test in this crate, this one included.** The discriminator
-/// asked for — "change `PhysicsVersion::CURRENT` and the line must move" — is
-/// not available, because `PhysicsVersion` has exactly one variant. Every test
-/// that could be written today compares 1 against 1.
+/// **`PhysicsVersion` no longer has exactly one variant — `V2` landed at issue
+/// #26 Task 26.1 Step 15 — and an earlier version of this comment's claim to
+/// that effect is the reason this paragraph exists.** What is still true, and
+/// is the reason `status_after("7")` below still cannot discriminate the
+/// mutation on its own: `loaded`/`status_after` always open on
+/// `ViewerState::new()`'s starting physics, which is `PhysicsVersion::CURRENT`
+/// — unchanged, still `V1` — so **this specific call path** never reaches `V2`
+/// regardless of how many variants the enum has. Substituting the literal `1`
+/// for `u8::from(universe.physics)` still passes this test, because `current`
+/// below is also read from `CURRENT`, which has not moved.
+///
+/// **The gap this leaves is closed elsewhere, not left open.** Real,
+/// non-vacuous coverage of the physics label moving exists now:
+/// `selecting_v2_regenerates_the_current_seed_under_v2` and its neighbours
+/// drive `ViewerState::set_physics` directly, so they read `physics v2` on a
+/// universe whose `CURRENT` is still `V1` and would fail against a hardcoded
+/// `v1`. This test's own job narrows to "the *opening* universe's label is
+/// read, not hardcoded" — worth keeping for that alone, since the opening
+/// state is still reachable by nobody clicking anything.
 ///
 /// **The count is deliberately gone.** It was re-measured three times as the
 /// suite grew (16, 18, 24) under a sentence promising it always would be — and
@@ -82,17 +97,18 @@ fn the_viewer_opens_on_a_universe_rather_than_an_instruction() {
 /// made the promise. A reviewer caught it. The mutation is the durable claim;
 /// the denominator is a fact about how many tests happen to exist this week.
 ///
-/// So what this is: a **latent** guard. It derives its expectation from
-/// `PhysicsVersion::CURRENT` rather than from a literal, so it stays vacuous
-/// until a second variant exists and fires the moment one does. Writing it as
-/// `assert!(line.contains("v1"))` would have been the same number of characters
-/// and would never fire at all.
+/// So what this is now: a **latent** guard over one specific path (the
+/// opening state) rather than over the whole enum. It derives its expectation
+/// from `PhysicsVersion::CURRENT` rather than from a literal, so it stays
+/// vacuous on this path until `CURRENT` itself moves and fires the moment it
+/// does. Writing it as `assert!(line.contains("v1"))` would have been the same
+/// number of characters and would never fire at all.
 ///
 /// The mechanism has a second, stronger protection that does not depend on this
 /// test: `impl From<PhysicsVersion> for u8` in `borbax-universe` is an
-/// exhaustive match over a `#[non_exhaustive]` enum, so adding `V2` fails to
-/// compile there and forces the conversation. That protection only covers this
-/// crate because the call is *made*; a literal would sail past it.
+/// exhaustive match over a `#[non_exhaustive]` enum, so adding a variant fails
+/// to compile there and forces the conversation. That protection only covers
+/// this crate because the call is *made*; a literal would sail past it.
 #[test]
 fn the_physics_version_on_screen_is_read_from_the_universe() {
     let line = status_after("7");
@@ -100,6 +116,249 @@ fn the_physics_version_on_screen_is_read_from_the_universe() {
     assert!(
         line.ends_with(&format!("physics v{current}")),
         "expected the line to end with the current physics version {current}, got {line:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #26 Task 26.1 Step 15 — the physics-version selector.
+// ---------------------------------------------------------------------------
+
+/// The expected line for `seed` under `physics`, derived rather than pinned.
+///
+/// The `PhysicsVersion`-aware sibling of [`expected_for`], for the tests below
+/// that exercise a law other than [`PhysicsVersion::CURRENT`].
+fn expected_for_under(seed: u64, physics: PhysicsVersion) -> String {
+    let universe = Universe::generate_under(seed, physics);
+    format!(
+        "{} elements · physics v{}",
+        universe.table.len(),
+        u8::from(universe.physics)
+    )
+}
+
+/// The window opens on `PhysicsVersion::CURRENT`, not on whichever law was
+/// last selected in some other test's state — each `ViewerState::new()` starts
+/// fresh.
+#[test]
+fn the_viewer_opens_on_current_physics() {
+    assert_eq!(ViewerState::new().physics(), PhysicsVersion::CURRENT);
+}
+
+/// Selecting a different law regenerates the seed box's own universe under it,
+/// in the same call — never merely arming the *next* commit.
+///
+/// **Regenerates rather than only recording the choice, and that is the
+/// requirement, not an implementation detail.** A universe is `(seed,
+/// physics)` (§6); leaving the old universe on screen under a status line that
+/// still names the old law would be the exact stale, misattributed number
+/// [`Outcome`] exists to make unrepresentable one field along.
+#[test]
+fn selecting_v2_regenerates_the_current_seed_under_v2() {
+    let mut state = loaded("7");
+    let before = state.regenerations();
+
+    state.set_physics(PhysicsVersion::V2);
+
+    assert_eq!(
+        state.regenerations(),
+        before + 1,
+        "switching to V2 did not regenerate the universe"
+    );
+    assert_eq!(state.physics(), PhysicsVersion::V2);
+    assert_eq!(
+        state.status_line(),
+        expected_for_under(7, PhysicsVersion::V2)
+    );
+}
+
+/// Switching away from V2 and back to V1 regenerates under V1, on the same
+/// seed — the round trip, not just the one-way case above.
+#[test]
+fn switching_physics_back_to_v1_regenerates_under_v1() {
+    let mut state = loaded("7");
+    state.set_physics(PhysicsVersion::V2);
+
+    state.set_physics(PhysicsVersion::V1);
+
+    assert_eq!(state.physics(), PhysicsVersion::V1);
+    assert_eq!(state.status_line(), expected_for(7));
+}
+
+/// Re-selecting the law already loaded costs no regeneration.
+///
+/// The physics-selector analogue of `selecting_an_element_does_not_regenerate_the_universe`
+/// — without this guard, clicking the already-highlighted button in the panel
+/// would cost a universe nobody asked for on every click.
+#[test]
+fn selecting_the_same_physics_again_does_not_regenerate() {
+    let mut state = loaded("7");
+    let before = state.regenerations();
+
+    state.set_physics(state.physics());
+
+    assert_eq!(
+        state.regenerations(),
+        before,
+        "re-selecting the currently-loaded physics regenerated the universe"
+    );
+}
+
+/// Changing physics leaves the seed box exactly as it read, and does not clear
+/// a name that is showing.
+///
+/// **Unlike a hand-typed seed, a physics change does not invalidate the
+/// name-to-seed mapping.** `seed_from_phrase("Emily")` still names the same
+/// seed regardless of which laws that seed is generated under, so — unlike
+/// [`ViewerState::commit_typed_seed`], which clears the name because a typed
+/// seed was not produced by whatever the name box holds —
+/// [`ViewerState::set_physics`] has no reason to touch either box.
+#[test]
+fn changing_physics_does_not_touch_the_seed_box_or_clear_a_showing_name() {
+    let mut state = ViewerState::new();
+    state.set_phrase("Emily");
+    let seed_before = state.seed_text().to_owned();
+
+    state.set_physics(PhysicsVersion::V2);
+
+    assert_eq!(
+        state.seed_text(),
+        seed_before,
+        "changing physics moved the seed box"
+    );
+    assert_eq!(
+        state.phrase_text(),
+        "Emily",
+        "changing physics cleared a name that still names this seed"
+    );
+}
+
+/// Every law offered has a distinct label and marks exactly the one loaded as
+/// selected.
+///
+/// **Built from [`PhysicsVersion::ALL`], not hand-counted**, so this keeps
+/// discriminating the day Task 26.2 lands `PhysicsVersion::V3`.
+#[test]
+fn every_physics_option_is_labelled_and_exactly_one_is_selected() {
+    let state = loaded("7");
+    let options = state.physics_options();
+
+    assert_eq!(
+        options.len(),
+        PhysicsVersion::ALL.len(),
+        "the panel offers a different number of laws than PhysicsVersion::ALL names"
+    );
+    let labels: std::collections::BTreeSet<&str> =
+        options.iter().map(|o| o.label.as_str()).collect();
+    assert_eq!(
+        labels.len(),
+        options.len(),
+        "two physics options share a label: {options:?}"
+    );
+    let selected: Vec<_> = options.iter().filter(|o| o.selected).collect();
+    assert_eq!(
+        selected.len(),
+        1,
+        "expected exactly one physics option marked selected, got {selected:?}"
+    );
+    assert_eq!(
+        selected
+            .first()
+            .unwrap_or_else(|| unreachable!("just asserted exactly one"))
+            .version,
+        state.physics(),
+        "the option marked selected is not the physics actually loaded"
+    );
+}
+
+/// The viewer's row count matches V2's own gap-derived period boundaries.
+///
+/// **A consistency check against the table `state.rows()` was built from, not
+/// "does it look like 7 rows".** V1's own version of this property
+/// (`the_column_a_cell_sits_in_is_its_group`'s neighbours) is already pinned
+/// by construction; this is the same invariant re-asserted for V2, whose
+/// period boundaries come from a genuinely different mechanism (the gap-derived
+/// `outer_n` rule, not V1's shell-packing model) and so are not covered by
+/// anything that only ever generates V1.
+#[test]
+fn the_row_count_matches_v2s_own_period_count() {
+    for seed in 1..15_u64 {
+        let mut state = loaded(&seed.to_string());
+        state.set_physics(PhysicsVersion::V2);
+
+        let universe = Universe::generate_under(seed, PhysicsVersion::V2);
+        let periods: std::collections::BTreeSet<u8> =
+            universe.table.iter().map(|(_, e)| e.period).collect();
+
+        assert_eq!(
+            state.rows().len(),
+            periods.len(),
+            "seed {seed}: the viewer shows {} rows but V2's own table has {} distinct \
+             periods",
+            state.rows().len(),
+            periods.len()
+        );
+    }
+}
+
+/// Real element names and symbols appear on screen only at V2's identity
+/// configuration (issue #26 Decision 9/10; G2's 2026-08-07 revision), and
+/// nowhere else.
+///
+/// **The identity seed is found, not hard-coded.** `Universe::is_identity`
+/// answers the same integer `rung == 0` question `naming::IdentityWitness`
+/// gates real names on inside `borbax-universe` — searching a small seed range
+/// with it, rather than pinning a literal seed, keeps this test discriminating
+/// even if a future perturbation-draw change moves which seeds land on
+/// identity.
+#[test]
+fn real_names_appear_only_at_the_v2_identity_configuration() {
+    let identity_seed = (0..500_u64)
+        .find(|&s| Universe::generate_under(s, PhysicsVersion::V2).is_identity())
+        .unwrap_or_else(|| {
+            unreachable!("some seed in 0..500 lands on V2's identity configuration")
+        });
+
+    let mut state = loaded(&identity_seed.to_string());
+    state.set_physics(PhysicsVersion::V2);
+    let mut real_seen = false;
+    for id in all_ids(&state) {
+        state.select(id);
+        let heading = state.selection_heading();
+        let mut parts = heading.split(" · ");
+        let symbol = parts.next().unwrap_or_default();
+        let name = parts.next().unwrap_or_default();
+        if borbax_universe::naming::is_real(symbol, name) {
+            real_seen = true;
+        }
+    }
+    assert!(
+        real_seen,
+        "seed {identity_seed}: V2's identity configuration shows no real names at all"
+    );
+
+    let mut non_identity_checked = 0;
+    for seed in (0..80_u64).filter(|&s| s != identity_seed) {
+        if Universe::generate_under(seed, PhysicsVersion::V2).is_identity() {
+            continue;
+        }
+        non_identity_checked += 1;
+        let mut state = loaded(&seed.to_string());
+        state.set_physics(PhysicsVersion::V2);
+        for id in all_ids(&state) {
+            state.select(id);
+            let heading = state.selection_heading();
+            let mut parts = heading.split(" · ");
+            let symbol = parts.next().unwrap_or_default();
+            let name = parts.next().unwrap_or_default();
+            assert!(
+                !borbax_universe::naming::is_real(symbol, name),
+                "seed {seed}: a non-identity V2 universe shows the real name {symbol}/{name}"
+            );
+        }
+    }
+    assert!(
+        non_identity_checked > 60,
+        "the negative arm above ran over too few non-identity seeds to mean anything: {non_identity_checked}"
     );
 }
 
