@@ -1269,6 +1269,21 @@ mod tests {
     fn v2_radius_falls_within_a_period_and_jumps_at_period_starts() {
         for seed in [0u64, 1, 5, 21, 42] {
             let (_, els, _) = table_v2(seed);
+            // **A run counter, not just a per-step tolerance — the guard a
+            // long flat plateau needs and a per-step check cannot give it.**
+            // A per-step ULP tolerance (below) cannot distinguish "one
+            // legitimate near-tie at a frontier transition" from "many
+            // consecutive exact ties", since both look identical one step
+            // at a time; a period-wide end-to-end check cannot either, since
+            // a period spans multiple blocks and a later block's genuine
+            // contraction can mask an earlier block sitting exactly flat.
+            // This is the guard `sigma_deep`'s fix (issue #26 `/review-pr`,
+            // finding F3, 2026-08-10) needed and did not have: before that
+            // fix, `run` reached 15 on four of five standard seeds (the
+            // 14-element 4f-analogue block, bit-identical start to end);
+            // `run` never exceeds 2 under the fix (one genuine s->p-transition
+            // near-tie, documented below).
+            let mut run = 1usize;
             for w in els.windows(2) {
                 let (prev, next) = (&w[0], &w[1]);
                 if next.period == prev.period {
@@ -1297,6 +1312,17 @@ mod tests {
                         prev.radius.0,
                         next.radius.0
                     );
+                    if (next.radius.0 - prev.radius.0).abs() <= tolerance {
+                        run += 1;
+                        assert!(
+                            run <= 3,
+                            "seed {seed} units ..{}: {run} consecutive near-tied radii within a \
+                             period — a plateau, not a legitimate frontier-transition near-tie",
+                            next.units
+                        );
+                    } else {
+                        run = 1;
+                    }
                 } else {
                     assert!(
                         next.radius.0 > prev.radius.0,
@@ -1306,6 +1332,7 @@ mod tests {
                         prev.radius.0,
                         next.radius.0
                     );
+                    run = 1;
                 }
             }
         }
@@ -1425,24 +1452,39 @@ mod tests {
     /// resolved as identity-only, not a general per-seed guarantee (every
     /// `MigratedConstant` lands on its base value at `rung == 0`, so the
     /// fold itself is seed-independent at identity): real element 118
-    /// (Oganesson-analogue) completes its own subshell -- `gap > 0` at
-    /// z=118 -- rather than sitting mid-fill, which is what makes 118 a
-    /// structurally sound table size to have pinned rather than an
-    /// arbitrary cut.
+    /// (Oganesson-analogue) completes its own subshell rather than sitting
+    /// mid-fill, which is what makes 118 a structurally sound table size to
+    /// have pinned rather than an arbitrary cut.
+    ///
+    /// **Reads `fill()`'s own run structure directly, not `gap > 0.0`.**
+    /// `gap > 0.0` used to be an almost-perfect proxy for "completes a
+    /// subshell" under `.abs()`'s old, wrong gap formula, since a nonzero
+    /// energy difference was `.abs()`-ed into something positive regardless
+    /// of sign. `/review-pr` (2026-08-10) found `.abs()` reads the gap
+    /// backwards (see `orbital.rs`'s own doc) and replaced it with a clamp
+    /// that is legitimately `0.0` at several subshell-final positions
+    /// (z = 56, 88, 120, 170, 218) — so `gap > 0.0` is no longer a sound
+    /// proxy for subshell completion in general, even though z=118 itself
+    /// happens not to be one of those five and this specific assertion
+    /// still passed. Reading the structural fact `fill()` already carries
+    /// is correct regardless of which positions the energy formula clamps.
     #[test]
     fn element_118_completes_its_own_subshell_at_the_identity_configuration() {
         let runs = orbital::fill();
-        let props = orbital::electronic_properties(
-            &runs,
-            OrbitalConsts::at_identity(),
-            GapConsts::at_identity(),
-        );
-        let last = props
-            .get(117) // z=118, 0-indexed
-            .unwrap_or_else(|| unreachable!("the identity fold reaches well past z=118"));
-        assert!(
-            last.gap > 0.0,
-            "z=118 should complete its own subshell (gap > 0), not sit mid-fill"
+        let mut cumulative = 0u32;
+        let closing_run = runs
+            .iter()
+            .find(|run| {
+                cumulative += run.count;
+                cumulative == 118
+            })
+            .unwrap_or_else(|| {
+                unreachable!("the identity fold's cumulative count is a sum of whole-run counts, so it reaches 118 exactly at some run")
+            });
+        assert_eq!(
+            closing_run.count,
+            closing_run.capacity(),
+            "z=118 should complete its own subshell, not sit mid-fill"
         );
     }
 
@@ -2255,11 +2297,15 @@ mod tests {
             }
         }
         assert_eq!(
-            h, 0x74f0_d6b0_999c_25ab,
+            h, 0x2b40_8e77_7d66_cad5,
             "the V2 universe digest moved — say which of §18.1's three this is, or the \
              fourth: the digest's own input set changed shape. This golden was first \
              measured 2026-08-10, alongside the assembled-universe V2 golden — see this \
-             test's own doc for what it closes"
+             test's own doc for what it closes. Moved twice more, same day: the \
+             `/review-pr` `.abs()` -> clamp fix (`0x74f0_d6b0_999c_25ab` -> \
+             `0x88e1_e805_bfb4_641b`), then the `sigma_deep` screener-keyed screening fix \
+             (`orbital.rs`) that restores a lanthanide-analogue contraction, both deliberate \
+             physics changes, not drift — §18.1 case 1"
         );
     }
 

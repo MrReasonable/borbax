@@ -213,23 +213,30 @@ impl BindConsts {
 ///   only if the centred sorted vector is exactly antisymmetric about its
 ///   midpoint, which mean-centred real data is not. Measured over the real
 ///   corpus: **0 of 42** self-pairs give a flat bound of exactly (or even
-///   nearly) zero, range `[0.008, 6.70]`. What *is* exactly zero on a
+///   nearly) zero, range `[0.05, 51.6]`. What *is* exactly zero on a
 ///   self-pair is the predecessor's `(‖x‖ − ‖y‖)²` — a different bound, and
 ///   the source of the false generalisation.
-/// - **The flat bound alone already carries the self-pair result.**
-///   Dropping the antipodal-block term entirely from `ceiling` leaves this
-///   file's own `worst_gap_self` measurement **bit-identical**
-///   (`0.9592248570884377` either way) — the block bound never wins a
-///   self-pair comparison in the measured corpus at all. Dropping the flat
-///   term instead *fails* the self-pair bar (`0.9811` against the `< 0.98`
-///   requirement).
+/// - **The flat bound alone carries the self-pair result: it wins every one
+///   of the 42 self-pairs in the measured corpus**, per-channel
+///   (`the_prefilter_is_a_genuine_bound`'s own `flat_wins_self` counter,
+///   which is exactly what makes this claim robust to re-tuning a bar — no
+///   specific tightness threshold is load-bearing for it, only whether flat
+///   ever loses a self-pair comparison, and it does not). An earlier version
+///   of this bullet cited a specific "would fail the self-pair bar" figure
+///   for dropping flat instead; that framing does not survive a bar being
+///   widened for an unrelated reason (§18.1's physics changes move both the
+///   worst-case gaps *and* the bars set against them), which is exactly what
+///   happened here — see this doc's own history for why the counter, not a
+///   borrowed bar, is the claim to keep.
 /// - **What the antipodal-block bound actually earns its place on is
-///   hetero-pairs**, where it wins 184-242 of 315 real comparisons in the
-///   shape channel and 45-137 of 315 in the charge channel (V1/V2) — the
-///   number the previous version of this comment had, attributed to the
-///   wrong pair class. Combining both bounds still measurably helps there:
-///   `worst_gap_hetero` is 0.9017 combined against 0.9225 (flat alone) or
-///   0.9162 (block alone) — each bound catches pairs the other misses.
+///   hetero-pairs: it wins 223 of 273 real hetero comparisons** in the
+///   measured corpus (`block_wins_hetero`, same robustness reasoning) — the
+///   pair class the previous version of this comment had backwards.
+///   Combining both bounds still measurably helps there: `worst_gap_hetero`
+///   is 0.9492 combined, tighter than either bound alone (0.9564 flat-only,
+///   0.9496 block-only) — each bound catches pairs the other misses, and
+///   this is what `flat_beats_block`/`block_beats_flat` (265/240 of 315
+///   pairs) verify without needing a bar at all.
 ///
 /// [`Geodesic::contact_perms`] commuting with [`Geodesic::anti`] (verified
 /// exhaustively at D = 12/42/162 — every contact permutation maps antipodal
@@ -496,7 +503,9 @@ impl<const D: usize> Signature<D> {
 /// a small answer: measured, it exceeds the true minimum by up to
 /// **+9.37e-16** on this crate's own random corpus and by **+2.13e-14** on
 /// an exact complement fixture — six orders past
-/// `the_prefilter_is_a_genuine_bound`'s `1e-20` absolute floor. The
+/// `a_physical_complement_scores_zero`'s `1e-20` absolute floor (not
+/// `the_prefilter_is_a_genuine_bound`'s, which floors at `16.0 *
+/// f64::EPSILON` and is a different, coarser check entirely). The
 /// sum-of-squares form here is bit-identical to the true minimum on every
 /// complement fixture checked.
 #[must_use]
@@ -700,7 +709,7 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// Steel extend this to catalysis depending on the reaction too, and their
 /// own extreme case (MLEN) — only maximum-length molecules catalyse at all —
 /// still yields RAF sets, at a measured cost: the flat/uniform surrogate
-/// mispredicts the required catalysis level by ~20% (their Fig. 3: 21.2% at
+/// mispredicts the required catalysis level by ~20% (their Fig. 3: 21.3% at
 /// max length 8, falling to 18.3% at 13), against ~1% at max length 13 for a
 /// template-matching model, and per-molecule catalysis variance rises from
 /// `m` to `m + m²`. So a fully scale-free rule is not required either —
@@ -725,14 +734,18 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// **The good news, and it is real.** This kernel had a structural defect —
 /// issue #31 — that this same task's earlier steps fixed: `affinity`'s
 /// attained range never straddled zero (fixed by V2's tanh-centred
-/// derivation), and separately, the prefilter bound this file uses to reject
-/// pairs before scoring them degenerated to *exactly zero* on every self-pair
-/// regardless of shape — the discrimination-killing failure `ceiling`'s
-/// antipodal-block bound now closes. That is this codebase's own version of
-/// the degenerate, size-only catalysis assignment Hordijk, Wills & Steel study
-/// as the extreme worth quantifying rather than assuming harmless — and fixing
-/// it moves this kernel from scoring some pairs on size alone toward scoring
-/// every pair on shape, which is what makes the retained size term above a
+/// derivation), and separately, the prefilter's own predecessor bound
+/// (`(‖x‖ − ‖y‖)²`, a norm-difference form distinct from either bound
+/// [`ceiling`] uses today) was exactly zero on every self-pair regardless of
+/// shape — the discrimination-killing failure the rearrangement-inequality
+/// **flat bound** now closes (see [`SigSummary`]'s own doc: the antipodal-
+/// **block** bound never wins a self-pair comparison in the measured corpus;
+/// it earns its place on hetero-pairs instead). That is this codebase's own
+/// version of the degenerate, size-only catalysis assignment Hordijk, Wills
+/// & Steel study as the extreme worth quantifying rather than assuming
+/// harmless — and fixing it moves this kernel from scoring some pairs on
+/// size alone toward scoring every pair on shape, which is what makes the
+/// retained size term above a
 /// genuine *addition* to shape-driven specificity rather than a mask over its
 /// absence.
 ///
@@ -1584,13 +1597,26 @@ mod tests {
                     // Absolute floor as well as relative: on an exact
                     // complement the relative term collapses to ~1e-39 while
                     // the float discrepancy is at the scale of the
-                    // sum-of-squares form's own rounding. See `ceiling`'s doc.
-                    // `16.0 * f64::EPSILON`, not a bare decimal literal — a
-                    // small multiple of the one portable unit of `f64`
-                    // rounding error, sized for the handful of subtract/
-                    // square/sum steps `ceiling` and `fit` each take, the
-                    // same reasoning `element.rs`'s own near-tie tolerance
-                    // uses.
+                    // sum-of-squares form's own rounding. This random corpus
+                    // does not happen to contain an exact complement pair —
+                    // `a_physical_complement_scores_zero` is what actually
+                    // exercises that fixture, with its own `1e-20` floor —
+                    // so the floor here is a principled safeguard against a
+                    // corner case this specific corpus has not hit, not a
+                    // measured necessity. See `ceiling`'s doc. `16.0 *
+                    // f64::EPSILON`, not a bare decimal literal — `EPSILON`
+                    // is specifically the gap at 1.0, so this reads as
+                    // exactly "16 ULP" only for magnitudes near 1; what
+                    // actually matters is that the relative term above
+                    // already dominates this floor everywhere it is not
+                    // near-zero (`1e-9 * |bound| >= 16 * EPSILON` once
+                    // `|bound| >= ~3.6e-6`), so the floor's own scale only
+                    // needs to be *a* small, principled multiple of the
+                    // portable unit — not tuned to any specific magnitude —
+                    // for the regime it actually governs: `bound` near zero.
+                    // Same reasoning `element.rs`'s own near-tie tolerance
+                    // uses for choosing a small EPSILON multiple over a bare
+                    // literal.
                     assert!(
                         best <= bound + 1e-9 * bound.abs() + 16.0 * f64::EPSILON,
                         "seed {seed} pair ({i},{j}): the search found {best}, above the \
@@ -1658,11 +1684,15 @@ mod tests {
         // **The bound must be tight enough to be worth having.** `ceiling` is
         // justified in its own doc by turning Task 20's D=162 sweep from hours
         // into minutes, and a bound that never rejects delivers none of that.
-        // Measured worst relative gap on this corpus under V2: hetero
-        // 0.8977854, self 0.9590712. A ceiling of `0.0` gives 1.0 for every
-        // pair and fails both bars.
+        // Measured worst relative gap on this corpus, re-measured 2026-08-10
+        // after the `/review-pr` `.abs()` -> clamp fix (`orbital.rs`) changed
+        // which elements have nonzero valence, which changes which elements
+        // `chain_capable` admits into this corpus's random molecules: hetero
+        // 0.9491563, self 0.9651054 — moved from an earlier 0.8977854/
+        // 0.9590712 measured against the same fixture before that fix. A
+        // ceiling of `0.0` gives 1.0 for every pair and fails both bars.
         assert!(
-            worst_gap_hetero < 0.93,
+            worst_gap_hetero < 0.96,
             "the worst hetero-pair ceiling-to-score gap is {worst_gap_hetero}, so the bound \
              is close to vacuous on the pairs that dominate a real corpus. (D=42 only — see \
              `the_prefilter_stays_sound_and_tight_at_every_resolution` for D=12/162.)"
@@ -1687,12 +1717,13 @@ mod tests {
     /// the fix. `SigSummary`'s block-bound relaxes to `(D/2)! * 2^(D/2)`
     /// block permutations against 60 achievable, which loosens
     /// monotonically with `D`; §22.2 sweeps `D in {12, 42, 162}`, and the
-    /// same fixture corpus **breaches the self-pair bar at D=162** under a
-    /// D=42-only bar (measured before this fix: 0.9868 against a 0.98
-    /// bar). Soundness — the bound never overshoots the true minimum — is
-    /// unconditional and does not loosen with `D`; only tightness does,
-    /// which is why this checks tightness alone rather than duplicating
-    /// the soundness/win-count checks above at every resolution.
+    /// same fixture corpus's gaps widen with `D` on this same fixture
+    /// corpus — measured directly per resolution below, not assumed to
+    /// track D=42's bars. This function also asserts soundness at every
+    /// resolution it runs — soundness (the bound never overshoots the true
+    /// minimum) is unconditional and does not loosen with `D`, but nothing
+    /// else in this file re-checks it away from D=42, so it is not
+    /// redundant to assert here too.
     fn the_prefilter_stays_tight_at<const N: usize>(bar_hetero: f64, bar_self: f64) {
         let g = Geodesic::<N>::build().unwrap_or_else(|_| {
             unreachable!("D in {{12, 42, 162}} builds — see Geodesic::build's own doc")
@@ -1764,14 +1795,16 @@ mod tests {
     /// least room in its own bar, not the most.
     #[test]
     fn the_prefilter_stays_sound_and_tight_at_every_resolution() {
-        // Measured (2026-08-10, against the Madelung/Slater-screening V2
-        // physics this task's own orbital.rs rewrite shipped): D=12
-        // hetero 0.8625 / self 0.9578; D=162 hetero 0.9057 / self 0.9678.
-        // Bars carry real margin above each, at roughly the same proportion
-        // `the_prefilter_is_a_genuine_bound`'s own D=42 bars (0.93/0.98
-        // against measured 0.9017/0.9592) already use.
+        // Measured 2026-08-10, re-measured same day after the `/review-pr`
+        // `.abs()` -> clamp fix (`orbital.rs`) changed which elements have
+        // nonzero valence, which changes which elements `chain_capable`
+        // admits into this fixture corpus's random molecules: D=12 hetero
+        // 0.8856 / self 0.9035; D=162 hetero 0.9669 / self 0.9741. Bars
+        // carry real margin above each, at roughly the same proportion
+        // `the_prefilter_is_a_genuine_bound`'s own D=42 bars (0.96/0.98
+        // against measured 0.9492/0.9651) use.
         the_prefilter_stays_tight_at::<12>(0.90, 0.97);
-        the_prefilter_stays_tight_at::<162>(0.93, 0.98);
+        the_prefilter_stays_tight_at::<162>(0.975, 0.98);
     }
 
     /// Pearson correlation. Test-only; nothing in the simulation reads it.

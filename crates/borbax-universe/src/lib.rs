@@ -839,9 +839,21 @@ mod tests {
                 // own doc) to Madelung ordering plus Slater-style two-tier
                 // screening — a deliberate physics change, not a bug fix
                 // that happened to move bits. First pinned 2026-08-10 at
-                // `0x3ec3_d54e_6c26_f5f7`; this is its second value, over the
-                // same `seed in 0..64` sweep as V1's.
-                PhysicsVersion::V2 => 0x2a05_4966_5e8e_6abe,
+                // `0x3ec3_d54e_6c26_f5f7`; second value `0x2a05_4966_5e8e_6abe`,
+                // over the same `seed in 0..64` sweep as V1's. Moved a third
+                // time, same day, same `/review-pr` pass: `orbital.rs`'s gap
+                // computation used `.abs()` where the sign carried the
+                // physical meaning (a negative raw difference is a free
+                // promotion, not an expensive one), giving barium- and
+                // radium-analogues (and z=120/170/218, outside the drawn
+                // range) valence 0 instead of the correct 2 — a deliberate
+                // physics fix, not drift. Moved a fourth time, same day: F3's
+                // own follow-up — `sigma_deep`, a new drawn constant capping
+                // every d/f-block electron's contribution to any candidate's
+                // screening sum, restores a real lanthanide-analogue radius
+                // contraction (calibrated against the real La->Lu Shannon
+                // radii) where the model previously showed none at all.
+                PhysicsVersion::V2 => 0x6322_4e33_d99f_3593,
             };
             assert_eq!(
                 h, want,
