@@ -85,7 +85,7 @@ rm -rf "$dir"; mkdir -p "$dir/findings" "$dir/crosschecks"
 | `rust-developer-expert` | Type design, API honesty, gotchas, and whether a crate should be doing this instead of us. |
 | `rust-performance-expert` | Data layout and asymptotics against the §17 budget. |
 | `alife-researcher` | Fidelity to the literature the algorithms are drawn from. |
-| `physics-plausibility-reviewer` | Whether a physical quantity is the right one, at the right scale, legitimately coupled to what it's wired into — not whether the arithmetic on it is correct. |
+| `physics-plausibility-reviewer` | Whether a physical quantity is the right one, at the right scale, legitimately coupled to what it's wired into, and — for any claim that the identity or a seed-equivalent configuration reproduces a real physical value — whether that claim holds. Not whether the arithmetic on it is correct. |
 
 Every reviewer prompt must contain, in this order:
 

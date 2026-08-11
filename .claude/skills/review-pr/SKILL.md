@@ -117,6 +117,7 @@ what the diff touches:
 | `borbax-molecule/**` (canonical, geodesic, layout, signature, binding, fold, cavity) | `geometry-numerics-reviewer` |
 | `borbax-reaction/**`, `borbax-beaker/**` | `geometry-numerics-reviewer`, `alife-researcher` |
 | any diff introducing a new physically-motivated formula or constant, or reusing an existing field for a new physical quantity | `physics-plausibility-reviewer` |
+| any diff or PR description adding or modifying a claim that the identity (unperturbed) or a seed-equivalent configuration reproduces a real physical value | `physics-plausibility-reviewer` |
 | any hot path, or a new data structure | `rust-performance-expert` |
 | any new module, type, trait, or dependency | `rust-developer-expert` |
 | `Cargo.toml` dependency changes | `rust-developer-expert` **and** `determinism-auditor` (a runtime dep in a result-affecting path is a physics change) |
