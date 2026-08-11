@@ -180,8 +180,8 @@ impl BindConsts {
 /// when it wires a threshold to [`ceiling`] and gains a reason to hold both.
 ///
 /// **Carries `D`, and that is load-bearing rather than tidy.** Without it
-/// `Signature<12>::summary()` and `Signature<42>::summary()` produce the same
-/// type, so `ceiling::<42>(&s12.summary(), ..)` compiles and answers — and
+/// `Signature<12>::summary(&g)` and `Signature<42>::summary(&g)` produce the
+/// same type, so `ceiling::<42>(&s12.summary(&g), ..)` compiles and answers — and
 /// answers wrongly: measured, the search beats the supposed upper bound on
 /// **93.4%** of pairs, worst overshoot 2.47x. §22.2 sweeps D across
 /// {12, 42, 162}, which is exactly where a copied turbofish comes from.

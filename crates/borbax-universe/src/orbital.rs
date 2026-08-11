@@ -271,14 +271,17 @@
 //! kept accurate below, not deleted, since a future change could
 //! reintroduce a fold shape where it matters again.
 //!
-//! This module has no production caller yet — Steps 6-9 give it one.
-//! Steps 1-5 (this module) build and test the fold in isolation, per the
-//! plan's own staging; `element.rs`'s `generate_elements(seed,
-//! PhysicsVersion::V2)` calls [`fill`] when it lands. Every item here is
-//! exercised by this module's own `#[cfg(test)]` tests, which are real
-//! callers today — the blanket `#[expect]` below is scoped to non-test
-//! builds for exactly that reason, matching `perturbation.rs`'s own
-//! precedent.
+//! **This module has a production caller as of Steps 6-9 — `element.rs`'s
+//! `generate_elements_v2` calls [`fill`] and [`electronic_properties`]
+//! directly, and constructs [`OrbitalConsts`]/[`GapConsts`] via their own
+//! `draw`.** [`fill`], [`electronic_properties`], [`Occupancy`],
+//! [`OrbitalConsts`] and [`GapConsts`] are all reachable from there;
+//! [`ElectronicProperties`]' own fields are read too, except `gap` — which
+//! `electronic_properties` still computes and stores (feeding `valence`
+//! internally, per its own doc) but nothing outside this module's
+//! `#[cfg(test)]` tests reads back out. That one field is what the
+//! `#[expect]` below still needs and correctly still fires on; every other
+//! item this doc used to name here is live in non-test builds now.
 //!
 //! **`clippy::redundant_pub_crate` and rustc's own `unreachable_pub`
 //! disagree about `pub(crate)` on this module's top-level items, and both
@@ -294,18 +297,21 @@
     not(test),
     expect(
         dead_code,
-        reason = "fill(), Occupancy, OrbitalConsts, GapConsts, ElectronicProperties and \
-                  electronic_properties() have no in-crate caller until the rest of Steps 6-9 \
-                  wire generate_elements(seed, PhysicsVersion::V2) to this module — see this \
-                  module's own doc"
+        reason = "ElectronicProperties.gap is written by electronic_properties() but never \
+                  read back outside this module's own #[cfg(test)] tests — see this module's \
+                  own doc. Every other item this reason used to name (fill(), Occupancy, \
+                  OrbitalConsts, GapConsts, electronic_properties(), and \
+                  ElectronicProperties' other fields) now has a real caller in element.rs's \
+                  generate_elements_v2, since Steps 6-9 landed in this same task"
     )
 )]
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "in tension with unreachable_pub for a pub(crate)-mod's own items with no \
-              cross-module caller yet — see this module's own doc for which one is right and \
-              why. Resolves itself once Steps 6-9 give fill() a caller in element.rs, matching \
-              packing.rs's clean state today"
+    reason = "in tension with unreachable_pub for a pub(crate)-mod's own items — see this \
+              module's own doc for which one is right and why. Still needed: this module's \
+              top-level items are all reachable from element.rs now, but redundant_pub_crate \
+              and unreachable_pub disagree about the correct pub(crate) spelling for them \
+              regardless of caller count, matching packing.rs's own established precedent"
 )]
 
 use crate::perturbation::{Direction, MigratedConstant, Rung, draw_symmetric, perturb};
