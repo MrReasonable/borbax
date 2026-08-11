@@ -113,9 +113,9 @@ what the diff touches:
 
 | Changed | Add |
 |---|---|
-| `borbax-universe/**` (element generation, bond energies, physical constants) | `physics-plausibility-reviewer` |
-| `borbax-molecule/**` (canonical, geodesic, layout, signature, binding, fold, cavity) | `geometry-numerics-reviewer` |
-| `borbax-reaction/**`, `borbax-beaker/**` | `geometry-numerics-reviewer`, `alife-researcher` |
+| `crates/borbax-universe/**` (element generation, bond energies, physical constants) | `physics-plausibility-reviewer` |
+| `crates/borbax-molecule/**` (canonical, geodesic, layout, signature, binding, fold, cavity) | `geometry-numerics-reviewer` |
+| `crates/borbax-reaction/**`, `crates/borbax-beaker/**` | `geometry-numerics-reviewer`, `alife-researcher` |
 | any diff introducing a new physically-motivated formula or constant, or reusing an existing field for a new physical quantity | `physics-plausibility-reviewer` |
 | any diff or PR description adding or modifying a claim that the identity (unperturbed) or a seed-equivalent configuration reproduces a real physical value | `physics-plausibility-reviewer` |
 | any hot path, or a new data structure | `rust-performance-expert` |
