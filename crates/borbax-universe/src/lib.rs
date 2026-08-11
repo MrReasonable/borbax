@@ -848,8 +848,14 @@ mod tests {
                 // radium-analogues (and z=120, reachable at n_elements=120;
                 // 170/218 are the two genuinely outside the drawn 60..=120
                 // range) valence 0 instead of the correct 2 — a deliberate
-                // physics fix, not drift. Moved a fourth time, same day: F3's
-                // own follow-up — `sigma_deep`, a new drawn constant capping
+                // physics fix, not drift, giving the intermediate value
+                // `0xf992_85ae_07de_ed75` (this clamp fix alone, no
+                // `sigma_deep` yet — round 3's determinism-auditor computed
+                // this by reproducing `element.rs`'s own already-known
+                // intermediate `0x88e1_e805_bfb4_641b` with the same method
+                // first, as a check on the method itself). Moved a fourth
+                // time, same day: F3's own follow-up — `sigma_deep`, a new
+                // drawn constant capping
                 // every d/f-block electron's contribution to any other
                 // candidate's screening sum, restores a real
                 // lanthanide-analogue radius contraction (calibrated against

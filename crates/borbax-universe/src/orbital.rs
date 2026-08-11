@@ -397,6 +397,25 @@ pub(crate) struct OrbitalConsts {
     sigma_deep: f64,
 }
 
+/// Draw and apply a migrated constant's one-sided-downward excursion — `p`
+/// sampled from `[-Direction::P_MAX, 0.0]`, the shape `ScreeningInner` and
+/// `ScreeningDeep` both use. A draw-site helper, not folded into
+/// [`crate::perturbation::draw_symmetric`]'s own generalisation: see
+/// [`MigratedConstant::ScreeningInner`]'s own doc for why one-sided-
+/// downward stays a per-call-site decision rather than a fourth
+/// [`MigratedConstant`] classification tag. Extracted once this shape
+/// reached its second call site inside a single function
+/// (`OrbitalConsts::draw`) — a stronger case for extraction than
+/// `draw_symmetric`'s own justification needed, since both copies sat
+/// next to each other rather than across files.
+fn draw_one_sided_downward(seed: u64, rung: Rung, constant: MigratedConstant, base: f64) -> f64 {
+    let mut stream = Stream::new(seed, Domain::Perturbation, constant.index());
+    let p = stream.next_f64_range(-Direction::P_MAX, 0.0);
+    let direction = Direction::new(p, Direction::P_MAX)
+        .unwrap_or_else(|| unreachable!("p is drawn within [-P_MAX, 0.0] by construction"));
+    perturb(base, rung, direction)
+}
+
 impl OrbitalConsts {
     /// The unperturbed near-shell screening coefficient — Slater's own
     /// historical value (Slater 1930), not a value chosen for this model.
@@ -436,6 +455,22 @@ impl OrbitalConsts {
     /// non-trivial lanthanide-analogue contraction where none existed
     /// before); the shipped value is not re-derived from either alternative
     /// mapping, since nothing here turns on the third decimal place.
+    ///
+    /// **A second honesty gap in the same target, independent of the
+    /// element-count one above: the Shannon figures are a 3+ *ionic*
+    /// contraction, calibrated into this module's own *neutral-atom-
+    /// analogue* probe radius.** Real neutral lanthanide atomic radii
+    /// contract by roughly half the ionic figure quoted above — the ionic
+    /// series loses its outer `6s`/`5d` electrons entirely, which changes
+    /// the screening problem `sigma_deep` models, not just its scale.
+    /// Shannon ionic radii were used anyway because they are the standard,
+    /// most widely tabulated reference (this module's own doc, and
+    /// `docs/glossary.md`'s "Shannon radii" entry); no equally standard
+    /// neutral-atom lanthanide-radius table was substituted in for a
+    /// stricter category match. As with the element-count gap above, this
+    /// changes the *precision* the calibration can honestly claim, not the
+    /// qualitative result — a real, non-trivial contraction where the
+    /// candidate-side split alone gives none.
     pub(crate) const BASE_SIGMA_DEEP: f64 = 0.928;
 
     /// Draw this universe's screening constants.
@@ -452,27 +487,19 @@ impl OrbitalConsts {
     /// move together.
     #[must_use]
     pub(crate) fn draw(seed: u64, rung: Rung) -> Self {
-        let mut near_stream = Stream::new(
-            seed,
-            Domain::Perturbation,
-            MigratedConstant::ScreeningInner.index(),
-        );
-        let near_p = near_stream.next_f64_range(-Direction::P_MAX, 0.0);
-        let near_direction = Direction::new(near_p, Direction::P_MAX)
-            .unwrap_or_else(|| unreachable!("p is drawn within [-P_MAX, 0.0] by construction"));
-
-        let mut deep_stream = Stream::new(
-            seed,
-            Domain::Perturbation,
-            MigratedConstant::ScreeningDeep.index(),
-        );
-        let deep_p = deep_stream.next_f64_range(-Direction::P_MAX, 0.0);
-        let deep_direction = Direction::new(deep_p, Direction::P_MAX)
-            .unwrap_or_else(|| unreachable!("p is drawn within [-P_MAX, 0.0] by construction"));
-
         Self {
-            sigma_near: perturb(Self::BASE_SIGMA_NEAR, rung, near_direction),
-            sigma_deep: perturb(Self::BASE_SIGMA_DEEP, rung, deep_direction),
+            sigma_near: draw_one_sided_downward(
+                seed,
+                rung,
+                MigratedConstant::ScreeningInner,
+                Self::BASE_SIGMA_NEAR,
+            ),
+            sigma_deep: draw_one_sided_downward(
+                seed,
+                rung,
+                MigratedConstant::ScreeningDeep,
+                Self::BASE_SIGMA_DEEP,
+            ),
         }
     }
 
@@ -610,7 +637,9 @@ fn subshell_energy(
 /// own doc), so the run structure this returns is identical for every
 /// seed; only the *energies* [`electronic_properties`] later reads from it
 /// vary. Returns one [`Occupancy`] per subshell — see [`Occupancy`]'s own
-/// doc for why that is now always a complete subshell, never a fragment.
+/// doc for why every entry but possibly the last is now a complete
+/// subshell (`ELECTRON_CEILING` can truncate the very last one mid-fill;
+/// never reachable in a real generated table).
 #[must_use]
 pub(crate) fn fill() -> Vec<Occupancy> {
     let mut out: Vec<Occupancy> = Vec::new();
@@ -1444,11 +1473,6 @@ mod tests {
     /// `valence_matches_real_ground_state_valences_through_period_3`'s own
     /// `z = 2` entry.
     ///
-    #[expect(
-        clippy::as_conversions,
-        reason = "run.count is at most 18 (capacity_of(l)'s max), well within usize's exact \
-                  integer range"
-    )]
     #[test]
     fn closed_s2_positions_promote_and_closed_p6_positions_do_not() {
         let runs = fill();
@@ -1460,7 +1484,8 @@ mod tests {
         let (mut s2_checked, mut p6_checked) = (0u32, 0u32);
         let mut z = 0usize;
         for run in &runs {
-            z += run.count as usize;
+            z += usize::try_from(run.count)
+                .unwrap_or_else(|_| unreachable!("run.count is at most 18, well within usize"));
             if z > 120 {
                 break;
             }
@@ -1490,6 +1515,68 @@ mod tests {
             s2_checked >= 6 && p6_checked >= 6,
             "corpus filter selected too few positions to be a real property check: \
              s2={s2_checked} p6={p6_checked}"
+        );
+    }
+
+    /// **F3's own property, pinned directly — `/review-pr` round 3, finding
+    /// F-E.** Every d/f-block candidate (`frontier_l >= 2`) with a d/f
+    /// screener anywhere below it must have `e_homo` depend on
+    /// `sigma_deep` — the property the whole fix exists to establish, and
+    /// until now only an indirect proxy (`element.rs`'s radius-plateau
+    /// counter, itself a function of `zeff_outer` not `e_homo`) exercised
+    /// it.
+    ///
+    /// **The 3d block (`z = 21..=30`) is a structural exception, not a
+    /// gap, and this test asserts that too.** A `(3, 2)` candidate's
+    /// `near`/`far` buckets hold only `n' <= 2`, and nothing with
+    /// `l' >= 2` exists below `n = 3` in any fold — there is no
+    /// `sigma_deep` term for those ten elements to depend on, provable by
+    /// construction rather than merely observed.
+    #[test]
+    fn every_df_candidate_with_a_df_screener_below_it_depends_on_sigma_deep() {
+        let runs = fill();
+        let a = electronic_properties(
+            &runs,
+            OrbitalConsts::at_identity(),
+            GapConsts::at_identity(),
+        );
+        let bumped = OrbitalConsts {
+            sigma_near: OrbitalConsts::BASE_SIGMA_NEAR,
+            sigma_deep: OrbitalConsts::BASE_SIGMA_DEEP - 0.05,
+        };
+        let b = electronic_properties(&runs, bumped, GapConsts::at_identity());
+        let (mut varies, mut flat_in_3d_block) = (0u32, 0u32);
+        for (i, (pa, pb)) in a.iter().zip(b.iter()).enumerate() {
+            let z = i + 1;
+            if z > 120 {
+                break;
+            }
+            if pa.frontier_l < 2 {
+                continue;
+            }
+            let differs = pa.e_homo.to_bits() != pb.e_homo.to_bits();
+            if (21..=30).contains(&z) {
+                assert!(
+                    !differs,
+                    "z={z}: the 3d block has no d/f screener below it and should be exactly \
+                     flat under sigma_deep"
+                );
+                flat_in_3d_block += 1;
+            } else {
+                assert!(
+                    differs,
+                    "z={z}: a d/f candidate outside the 3d block should depend on sigma_deep"
+                );
+                varies += 1;
+            }
+        }
+        assert_eq!(
+            flat_in_3d_block, 10,
+            "the 3d block should be exactly the 10 elements z=21..=30"
+        );
+        assert!(
+            varies >= 30,
+            "corpus filter selected too few d/f candidates outside the 3d block: {varies}"
         );
     }
 }
