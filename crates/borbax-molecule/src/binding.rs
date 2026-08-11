@@ -330,6 +330,16 @@ fn antipodal_blocks<const D: usize>(centred: &[f64; D], anti: &[u8; D]) -> [f64;
             diffs.push((ci - cj).abs());
         }
     }
+    // Depends on `anti` having no fixed point (asserted where `anti` is
+    // built, `geodesic.rs`'s own `Geodesic::build`) — a fixed point would
+    // silently produce fewer than `D / 2` pairs here, leaving `out`'s tail
+    // at its `0.0` init value rather than a computed one. Made explicit at
+    // the point that relies on it, not just where the invariant is proven.
+    debug_assert_eq!(
+        sums.len(),
+        D / 2,
+        "anti should pair every direction exactly once"
+    );
     sums.sort_by(|a, b| canonical_cmp(*a, *b));
     diffs.sort_by(|a, b| canonical_cmp(*a, *b));
     let mut out = [0.0f64; D];
@@ -725,7 +735,11 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// their Theorem 4.1(ii) gives the *same* lower bound — one independent of the
 /// maximum length n — on the probability a RAF exists whether the catalysis
 /// level is uniform across molecules (`μ_n(x) >= λn`) or proportional to each
-/// molecule's own length (`μ_n(x) >= λγ_n|x|`, `γ_n ≈ 1`). Hordijk, Wills &
+/// molecule's own length (`μ_n(x) >= λγ_n|x|`, `γ_n ≈ 1`), for either
+/// hypothesis requiring `λ > log_e(k)` (`k` the number of reaction types) —
+/// a real precondition of the theorem, not one this doc invents, and one
+/// both branches share equally so it does not favour either reading.
+/// Hordijk, Wills &
 /// Steel extend this to catalysis depending on the reaction too, and their
 /// own extreme case (MLEN) — only maximum-length molecules catalyse at all —
 /// still yields RAF sets, at a measured cost: the flat/uniform surrogate
