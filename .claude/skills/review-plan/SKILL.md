@@ -1,6 +1,6 @@
 ---
 name: review-plan
-description: Review a Borbax plan or spec with the six specialist agents, then reconcile their findings through a coordinator that cross-checks anything only one reviewer saw. Use before executing a plan, after substantive edits to one, or when a design decision needs adversarial pressure. Catching a defect in a plan costs an edit; catching the same defect after implementation costs a rewrite of everything downstream.
+description: Review a Borbax plan or spec with the seven specialist agents, then reconcile their findings through a coordinator that cross-checks anything only one reviewer saw. Use before executing a plan, after substantive edits to one, or when a design decision needs adversarial pressure. Catching a defect in a plan costs an edit; catching the same defect after implementation costs a rewrite of everything downstream.
 ---
 
 # Review Plan
@@ -73,7 +73,7 @@ dir="${TMPDIR:-/tmp}/borbax-review/$slug"
 rm -rf "$dir"; mkdir -p "$dir/findings" "$dir/crosschecks"
 ```
 
-## Step 2 — Dispatch all six reviewers in parallel
+## Step 2 — Dispatch all seven reviewers in parallel
 
 **Send every `Agent` call in a single message** so they run concurrently.
 
@@ -85,6 +85,7 @@ rm -rf "$dir"; mkdir -p "$dir/findings" "$dir/crosschecks"
 | `rust-developer-expert` | Type design, API honesty, gotchas, and whether a crate should be doing this instead of us. |
 | `rust-performance-expert` | Data layout and asymptotics against the §17 budget. |
 | `alife-researcher` | Fidelity to the literature the algorithms are drawn from. |
+| `physics-plausibility-reviewer` | Whether a physical quantity is the right one, at the right scale, legitimately coupled to what it's wired into — not whether the arithmetic on it is correct. |
 
 Every reviewer prompt must contain, in this order:
 
@@ -171,7 +172,7 @@ Dispatch `review-coordinator` with every findings file. It classifies each
 finding `corroborated` / `solo` / `disputed` / `gap`, then cross-checks the
 `solo` and `disputed` ones against the most relevant *other* specialist.
 
-**Do not skip this.** Without it the skill degrades to six parallel opinions
+**Do not skip this.** Without it the skill degrades to seven parallel opinions
 stitched together, and a single reviewer's false positive reaches the user
 with the same weight as a corroborated finding.
 

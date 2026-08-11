@@ -638,21 +638,29 @@ metric against a neutral shadow run.
 
 ## Agents
 
-Six project agents in `.claude/agents/`, most mapped to a named risk in §20
+Seven project agents in `.claude/agents/`, most mapped to a named risk in §20
 rather than to a generic role. They review; none of them writes code.
 
-| Agent | Invoke when |
-|---|---|
-| `rust-developer-expert` | On any new module before it settles; when a type or trait is introduced; when code works but reads badly; as the last pass before a task is committed. Also owns **dependency review** — whether a well-established crate should be doing this instead of us. |
-| `rust-performance-expert` | Before committing to a data structure in a hot path; when a task specifies performance targets; to audit that an optimisation preserved determinism. |
-| `determinism-auditor` | Before adding parallelism or a dependency that touches results; when a golden hash moves; on any diff touching float arithmetic, collection iteration, sorting or RNG. Every hazard here is invisible on one machine. |
-| `emergence-auditor` | Before adding a threshold, special case or per-molecule field; when a behaviour is not emerging and there is a temptation to help it along; on any chemistry or simulation diff. |
-| `geometry-numerics-reviewer` | On canonicalisation, geodesic construction, the rotation table, stress majorization, signatures, binding, FCC folding, cavity detection — code that is either correct or silently wrong forever. |
-| `alife-researcher` | When implementing an algorithm or metric from the literature (RAF, Gillespie, Bedau activity statistics, neutral networks, plateau fitting), or when a design decision rests on a cited result. Constrained by the revised §5: never import real chemistry or biology data (G1's unrevised core) — real-world calibration and correspondence are in scope since the 2026-08-06/07 revisions. |
+| Agent | Invoke when | Precedence |
+|---|---|---|
+| `rust-developer-expert` | On any new module before it settles; when a type or trait is introduced; when code works but reads badly; as the last pass before a task is committed. Also owns **dependency review** — whether a well-established crate should be doing this instead of us. | 6 |
+| `rust-performance-expert` | Before committing to a data structure in a hot path; when a task specifies performance targets; to audit that an optimisation preserved determinism. | 5 |
+| `determinism-auditor` | Before adding parallelism or a dependency that touches results; when a golden hash moves; on any diff touching float arithmetic, collection iteration, sorting or RNG. Every hazard here is invisible on one machine. | 3 |
+| `emergence-auditor` | Before adding a threshold, special case or per-molecule field; when a behaviour is not emerging and there is a temptation to help it along; on any chemistry or simulation diff. | 4 |
+| `geometry-numerics-reviewer` | On canonicalisation, geodesic construction, the rotation table, stress majorization, signatures, binding, FCC folding, cavity detection — code that is either correct or silently wrong forever. | 2 |
+| `alife-researcher` | When implementing an algorithm or metric from the literature (RAF, Gillespie, Bedau activity statistics, neutral networks, plateau fitting), or when a design decision rests on a cited result. Constrained by the revised §5: never import real chemistry or biology data (G1's unrevised core) — real-world calibration and correspondence are in scope since the 2026-08-06/07 revisions. **Scoped to artificial-life methodology and literature** — a question about real-world physical/chemical plausibility (is this energy term the right order of magnitude, should this quantity be allowed to influence that one) belongs to `physics-plausibility-reviewer` instead. | 2 |
+| `physics-plausibility-reviewer` | Before wiring a new physically-motivated term into a field already used for something else; when a plan claims the identity configuration reproduces a real physical value; whenever an energy/length/time-scale claim needs sanity-checking against a known real value. Added 2026-08-11 after a near-miss: Task 26.2's plan fed a nuclear binding-energy term into the same field that prices chemical bonds, a formula that was internally consistent and ~10⁶× wrong, and no agent in the roster had "is this the right quantity" in scope — caught only by an ad-hoc three-amigos session, not the review fleet. | 2 |
 
 The auditors are independent lenses on the same diff and can run in parallel.
 Run the emergence and determinism auditors before any commit that touches
 physics — those are the two invariants no test suite fully protects.
+`geometry-numerics-reviewer`, `alife-researcher` and `physics-plausibility-reviewer`
+all sit at precedence 2 and cover three distinct facets of "correctness of
+the physics": is the formula computed correctly, does it match the published
+alife result it claims to implement, and is it the right formula and the
+right quantity in the first place, respectively. Expect them to sometimes
+flag the same line for different reasons — that is the coverage working, not
+redundancy.
 
 ### Review precedence
 

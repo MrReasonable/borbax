@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Review a Borbax branch or pull request with the six specialist agents, reconciled through a coordinator. Run before EVERY push, not only before merging — CLAUDE.md makes it unconditional. Also use after implementing a task and on any diff touching the chemistry, reaction or simulation crates. The determinism and emergence auditors should run on every commit that touches physics — those are the two invariants no test suite fully protects.
+description: Review a Borbax branch or pull request with the seven specialist agents, reconciled through a coordinator. Run before EVERY push, not only before merging — CLAUDE.md makes it unconditional. Also use after implementing a task and on any diff touching the chemistry, reaction or simulation crates. The determinism and emergence auditors should run on every commit that touches physics — those are the two invariants no test suite fully protects.
 ---
 
 # Review Pull Request
@@ -32,7 +32,7 @@ something the others missed:
   path, so a stale lockfile lets the three CI legs resolve different versions.
 
 **Red suite, no review.** Specialists are for logic, architecture and approach;
-a compiler is better than all six at compilation and runs in seconds. Sending
+a compiler is better than all seven at compilation and runs in seconds. Sending
 them at a broken build spends their attention on what a tool would have told
 you, and buries the findings only they can produce.
 
@@ -113,14 +113,16 @@ what the diff touches:
 
 | Changed | Add |
 |---|---|
+| `borbax-universe/**` (element generation, bond energies, physical constants) | `physics-plausibility-reviewer` |
 | `borbax-molecule/**` (canonical, geodesic, layout, signature, binding, fold, cavity) | `geometry-numerics-reviewer` |
 | `borbax-reaction/**`, `borbax-beaker/**` | `geometry-numerics-reviewer`, `alife-researcher` |
+| any diff introducing a new physically-motivated formula or constant, or reusing an existing field for a new physical quantity | `physics-plausibility-reviewer` |
 | any hot path, or a new data structure | `rust-performance-expert` |
 | any new module, type, trait, or dependency | `rust-developer-expert` |
 | `Cargo.toml` dependency changes | `rust-developer-expert` **and** `determinism-auditor` (a runtime dep in a result-affecting path is a physics change) |
 | `.github/**`, `xtask/**`, `.prototools` | `determinism-auditor` |
 
-When in doubt dispatch all six. They are cheap next to a determinism bug found
+When in doubt dispatch all seven. They are cheap next to a determinism bug found
 three months later.
 
 **And always dispatch one lane with no brief at all.**
