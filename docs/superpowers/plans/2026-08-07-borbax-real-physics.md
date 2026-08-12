@@ -193,6 +193,21 @@ revision.
    needs — one golden regeneration, shared with that known-open item, not
    two.
 
+   **Dependency note, added at pre-registration (2026-08-12) rather than
+   left to be rediscovered at Step 5: this constant must land wired, not
+   stubbed, in the same commit that removes the cap.** `element.rs:641-642`
+   (`find_peak_and_set_instability`) is where the cap currently lives and
+   where its replacement will read the scale constant; its own comment
+   already points at Task 15 rather than naming a value. If the cap is
+   simply deleted (or replaced with an unbounded pass-through) without the
+   scale constant actually being wired to something, `instability` becomes
+   a well-defined Q-value that nothing downstream converts into a decay
+   propensity — the composition-changing channel this task exists to add
+   would be computed and never read, silently degrading the RESOLVED
+   decay-only coupling above from "decay-only" to "decay-none." Track this
+   explicitly through Step 5/6 rather than assuming Task 15 will supply it
+   later; Task 15 itself is not in this task's scope, but the constant is.
+
 8. **Four previously-unspecified V2 outcomes — valence promotion, `affinity`,
    period boundaries, V2's bond capacity — are all answered by one quantity
    the fill already produces**, found independently by three reviewers and
@@ -563,6 +578,161 @@ revision.
     non-empty) is the quantity that actually moves with `c`. A test that
     asserts the mean *selects* `c` is measuring the boundary rule from the
     first bullet above, not the physics.
+
+    **Round 5, 2026-08-12 — pre-registration (routed requirement 5), fixing
+    two more errors in the fix immediately above and settling both
+    sub-decisions it left open.** Independently verified by
+    `geometry-numerics-reviewer` (0/48,000 mismatches against brute-force
+    integer argmax over `κ∈[0.1,100], c∈[1e-3,0.1], t∈1..400`).
+
+    **The `base_c` formula stated two paragraphs up is itself the
+    superseded `a²`-model inversion — the exact error round 4 announced it
+    had fixed, one level further in.** `base_c = (t_max/118 − 2) /
+    t_max^(2/3)` is algebraically the inversion of `a* = t/(2 + c·t^(2/3))`
+    (the `a²` closed form), not of this document's own shipped `a(a−1)`
+    form. It is **0.4237% low at every `t_max`** — small, but the same
+    class of error this document has already had to retract once. The
+    correct inversion of `a*(t) = (2t + c·t^(2/3)) / (4 + 2c·t^(2/3))` for
+    the `c` at which `a*(t) = N`:
+
+    ```
+    c(t, N) = 2·(t − 2N) / ((2N − 1)·t^(2/3))
+    ```
+
+    **The recipe itself (pin `base_c` to the identity value exactly, at
+    `n_elements = 118`) is unsound independent of that arithmetic — it
+    leaves zero perturbation headroom.** At `t_max = 386` under the stated
+    formula, `base_c = 0.024038`, giving `a*(t_max, 1.5·base_c) = 98.87` —
+    every perturbed universe with `n_elements ≥ 100` would have empty
+    isotope distributions for its heaviest elements. **Fix, replacing the
+    recipe two paragraphs up**: pin `base_c` to the real physical value
+    first (Decision 9: `base_c = a_C/(2·a_sym) = 0.711/(2·23.7) = 0.015`
+    exactly, Rohlf's self-consistent pair — see the citation correction
+    above), then solve `c(t_max, N) = base_c` for `t_max`, using the
+    corrected inversion above and `N` set to the coverage target *with
+    margin* (not 118 — see below), not the other way round.
+
+    **`T_MAX = 386` (an integer — `t = a + b` is a nucleon count, never a
+    continuous quantity, which the float `t_max ≈ 385.65` an earlier draft
+    of this pre-registration used got backwards).** Chosen so that the
+    worst-case reachable `c` (`base_c · 1.5`, at the crate-wide default
+    `|p| ≤ Direction::P_MAX = 0.5`) gives `a*(T_MAX) = 121.08` — a 1.5-unit
+    buffer above the bare `119.5` threshold `round(a*) ≥ 120` needs. The
+    margin's job is landing on an integer `T_MAX` and headroom for a future
+    added term (Decision 9's own text already anticipates one, e.g. a
+    pairing term) — **not** floating-point precision: the spread across
+    `t^(2/3)`'s three candidate spellings (`cbrt(t*t)`, `cbrt(t)²`,
+    `powf(t, 2/3)`) is `2.84e−14` over `t = 1..400`, thirteen orders of
+    magnitude below the margin, so citing precision as the reason would be
+    a false rationale for a real number. Pin `t^(2/3)` as
+    `det_math::cbrt(t*t)` regardless, per this document's own house
+    convention (`element.rs:627` and the "every float spelling pinned"
+    section above) — consistency with the runtime energy function, not
+    defensiveness against this specific 386-cell scan.
+
+    | at `T_MAX = 386` | `0.5·base_c` | `base_c` (identity) | `1.5·base_c` (worst-case) |
+    |---|---|---|---|
+    | `a*(T_MAX)` | 161.077 | 138.235 | **121.083** |
+
+    Clears the hard floor (`T_MAX ≥ 2·n_elements_max = 240`) by 146.
+
+    **Independent cross-check on the physics, not just the arithmetic**: at
+    `c = 0.015`, this model's valley line against the textbook β-stability
+    line `Z = A/(1.98 + 0.0155·A^(2/3))` — `A=16`: 7.659 vs 7.698; `A=56`:
+    25.280 vs 25.375; `A=208`: 82.429 vs 82.404; `A=238`: 92.501 vs 92.417.
+    Maximum deviation 0.10 protons across the whole range — independent
+    support for `c_real = 0.015` beyond the citation fix alone.
+
+    **Why coverage has no gaps — a proof, not the continuity hand-wave an
+    earlier draft of this pre-registration used.** Two facts, both
+    verified: (1) the per-unit energy is **exactly quadratic** in `a` at
+    fixed `t` (leading coefficient `4κ/t + γ/t^(1/3) > 0`), so the integer
+    argmax equals `round(a*(t))` exactly, never merely `{floor, ceil}` of
+    it — confirmed 0 mismatches over the same 48,000-case sweep above.
+    (2) `da*/dt` is strictly positive and **strictly less than 1/2**
+    everywhere (measured supremum `0.499975` over `c ∈ [1e-4, 1], t ∈
+    1..400`; the analytic supremum is exactly `1/2` as `c, t → 0`). A
+    slope under `1/2` means `round(a*(t))` can step by at most 1 as `t`
+    increases by 1 (with margin against adversarial tie-breaking), so no
+    integer in `[round(a*(1)), round(a*(T_MAX))]` is ever skipped. Step 1's
+    own coverage assertion should be the direct 386-cell scan this proof
+    licenses (`for t in 1..=T_MAX`, assert every element `1..=n_elements`
+    is hit at least once), not a re-statement of the argument.
+
+    **The clamp-vs-drop sub-decision (the first bullet, two paragraphs
+    up) is closed: drop — and the finding that closes it changes what
+    "rare" meant.** At `T_MAX = 386`, `base_c` (identity), **67 of 386
+    totals (17%) give `a*(t) > 118.5`** — no representable element in the
+    118-element identity table — a routine fraction, not an edge case.
+    (The earlier three-amigos pass that first proposed "drop" called it "a
+    should-never-happen guard," which undersold this — at this `T_MAX` it
+    is neither rare nor a guard, it is the expected outcome for roughly
+    one total in six, at identity, before any perturbation is even
+    applied.) **Drop is still the right choice**, on a real physical
+    correspondence: no real stable nuclide exists above `A ≈ 209`, so a
+    model that simply has no stable composition past a certain total
+    matches the real periodic table's own boundary rather than fighting
+    it. **Clamp would be visibly wrong at this `T_MAX`, not merely
+    inelegant**: under clamp, the identity table's heaviest element would
+    absorb 67+ isotopes against 2–4 for every other element — a gross,
+    physically unmotivated distortion of the abundance-weighted
+    `mass`/`instability` averages Decision 5 builds. Implement as a
+    well-formedness filter on the candidate daughter/isotope set (per this
+    document's own "domain-restrict... never a special case in the energy
+    function" rule above), not a branch naming the outcome.
+
+    **The second sub-decision (the `t_max ≥ 2·n_elements_max` floor
+    possibly conflicting with a target mean ratio at identity) is now
+    moot, not merely deferred**: nothing above targets a mean ratio.
+    `T_MAX/n_elements = 386/118 ≈ 3.27` sits outside the `2.52–2.95` band
+    cited earlier in this document (Decision 5, Decision 7, and routed
+    requirement 5's own text) — that citation predates this section's own
+    finding, a few paragraphs up, that the mean-composition-stable
+    identity is **uninformative about `c`** (it holds regardless of `c`,
+    including at `c = 0`) and therefore was never a real constraint to
+    satisfy. `T_MAX/118 ≈ 3.27` is the *composition-stable* mean, a strict
+    upper bound on the true post-both-channels stable-isotope count Step 1
+    Arm 2 and Decision 7 actually care about (2.5–3.0) — the two are not
+    in tension, since filtering through the size-shedding channel can only
+    reduce the count, and by how much is exactly what Arm 2 measures
+    empirically rather than what this derivation is entitled to assume.
+
+    **The other three coefficients, pre-registered alongside `c` per
+    routed requirement 5's "three things, not one interval" instruction —
+    `base_i`, each coefficient's `p` range, and `m` together:**
+
+    | constant | `base_i` | `p` range | `Counterpart` | source |
+    |---|---|---|---|---|
+    | `kappa` | `23.7` (MeV) | `±0.5` (`Direction::P_MAX`) | `HasReal` | Rohlf's `a_sym`, self-consistent with `base_c` above |
+    | `c` | `0.015` | `±0.5` | `HasReal` | `a_C/(2·a_sym) = 0.711/(2·23.7)`, Rohlf |
+    | `sigma` | `0.075` | `±0.5` | `DefaultOnly` | V1's own historical `sigma` range midpoint (`element.rs`'s `0.02 + 0.01·next_range(12)`, i.e. `[0.02, 0.13]`) — the scale Step 1 Arm 2 already needs for a like-for-like comparison against the V1 census |
+    | `eps` | `1.0` | `±0.5` | `DefaultOnly` (composite — folds the real formula's volume *and* surface terms into one packing-derived contact count, no single clean real counterpart) | V1's own historical `eps` range midpoint (`[0.80, 1.20]`) |
+    | `Rung::MAX` (`m`) | — | — | — | `99` — `P(identity) = 1/100 = 1%` exactly, a product decision (Ian, 2026-08-12): the search-cost case for a common identity seed is weak (found once, shipped as a named universe, Step 1b's precedent), so real chemistry stays a genuine rarity; `m=99` also gives every other migrated constant (Task 26.1's electronic axis included) a finer 100-rung perturbation ladder than the placeholder `m=8` did |
+
+    No constant needed a custom-tightened `p` bound (unlike `w_shape`/
+    `w_charge`'s `1/3`) — the crate-wide default closes every case checked
+    above with margin.
+
+    **One consequence worth stating plainly, found while pre-registering
+    `kappa`: `gamma = 2·kappa·c` is derived, and at these real values
+    `gamma = 2 · 23.7 · 0.015 = 0.711` exactly — `a_C` itself, which is the
+    self-consistency check working as intended, not a coincidence.**
+    `gamma/4 = 0.17775` **exceeds V1's own `sigma` range ceiling (`0.13`)
+    outright**, not merely its midpoint as an earlier draft of this
+    section anticipated qualitatively. Since the size-cost term's actual
+    governing quantity on the valley is `sigma + gamma/4` (shown above,
+    Step 1), the effective value at these real coefficients is
+    `0.075 + 0.17775 ≈ 0.253` — roughly double `sigma`'s own historical
+    ceiling. State this explicitly per the plan's own instruction: **Arm 2
+    does not measure `sigma`'s growth-limiting behaviour in isolation
+    against the V1 census; it measures `sigma + gamma/4`'s**, which at the
+    real-physics coefficients sits well outside V1's own drawn range. This
+    is not a defect — Decision 11's per-unit bound proof (`kappa +
+    kappa/4` bounding all non-`sigma` cost, `sigma·t^(5/3)` supplying the
+    only unbounded growth limit) holds at any positive `sigma`, including
+    this one — but a reader expecting Arm 2's comparison to land inside
+    V1's historical range at the real-physics point should not be
+    surprised when it does not.
 
 12. **The plan (this document, in its first revision) contradicted itself in
     eight places** — found by two review rounds' worth of specialists reading
@@ -958,20 +1128,62 @@ plan named a file (`testkit.rs`) that does not exist.
   is `has a real counterpart`, pinned to 118 already. Task 26.2's `sigma`
   has no real-mass-formula counterpart (`sigma * t^(5/3)` is this model's
   own packing-series size term; no term in the real formula carries that
-  exponent) — tag it `default only`. `kappa` and `c` **do** have real
-  counterparts and must be pinned to them, not left as defensible-but-
-  arbitrary points in Decision 11's legal band: `base_kappa = 23.2` (MeV,
-  the real semi-empirical mass formula's asymmetry coefficient `a_sym`) and
-  `base_c = a_C / (2 * a_sym) ≈ 0.015323` (the real Coulomb-to-asymmetry
-  ratio) — reassuringly, this value sits near the middle of the band
-  `[0.01172, 0.01928]` that Decision 11's `t_max/n_elements ∈ 2.52–2.95`
-  target implies at `n_elements = 118`, so pinning it to the real value and
-  meeting Decision 11's own numeric target are not in tension. `eps` is the
-  genuinely hard one to tag: `eps * contacts(total)` folds the real
-  formula's volume *and* surface terms into one packing-derived contact
-  count, so it has no single clean real counterpart — tag it explicitly as
-  a composite and say so in its doc comment, rather than forcing it into
-  either category. A `default only` constant's value at `rung == 0` is *a*
+  exponent) — tag it `default only`, base value drawn from V1's own
+  historical `sigma` range (`element.rs`'s `0.02 + 0.01 * next_range(12)`,
+  i.e. `[0.02, 0.13]`), which Step 1 Arm 2 already needs as a like-for-like
+  comparison scale. `kappa` and `c` **do** have real counterparts and must
+  be pinned to them, not left as defensible-but-arbitrary points in
+  Decision 11's legal band.
+
+  **Citation correction, 2026-08-12 — the previous version of this
+  paragraph cited "Rohlf" for a pair Rohlf's own text does not contain.**
+  Verified against Rohlf's actual published coefficients (J. W. Rohlf,
+  *Modern Physics from α to Z⁰*, Wiley, 1994, ISBN 0-471-57270-5:
+  `a_V=15.75, a_S=17.8, a_C=0.711, a_sym=23.7, a_P=11.18` MeV) and
+  cross-checked against Krane's *Introductory Nuclear Physics* and Imperial
+  College's Dauncey lecture notes (both agree on `a_C≈0.71–0.72,
+  a_sym≈23.0–23.2` for the classical fits): `base_kappa = 23.2` and
+  `base_c ≈ 0.015323` were never a real published pair. `0.711/(2×23.2) =
+  0.0153233` reproduces the old number to 7 digits, but it silently mixed
+  Rohlf's own `a_C = 0.711` with `a_sym = 23.2` from a *different* fit (the
+  "least-squares fit (1)" set, `15.8, 18.3, 0.714, 23.2, 12`) — two
+  incompatible columns, not one source. No 2019 refit was found supporting
+  `0.015323` either (checked Benzaid, Bentridi, Kerraci & Amrani, *Nucl.
+  Sci. Tech.* 31:9, 2020, an actual AME2016 refit: `a_c=0.64, a_a=21.07` →
+  `c=0.015187`, 0.88% off, not the "0.1%" this document previously claimed
+  with no source named). **Fix: `base_kappa = 23.7` (MeV, Rohlf's own
+  `a_sym`) and `base_c = a_C / (2 * a_sym) = 0.711 / (2 * 23.7) = 0.015`
+  exactly** — Rohlf's own self-consistent pair, so both constants come from
+  one fitted set rather than two. Published `a_sym` spans 21.1–23.7 MeV
+  depending on the fit and mass evaluation used; "the real `a_sym`" should
+  read "Rohlf's `a_sym`" throughout this document. The physics the
+  coefficient expresses is unaffected: `c = a_C/(2*a_sym)` is exactly the
+  coefficient in the β-stability line `Z = A/(2 + c·A^(2/3))`, and at
+  `c=0.015` it predicts `Z=92.4` for `A=238` (real 92) and `Z=82.3` for
+  `A=208` (real 82) — this was a wrong coefficient, not a wrong quantity.
+
+  **The "band" claim above it, and the reasoning behind it, are both
+  superseded — not by this citation fix, but by Decision 11's own round-4
+  correction (below), found independently.** `t_max/n_elements ∈
+  2.52–2.95` "pinning" `c`'s band via the mean-stable-isotopes identity was
+  later shown to be **uninformative about `c`** (the identity holds
+  identically regardless of `c`, including at `c=0`) — see Decision 11's
+  round-4 text for the proof. `base_c = 0.015` still survives on its own
+  terms: solving the *coverage* requirement (not the mean-identity one)
+  with `base_c` pinned to `0.015` exactly gives `t_max ≈ 385.65`, at which
+  the worst-case perturbed `c` (the crate-wide default `|p| ≤ 0.5`) still
+  covers every legal `n_elements` up to 120 with a safety margin — see
+  Decision 11's own text for the full derivation. That the real physical
+  ratio and the coverage requirement are jointly satisfiable at all, with
+  no custom-tightened excursion bound needed, is worth stating plainly:
+  it did not have to work out that way. `eps` is the genuinely hard one to
+  tag: `eps * contacts(total)` folds the real formula's volume *and*
+  surface terms into one packing-derived contact count, so it has no
+  single clean real counterpart — tag it explicitly as a composite and say
+  so in its doc comment, rather than forcing it into either category; base
+  value drawn from V1's own historical `eps` range (`element.rs`'s
+  `0.8 + 0.05 * next_range(9)`, i.e. `[0.80, 1.20]`), same reasoning as
+  `sigma` above. A `default only` constant's value at `rung == 0` is *a*
   chosen default, not *the* real value, and the plan should not imply
   otherwise.
 - [ ] **P8 — Run the full six-leg gate and commit P6/P7 as their own
@@ -1333,10 +1545,44 @@ with the same comparator rigour Task 26.1 Step 3 already specifies —
 and confirm the tie-break fires — this remains a valid unit-test probe
 even though real universes never reach `gamma = 0`. State the sampling
 regime for the "no other exact tie" measurement above, per routed
-requirement 6. State the model in **per-unit** form (it feeds
-`energy_per_unit`, and the total-energy form above is off by a factor of
-the total size) — divide the whole expression by `total` before it's
-assigned.
+requirement 6. State the model in **per-unit** form (the total-energy form
+above is off by a factor of the total size) — divide the whole expression
+by `total` before it's assigned.
+
+**Round 5 correction, 2026-08-12 — the line above used to end "…it feeds
+`energy_per_unit`", and that is wrong: fixed here rather than left to
+contradict the resolution below at Step 5 implementation time.**
+`energy_per_unit`/`ShellPattern::eps` is what both `bonds.rs`'s V1
+(`contact_density`, "the positive half of `energy_per_unit`, divided by
+`eps`") and V2 (`base = pattern.eps * scale`) paths price every bond from —
+reusing it for this task's nuclear binding model would make bond strength a
+function of nuclear structure, and real nuclear binding energies are
+~2.25×10⁶× a real chemical bond energy (Ni-62's BE/A peak, 8.794555
+MeV/nucleon, against a C–C bond at 376.98 kJ/mol) — no real channel above
+~10⁻⁵ of a bond energy connects the two. Caught 2026-08-11/12 by an ad-hoc
+three-amigos session after surviving four `/review-plan` rounds, then
+independently confirmed by two review-agent lenses in parallel (physics
+magnitude; alife emergence — a correctly-rescaled coupling would still be
+wrong, because real per-nucleon binding is nearly flat above A≈12 while
+real bond energies span 7–11×, so feeding one into the other would flatten
+the whole bond-energy landscape and kill differential persistence, §9.4).
+**This task's four-term per-unit binding model feeds a quantity Step 5
+names when it lands — not `energy_per_unit`, not `ShellPattern::eps` —
+which in turn feeds `instability`'s Q-value redefinition (Decision 7),
+`mass`'s defect term, and eventually `abundance` (the Fe-peak in cosmic
+abundance **is** the nuclear BE/A peak, NSE, Ni-56→Fe-56 — legitimate
+physical backing for that route specifically).** One coupling stays legal
+and is worth keeping deliberately, not rejecting wholesale: composition →
+`mass` → the Arrhenius prefactor (`A ∝ 1/√μ`, the kinetic isotope effect) —
+real, small (1–2%, from the H₂/D₂ dissociation-energy comparison), and
+already permitted by Decision 5's independence test, which names
+valence/affinity/radius/block as the electronic-side observables, not
+mass. **Step 3's independence-test observable set must add
+`BondEnergyMatrix::energy`** (`bonds.rs`) to what it asserts bit-identical
+under a nuclear-tagged perturbation — as originally planned, the test
+suite has no observable that could see this exact coupling leak back in
+by accident, which is precisely the shape of miss that let the plan's own
+wording say "feeds `energy_per_unit`" for two review rounds running.
 
 **The rejected alternative, recorded so it isn't tried again**: replacing
 the size-cost term with an asymmetric one instead of adding a fourth term
@@ -1626,8 +1872,14 @@ computed as abundance-weighted averages over that distribution.
   nuclear-tagged constant (`eps`, `sigma`, `kappa`, `c` — not `gamma`,
   which is derived from `kappa` and `c` and is not an independent
   perturbation target, per Decision 11) leaves `(valence, affinity,
-  radius, block())` bit-identical; perturbing any electronic-tagged
-  constant leaves the composition distribution and Q-values bit-identical.
+  radius, block(), BondEnergyMatrix::energy)` bit-identical; perturbing
+  any electronic-tagged constant leaves the composition distribution and
+  Q-values bit-identical. **`BondEnergyMatrix::energy` added to this
+  observable set 2026-08-12, per the RESOLVED bond-pricing decision
+  above** — without it, the test suite has no way to see whether a
+  nuclear-tagged perturbation leaks into bond pricing (via
+  `energy_per_unit`/`ShellPattern::eps`) by accident; every other
+  observable in this set is silent to exactly that failure mode.
 
   Mass conservation: composition changes under a reaction still sum `Mass`
   exactly. **Both of the original note's headline assertions ("composition

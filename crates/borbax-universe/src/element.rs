@@ -2296,8 +2296,12 @@ mod tests {
                 }
             }
         }
+        // Regenerated 2026-08-12: deliberate physics change, Rung::MAX 8 -> 99
+        // (issue #26 Task 26.2 pre-registration, routed requirement 8) -- every
+        // rung != 0 draws a different perturbed universe under the new ladder.
+        // Was 0x2b40_8e77_7d66_cad5.
         assert_eq!(
-            h, 0x2b40_8e77_7d66_cad5,
+            h, 0x2972_1d1e_51cd_9c85,
             "the V2 universe digest moved — say which of §18.1's three this is, or the \
              fourth: the digest's own input set changed shape. This golden was first \
              measured 2026-08-10, alongside the assembled-universe V2 golden — see this \
