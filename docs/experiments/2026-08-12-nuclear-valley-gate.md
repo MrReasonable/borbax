@@ -12,6 +12,14 @@ cargo test --locked --release -p borbax-universe --lib nuclear:: -- --ignored --
 
 **Verdict: both arms pass. Step 1 is cleared to proceed to Steps 2+.**
 
+**Updated 2026-08-13: `sigma` was removed from the model after this gate
+first passed — see "Post-gate correction, 2026-08-13" near the end of this
+document for the re-measured numbers before trusting any `sigma`-referencing
+figure elsewhere in this document as current.** Everything between here and
+that section is left as the historical record of how the gate was
+originally cleared (a four-coefficient model), not the model this crate
+now ships.
+
 ## Three corrections landed before the gate could run meaningfully
 
 A three-amigos design session proposed the initial harness; two independent
@@ -57,15 +65,19 @@ Both corrections 1 and 2 are recorded directly in `perturbation.rs`'s
 
 ## Coefficients as actually run
 
+**Historical — `sigma` row removed 2026-08-13, see "Post-gate correction"
+below.** This table reflects what the gate first ran against, not what
+`crates/borbax-universe/src/nuclear.rs` ships today.
+
 | constant | base | source |
 |---|---|---|
 | `eps` | `2.625` | `2·a_V/z`, Rohlf `a_V = 15.75` MeV, `z = 12` |
-| `sigma` | `0.075` | V1's own historical range midpoint |
+| `sigma` | `0.075` | V1's own historical range midpoint — **deleted 2026-08-13** |
 | `kappa` | `23.7` MeV | Rohlf `a_sym` |
 | `c` | `0.015` | Rohlf `a_C/(2·a_sym)` |
 | `Rung::MAX` | `99` | `P(identity) = 1%` |
 
-All four coefficients drawn from `p ∈ [-0.5, 0.5]` (`Direction::P_MAX`, the
+All coefficients drawn from `p ∈ [-0.5, 0.5]` (`Direction::P_MAX`, the
 crate-wide default), jointly through one shared rung — `Rung::draw(seed)`
 once, then `draw_symmetric` per constant — never independently, per routed
 requirements 5/6.
@@ -233,15 +245,70 @@ cross-check, since this exactly matches the physics-plausibility pass's own
 scratch-script prediction for `k=10, eps=2.625` before any of this was
 production code.
 
+## Post-gate correction, 2026-08-13: `sigma` removed
+
+Found after the gate above already returned "both arms pass" — a
+`/review-pr` follow-up question, not a pre-verification finding like
+corrections 1-3. Full physics account:
+`crates/borbax-universe/src/nuclear.rs`'s own module doc, "Post-gate
+correction." Summary: a `physics-plausibility-reviewer` pass found
+`sigma * total^(5/3)` structurally unjustified, not merely miscalibrated —
+`eps * contacts(total)` already reproduces the real SEMF's volume-and-surface
+behaviour, so the three surviving coefficients (`eps`, `kappa`, `c`) already
+form the real four-term SEMF at Rohlf's own values. The "growth limit"
+argument that had justified keeping `sigma` (§ Arm 2, 2b above, "since
+`sigma·total^(5/3)` is the model's only unbounded term") does not hold: a
+bounded cost exceeding a saturating gain limits growth without needing to
+be unbounded itself, and `eps`/`kappa`'s own saturation already does that.
+`BASE_SIGMA` and `MigratedConstant::Sigma` are deleted; `MigratedConstant`'s
+index 14 is retired, not reused, so `kappa`/`c`'s draws are bit-identical
+to before.
+
+**Both arms re-run over the same 38,416-seed corpus, three-coefficient
+model:**
+
+- **Arm 1**: `[16, 30]` — unchanged, as expected (`sigma` never entered
+  `composition_argmax`). Still 38,416/38,416.
+- **Arm 2a** (interior peak + positive-Q): **38,406/38,416 = 99.974%**,
+  down from 100% — `sigma` was, per the physics reviewer's own finding, a
+  meaningful contributor to positive shedding-Q at `T_MAX` for a small
+  number of universes, and losing it costs ten of them. Still comfortably
+  above the 89.44% bar.
+- **Arm 2b** (bound-set shape): still 38,416/38,416, but the shape
+  underneath changed. Last-bound-total range widened from `[62, 386]` to
+  `[92, 386]`; **98.6% of universes (37,863/38,416) are now never unbound
+  anywhere in `4..=T_MAX` at all** (most of what this check used to
+  discriminate against no longer occurs at all); the transition-count
+  distribution moved from **p50 = 0, p90 = 1, max = 3** to **p50 = 0,
+  p90 = 0, max = 3** — the `≤ 5` bound is unchanged but tighter relative to
+  what is now observed. The `total = 309` shell-closure blip still occurs —
+  two seeds (3992, 4425) hit it in this corpus, down from three (14355,
+  20107, 21217), for the same reason: fewer universes reach an unbound
+  region at all for the blip to interrupt.
+- **Arm 2c** (elements reached while bound, reported not gated): **min = 38,
+  p1 = 116, p10 = 130, p50 = 138; 419/38,416 (1.09%) of universes cover
+  fewer than 120 elements while still bound**, down from 9.25%
+  (3,554/38,416) — matching exactly the figure the `emergence-auditor`
+  pass measured at `BASE_SIGMA = 0.0` on the four-coefficient model before
+  the term was actually deleted, as it should.
+
+**Not the justification for the removal, only its consequence** — see
+`nuclear.rs`'s own module doc for why the coverage improvement is
+deliberately not the stated reason.
+
 ## What Step 1 does not settle
 
-- **Whether the 9.25%-of-universes coverage shortfall (2c, above) needs a
-  design response** — routed to Steps 2+, which decide how `n_elements`'s
-  own draw interacts with it.
+- **Whether the residual 1.09%-of-universes coverage shortfall (2c, above,
+  post-removal) needs a design response** — routed to Steps 2+, which
+  decide how `n_elements`'s own draw interacts with it. Smaller than the
+  pre-removal 9.25%, not zero.
 - **The size-shedding channel's Q-value** used by 2a is a Step-1-only
   definition (`crate::nuclear::shedding_q` — does splitting a heavy total
   into two on-valley fragments release energy), not the plan's own
   per-isotope definition, which Steps 5-7 still own.
-- **Whether `sigma`/`gamma` are collinear on the valley** was pre-registered
-  as a caveat before this gate ran (`gamma/4 = 0.17775` exceeds V1's own
-  `sigma` ceiling of `0.13`) and stands unchanged by this measurement.
+- **Whether `sigma`/`gamma` were collinear on the valley** was a
+  pre-registered caveat before this gate first ran, and is now moot —
+  `sigma` no longer exists.
+- **The `NuclearCoeffs` struct** (bundling `eps`/`kappa`/`c` positionally,
+  recommended by `rust-developer-expert` across two review rounds) remains
+  deferred to Steps 2+, whose real call sites will settle its shape.

@@ -712,7 +712,7 @@ revision.
     |---|---|---|---|---|
     | `kappa` | `23.7` (MeV) | `±0.5` (`Direction::P_MAX`) | `HasReal` | Rohlf's `a_sym`, self-consistent with `base_c` above |
     | `c` | `0.015` | `±0.5` | `HasReal` | `a_C/(2·a_sym) = 0.711/(2·23.7)`, Rohlf |
-    | `sigma` | `0.075` | `±0.5` | `DefaultOnly` | V1's own historical `sigma` range midpoint (`element.rs`'s `0.02 + 0.01·next_range(12)`, i.e. `[0.02, 0.13]`) — the scale Step 1 Arm 2 already needs for a like-for-like comparison against the V1 census |
+    | ~~`sigma`~~ | ~~`0.075`~~ | — | — | **Deleted 2026-08-13, post-gate**, along with `MigratedConstant::Sigma` (index 14, retired not reused): a `physics-plausibility-reviewer` pass found the term structurally unjustified rather than merely miscalibrated — `eps · contacts(total)` already reproduces the real SEMF's volume-and-surface behaviour, so the three surviving coefficients already form the real four-term SEMF at Rohlf's own values. See `crates/borbax-universe/src/nuclear.rs`'s own module doc, "Post-gate correction," and this document's own Round 8 note below |
     | `eps` | ~~`1.0`~~ **`2.625`** | `±0.5` | `DefaultOnly` (composite — folds the real formula's volume *and* surface terms into one packing-derived contact count, no single clean real counterpart) | Superseded during Step 1's own gate (2026-08-12, `b4ef361`): `1.0` (V1's own historical `eps` range midpoint, `[0.80, 1.20]`) sat at a scale unrelated to `kappa`/`c`'s real MeV values, leaving 305/386 totals (79.0%) unbound at identity. Corrected to `eps = 2·a_V/z`, `a_V = 15.75` MeV (Rohlf's real SEMF volume coefficient), `z = 12` — see Step 1's own "Round 6" note below and `crates/borbax-universe/src/nuclear.rs` |
     | `Rung::MAX` (`m`) | — | — | — | `99` — `P(identity) = 1/100 = 1%` exactly, a product decision (Ian, 2026-08-12): the search-cost case for a common identity seed is weak (found once, shipped as a named universe, Step 1b's precedent), so real chemistry stays a genuine rarity; `m=99` also gives every other migrated constant (Task 26.1's electronic axis included) a finer 100-rung perturbation ladder than the placeholder `m=8` did |
 
@@ -724,22 +724,25 @@ revision.
     `kappa`: `gamma = 2·kappa·c` is derived, and at these real values
     `gamma = 2 · 23.7 · 0.015 = 0.711` exactly — `a_C` itself, which is the
     self-consistency check working as intended, not a coincidence.**
-    `gamma/4 = 0.17775` **exceeds V1's own `sigma` range ceiling (`0.13`)
-    outright**, not merely its midpoint as an earlier draft of this
-    section anticipated qualitatively. Since the size-cost term's actual
-    governing quantity on the valley is `sigma + gamma/4` (shown above,
-    Step 1), the effective value at these real coefficients is
-    `0.075 + 0.17775 ≈ 0.253` — roughly double `sigma`'s own historical
-    ceiling. State this explicitly per the plan's own instruction: **Arm 2
-    does not measure `sigma`'s growth-limiting behaviour in isolation
-    against the V1 census; it measures `sigma + gamma/4`'s**, which at the
-    real-physics coefficients sits well outside V1's own drawn range. This
-    is not a defect — Decision 11's per-unit bound proof (`kappa +
-    kappa/4` bounding all non-`sigma` cost, `sigma·t^(5/3)` supplying the
-    only unbounded growth limit) holds at any positive `sigma`, including
-    this one — but a reader expecting Arm 2's comparison to land inside
-    V1's historical range at the real-physics point should not be
-    surprised when it does not.
+    ~~`gamma/4 = 0.17775` exceeds V1's own `sigma` range ceiling (`0.13`)
+    outright, not merely its midpoint as an earlier draft of this section
+    anticipated qualitatively. Since the size-cost term's actual governing
+    quantity on the valley is `sigma + gamma/4` (shown above, Step 1), the
+    effective value at these real coefficients is `0.075 + 0.17775 ≈
+    0.253` — roughly double `sigma`'s own historical ceiling. State this
+    explicitly per the plan's own instruction: Arm 2 does not measure
+    `sigma`'s growth-limiting behaviour in isolation against the V1 census;
+    it measures `sigma + gamma/4`'s, which at the real-physics coefficients
+    sits well outside V1's own drawn range. This is not a defect —
+    Decision 11's per-unit bound proof (`kappa + kappa/4` bounding all
+    non-`sigma` cost, `sigma·t^(5/3)` supplying the only unbounded growth
+    limit) holds at any positive `sigma`, including this one — but a reader
+    expecting Arm 2's comparison to land inside V1's historical range at
+    the real-physics point should not be surprised when it does not.~~
+    **Moot as of 2026-08-13 — `sigma` (and the `gamma/4` collinearity this
+    paragraph describes) no longer exists. Left struck rather than deleted
+    as the historical record of a caveat this project once had to track;
+    see the Round 8 note below.**
 
 12. **The plan (this document, in its first revision) contradicted itself in
     eight places** — found by two review rounds' worth of specialists reading
@@ -1593,12 +1596,19 @@ wording say "feeds `energy_per_unit`" for two review rounds running.
 
 **The rejected alternative, recorded so it isn't tried again**: replacing
 the size-cost term with an asymmetric one instead of adding a fourth term
-(fewer coefficients) was measured to delete the growth limit entirely — at
-the optimum, its size cost falls to 0.3–21% of the original, and a heavy
-on-valley element has no interior binding peak at all in 20–78% of draws.
-It also turned out to be structurally incompatible with the Q-value
-redefinition below (that redefinition's whole argument rests on having two
-distinct decay channels; the rejected alternative deletes one of them).
+(fewer coefficients) ~~was measured to delete the growth limit entirely~~
+**(struck 2026-08-13: this leg of the rejection rested on the same "the
+growth limit rests entirely on `sigma`" premise the post-gate correction
+below found to be a non-sequitur — a bounded cost exceeding a saturating
+gain limits growth without needing to be unbounded itself, so "deletes the
+growth limit" is not, on its own, disqualifying. The other two legs are
+independent and survive intact:)** at the optimum, its size cost falls to
+0.3–21% of the original, and a heavy on-valley element has no interior
+binding peak at all in 20–78% of draws. It also turned out to be
+structurally incompatible with the Q-value redefinition below (that
+redefinition's whole argument rests on having two distinct decay channels;
+the rejected alternative deletes one of them). The rejection itself still
+stands, on these two remaining grounds.
 
 **`instability` is redefined as a Q-value (Decision 7), not a global
 distance.** Best-available-transition energy release, clamped at zero,
@@ -1803,11 +1813,24 @@ computed as abundance-weighted averages over that distribution.
   holds and is close to tight. So total non-sigma on-valley per-unit cost
   is bounded by `kappa + kappa/4`, and only `sigma * total^(5/3)` (still
   stated in total form here, since it is what feeds the size-cost term
-  directly) is unbounded and can supply a growth limit against a saturating
-  binding term — adopt this as the stated reason the corrected model
-  cannot lose its growth limit the way the rejected alternative did,
-  replacing the earlier regime-dependent "0.3–21% / 20–78%" figures, which
-  needed a stated sampling regime this proof does not. **Pre-register
+  directly) is unbounded.
+  ~~adopt this as the stated reason the corrected model cannot lose its
+  growth limit the way the rejected alternative did, replacing the earlier
+  regime-dependent "0.3–21% / 20–78%" figures, which needed a stated
+  sampling regime this proof does not.~~
+  **Correction, 2026-08-13 (post-gate, `physics-plausibility-reviewer`):
+  the bound derivation above (`kappa + kappa/4`) is correct and still
+  stands, but the conclusion drawn from it does not follow.** Being the
+  model's *only* unbounded term does not make `sigma` *necessary* to
+  supply a growth limit: a bounded cost that exceeds a saturating gain
+  limits growth without itself needing to be unbounded, and
+  `eps`/`kappa`'s own per-unit saturation already does exactly that — the
+  on-valley per-unit asymptote at `sigma = 0` is `eps * z/2 - kappa`,
+  which at the identity coefficients is `-7.95` MeV/nucleon, matching the
+  real SEMF's own asymptote (`a_V - a_A`) exactly. `sigma * total^(5/3)`
+  was deleted 2026-08-13, along with `MigratedConstant::Sigma` — see
+  `crates/borbax-universe/src/nuclear.rs`'s own module doc, "Post-gate
+  correction," and this document's own Round 8 note below. **Pre-register
   `base_i` (each coefficient's base value),
   each coefficient's `p` range, **and** `m` together, as three things, not
   one interval** — P7's shared rung correlates all four Task 26.2
@@ -1878,6 +1901,34 @@ computed as abundance-weighted averages over that distribution.
   (`every_migrated_constant_is_electronic_or_nuclear_exactly_once`,
   `perturbation.rs`) was replaced with a real per-constant membership
   check.
+
+  **Round 8, 2026-08-13 — post-gate correction: `sigma` deleted.** Round
+  7's own routed finding ("`sigma` costs coverage for a term with no real
+  counterpart, routed to Steps 2+") was answered directly rather than left
+  open: asked, a `physics-plausibility-reviewer` pass found `sigma *
+  total^(5/3)` structurally unjustified, not merely miscalibrated — `eps *
+  contacts(total)` already reproduces the real SEMF's volume-and-surface
+  behaviour (1-9% error across the tested range), so the three surviving
+  coefficients already form the real four-term SEMF at Rohlf's own values,
+  and `sigma` was a fifth term duplicating a role already filled. The
+  "growth limit" argument this section's own proof made for keeping it
+  (above, "the growth limit itself rests entirely on `sigma`, provably")
+  does not follow from its own premise: a bounded cost exceeding a
+  saturating gain limits growth without needing to be unbounded itself,
+  and `eps`/`kappa`'s own saturation already supplies that. `BASE_SIGMA`
+  and `MigratedConstant::Sigma` (index 14) deleted; index 14 retired, not
+  reused, so `kappa`/`c`'s draws stay bit-identical. Both arms re-run:
+  Arm 1 unchanged (`[16, 30]`); Arm 2's closure moved from 100% to 99.97%
+  (38,406/38,416, still clearing the 89.44% bar) since `sigma` had been a
+  real contributor to positive shedding-Q for a handful of universes;
+  bound-shape still holds 100% with a tighter margin (98.6% of universes
+  now never unbound in `4..=T_MAX` at all); the coverage-while-bound
+  shortfall fell from 9.25% to 1.09%, a consequence of the correction, not
+  its justification. Scoped as a three-amigos session (product/developer/
+  QA) before implementation, per this project's own standing rule — full
+  account: `docs/experiments/2026-08-12-nuclear-valley-gate.md`'s own
+  "Post-gate correction" section and
+  `crates/borbax-universe/src/nuclear.rs`'s module doc.
 - [ ] **Step 2: Confirm `ElementId`'s shape is unchanged** (it is, per
   Decision 5). **Round 4 correction: "two molecules differing only in
   isotopic composition" is not constructible under Decision 5's own design,
