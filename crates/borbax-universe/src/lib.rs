@@ -1015,17 +1015,20 @@ mod tests {
     /// (`P(identity)` 1/9 → 1/100, per the plan's pre-registration): seed
     /// 21 stopped being identity, and the much lower probability means the
     /// small `0..50` sample that found the original four no longer finds
-    /// any — seeds 103/110/113/130/157 were found by the same probe
-    /// widened to `0..500_000`, and 103 is pinned here on the same
-    /// discipline.
+    /// any — seeds 103/110/113/130/157 were the first five hits of the
+    /// same probe widened to `0..500_000` (at `P(identity) = 1%` that scan
+    /// finds roughly 5,000 identity seeds, not five), and 103 is pinned
+    /// here on the same discipline.
     #[test]
     fn identity_seeds_get_real_names_and_exactly_118_elements() {
         // Re-derived 2026-08-12 for Rung::MAX=8 -> 99 (P(identity) 1/9 -> 1/100):
-        // seed 21 stopped being identity under the new rung draw. Re-found by an
-        // exhaustive scan over seeds 0..500_000 (perturbation.rs's own
-        // `Rung::draw(seed).is_identity()`), which returned [103, 110, 113, 130,
-        // 157] -- 103 is the new pin, same "hardcode one, don't widen to a
-        // `find()`" discipline the comment below already states.
+        // seed 21 stopped being identity under the new rung draw. Re-found by a
+        // scan over seeds 0..500_000 (perturbation.rs's own
+        // `Rung::draw(seed).is_identity()`), whose first five hits were
+        // [103, 110, 113, 130, 157] -- not the whole result, which at
+        // P(identity)=1% is roughly 5,000 seeds. 103 is the new pin, same
+        // "hardcode one, don't widen to a `find()`" discipline the comment
+        // below already states.
         let seed = 103;
         let u = Universe::generate_under(seed, PhysicsVersion::V2);
         assert!(

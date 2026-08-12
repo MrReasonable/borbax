@@ -706,7 +706,7 @@ revision.
     | `kappa` | `23.7` (MeV) | `±0.5` (`Direction::P_MAX`) | `HasReal` | Rohlf's `a_sym`, self-consistent with `base_c` above |
     | `c` | `0.015` | `±0.5` | `HasReal` | `a_C/(2·a_sym) = 0.711/(2·23.7)`, Rohlf |
     | `sigma` | `0.075` | `±0.5` | `DefaultOnly` | V1's own historical `sigma` range midpoint (`element.rs`'s `0.02 + 0.01·next_range(12)`, i.e. `[0.02, 0.13]`) — the scale Step 1 Arm 2 already needs for a like-for-like comparison against the V1 census |
-    | `eps` | `1.0` | `±0.5` | `DefaultOnly` (composite — folds the real formula's volume *and* surface terms into one packing-derived contact count, no single clean real counterpart) | V1's own historical `eps` range midpoint (`[0.80, 1.20]`) |
+    | `eps` | ~~`1.0`~~ **`2.625`** | `±0.5` | `DefaultOnly` (composite — folds the real formula's volume *and* surface terms into one packing-derived contact count, no single clean real counterpart) | Superseded during Step 1's own gate (2026-08-12, `b4ef361`): `1.0` (V1's own historical `eps` range midpoint, `[0.80, 1.20]`) sat at a scale unrelated to `kappa`/`c`'s real MeV values, leaving 305/386 totals (79.0%) unbound at identity. Corrected to `eps = 2·a_V/z`, `a_V = 15.75` MeV (Rohlf's real SEMF volume coefficient), `z = 12` — see Step 1's own "Round 6" note below and `crates/borbax-universe/src/nuclear.rs` |
     | `Rung::MAX` (`m`) | — | — | — | `99` — `P(identity) = 1/100 = 1%` exactly, a product decision (Ian, 2026-08-12): the search-cost case for a common identity seed is weak (found once, shipped as a named universe, Step 1b's precedent), so real chemistry stays a genuine rarity; `m=99` also gives every other migrated constant (Task 26.1's electronic axis included) a finer 100-rung perturbation ladder than the placeholder `m=8` did |
 
     No constant needed a custom-tightened `p` bound (unlike `w_shape`/
@@ -1824,21 +1824,29 @@ computed as abundance-weighted averages over that distribution.
   form" two paragraphs up — the two differ by up to 4 ulp and round to a
   different *element* in 3 of 6,951,474 sampled cells; (2) `BASE_EPS =
   2.625`, not `1.0` — the original value sat at an unrelated scale next to
-  `kappa`/`c`'s real Rohlf MeV values, leaving 74.6% of totals unbound at
-  identity; (3) the nuclear packing model's fixed coordination parameter is
-  `k = 10`, not `12` — this crate's shell law gives `z = k + 2`, so `12`
-  actually selects coordination 14. Both (1) and (2) are also recorded in
-  `perturbation.rs`'s own `MigratedConstant` doc comments.
+  `kappa`/`c`'s real Rohlf MeV values, leaving 305/386 totals (79.0%, at
+  the shipped `NUCLEAR_K = 10`) unbound at identity; (3) the nuclear
+  packing model's fixed coordination parameter is `k = 10`, not `12` —
+  this crate's shell law gives `z = k + 2`, so `12` actually selects
+  coordination 14. Both (1) and (2) are also recorded in `perturbation.rs`'s
+  own `MigratedConstant` doc comments.
 
-  Arm 1's gate is the analytic envelope `drift_onset(c) ∈ [16, 30]`,
-  derived from `c`'s own P7-reachable range rather than this section's
-  Ca-40 anchor (`40/386`) — measured to be structurally unfalsifiable,
-  since `kappa` provably cancels and `c` is bounded before any sampling
-  happens, so no implementation could ever fail it. Arm 2 passes the
-  literal criteria above (100% closure against the 89.44% bar) plus an
-  added bound-set-shape check (at most a handful of sign transitions in the
-  on-valley binding curve, tolerating the one measured shell-closure
-  "island of stability" at `total = 309`). One further finding, reported
+  Arm 1's gate is a monotonicity/band-membership check on `drift_onset(c)`
+  over `c`'s own P7-reachable range rather than this section's Ca-40
+  anchor (`40/386`) — measured to be structurally unfalsifiable as a
+  closed-form regression bound (`kappa` provably cancels and `c` is
+  bounded before any sampling happens, so several broken implementations
+  print the identical `[16, 30]` envelope and pass); closed-form
+  correctness is actually carried by the identity-drift pin (`== 22`) and
+  the brute-force cross-check. Arm 2 passes the literal criteria above
+  (100% closure against the 89.44% bar) plus an added bound-set-shape
+  check (at most a handful of sign transitions in the on-valley binding
+  curve, tolerating three measured shell-closure "island of stability"
+  seeds, all at `total = 309`) — mutation-tested during `/review-pr` to
+  reliably catch scattered defects and not smooth ones (a wrong exponent
+  on `sigma`'s term passes it, so two more pinned tests close that:
+  the identity's unbound-total set and the size term's exponent, both in
+  `crates/borbax-universe/src/nuclear.rs`). One further finding, reported
   rather than gated: 9.25% of universes cover fewer than 120 elements while
   still bound — real, and now corrected into `MigratedConstant::C`'s own
   doc (its coverage proof covered the composition argmax's shape, not

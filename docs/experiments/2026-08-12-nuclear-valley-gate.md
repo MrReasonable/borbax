@@ -32,11 +32,17 @@ trusting a single derivation, however careful, on load-bearing physics math.
 2. **`BASE_EPS = 2.625`, not the pre-registration commit's original `1.0`.**
    `kappa`/`c` are pinned to Rohlf's real MeV-scale SEMF coefficients; `eps`
    was left at V1's old, unrelated Borbax-internal scale. Measured at the
-   identity coefficients: 288 of 386 totals (74.6%) had negative on-valley
-   per-unit binding energy — unbound over most of the domain. Corrected to
-   `eps = 2·a_V/z`, `a_V = 15.75` MeV (Rohlf's real volume coefficient),
-   `z = 12` (`crate::packing::shell_size(k, 1)` at `k = 10`) — the real
-   limit `BE/A → a_V` as `A → ∞`.
+   identity coefficients and the shipped `NUCLEAR_K = 10`: 305 of 386
+   totals (79.0%) had negative on-valley per-unit binding energy — unbound
+   over most of the domain. (An earlier draft of this correction quoted
+   288/386, 74.6% — measured at the since-superseded `NUCLEAR_K = 12` and
+   never re-taken; the direction is unaffected, 79% is worse — see
+   `nuclear.rs`'s `the_identity_configuration_is_bound_over_all_but_two_totals`
+   for the figure as a pinned test.) Corrected to `eps = 2·a_V/z`,
+   `a_V = 15.75` MeV (Rohlf's real volume coefficient), `z = 12`
+   (`crate::packing::shell_size(k, 1)` at `k = 10`) — the real limit
+   `BE/A → a_V` as `A → ∞`, approached slowly and not attained within
+   `T_MAX` (`eps · contacts(T_MAX)/T_MAX` is `13.19`, not `15.75`).
 
 3. **`NUCLEAR_K = 10`, not `12`.** `contacts(total)` has no source under the
    V2 electronic-configuration model (`generate_elements_v2` never calls
@@ -79,11 +85,27 @@ to `[0.0075, 0.0225]` by P7's mechanism before any sampling happens — so
 seed, deterministically. A bar of `40/386` can never fail regardless of
 implementation correctness — the same tautology shape the plan's own
 round-4 correction already fixed once for Arm 1's original "is the optimum
-interior" framing. Replaced with the analytic envelope itself: a real
-regression bound (a sign error, a dropped factor of 2, or a wrong
-`t^(2/3)` spelling moves `drift_onset` outside it), derived rather than
-guessed. Ca-40's `40/386` is reported alongside as a real-world comparison,
-not gated on.
+interior" framing. Ca-40's `40/386` is reported alongside as a real-world
+comparison, not gated on.
+
+**The replacement (the computed envelope itself) is a monotonicity/band
+check, not a closed-form regression bound — corrected after
+mutation-testing it.** An earlier draft of this section claimed the
+envelope was itself "a real regression bound: a sign error, a dropped
+factor of 2, or a wrong `t^(2/3)` spelling moves `drift_onset` outside
+it" — false for several defect classes: a `c`-term sign error and a
+`cbrt(t)*cbrt(t)` respelling of `t^(2/3)` both print the *identical*
+`[16, 30]` envelope with zero violations over a 20,001-point sweep,
+because the envelope is computed by calling the same function the
+per-seed check then tests against — the same tautology shape recurring one
+level deeper after replacing the Ca-40 anchor. What the corpus check
+genuinely verifies: `drift_onset` is monotone non-increasing in `c`, and
+every drawn `c` stays inside P7's own reachable band. **The tests that
+actually carry closed-form correctness** are `the_drift_onset_at_identity_is_pinned`
+(an exact regression pin, `== 22`) and
+`the_closed_form_matches_the_brute_force_integer_argmax` (mismatches on
+2,040-11,490 of 11,580 cells under every defect tried, including the two
+above via the `gamma` factor-2 mutation).
 
 **Result: `[16, 30]` — passes, 38,416/38,416 seeds.**
 
@@ -108,24 +130,45 @@ comment reports a compatible 2/24 ≈ 8.3% on a 24-seed sample).
 ("binding positive everywhere") is simply false at the *identity*
 configuration: `total = 3` has negative on-valley per-unit binding
 (`-0.5615`) with no perturbation involved, matching a known limitation of a
-four-term liquid-drop model with no pairing/curvature term (the real SEMF's
-own A=3 prediction is `+0.77` MeV against He-3's real `2.57` — already 3.3×
-off before any seed is drawn). What survives contact with that fact: the
-bound/unbound sequence over `4..=T_MAX` should have at most a handful of
-sign transitions (a clean single crossover, once the model turns
-permanently unbound past some total, since `sigma·total^(5/3)` is the
-model's only unbounded term). A genuinely broken model (sign error, wrong
-exponent) scatters negativity across a large fraction of the range — many
-transitions, not a handful.
+four-term liquid-drop model with no pairing/curvature term. The real SEMF's
+own prediction for the A=3 nuclide this model actually favours at that
+total (Z=1, i.e. H-3 — both by the real SEMF's own argmax and by this
+model's) is `+0.775` MeV, against H-3's real `2.827`, 3.65× off before any
+seed is drawn. (An earlier draft of this comparison paired the model's Z=1
+prediction against He-3's, Z=2, real value — the direction of the finding
+is unaffected, but the two nuclides shouldn't be crossed.) What survives
+contact with that fact: the bound/unbound sequence over `4..=T_MAX` should
+have at most a handful of sign transitions (a clean single crossover, once
+the model turns permanently unbound past some total, since
+`sigma·total^(5/3)` is the model's only unbounded term).
+
+**What this check does and does not discriminate — corrected after
+mutation-testing it directly.** It reliably catches a *scattered* defect,
+where several distinct regions of the range flip sign (a gross scale error
+in `eps`, e.g., measured to produce 7 transitions at one sampled seed). It
+does **not** reliably catch a *smooth* defect that still crosses zero once
+— a wrong exponent on `sigma`'s term, or halving `sigma`'s coefficient,
+both leave the transition count at 0 or 1 while moving where the single
+crossing happens by a large amount, and one of the two (the wrong
+exponent) makes the gate's own reported numbers look *better*, not worse.
+That class is caught by two added pinned tests instead:
+`the_identity_configuration_is_bound_over_all_but_two_totals` (the
+identity's unbound set is exactly `{1, 3}`) and
+`the_size_term_is_total_to_the_five_thirds` (the term itself, plus the
+identity peak position).
 
 Measured over the corpus: **p50 = 0 transitions (never turns unbound at
-all), p90 = 1 (the ordinary single crossover), max = 3** — the one outlier
-(seed 14355) is a one-total re-binding blip at `total = 309`, which is
-`crate::packing::shell_size(10, ·)`'s **exact** cumulative shell-4 boundary
-(`1+12+42+92+162 = 309`) — a completed shell buying one extra total of
-binding, the same "island of stability" shape shell closures produce in
-real nuclei. Gate set at `≤ 5` transitions, clearing the measured worst
-case with margin.
+all), p90 = 1 (the ordinary single crossover), max = 3** — three seeds
+(14355, 20107, 21217), each a one-total re-binding blip at `total = 309`,
+which is `crate::packing::shell_size(10, ·)`'s **exact** cumulative
+shell-4 boundary (`1+12+42+92+162 = 309`) — a completed shell buying one
+extra total of binding, an "island of stability" shape analogous to (not
+the same mechanism as) real nuclear shell closures — real magic numbers
+come from the spin-orbit-split shell model, not geometric packing, and
+this crate's own closures don't coincide with them. Three independent
+seeds landing on the same boundary is what makes it the mechanism rather
+than coincidence. Gate set at `≤ 5` transitions, clearing the measured
+worst case with margin.
 
 **Result: 38,416/38,416 pass (`total = 3` excluded from the count, as
 designed).**

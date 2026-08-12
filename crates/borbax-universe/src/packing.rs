@@ -131,7 +131,9 @@ pub(crate) fn lateral_coordination(cap: usize) -> f64 {
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`cap` and `outer` are bounded shell counts, at most 226 over the drawn range"
+    reason = "`cap` and `outer` are bounded shell counts: at most 226 over V1's own drawn range \
+              (k in 6..=14, units <= 120), at most 252 under nuclear.rs's fixed k = 10 caller \
+              reaching units = T_MAX = 386 -- both far below f64's exact-integer range"
 )]
 pub(crate) fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     let f = outer as f64 / cap as f64;
@@ -169,7 +171,9 @@ pub(crate) fn unmade_lateral(cap: usize, outer: usize) -> f64 {
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`cap` is a bounded shell count, at most 226 over the drawn range"
+    reason = "`cap` is a bounded shell count: at most 226 over V1's own drawn range, at most \
+              252 under nuclear.rs's fixed k = 10 caller (see unmade_lateral's own reason) -- \
+              far below f64's exact-integer range either way"
 )]
 pub(crate) fn continuum_at(cap: usize, f: f64) -> f64 {
     FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt()
@@ -363,11 +367,20 @@ impl PackingConsts {
 /// is untouched (0 of 4320 cells change `defect_sub`) but `energy_per_unit`,
 /// `peak` and every `instability` are not. `the_universe_digest_is_pinned` is
 /// what fails if it moves; nothing else would. Do not tidy (§13.4).
+///
+/// **The 1080-cell domain above is V1's own (`k in 6..=14`, `N in 1..=120`) —
+/// `nuclear.rs` calls this at the fixed `k = 10` up to `N = T_MAX = 386`, a
+/// domain this specific measurement was not re-taken over.** The conclusion
+/// (accumulation order is load-bearing, do not tidy) does not depend on the
+/// exact cell count and is not in question; the 167 figure specifically is
+/// scoped to V1's domain only.
 #[must_use]
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`prev_cap`, `cap` and `take` are bounded shell counts; `units` is at most 120"
+    reason = "`prev_cap`, `cap` and `take` are bounded shell counts; `units` is at most 120 \
+              over V1's own drawn range, at most T_MAX = 386 under nuclear.rs's fixed k = 10 \
+              caller -- both far below f64's exact-integer range"
 )]
 pub(crate) fn contacts_upto(c: PackingConsts, units: usize) -> f64 {
     if units <= 1 {

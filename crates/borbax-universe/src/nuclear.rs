@@ -37,13 +37,20 @@
 //! O(0.01-0.1); Task 26.2's pre-registration pinned two of the three cost
 //! coefficients (`kappa`, `c`) to real MeV-scale SEMF values and left `eps`
 //! at its old, unrelated scale. Consequence, measured at the identity
-//! coefficients: 288 of 386 totals (74.6%) have **negative** on-valley
-//! per-unit binding energy — the model is unbound over most of its domain,
-//! not merely peaked low. Corrected value: `eps = 2*a_V/z`, `a_V = 15.75`
-//! MeV (Rohlf's real SEMF volume coefficient — the same citation `kappa`
-//! already uses), `z = 12` (this crate's `packing::shell_size(k, 1)` at
-//! [`crate::nuclear::NUCLEAR_K`]`= 10`) — matching the real limit `BE/A -> a_V` as `A ->
-//! infinity` with the Coulomb/asymmetry terms ignored. This is a genuine
+//! coefficients and the shipped [`crate::nuclear::NUCLEAR_K`]` = 10`: 305 of 386
+//! totals (79.0%) have **negative** on-valley per-unit binding energy — the
+//! model is unbound over most of its domain, not merely peaked low. (An
+//! earlier draft of this correction quoted 288/386, 74.6% — measured at the
+//! superseded `NUCLEAR_K = 12` and never re-taken after correction 3 below;
+//! the direction is unaffected, 79% is worse, but see
+//! `the_identity_configuration_is_bound_over_all_but_two_totals` for the
+//! figure as a pinned test rather than a paragraph.) Corrected value:
+//! `eps = 2*a_V/z`, `a_V = 15.75` MeV (Rohlf's real SEMF volume coefficient —
+//! the same citation `kappa` already uses), `z = 12` (this crate's
+//! `packing::shell_size(k, 1)` at `NUCLEAR_K = 10`) — matching the real
+//! limit `BE/A -> a_V` as `A -> infinity`, a limit this model approaches
+//! slowly and does not reach within `T_MAX` (`eps * contacts(T_MAX)/T_MAX`
+//! is `13.19`, not `15.75`, at `T_MAX = 386`). This is a genuine
 //! pre-registration correction, landing the same way Decision 11's own
 //! round-5 correction to `base_c` did: found while verifying, not tuned to
 //! Step 1's own output.
@@ -153,7 +160,9 @@ pub(crate) fn composition_argmax(c: f64, total: u32) -> f64 {
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
     reason = "the floor at 1.0 makes this non-negative, and composition_argmax(c, total) <= \
-              total <= T_MAX = 386, far below u32's range"
+              total <= T_MAX = 386, far below u32's range -- precondition c > 0, which every \
+              call site satisfies (draw_symmetric scales a positive base by a multiplier in \
+              [0.5, 1.5]) but which neither function takes as a runtime guard"
 )]
 pub(crate) fn composition_argmax_int(c: f64, total: u32) -> u32 {
     let rounded = composition_argmax(c, total).round_ties_even();
@@ -163,6 +172,11 @@ pub(crate) fn composition_argmax_int(c: f64, total: u32) -> u32 {
 /// The four-term per-unit binding energy (the mechanism's own diagram,
 /// stated as one signed total-energy expression divided once by `total`,
 /// per Task 26.2's "state the model in per-unit form" instruction).
+///
+/// `a` is the proton count, `b` the neutron count — not interchangeable:
+/// the Coulomb/asymmetry term (`gamma * a*(a-1) / t13`) reads `a`
+/// specifically, so a transposed call computes a different, still-plausible
+/// number.
 ///
 /// Every float spelling pinned per Task 26.2's own list: `total^(5/3)` as
 /// `total * cbrt(total*total)`; `total^(1/3)` as `cbrt(total)`; `(a-b)^2`
@@ -238,20 +252,24 @@ pub(crate) fn on_valley_per_unit_energy(
 /// nothing — verified this coincides with the even-total definition in
 /// every sampled universe.
 ///
-/// Returns `T_MAX + 2` (out of range, unreachable by construction below) if
-/// no drift is ever found in `2..=T_MAX` — not expected to occur for any
-/// legal `c`, and Arm 1's own acceptance test would fail loudly on it
-/// rather than silently accepting a sentinel.
+/// `None` if no drift is ever found in `2..=T_MAX` — not expected to occur
+/// for any legal `c` (`a* <= t/2` for every `t`, proved in this module's
+/// own tests, so drift is not merely likely but structurally bounded within
+/// `T_MAX`). `Option<u32>`, not a magic out-of-range sentinel: an earlier
+/// version returned `T_MAX + 2`, and a caller comparing two such sentinels
+/// against each other (as a range-containment check would) can pass
+/// vacuously — the same shape of hazard `bound_shape`'s `Option<u32>`
+/// already avoids.
 #[must_use]
-pub(crate) fn drift_onset(c: f64) -> u32 {
+pub(crate) fn drift_onset(c: f64) -> Option<u32> {
     let mut total = 2_u32;
     while total <= T_MAX {
         if composition_argmax_int(c, total) < total / 2 {
-            return total;
+            return Some(total);
         }
         total += 2;
     }
-    T_MAX + 2
+    None
 }
 
 /// Step-1-only definition of the size-shedding channel's Q-value: does
@@ -275,9 +293,15 @@ pub(crate) fn shedding_q(total: u32, eps: f64, sigma: f64, kappa: f64, c: f64) -
 /// The total at which the on-valley per-unit binding energy peaks —
 /// first-wins on ties by iteration order, the same idiom
 /// `element.rs::find_peak_and_set_instability` already uses for the
-/// identical shape of search (strict `>`, no `f64::max`, no tie-break
-/// needed: a fold-max over a finite sequence is order-invariant under
-/// IEEE `maxNum` semantics regardless of which element wins a tie).
+/// identical shape of search (strict `>`, no `f64::max`). **The tie-break
+/// matters here and is not free to change**: unlike a fold that returns
+/// only the maximum *value* (order-invariant under IEEE `maxNum`
+/// semantics), this fold returns the *index* (`total`) the maximum
+/// occurred at — a genuinely different total can tie on energy, and which
+/// one wins is exactly "first, by iteration order", not incidental. No
+/// exact tie has been observed (0 across an 11M-cell sweep of the
+/// P7-reachable box), which is a reason not to expect trouble, not a
+/// license to parallelise or reorder this fold.
 #[must_use]
 pub(crate) fn valley_peak_total(eps: f64, sigma: f64, kappa: f64, c: f64) -> u32 {
     (1..=T_MAX)
@@ -294,9 +318,12 @@ pub(crate) fn valley_peak_total(eps: f64, sigma: f64, kappa: f64, c: f64) -> u32
 
 /// Whether the on-valley per-unit binding energy has the shape found while
 /// running Step 1's gate: bound at `total = 2`, at most a handful of sign
-/// changes across `4..=T_MAX` (`total = 3` excluded — see below), and once
-/// unbound past its last sign change, stays unbound. Returns `Some(last
-/// bound total)` if the shape holds, `None` otherwise.
+/// changes across `4..=T_MAX` (`total = 3` excluded — see below). Returns
+/// `Some(last total observed bound)` if the shape holds, `None` otherwise.
+/// **Not a suffix property** — a sequence with several transitions that
+/// ends bound still passes; `Some`'s payload is the *last* bound total
+/// anywhere in the scan, not "the total before permanent unbinding", which
+/// coincide in all but the three seeds discussed below.
 ///
 /// **Why a *count* of transitions, not "exactly one" — found the hard way.**
 /// An earlier version of this check demanded zero re-binding past the first
@@ -304,25 +331,43 @@ pub(crate) fn valley_peak_total(eps: f64, sigma: f64, kappa: f64, c: f64) -> u32
 /// `total = 309` (this module's fixed `NUCLEAR_K = 10`'s **exact** shell-4
 /// cumulative boundary, `1 + 12 + 42 + 92 + 162 = 309` —
 /// `crate::packing::shell_size`'s own arithmetic), a completed shell buys a
-/// one-total burst of extra binding — a real "island of stability" shape,
-/// the same phenomenon shell closures produce in real nuclei, not a
-/// coefficient defect. Measured over the full 38,416-seed corpus: p50 = 0
-/// transitions, p90 = 1, **max = 3** (that same seed) — so `<= 5` clears the
-/// measured worst case with margin while still catching what a genuine
-/// defect looks like: a sign error or wrong exponent scatters negativity
-/// across a large fraction of the range (measured separately: p99 = 232 of
-/// 385 totals negative in the worst decile), which shows up as dozens of
-/// transitions, not a handful clustered at one shell boundary.
+/// one-total burst of extra binding — an "island of stability" shape,
+/// analogous to (not the same mechanism as) real nuclear shell closures
+/// (real magic numbers come from the spin-orbit-split shell model, not
+/// geometric packing, and this crate's closures don't coincide with them),
+/// not a coefficient defect. Measured over the full 38,416-seed corpus:
+/// three seeds — 14355, 20107, 21217 — each hit exactly this one-total
+/// re-binding blip at `total = 309`, giving a transition-count distribution
+/// of p50 = 0, p90 = 1, **max = 3**; `<= 5` clears the measured worst case
+/// with margin.
+///
+/// **What this check does and does not discriminate — corrected after
+/// mutation-testing it directly.** It reliably catches a *scattered*
+/// implementation, where several genuinely distinct regions of the range
+/// flip sign (a gross scale error, e.g. drawing `eps` far enough off that a
+/// mid-range block of totals goes unbound: measured to produce 7
+/// transitions at one sampled seed). It does **not** reliably catch a
+/// *smooth* defect that still crosses zero once — a wrong exponent on
+/// `sigma`'s term, or halving `sigma`'s coefficient, both leave the
+/// transition count at 0 or 1 while moving where the single crossing
+/// happens by a large amount. That class is caught elsewhere:
+/// [`total_binding_energy`]'s pinned unit test
+/// (`the_size_term_is_total_to_the_five_thirds`) and the identity-bound
+/// count (`the_identity_configuration_is_bound_over_all_but_two_totals`).
+/// Fraction of totals negative and count of sign transitions are different
+/// statistics and this doc previously conflated them.
 ///
 /// **Why `total = 3` is excluded, not merely tolerated.** Verified against
 /// `physics-plausibility-reviewer`: `total = 3` is negative at the
 /// *identity* configuration (`-0.5615`, no perturbation involved), matching
 /// a known property of a four-term liquid-drop model with no pairing or
-/// curvature term — the real SEMF's own prediction at `A = 3` is `+0.77`
-/// `MeV` against He-3's real `2.57`, already 3.3x off before Borbax adds any
-/// seed. It is not a coefficient-balance defect this shape check should
-/// catch, so it is carved out rather than either asserted-negative (false
-/// in ~14% of universes) or asserted-positive (false in the rest).
+/// curvature term — the real SEMF's own prediction for the A=3 nuclide this
+/// model actually favours at that total (Z=1, i.e. H-3, both by the real
+/// SEMF's own argmax and by this model's) is `+0.775` `MeV`, against H-3's
+/// real `2.827`, 3.65x off before Borbax adds any seed. It is not a
+/// coefficient-balance defect this shape check should catch, so it is
+/// carved out rather than either asserted-negative (false in ~14% of
+/// universes) or asserted-positive (false in the rest).
 #[must_use]
 pub(crate) fn bound_shape(eps: f64, sigma: f64, kappa: f64, c: f64) -> Option<u32> {
     const MAX_TRANSITIONS: u32 = 5;
@@ -373,8 +418,8 @@ mod tests {
     )]
     use super::{
         BASE_C, BASE_EPS, BASE_KAPPA, BASE_SIGMA, T_MAX, bound_shape, composition_argmax,
-        composition_argmax_int, contacts, drift_onset, per_unit_binding_energy, shedding_q,
-        total_binding_energy, valley_peak_total,
+        composition_argmax_int, contacts, drift_onset, on_valley_per_unit_energy,
+        per_unit_binding_energy, shedding_q, total_binding_energy, valley_peak_total,
     };
     use crate::perturbation::{MigratedConstant, Rung, draw_symmetric};
     use borbax_units::det_math;
@@ -406,35 +451,41 @@ mod tests {
 
     /// **1 (acceptance).** Step 1's two-armed gate over the derived corpus.
     ///
-    /// **Arm 1's bar is the analytic envelope, not the plan's Ca-40 anchor
-    /// (40/386) — found, independently verified, to be unfalsifiable.**
-    /// `kappa` provably cancels from [`composition_argmax`], so `drift_onset`
-    /// is a pure function of `c` alone, and `c` is bounded to `[C_MIN,
-    /// C_MAX]` by P7's mechanism *before any sampling happens* — so
-    /// `drift_onset`'s range over every legal seed is exactly
-    /// `[drift_onset(C_MAX), drift_onset(C_MIN)]`, computed once below, and
-    /// a corpus sweep against a looser bound (Ca-40's real 40/386) could
-    /// never fail regardless of implementation correctness. That is the
-    /// same tautology shape the plan's own round-4 correction already fixed
-    /// once for Arm 1's original framing (`assert!(x > N)` with `N` chosen
-    /// before `x` was measured is a recorded anti-pattern on this project).
-    /// The tightened envelope is a real regression bound: a sign error, a
-    /// dropped factor, or a wrong `t^(2/3)` spelling moves `drift_onset`
-    /// outside it.
+    /// **Arm 1's corpus check is a monotonicity/band-membership check, not a
+    /// closed-form regression bound — say so honestly, found after
+    /// mutation-testing it.** An earlier version of this doc claimed the
+    /// computed envelope (`drift_onset(C_MAX)..=drift_onset(C_MIN)`) was
+    /// itself "a real regression bound: a sign error, a dropped factor, or a
+    /// wrong `t^(2/3)` spelling moves `drift_onset` outside it" — false for
+    /// several defect classes, verified by running seven broken
+    /// implementations over a 20,001-point `c` sweep: a `c`-term sign error
+    /// and a `cbrt(t)*cbrt(t)` respelling of `t^(2/3)` both print the
+    /// **identical** `[16, 30]` envelope with 0 violations, because the
+    /// envelope is computed by calling the same function the assertion then
+    /// checks — the same tautology shape the plan's own round-4 correction
+    /// already fixed once for the Ca-40 anchor, recurring one level deeper
+    /// after replacing it. What this check actually verifies: `drift_onset`
+    /// is monotone non-increasing in `c` (true for the correct form and
+    /// every broken form tried), and every drawn `c` lands inside P7's own
+    /// reachable band — both real properties, neither a proof the closed
+    /// form itself is right. **The tests that do carry that proof** are
+    /// `the_drift_onset_at_identity_is_pinned` (an exact regression pin) and
+    /// `the_closed_form_matches_the_brute_force_integer_argmax` (which
+    /// mismatches on 2,040-11,490 of 11,580 cells under every defect
+    /// tried) — read those, not this corpus loop, for closed-form
+    /// correctness.
     ///
     /// **Arm 2 also gates on the bound-set shape ([`bound_shape`]), added
     /// beyond the plan's own literal text after a `physics-plausibility-reviewer`
     /// pass found the natural stronger assertion ("binding positive
     /// everywhere") is simply false at the identity configuration —
     /// `total = 3` is negative even unperturbed, matching a known limitation
-    /// of a four-term liquid-drop model with no pairing term (real SEMF at
-    /// `A = 3` is barely positive too, `+0.77` `MeV` against He-3's real
-    /// `2.57`). The shape check that survives contact with that fact —
-    /// bound everywhere except `total = 3` and a single contiguous heavy
-    /// unbound tail, no scattered islands — is a real discriminator
-    /// (verified 38,416/38,416 in this corpus) precisely because a
-    /// coefficient-sign or exponent error produces scattered islands, not a
-    /// clean single transition.
+    /// of a four-term liquid-drop model with no pairing term (see
+    /// [`bound_shape`]'s own doc for the corrected real-SEMF comparison and
+    /// for exactly which defect classes this shape check does and does not
+    /// discriminate — it reliably catches scattered, multi-region defects,
+    /// not a smooth single-crossing one like a wrong `sigma` exponent, which
+    /// `the_size_term_is_total_to_the_five_thirds` exists to catch instead).
     ///
     /// **Reported, not gated: how far the bound range reaches.**
     /// `physics-plausibility-reviewer` also found `MigratedConstant::C`'s
@@ -448,12 +499,17 @@ mod tests {
     #[ignore = "expensive corpus sweep -- cargo test --locked --release -p borbax-universe \
                 -- --ignored --nocapture nuclear"]
     fn the_two_armed_gate_passes_over_the_derived_corpus() {
-        let drift_lower = drift_onset(C_MAX);
-        let drift_upper = drift_onset(C_MIN);
+        let drift_at_c_max = drift_onset(C_MAX);
+        let drift_at_c_min = drift_onset(C_MIN);
         assert!(
-            drift_lower <= drift_upper,
-            "drift_onset should be non-increasing in c: drift_onset(C_MAX)={drift_lower} > \
-             drift_onset(C_MIN)={drift_upper}"
+            drift_at_c_max.is_some() && drift_at_c_min.is_some(),
+            "drift_onset should find a drift point at both ends of the reachable c band -- \
+             drift_onset(C_MAX)={drift_at_c_max:?} drift_onset(C_MIN)={drift_at_c_min:?}"
+        );
+        assert!(
+            drift_at_c_max <= drift_at_c_min,
+            "drift_onset should be non-increasing in c: drift_onset(C_MAX)={drift_at_c_max:?} > \
+             drift_onset(C_MIN)={drift_at_c_min:?}"
         );
 
         let mut closed = 0_u64;
@@ -467,10 +523,11 @@ mod tests {
 
             let drift = drift_onset(c);
             assert!(
-                (drift_lower..=drift_upper).contains(&drift),
-                "seed {seed}: drift_onset={drift} outside the analytic envelope \
-                 [{drift_lower}, {drift_upper}] derived from c's own reachable range \
-                 [{C_MIN}, {C_MAX}] -- c={c}"
+                drift.is_some() && drift >= drift_at_c_max && drift <= drift_at_c_min,
+                "seed {seed}: drift_onset={drift:?} outside the band [{drift_at_c_max:?}, \
+                 {drift_at_c_min:?}] measured at c's own reachable endpoints -- c={c} (see this \
+                 test's own doc: this checks monotonicity and band membership, not the closed \
+                 form's correctness -- that is test 6 and test 3's job)"
             );
 
             let shape = bound_shape(eps, sigma, kappa, c);
@@ -524,16 +581,29 @@ mod tests {
         let t_bound_max = t_bounds[t_bounds.len() - 1];
 
         println!(
-            "Step 1 gate: drift_onset range [{drift_lower}, {drift_upper}]/{T_MAX} (Ca-40 real \
-             anchor: 40/{T_MAX}, informational only); Arm 2 closure {closed}/{CORPUS_N} = \
-             {closed_fraction} (bar {closure_bar}); bound-shape holds for {CORPUS_N}/{CORPUS_N}, \
-             t_bound range [{t_bound_min}, {t_bound_max}]"
+            "Step 1 gate: drift_onset band [{drift_at_c_max:?}, {drift_at_c_min:?}]/{T_MAX} \
+             (Ca-40 real anchor: 40/{T_MAX}, informational only); Arm 2 closure \
+             {closed}/{CORPUS_N} = {closed_fraction} (bar {closure_bar}); bound-shape holds for \
+             {CORPUS_N}/{CORPUS_N}, last-bound-total range [{t_bound_min}, {t_bound_max}]"
         );
         println!(
             "elements reached while still bound (reported, not gated): min={min} p1={p1} \
              p10={p10} p50={p50}; universes reaching fewer than 120: \
              {below_120}/{CORPUS_N}"
         );
+    }
+
+    /// Brute-force integer argmax of [`per_unit_binding_energy`] over
+    /// `a in 1..=total`, domain-restricted per [`composition_argmax_int`]'s
+    /// own floor. Shared by tests 2 and 3, which both cross-check
+    /// [`composition_argmax_int`] against it under different sweeps.
+    fn brute_force_argmax(total: u32, eps: f64, sigma: f64, kappa: f64, c: f64) -> u32 {
+        (1..=total)
+            .fold((1_u32, f64::MIN), |(best_a, best_e), a| {
+                let e = per_unit_binding_energy(a, total - a, eps, sigma, kappa, c);
+                if e > best_e { (a, e) } else { (best_a, best_e) }
+            })
+            .0
     }
 
     /// **2.** `kappa` cancels from the composition argmax by construction —
@@ -551,13 +621,7 @@ mod tests {
         for &total in &TOTALS {
             let reference = composition_argmax_int(c, total);
             for &kappa in &KAPPAS {
-                let brute = (1..=total)
-                    .fold((1_u32, f64::MIN), |(best_a, best_e), a| {
-                        let e =
-                            per_unit_binding_energy(a, total - a, BASE_EPS, BASE_SIGMA, kappa, c);
-                        if e > best_e { (a, e) } else { (best_a, best_e) }
-                    })
-                    .0;
+                let brute = brute_force_argmax(total, BASE_EPS, BASE_SIGMA, kappa, c);
                 assert_eq!(
                     brute, reference,
                     "total={total} kappa={kappa} c={c}: brute-force argmax {brute} != the \
@@ -582,15 +646,8 @@ mod tests {
             for &c in &CS {
                 for total in 1..=T_MAX {
                     examined += 1;
-                    let sigma = BASE_SIGMA;
-                    let eps = BASE_EPS;
                     let closed_form = composition_argmax_int(c, total);
-                    let brute = (1..=total)
-                        .fold((1_u32, f64::MIN), |(best_a, best_e), a| {
-                            let e = per_unit_binding_energy(a, total - a, eps, sigma, kappa, c);
-                            if e > best_e { (a, e) } else { (best_a, best_e) }
-                        })
-                        .0;
+                    let brute = brute_force_argmax(total, BASE_EPS, BASE_SIGMA, kappa, c);
                     assert_eq!(
                         closed_form, brute,
                         "kappa={kappa} c={c} total={total}: closed form {closed_form} != brute \
@@ -599,10 +656,9 @@ mod tests {
                 }
             }
         }
-        assert_eq!(
-            examined,
-            u64::from(u32::try_from(KAPPAS.len() * CS.len()).unwrap_or(0)) * u64::from(T_MAX)
-        );
+        let expected_examined =
+            u64::from(KAPPAS.len() as u32) * u64::from(CS.len() as u32) * u64::from(T_MAX);
+        assert_eq!(examined, expected_examined);
     }
 
     /// **4.** `total = 1` is a real, exact tie between `a = 0` and `a = 1` —
@@ -670,7 +726,7 @@ mod tests {
     /// `1..10` is correct at the shipped `base_c = 0.015`.
     #[test]
     fn the_drift_onset_at_identity_is_pinned() {
-        assert_eq!(drift_onset(BASE_C), 22);
+        assert_eq!(drift_onset(BASE_C), Some(22));
         for a in 1..=10_u32 {
             assert_eq!(
                 composition_argmax_int(BASE_C, 2 * a),
@@ -691,7 +747,10 @@ mod tests {
     /// proof licenses, not a restatement of the proof.
     #[test]
     fn every_proton_count_is_reachable_by_the_valley_at_every_legal_c() {
-        for &c in &[C_MIN, BASE_C, C_MAX * (1.0 - 1e-9)] {
+        // C_MAX itself, unnudged: coverage holds at the exact endpoint (measured;
+        // `next_f64_range` never actually returns its upper bound, so this is a
+        // legitimate worst-case check, not a value the shipped draw can hit).
+        for &c in &[C_MIN, BASE_C, C_MAX] {
             let mut reached = [false; 121];
             for total in 1..=T_MAX {
                 let a = composition_argmax_int(c, total);
@@ -734,8 +793,6 @@ mod tests {
         }
         // Within-universe curve at identity: non-crossing check against a
         // second universe's curve (a lower c).
-        let mut prev_identity = None;
-        let mut prev_low_c = None;
         for total in (2..=T_MAX).step_by(20) {
             let identity = composition_argmax(BASE_C, total) / f64::from(total);
             let low_c = composition_argmax(C_MIN, total) / f64::from(total);
@@ -743,12 +800,6 @@ mod tests {
                 low_c >= identity,
                 "curves crossed at total={total}: low-c ratio {low_c} < identity ratio {identity}"
             );
-            if let (Some(pi), Some(pl)) = (prev_identity, prev_low_c) {
-                let _ = (pi, pl); // curves are each individually monotone; asserted implicitly
-                // by the non-crossing check above holding at every sampled total
-            }
-            prev_identity = Some(identity);
-            prev_low_c = Some(low_c);
         }
     }
 
@@ -813,6 +864,71 @@ mod tests {
              V1's reconstructed p5 ~0.100 / median ~0.581 of n_elements, and the real SEMF's \
              peak at A~61-62",
             composition_argmax_int(BASE_C, peak)
+        );
+    }
+
+    /// **11.** The identity configuration is bound over all but two totals —
+    /// pinned as a count, not left to a corpus percentile. This is what
+    /// correction 2 (`BASE_EPS` `1.0 -> 2.625`) was *for*, and until this
+    /// test existed nothing failed when it was undone: at `eps = 1.0` (this
+    /// module's `NUCLEAR_K = 10`), 305 of 386 totals are unbound, and
+    /// [`bound_shape`] returns `Some` on every one of them regardless,
+    /// because the sequence crosses zero exactly once (a scale error, not a
+    /// scattered one). Mutation-probed against three defects that pass
+    /// every other test in this module: `BASE_EPS = 1.0` (unbound set grows
+    /// to 305 totals), `t53` losing its leading `t *` (a wrong exponent),
+    /// and `t53 * 0.5` (a halved coefficient) — the latter two leave this
+    /// test's own unbound *set* unchanged (`{1, 3}`, since neither moves
+    /// the identity coefficients enough to flip a sign at this scale), which
+    /// is exactly why test 12 exists as a companion: this test closes
+    /// `eps`/`sigma`'s *scale*, not `sigma`'s *exponent*.
+    #[test]
+    fn the_identity_configuration_is_bound_over_all_but_two_totals() {
+        let unbound: Vec<u32> = (1..=T_MAX)
+            .filter(|&t| {
+                on_valley_per_unit_energy(t, BASE_EPS, BASE_SIGMA, BASE_KAPPA, BASE_C) <= 0.0
+            })
+            .collect();
+        assert_eq!(
+            unbound,
+            vec![1, 3],
+            "identity should be unbound only at total = 1 (contacts(1) == 0, so the volume \
+             term vanishes) and total = 3 (the known four-term liquid-drop limitation \
+             bound_shape's own doc records) -- a different unbound set here means eps or \
+             sigma's scale has drifted"
+        );
+    }
+
+    /// **12.** The size-cost term is `sigma * total^(5/3)`, pinned directly
+    /// rather than through a downstream statistic — every other test in
+    /// this module is insensitive to this specific exponent at the identity
+    /// coefficients (test 11 does not move, because neither a wrong
+    /// exponent nor a halved coefficient flips enough signs at this scale
+    /// to change which totals are unbound). `total_binding_energy(4, 4,
+    /// eps=0, sigma=1, kappa=0, c=0)` isolates the term exactly: `contacts`
+    /// is multiplied by zero, the asymmetry term is zero because `a == b`,
+    /// and `gamma = 2*kappa*c = 0`. `sigma * total^(5/3)` at `total = 8,
+    /// sigma = 1` is `8 * cbrt(64) = 8 * 4 = 32` exactly (`64` is a perfect
+    /// cube and `libm::cbrt` is exact on those), so the total energy is
+    /// exactly `-32.0` — no tolerance needed. The peak-position assertion
+    /// is the companion the exponent actually needs: `sigma`'s term is this
+    /// model's only unbounded cost (`MigratedConstant::Sigma`'s own doc),
+    /// so a wrong exponent moves where the valley's per-unit binding peaks,
+    /// even though it doesn't move the identity's unbound *set*.
+    #[test]
+    fn the_size_term_is_total_to_the_five_thirds() {
+        let with = total_binding_energy(4, 4, 0.0, 1.0, 0.0, 0.0);
+        assert_eq!(
+            with.to_bits(),
+            (-32.0_f64).to_bits(),
+            "sigma * total^(5/3) at total = 8, sigma = 1: got {with}, want -32.0 exactly"
+        );
+
+        let peak = valley_peak_total(BASE_EPS, BASE_SIGMA, BASE_KAPPA, BASE_C);
+        assert_eq!(
+            (peak, composition_argmax_int(BASE_C, peak)),
+            (55, 25),
+            "on-valley peak at identity should sit at total = 55 (element 25)"
         );
     }
 }
