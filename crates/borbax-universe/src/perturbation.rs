@@ -366,16 +366,36 @@ migrated_constants! {
     /// real semi-empirical mass formula's volume *and* surface terms into
     /// one packing-derived contact count, so it has no single clean real
     /// coefficient to pin against — see the plan's own P7 pre-registration
-    /// (2026-08-12) for the full accounting. `BASE_EPS = 1.0`, V1's own
-    /// historical `eps` range midpoint (`element.rs`'s `0.8 + 0.05 *
-    /// next_range(9)`, i.e. `[0.80, 1.20]`) — chosen as a principled anchor
-    /// already validated by V1's own review, not picked freely. **Does not
-    /// feed `energy_per_unit`** (V1's and V2's shared bond-pricing field) —
-    /// see the plan's Round 5 correction for why that would re-price every
-    /// bond by nuclear structure, ~10⁶× too strong. Symmetric `p` bound: no
-    /// structural reason to favour one direction, and `eps` has zero effect
-    /// on the composition argmax itself (a per-total additive constant that
-    /// cancels out of the comparison across compositions at fixed total).
+    /// (2026-08-12) for the full accounting.
+    ///
+    /// **`BASE_EPS = 2.625`, corrected 2026-08-12 during Step 1's own gate —
+    /// this entry originally pinned `1.0`, V1's own historical `eps`
+    /// midpoint, which sits at an unrelated scale next to
+    /// [`Self::Kappa`]/[`Self::C`]'s real MeV-pinned values.** Measured at
+    /// `eps = 1.0`: 288 of 386 totals have negative on-valley per-unit
+    /// binding energy — the model is unbound over most of its domain, not
+    /// merely peaked low, caught by a `physics-plausibility-reviewer` pass
+    /// dispatched specifically because `kappa`/`c` carry real correspondence
+    /// and `eps` did not. Corrected to `eps = 2*a_V/z`, `a_V = 15.75` MeV
+    /// (Rohlf's real SEMF volume coefficient, the same citation `kappa`
+    /// uses), `z = 12` (`crate::packing::shell_size(k, 1)` at the nuclear
+    /// module's own fixed `k = 10`) — matching the real limit `BE/A -> a_V`
+    /// as `A -> infinity`. See `crates/borbax-universe/src/nuclear.rs` for
+    /// the landed constant and the full accounting.
+    ///
+    /// **Does not feed `energy_per_unit`** (V1's and V2's shared bond-pricing
+    /// field) — see the plan's Round 5 correction for why that would
+    /// re-price every bond by nuclear structure, ~10⁶× too strong.
+    /// Symmetric `p` bound: no structural reason to favour one direction,
+    /// and `eps` has zero effect on the composition argmax itself (a
+    /// per-total additive constant that cancels out of the comparison
+    /// across compositions at fixed total). **Independently perturbing
+    /// `eps` from `kappa`/`c` was considered and rejected** — real SEMF
+    /// volume/asymmetry coefficients are independently fitted parameters
+    /// with no derivable relationship (`a_A/a_V` spans 1.348-1.505 across
+    /// five published fits against `a_V`'s own ±5.7% spread), so deriving
+    /// `eps` from `kappa` the way `gamma` is derived from `kappa`/`c` would
+    /// assert a physical constraint real nuclear physics does not make.
     Eps = 13, Axis::Nuclear, Counterpart::DefaultOnly, Direction::P_MAX;
     /// Task 26.2's nuclear size-cost coefficient — the model's `sigma *
     /// total^(5/3)` term, the sole source of the model's growth limit
@@ -428,6 +448,28 @@ migrated_constants! {
     /// table's own size would make `c`'s legal range circular and couple
     /// the nuclear axis to Task 26.1's electronic one through `n_elements`,
     /// contradicting Step 3's independence requirement).
+    ///
+    /// **Correction, 2026-08-12, found during Step 1's own gate: this proof
+    /// covers only the composition argmax's shape (does `a*(t)` reach every
+    /// integer as `t` ranges to `T_MAX`), not whether binding stays
+    /// positive out that far — and those are different questions once
+    /// `eps`/`sigma` are perturbed too.** `contacts(total)` is bounded
+    /// (`eps * contacts(total)` saturates), while `sigma * total^(5/3)` is
+    /// unbounded, so the on-valley per-unit energy inevitably turns negative
+    /// past some total — real physics too (real SEMF binding per nucleon
+    /// crosses zero at `A ~ 3067`, far past `T_MAX`, so the identity
+    /// configuration correctly reproduces "bound everywhere in range"), but
+    /// under `eps`/`sigma` perturbation that crossover can be pulled inside
+    /// `1..=T_MAX`. Measured over a joint P7 sample: the *bound* range
+    /// (before that crossover) reaches only p50 = 138, p10 = 122, p1 = 62,
+    /// min = 27 elements — 9.25% of universes cover fewer than 120 elements
+    /// while still bound, even though `composition_argmax` itself reaches
+    /// every integer up to 120 given a large enough `total`. `T_MAX`'s
+    /// coverage proof is real and still holds for what it actually proves;
+    /// it does not by itself guarantee the table stays bound that far. See
+    /// `crates/borbax-universe/src/nuclear.rs`'s own gate for the
+    /// measurement; how this bears on `n_elements`'s own draw is a question
+    /// for Steps 2+, not resolved here.
     C = 16, Axis::Nuclear, Counterpart::HasReal, Direction::P_MAX;
 }
 

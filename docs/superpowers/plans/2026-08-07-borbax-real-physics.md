@@ -1716,7 +1716,7 @@ computed as abundance-weighted averages over that distribution.
 
 ### Does the mechanism actually produce a valley — settle this before building anything else
 
-- [ ] **Step 1: Run the corrected model's own gating probe, with a second
+- [x] **Step 1: Run the corrected model's own gating probe, with a second
   arm, sampled the way the shipped code will draw.** **Round 4 correction:
   the first arm's original framing — "is the most-bound composition
   interior, and specifically not always at the symmetric point" — is a
@@ -1813,6 +1813,37 @@ computed as abundance-weighted averages over that distribution.
   regime the shipped code will actually draw from. Sample `(rung, p_eps,
   p_sigma, p_kappa, p_c)` jointly, the way `generate_elements` will. **If
   either arm fails, stop — do not proceed to wire this into `Element`.**
+
+  **Round 6, 2026-08-12 — both arms pass; cleared to proceed to Step 2.**
+  Full account: `docs/experiments/2026-08-12-nuclear-valley-gate.md`,
+  implementation: `crates/borbax-universe/src/nuclear.rs`. Three corrections
+  landed before the gate could run meaningfully, each found by an
+  independent verification pass rather than trusted on the first
+  derivation: (1) `composition_argmax` ships the κ-free closed-form
+  spelling, not the one this section's own text calls "the correct closed
+  form" two paragraphs up — the two differ by up to 4 ulp and round to a
+  different *element* in 3 of 6,951,474 sampled cells; (2) `BASE_EPS =
+  2.625`, not `1.0` — the original value sat at an unrelated scale next to
+  `kappa`/`c`'s real Rohlf MeV values, leaving 74.6% of totals unbound at
+  identity; (3) the nuclear packing model's fixed coordination parameter is
+  `k = 10`, not `12` — this crate's shell law gives `z = k + 2`, so `12`
+  actually selects coordination 14. Both (1) and (2) are also recorded in
+  `perturbation.rs`'s own `MigratedConstant` doc comments.
+
+  Arm 1's gate is the analytic envelope `drift_onset(c) ∈ [16, 30]`,
+  derived from `c`'s own P7-reachable range rather than this section's
+  Ca-40 anchor (`40/386`) — measured to be structurally unfalsifiable,
+  since `kappa` provably cancels and `c` is bounded before any sampling
+  happens, so no implementation could ever fail it. Arm 2 passes the
+  literal criteria above (100% closure against the 89.44% bar) plus an
+  added bound-set-shape check (at most a handful of sign transitions in the
+  on-valley binding curve, tolerating the one measured shell-closure
+  "island of stability" at `total = 309`). One further finding, reported
+  rather than gated: 9.25% of universes cover fewer than 120 elements while
+  still bound — real, and now corrected into `MigratedConstant::C`'s own
+  doc (its coverage proof covered the composition argmax's shape, not
+  whether binding stays positive that far out) — routed to Steps 2+, which
+  own how it bears on `n_elements`'s draw.
 - [ ] **Step 2: Confirm `ElementId`'s shape is unchanged** (it is, per
   Decision 5). **Round 4 correction: "two molecules differing only in
   isotopic composition" is not constructible under Decision 5's own design,

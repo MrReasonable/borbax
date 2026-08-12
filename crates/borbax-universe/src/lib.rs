@@ -66,6 +66,18 @@
 pub mod bonds;
 pub mod element;
 pub mod naming;
+/// **`pub(crate)`, not `pub` — same narrow-API hygiene as `packing` and
+/// `perturbation`, below.** Task 26.2's Step 1 gate (this module's own
+/// tests) is the only consumer today; Steps 2-7 wire it into
+/// [`element::Element`], and nothing outside this crate has a legitimate
+/// reason to price a nuclear binding energy directly.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "same reasoning as packing and perturbation: the items are `pub(crate)` *and* the \
+              module is, deliberately, so a future widening of the module to `pub` cannot \
+              silently carry its contents public with it"
+)]
+pub(crate) mod nuclear;
 pub(crate) mod orbital;
 /// **`pub(crate)`, not `pub`, and that is §8.6 enforced by the compiler rather
 /// than by discipline.** Everything here runs at intern time and its results are
