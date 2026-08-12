@@ -397,15 +397,19 @@ migrated_constants! {
     /// Symmetric `p` bound: no structural reason to favour one direction,
     /// and `eps` has zero effect on the composition argmax itself (a
     /// per-total additive constant that cancels out of the comparison
-    /// across compositions at fixed total). **`eps` is independently
-    /// perturbed from `kappa`/`c`, and *deriving* it from them instead —
-    /// the way `gamma` is derived from `kappa`/`c` — was considered and
-    /// rejected**, not the independence itself: real SEMF volume/asymmetry
-    /// coefficients are independently fitted parameters with no derivable
-    /// relationship (`a_A/a_V` spans 1.348-1.505 across five published fits
-    /// against `a_V`'s own ±5.7% spread), so deriving `eps` from `kappa`
-    /// would assert a physical constraint real nuclear physics does not
-    /// make.
+    /// across compositions at fixed total). **`eps`'s *direction* is
+    /// independently drawn from `kappa`/`c`'s (each reads its own `Stream`
+    /// index, per [`draw_symmetric`]'s doc) — "independent" here means
+    /// independently *drawn*, not statistically independent: all four
+    /// nuclear constants still share one rung, so their *magnitudes* move
+    /// together. *Deriving* `eps` from `kappa`/`c` instead — the way
+    /// `gamma` is derived from `kappa`/`c` — was considered and
+    /// rejected**, not the independent draw itself: real SEMF
+    /// volume/asymmetry coefficients are independently fitted parameters
+    /// with no derivable relationship (`a_A/a_V` spans 1.348-1.505 across
+    /// five published fits against `a_V`'s own ±5.7% spread), so deriving
+    /// `eps` from `kappa` would assert a physical constraint real nuclear
+    /// physics does not make.
     Eps = 13, Axis::Nuclear, Counterpart::DefaultOnly, Direction::P_MAX;
     /// Task 26.2's nuclear size-cost coefficient — the model's `sigma *
     /// total^(5/3)` term, the sole source of the model's growth limit
@@ -471,8 +475,9 @@ migrated_constants! {
     /// form of the unbounded `sigma * total^(5/3)` cost) is not, so the
     /// on-valley per-unit energy inevitably turns negative past some total
     /// — real physics too (real SEMF binding per nucleon crosses zero at
-    /// `A ~ 3067`, far past `T_MAX`, so the identity configuration
-    /// correctly reproduces "bound everywhere in range"), but under
+    /// `A ~ 3076` under the `Z(Z-1)` Coulomb convention this model itself
+    /// uses, far past `T_MAX`, so the identity configuration correctly
+    /// reproduces "bound everywhere in range"), but under
     /// `eps`/`sigma` perturbation that crossover can be pulled inside
     /// `1..=T_MAX`. Measured over a joint P7 sample: the bound range —
     /// the last total any composition is still bound at, per seed — reaches
@@ -489,19 +494,43 @@ migrated_constants! {
     /// **Also for Steps 2+, not resolved here: a `physics-plausibility-reviewer`
     /// pass measured that `sigma * total^(5/3)` — not `eps` — is the larger
     /// driver of the 9.25% shortfall above.** `eps * contacts(total)/total`
-    /// reproduces the real SEMF's volume-plus-surface term to within 1% for
-    /// `total >= 55`, and this model's asymmetry/Coulomb terms are already
-    /// exactly the real SEMF's own (`gamma = 0.711 = a_C` at identity) — so
-    /// at identity this model is the real four-term SEMF plus one extra
-    /// term with no real counterpart, and one whose exponent has the wrong
-    /// *sign* relative to the real surface term (`A^(-1/3)`, falling — this
-    /// model's own `total^(+2/3)`, growing). Sweeping `sigma` alone at the
-    /// identity `kappa`/`c`: the zero-crossing moves from `total = 3055`
-    /// (`sigma = 0`, close to the real `3076`) to `603` at the shipped
-    /// `BASE_SIGMA = 0.075`. `sigma` is not needed for the interior peak at
-    /// the pinned `kappa`/`c` (measured: the peak stays at `total = 55`
-    /// even at `sigma = 0`), so a future change here changes coverage
-    /// without changing where the model peaks.
+    /// reproduces the real SEMF's volume-plus-surface term with a worst-case
+    /// error of 2.63% (at `total = 78`), a mean absolute error of 1.20%,
+    /// and stays within 1% only from `total >= 266` onward (a `/review-pr`
+    /// correction: an earlier draft of this note claimed "within 1% for
+    /// `total >= 55`", measured against the wrong fit) — and this model's
+    /// asymmetry/Coulomb terms are already exactly the real SEMF's own
+    /// (`gamma = 0.711 = a_C` at identity) — so at identity this model is
+    /// close to the real four-term SEMF plus one extra term with no real
+    /// counterpart, and one whose exponent has the wrong *sign* relative to
+    /// the real surface term (`A^(-1/3)`, falling — this model's own
+    /// `total^(+2/3)`, growing). Sweeping `sigma` alone at the identity
+    /// `kappa`/`c`: the zero-crossing moves from `total = 3055` (`sigma =
+    /// 0`, close to the real `3076`) to `603` at the shipped `BASE_SIGMA =
+    /// 0.075`. `sigma` is not needed for the interior peak at the pinned
+    /// `kappa`/`c` (measured: the peak stays at `total = 55` even at
+    /// `sigma = 0`), so a future change here changes coverage without
+    /// changing where the model peaks.
+    ///
+    /// **Sharper version of the same finding, from `/review-pr`'s
+    /// `emergence-auditor` pass: at `BASE_SIGMA = 0.0`, every one of this
+    /// module's 13 permanent and 4 corpus tests still passes, the identity
+    /// peak is unchanged (`total = 55`, element 25), and the
+    /// coverage-while-bound shortfall *improves* from 9.25% to 1.09%.**
+    /// `sigma` has no real mass-formula counterpart (this entry's own tag),
+    /// and the packing series (`eps * contacts(total)`) already supplies
+    /// the surface-term-like behaviour a real SEMF gets from its own
+    /// `a_S` — so at the pre-registered value `sigma` is not merely
+    /// unnecessary for the interior peak, it actively costs coverage for a
+    /// term with no physical counterpart. The counter-consideration,
+    /// stated so it is not lost: Decision 11's own per-unit bound proof
+    /// needs `sigma` to guarantee a growth limit in the *general* case, but
+    /// only outside `T_MAX` — the zero-crossing without it (`total = 3055`)
+    /// already sits close to the real `3076`, inside the regime this model
+    /// never actually samples. Not resolved here: whether `BASE_SIGMA`
+    /// should be reduced (or removed) is a physics-plausibility question
+    /// for Steps 2+, not something Step 1's own pass/fail gate is
+    /// positioned to decide.
     C = 16, Axis::Nuclear, Counterpart::HasReal, Direction::P_MAX;
 }
 
@@ -798,6 +827,35 @@ mod tests {
         }
     }
 
+    /// The electronic/nuclear partition, shared by
+    /// `electronic_constants_are_electronic_and_default_only`,
+    /// `nuclear_constants_are_nuclear_and_only_kappa_and_c_have_real_counterparts`
+    /// and `every_migrated_constant_is_electronic_or_nuclear_exactly_once` —
+    /// one canonical pair of lists rather than three independent copies, so
+    /// a constant added to the wrong half has exactly one place to hide,
+    /// not three.
+    const ELECTRONIC: &[MigratedConstant] = &[
+        MigratedConstant::ScreeningInner,
+        MigratedConstant::PromotionBudget,
+        MigratedConstant::RadiusScale,
+        MigratedConstant::CapacityScale,
+        MigratedConstant::BaseMass,
+        MigratedConstant::ContactDefect,
+        MigratedConstant::WShape,
+        MigratedConstant::WCharge,
+        MigratedConstant::IdealGap,
+        MigratedConstant::Scale,
+        MigratedConstant::Gamma,
+        MigratedConstant::IonicScale,
+        MigratedConstant::ScreeningDeep,
+    ];
+    const NUCLEAR: &[MigratedConstant] = &[
+        MigratedConstant::Eps,
+        MigratedConstant::Sigma,
+        MigratedConstant::Kappa,
+        MigratedConstant::C,
+    ];
+
     /// **Task 26.1's electronic constants stay electronic, and only
     /// `Kappa`/`C` (of Task 26.2's four nuclear additions) carry
     /// `HasReal`.** Superseded 2026-08-12: an earlier version of this test
@@ -812,21 +870,6 @@ mod tests {
     /// could hide.
     #[test]
     fn electronic_constants_are_electronic_and_default_only() {
-        const ELECTRONIC: &[MigratedConstant] = &[
-            MigratedConstant::ScreeningInner,
-            MigratedConstant::PromotionBudget,
-            MigratedConstant::RadiusScale,
-            MigratedConstant::CapacityScale,
-            MigratedConstant::BaseMass,
-            MigratedConstant::ContactDefect,
-            MigratedConstant::WShape,
-            MigratedConstant::WCharge,
-            MigratedConstant::IdealGap,
-            MigratedConstant::Scale,
-            MigratedConstant::Gamma,
-            MigratedConstant::IonicScale,
-            MigratedConstant::ScreeningDeep,
-        ];
         for &constant in ELECTRONIC {
             assert_eq!(
                 constant.axis(),
@@ -846,12 +889,7 @@ mod tests {
     /// this is split rather than exhaustive over `ALL` with exceptions.
     #[test]
     fn nuclear_constants_are_nuclear_and_only_kappa_and_c_have_real_counterparts() {
-        for &constant in &[
-            MigratedConstant::Eps,
-            MigratedConstant::Sigma,
-            MigratedConstant::Kappa,
-            MigratedConstant::C,
-        ] {
+        for &constant in NUCLEAR {
             assert_eq!(
                 constant.axis(),
                 Axis::Nuclear,
@@ -879,24 +917,44 @@ mod tests {
     /// found worth pinning separately after the split.** Two lists that
     /// each individually check out could still, together, omit a variant
     /// `ALL` contains (or double-count one) with neither per-list test
-    /// noticing; this derives its own check from `ALL` rather than
-    /// trusting the two lists above to have been written correctly by eye.
+    /// noticing.
+    ///
+    /// **Corrected by `/review-pr` (`CodeRabbit`, corroborating an earlier
+    /// informal `emergence-auditor` note): the original version of this
+    /// test summed `axis() == Electronic` and `axis() == Nuclear` counts
+    /// and compared the sum to `ALL.len()` — a tautology given `Axis` has
+    /// exactly two variants, since every constant's `axis()` call returns
+    /// one of the two by construction regardless of whether `ELECTRONIC`/
+    /// `NUCLEAR` are correct. A third `Axis` variant added later without
+    /// updating either list would still pass silently.** Checks per-
+    /// constant membership against the two explicit lists instead: every
+    /// `ALL` entry must appear in exactly one of `ELECTRONIC`/`NUCLEAR`,
+    /// and its `axis()` must agree with which list it's in — the check
+    /// this test's name has always claimed to make.
     #[test]
     fn every_migrated_constant_is_electronic_or_nuclear_exactly_once() {
-        let electronic_count = MigratedConstant::ALL
-            .iter()
-            .filter(|c| c.axis() == Axis::Electronic)
-            .count();
-        let nuclear_count = MigratedConstant::ALL
-            .iter()
-            .filter(|c| c.axis() == Axis::Nuclear)
-            .count();
+        for &constant in MigratedConstant::ALL {
+            let in_electronic = ELECTRONIC.contains(&constant);
+            let in_nuclear = NUCLEAR.contains(&constant);
+            assert!(
+                in_electronic ^ in_nuclear,
+                "{constant:?}: must appear in exactly one of ELECTRONIC/NUCLEAR -- found in \
+                 ELECTRONIC={in_electronic}, in NUCLEAR={in_nuclear}"
+            );
+            let expected_axis = if in_nuclear {
+                Axis::Nuclear
+            } else {
+                Axis::Electronic
+            };
+            assert_eq!(
+                constant.axis(),
+                expected_axis,
+                "{constant:?}: axis() disagrees with which partition list it's in"
+            );
+        }
         assert_eq!(
-            electronic_count + nuclear_count,
-            MigratedConstant::ALL.len()
-        );
-        assert_eq!(
-            nuclear_count, 4,
+            NUCLEAR.len(),
+            4,
             "Task 26.2 pre-registers exactly four nuclear constants"
         );
     }

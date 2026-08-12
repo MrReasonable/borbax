@@ -93,12 +93,15 @@ check, not a closed-form regression bound — corrected after
 mutation-testing it.** An earlier draft of this section claimed the
 envelope was itself "a real regression bound: a sign error, a dropped
 factor of 2, or a wrong `t^(2/3)` spelling moves `drift_onset` outside
-it" — false for several defect classes: a `c`-term sign error and a
-`cbrt(t)*cbrt(t)` respelling of `t^(2/3)` both print the *identical*
-`[16, 30]` envelope with zero violations over a 20,001-point sweep,
-because the envelope is computed by calling the same function the
-per-seed check then tests against — the same tautology shape recurring one
-level deeper after replacing the Ca-40 anchor. What the corpus check
+it" — false for at least one real defect class: a `c`-term sign error
+prints the *identical* `[16, 30]` envelope with zero violations over a
+20,001-point sweep, because the envelope is computed by calling the same
+function the per-seed check then tests against — the same tautology shape
+recurring one level deeper after replacing the Ca-40 anchor. (A
+`cbrt(t)*cbrt(t)` respelling of `t^(2/3)` was also tried and is *not* a
+second example — it produces zero integer differences from the pinned
+spelling over the same sweep, so it is behaviourally inert and proves
+nothing about the check's power either way.) What the corpus check
 genuinely verifies: `drift_onset` is monotone non-increasing in `c`, and
 every drawn `c` stays inside P7's own reachable band. **The tests that
 actually carry closed-form correctness** are `the_drift_onset_at_identity_is_pinned`
@@ -119,8 +122,8 @@ search find a positive-Q size-shedding transition for `total = T_MAX` (the
 "heavy on-valley element" proxy, since `n_elements` doesn't exist without
 Element wiring)? Bar: `≥ 1 − 6261/59292 = 0.894404` — V1's own edge-peak
 census, reconstructed *inside* the crate against the real `contacts_upto`
-(9 × 9 × 12 × 61 = 59,292 cells over `k ∈ 6..14`, `eps ∈ [0.8,1.2]`,
-`sigma ∈ [0.02,0.13]`, `n_elements ∈ 60..120`; V1's own `element.rs:887-914`
+(9 × 9 × 12 × 61 = 59,292 cells over `k ∈ 6..=14`, `eps ∈ [0.8,1.2]`,
+`sigma ∈ [0.02,0.13]`, `n_elements ∈ 60..=120`; V1's own `element.rs:887-914`
 comment reports a compatible 2/24 ≈ 8.3% on a 24-seed sample).
 
 **Result: 38,416/38,416 = 100%, well above the 89.44% bar.**
@@ -180,7 +183,10 @@ unbound tail begins? A `physics-plausibility-reviewer` pass found
 coverage proof (that `T_MAX` is large enough for `composition_argmax` to
 reach every integer up to 120) covers only the composition argmax's
 *shape*, not whether binding stays positive that far out — a different
-question once `eps`/`sigma` are perturbed independently of `c`.
+question once `eps`/`sigma` move too. (All four nuclear coefficients share
+one rung, so their *magnitudes* move together, not independently of `c` —
+only each constant's *direction* is drawn independently, from its own
+`Stream` index.)
 
 Measured: **min = 27, p1 = 62, p10 = 122, p50 = 138; 3,554/38,416 (9.25%)
 of universes cover fewer than 120 elements while still bound.** This is a
@@ -194,6 +200,26 @@ derivable relationship: `a_A/a_V` spans 1.348–1.505 across five published
 fits against `a_V`'s own ±5.7% spread) — a decision for Steps 2+, which own
 how this bears on `n_elements`'s own draw, not something Step 1 is
 positioned to resolve by picking a threshold.
+
+**`sigma`, not `eps`, is the larger driver of this shortfall — a
+`/review-pr` finding, also routed to Steps 2+, not resolved here.**
+`eps · contacts(total)/total` reproduces the real SEMF's volume-plus-surface
+term with worst-case error 2.63% (at `total = 78`), mean absolute error
+1.20%, holding within 1% only from `total ≥ 266`. This model's
+asymmetry/Coulomb terms are already exactly the real SEMF's own
+(`gamma = 0.711 = a_C` at identity), so at identity this model is close to
+the real four-term SEMF plus one extra term with no real counterpart and
+the wrong exponent sign relative to the real surface term. Sweeping
+`sigma` alone at the identity `kappa`/`c`: zero-crossing moves from
+`total = 3055` (`sigma = 0`, close to the real `3076` under this model's
+own `Z(Z-1)` Coulomb convention) to `603` at the shipped `BASE_SIGMA =
+0.075`; the peak stays at `total = 55` regardless. Sharper still: **at
+`BASE_SIGMA = 0.0`, every test in this module still passes and the
+coverage shortfall improves from 9.25% to 1.09%** — `sigma` is not merely
+unneeded for the interior peak at the pre-registered value, it actively
+costs coverage for a term with no physical counterpart, within the range
+this model actually samples. Whether `BASE_SIGMA` should be reduced is a
+physics-plausibility question for Steps 2+.
 
 ## V1 census cross-check (in-crate, settles a transcription caveat)
 

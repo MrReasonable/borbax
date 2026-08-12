@@ -246,11 +246,19 @@ pub(crate) fn on_valley_per_unit_energy(
 /// The smallest even `total` at which [`composition_argmax_int`] first
 /// departs from the symmetric composition (`total / 2`) — Step 1 Arm 1's
 /// scalar, per the plan's own round-4 correction ("gate on drift, not
-/// interiority"). Only even totals are scanned: at odd `total` the
-/// symmetric composition is not an integer, so "departs from `total/2`"
-/// (integer division) is trivially true from `total = 3` on and measures
-/// nothing — verified this coincides with the even-total definition in
-/// every sampled universe.
+/// interiority"). Only even totals are scanned, because "the symmetric
+/// composition" is only a real thing to depart from where `total / 2` is
+/// exact — at odd `total`, `total / 2` (integer division) is already the
+/// floor of the true midpoint, a different and less meaningful comparison.
+/// **Scanning every total instead of only even ones does not change the
+/// answer** (verified at every tested `c`, including the reachable band's
+/// endpoints and the identity value: the full scan's onset is identical to
+/// the even-only scan's) — the correct reason to prefer even totals is
+/// that they ask the physically meaningful question, not that odd totals
+/// are somehow already trivially past onset (an earlier version of this
+/// doc claimed the odd-total condition holds "from `total = 3` on",
+/// unverified and wrong: the first odd total it actually holds at, for the
+/// identity `c`, is `31`, well past the even-only onset of `22`).
 ///
 /// `None` if no drift is ever found in `2..=T_MAX` — not expected to occur
 /// for any legal `c` (`a* <= t/2` for every `t`, proved in this module's
@@ -294,14 +302,20 @@ pub(crate) fn shedding_q(total: u32, eps: f64, sigma: f64, kappa: f64, c: f64) -
 /// first-wins on ties by iteration order, the same idiom
 /// `element.rs::find_peak_and_set_instability` already uses for the
 /// identical shape of search (strict `>`, no `f64::max`). **The tie-break
-/// matters here and is not free to change**: unlike a fold that returns
-/// only the maximum *value* (order-invariant under IEEE `maxNum`
-/// semantics), this fold returns the *index* (`total`) the maximum
-/// occurred at — a genuinely different total can tie on energy, and which
-/// one wins is exactly "first, by iteration order", not incidental. No
-/// exact tie has been observed (0 across an 11M-cell sweep of the
+/// matters here and is not free to change**: this fold returns the
+/// *index* (`total`) the maximum occurred at, not just the maximum value
+/// — a genuinely different total can tie on energy, and which one wins is
+/// exactly "first, by iteration order", not incidental. (Even a
+/// value-only fold using this same strict-`>` shape is not fully
+/// order-invariant either — `clippy.toml`'s own `f64::max`/`min` entry
+/// records that a `±0.0` tie's sign depends on which operand is seen
+/// first, which reaches `to_bits()` the moment such a value is digested.
+/// [`shedding_q`] is that value-only shape, and this note is not a claim
+/// that it is safe to reorder — only this function's own extra hazard,
+/// the index, is what the tie-break above is about.) No exact tie has
+/// been observed for either fold (0 across an 11M-cell sweep of the
 /// P7-reachable box), which is a reason not to expect trouble, not a
-/// license to parallelise or reorder this fold.
+/// licence to parallelise or reorder either one.
 #[must_use]
 pub(crate) fn valley_peak_total(eps: f64, sigma: f64, kappa: f64, c: f64) -> u32 {
     (1..=T_MAX)
@@ -363,8 +377,10 @@ pub(crate) fn valley_peak_total(eps: f64, sigma: f64, kappa: f64, c: f64) -> u32
 /// a known property of a four-term liquid-drop model with no pairing or
 /// curvature term — the real SEMF's own prediction for the A=3 nuclide this
 /// model actually favours at that total (Z=1, i.e. H-3, both by the real
-/// SEMF's own argmax and by this model's) is `+0.775` `MeV`, against H-3's
-/// real `2.827`, 3.65x off before Borbax adds any seed. It is not a
+/// SEMF's own argmax and by this model's) is `+0.775` `MeV` **per
+/// nucleon**, against H-3's real `2.827` `MeV` per nucleon (not the
+/// tabulated total binding energy, `8.482` `MeV`), 3.65x off before Borbax
+/// adds any seed. It is not a
 /// coefficient-balance defect this shape check should catch, so it is
 /// carved out rather than either asserted-negative (false in ~14% of
 /// universes) or asserted-positive (false in the rest).
@@ -457,14 +473,18 @@ mod tests {
     /// computed envelope (`drift_onset(C_MAX)..=drift_onset(C_MIN)`) was
     /// itself "a real regression bound: a sign error, a dropped factor, or a
     /// wrong `t^(2/3)` spelling moves `drift_onset` outside it" — false for
-    /// several defect classes, verified by running seven broken
+    /// at least one real defect class, verified by running seven broken
     /// implementations over a 20,001-point `c` sweep: a `c`-term sign error
-    /// and a `cbrt(t)*cbrt(t)` respelling of `t^(2/3)` both print the
-    /// **identical** `[16, 30]` envelope with 0 violations, because the
-    /// envelope is computed by calling the same function the assertion then
-    /// checks — the same tautology shape the plan's own round-4 correction
-    /// already fixed once for the Ca-40 anchor, recurring one level deeper
-    /// after replacing it. What this check actually verifies: `drift_onset`
+    /// prints the **identical** `[16, 30]` envelope with 0 violations,
+    /// because the envelope is computed by calling the same function the
+    /// assertion then checks — the same tautology shape the plan's own
+    /// round-4 correction already fixed once for the Ca-40 anchor, recurring
+    /// one level deeper after replacing it. (A `cbrt(t)*cbrt(t)` respelling
+    /// of `t^(2/3)` was also tried and is *not* a second example of this —
+    /// measured, it produces zero integer differences from the pinned
+    /// spelling over the same sweep, so it is behaviourally inert and no
+    /// check, corpus-level or otherwise, could be expected to catch it.)
+    /// What this check actually verifies: `drift_onset`
     /// is monotone non-increasing in `c` (true for the correct form and
     /// every broken form tried), and every drawn `c` lands inside P7's own
     /// reachable band — both real properties, neither a proof the closed
@@ -496,8 +516,10 @@ mod tests {
     /// Steps 2+ (see `perturbation.rs`'s `C` doc), not something Step 1
     /// itself is positioned to fix by picking a threshold here.
     #[test]
-    #[ignore = "expensive corpus sweep -- cargo test --locked --release -p borbax-universe \
-                -- --ignored --nocapture nuclear"]
+    #[ignore = "not run under CI by default -- NOT actually expensive (measured ~2.5s release for \
+                all four ignored tests combined; an earlier version of this reason overstated the \
+                cost, per a /review-pr finding). Run explicitly: cargo test --locked --release \
+                -p borbax-universe -- --ignored --nocapture nuclear"]
     fn the_two_armed_gate_passes_over_the_derived_corpus() {
         let drift_at_c_max = drift_onset(C_MAX);
         let drift_at_c_min = drift_onset(C_MIN);
@@ -516,6 +538,7 @@ mod tests {
         let mut examined = 0_u64;
         let mut t_bounds: Vec<u32> = Vec::with_capacity(CORPUS_N as usize);
         let mut elements_reached_while_bound: Vec<u32> = Vec::with_capacity(CORPUS_N as usize);
+        let mut drift_seen: Vec<u32> = Vec::with_capacity(CORPUS_N as usize);
 
         for seed in 0..CORPUS_N {
             let (_rung, eps, sigma, kappa, c) = draw_universe(seed);
@@ -529,6 +552,7 @@ mod tests {
                  test's own doc: this checks monotonicity and band membership, not the closed \
                  form's correctness -- that is test 6 and test 3's job)"
             );
+            drift_seen.push(drift.unwrap_or_else(|| unreachable!("checked is_some() above")));
 
             let shape = bound_shape(eps, sigma, kappa, c);
             assert!(
@@ -563,6 +587,19 @@ mod tests {
             closed_fraction >= closure_bar,
             "Arm 2 closure fraction {closed_fraction} ({closed}/{CORPUS_N}) below the bar \
              {closure_bar} (V1's own reconstructed census, 1 - 6261/59292)"
+        );
+
+        // Anti-vacuity: a constant-returning drift_onset (ignoring c entirely) would
+        // still satisfy every assertion above -- band-membership against its own two
+        // endpoints is trivially true if all three calls return the same value. This
+        // is exactly the shape of defect this check exists to rule out.
+        drift_seen.sort_unstable();
+        drift_seen.dedup();
+        assert!(
+            drift_seen.len() >= 2,
+            "drift_onset returned only {} distinct value(s) across {CORPUS_N} seeds -- a \
+             constant function would pass every other assertion in this test",
+            drift_seen.len()
         );
 
         elements_reached_while_bound.sort_unstable();
@@ -695,7 +732,8 @@ mod tests {
     /// `P_IDENTITY_N`/`P_IDENTITY_BAND` pair for the same quantity, rather
     /// than inventing a second corpus.
     #[test]
-    #[ignore = "200_000-seed sweep -- cargo test --locked --release -p borbax-universe \
+    #[ignore = "not run under CI by default -- see the_two_armed_gate_passes_over_the_derived_corpus's \
+                own reason for the timing note. Run: cargo test --locked --release -p borbax-universe \
                 -- --ignored --nocapture nuclear"]
     fn the_four_nuclear_coefficients_share_one_rung() {
         const N: u64 = 200_000;
@@ -721,9 +759,9 @@ mod tests {
     /// would still pass a loose corpus bar: a factor-2 error in `gamma`
     /// (giving `30`), a wrong `t^(2/3)` spelling, or a `base_c` drift.
     /// Elements `1..=10` sit exactly at the symmetric composition at
-    /// identity — the plan's own text says `1..7`, measured under a
+    /// identity — the plan's own text says `1..=7`, measured under a
     /// superseded `base_c` value the plan's round-5 correction retracted;
-    /// `1..10` is correct at the shipped `base_c = 0.015`.
+    /// `1..=10` is correct at the shipped `base_c = 0.015`.
     #[test]
     fn the_drift_onset_at_identity_is_pinned() {
         assert_eq!(drift_onset(BASE_C), Some(22));
@@ -783,8 +821,8 @@ mod tests {
     /// pooled — pooling makes a degenerate (single-optimum) model look
     /// diverse, which is exactly the trap the plan names.
     #[test]
-    #[ignore = "reporting only -- cargo test --locked --release -p borbax-universe \
-                -- --ignored --nocapture nuclear"]
+    #[ignore = "reporting only, not run under CI by default -- run: cargo test --locked --release \
+                -p borbax-universe -- --ignored --nocapture nuclear"]
     fn the_drift_distribution_is_reported_at_fixed_totals_not_pooled() {
         for &total in &[20_u32, 56, 120, 200, 386] {
             let lo = composition_argmax(C_MAX, total) / f64::from(total);
@@ -812,7 +850,8 @@ mod tests {
     /// V1's own typical position — this test makes that visible rather than
     /// silently absent.
     #[test]
-    #[ignore = "59,292-cell enumerated scan -- cargo test --locked --release -p borbax-universe \
+    #[ignore = "not run under CI by default -- see the_two_armed_gate_passes_over_the_derived_corpus's \
+                own reason for the timing note. Run: cargo test --locked --release -p borbax-universe \
                 -- --ignored --nocapture nuclear"]
     fn v1_edge_peak_census_is_pinned_and_arm_two_peak_is_reported_against_it() {
         use crate::packing::{PackingConsts as V1PackingConsts, contacts_upto};
@@ -909,26 +948,49 @@ mod tests {
     /// is multiplied by zero, the asymmetry term is zero because `a == b`,
     /// and `gamma = 2*kappa*c = 0`. `sigma * total^(5/3)` at `total = 8,
     /// sigma = 1` is `8 * cbrt(64) = 8 * 4 = 32` exactly (`64` is a perfect
-    /// cube and `libm::cbrt` is exact on those), so the total energy is
-    /// exactly `-32.0` — no tolerance needed. The peak-position assertion
-    /// is the companion the exponent actually needs: `sigma`'s term is this
-    /// model's only unbounded cost (`MigratedConstant::Sigma`'s own doc),
-    /// so a wrong exponent moves where the valley's per-unit binding peaks,
-    /// even though it doesn't move the identity's unbound *set*.
+    /// cube and `libm::cbrt` is exact on those, correctly-rounded per the
+    /// CORE-MATH port it's built from), so the total energy is exactly
+    /// `-32.0` — no tolerance needed.
+    ///
+    /// **Deliberately does *not* assert the identity peak position — that
+    /// used to live here and was found, by mutation-testing, to test a
+    /// different thing than this test's own name and doc claimed.** With
+    /// `eps = 0` this assertion's own inputs, `contacts(total)` is
+    /// multiplied away entirely, so nothing here can see `NUCLEAR_K`.
+    /// Measured: both a wrong `sigma` exponent (`t^(2/3)`) and a halved
+    /// `sigma` coefficient leave the identity peak at `(55, 25)`
+    /// unchanged, so a peak assertion in *this* test would not have
+    /// discriminated the defect this test exists to catch. See the next
+    /// test for what the peak position actually guards.
     #[test]
     fn the_size_term_is_total_to_the_five_thirds() {
-        let with = total_binding_energy(4, 4, 0.0, 1.0, 0.0, 0.0);
+        let isolated = total_binding_energy(4, 4, 0.0, 1.0, 0.0, 0.0);
         assert_eq!(
-            with.to_bits(),
+            isolated.to_bits(),
             (-32.0_f64).to_bits(),
-            "sigma * total^(5/3) at total = 8, sigma = 1: got {with}, want -32.0 exactly"
+            "sigma * total^(5/3) at total = 8, sigma = 1: got {isolated}, want -32.0 exactly"
         );
+    }
 
+    /// **13.** The identity configuration's on-valley peak is pinned to
+    /// `total = 55` (element 25) — found, by mutation-testing, to be this
+    /// module's **only** guard on [`NUCLEAR_K`] (`= 10`, not `12`,
+    /// correction 3 of this module's own top-level doc): `contacts(total)`
+    /// is what `NUCLEAR_K` feeds, and test 12's isolated exponent check
+    /// zeroes `contacts` out via `eps = 0`, so it cannot see this constant
+    /// at all. This test is a general identity-configuration regression
+    /// pin, not an exponent test — kept separate from test 12 (which used
+    /// to carry this assertion under a name and doc about `sigma`'s
+    /// exponent, which it did not actually test) so each test's name says
+    /// what it verifies.
+    #[test]
+    fn the_identity_peak_is_pinned_to_total_fifty_five() {
         let peak = valley_peak_total(BASE_EPS, BASE_SIGMA, BASE_KAPPA, BASE_C);
         assert_eq!(
             (peak, composition_argmax_int(BASE_C, peak)),
             (55, 25),
-            "on-valley peak at identity should sit at total = 55 (element 25)"
+            "on-valley peak at identity should sit at total = 55 (element 25) -- if this moved, \
+             check NUCLEAR_K first (this is its only guard), then eps/sigma/kappa/c's base values"
         );
     }
 }

@@ -645,10 +645,17 @@ revision.
 
     **Why coverage has no gaps — a proof, not the continuity hand-wave an
     earlier draft of this pre-registration used.** Two facts, both
-    verified: (1) the per-unit energy is **exactly quadratic** in `a` at
-    fixed `t` (leading coefficient `4κ/t + γ/t^(1/3) > 0`), so the integer
-    argmax equals `round(a*(t))` exactly, never merely `{floor, ceil}` of
-    it — confirmed 0 mismatches over the same 48,000-case sweep above.
+    verified: (1) the **total** binding energy is strictly concave in `a`
+    at fixed `t`, quadratic coefficient `-(4κ/t + γ/t^(1/3))` (a
+    `/review-pr` correction, CodeRabbit: an earlier draft of this line
+    both stated the coefficient with the wrong sign and quoted the
+    per-unit form, `-(4κ/t² + γ/t^(4/3))`, where the total-energy form is
+    what the argmax argument actually needs — dividing by the positive
+    constant `t` to get per-unit form preserves the argmax either way, so
+    the conclusion was never in question, only the stated coefficient).
+    So the integer argmax equals `round(a*(t))` exactly, never merely
+    `{floor, ceil}` of it — confirmed 0 mismatches over the same
+    48,000-case sweep above.
     (2) `da*/dt` is strictly positive and **strictly less than 1/2**
     everywhere (measured supremum `0.499975` over `c ∈ [1e-4, 1], t ∈
     1..400`; the analytic supremum is exactly `1/2` as `c, t → 0`). A
@@ -1852,6 +1859,25 @@ computed as abundance-weighted averages over that distribution.
   doc (its coverage proof covered the composition argmax's shape, not
   whether binding stays positive that far out) — routed to Steps 2+, which
   own how it bears on `n_elements`'s draw.
+
+  **Round 7, 2026-08-12 — a second `/review-pr` round, cross-routing each
+  round-6 fix to a specialist other than the one who proposed it, found
+  and fixed several more precision issues (none changing the verdict).**
+  Full account: `docs/experiments/2026-08-12-nuclear-valley-gate.md` and
+  `crates/borbax-universe/src/nuclear.rs`'s/`perturbation.rs`'s own doc
+  comments. Highlights: the size-term-exponent test (test 12 above) was
+  found, by mutation-testing, to guard `NUCLEAR_K` rather than `sigma`'s
+  exponent under its own `eps = 0` isolation — split into two tests, one
+  per property, each correctly named; the "reproduces the real SEMF's
+  surface term within 1%" figure was wrong by ~2.6× (worst case 2.63%);
+  a `physics-plausibility-reviewer` pass measured that `sigma` is not
+  merely unneeded for coverage at the pre-registered value but *costs*
+  coverage for a term with no real counterpart (`sigma = 0` improves the
+  9.25% shortfall to 1.09% with no other test moving) — routed to Steps
+  2+, not decided here; and a genuinely tautological test
+  (`every_migrated_constant_is_electronic_or_nuclear_exactly_once`,
+  `perturbation.rs`) was replaced with a real per-constant membership
+  check.
 - [ ] **Step 2: Confirm `ElementId`'s shape is unchanged** (it is, per
   Decision 5). **Round 4 correction: "two molecules differing only in
   isotopic composition" is not constructible under Decision 5's own design,
