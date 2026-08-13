@@ -164,10 +164,12 @@
 //! (the worst universe now stays bound 30 totals further in), and
 //! `98.6%` of universes (37,863/38,416) are now never unbound anywhere in
 //! `4..=T_MAX` at all (most of what `bound_shape` used to discriminate
-//! against no longer occurs) — the transition-count distribution that sets
-//! `MAX_TRANSITIONS = 5` moved from `p50=0, p90=1, max=3` to `p50=0, p90=0,
-//! max=3`, so the bound is unchanged but tighter relative to what is
-//! actually observed. The `total = 309` shell-closure "island of
+//! against no longer occurs) — the transition-count distribution moved from
+//! `p50=0, p90=1, max=3` to `p50=0, p90=0, max=3`, max unchanged at the top.
+//! (`MAX_TRANSITIONS` was `5` at the time of this measurement; a later
+//! `/review-pr` round tightened it to `3`, this mechanism's own structural
+//! ceiling — see [`crate::nuclear::bound_shape`]'s own doc.) The `total =
+//! 309` shell-closure "island of
 //! stability" (see [`crate::nuclear::bound_shape`]'s own doc) still occurs — two seeds
 //! (3992, 4425) hit it in this corpus, down from three (14355, 20107,
 //! 21217) before, since fewer universes reach an unbound region at all for
@@ -191,7 +193,7 @@
 )]
 
 use crate::packing::{self, PackingConsts};
-use borbax_units::det_math;
+use borbax_units::{Quanta, det_math};
 
 /// Task 26.2's nuclear binding-energy scale — see this module's own doc,
 /// correction 2, for why this is `2.625` rather than the pre-registration
@@ -250,10 +252,34 @@ pub(crate) const NUCLEAR_K: usize = 10;
 /// at all and has to write out what it actually means (exact match on
 /// every field,
 /// component-wise `.abs() < epsilon`, or something else).
+///
+/// **`eps`/`kappa` are `Quanta`, not `f64` — landed 2026-08-13, resolving a
+/// question two `/review-pr` rounds had deferred.** `CodeRabbit` and
+/// `emergence-auditor` independently suggested Quanta-typing these (they
+/// are, unambiguously, energy quantities — G4 names `Quanta` as the
+/// required newtype); `determinism-auditor` proved it bit-identical over a
+/// 416,880-cell sweep both times it was asked. What tipped the deferral
+/// was not headcount but a concrete typing exercise: `rust-developer-expert`
+/// dispatched a third time actually wrote the five affected signatures
+/// against `Quanta`'s real trait surface (`element.rs`'s V1 generator
+/// already types its own `eps` this way, with the identical
+/// zero-bit-movement proof) and found no rough edge — no missing operator,
+/// no call site the newtype fights. `c` stays bare `f64`: it is
+/// `a_C/(2*a_sym)`, a genuinely dimensionless ratio, not an energy. `total`
+/// (nucleon count), `contacts`'s dimensionless coordination number, and
+/// every `composition_argmax*`/`drift_onset`/`valley_peak_total`/
+/// `bound_shape` return value are compositions or totals, not energies —
+/// none of those became `Quanta`. **Distinct from, and does not resolve,**
+/// the plan's own still-open "does `Element::instability` become
+/// `Quanta`-typed or stay a Q-derived `f64`" decision
+/// (`docs/superpowers/plans/2026-08-07-borbax-real-physics.md`, Task 15's
+/// routed requirement) — that is a field which does not exist yet, decided
+/// when Steps 5-7 actually build it, not settled by typing this module's
+/// existing internals.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NuclearCoeffs {
-    pub(crate) eps: f64,
-    pub(crate) kappa: f64,
+    pub(crate) eps: Quanta,
+    pub(crate) kappa: Quanta,
     pub(crate) c: f64,
 }
 
@@ -269,6 +295,16 @@ impl NuclearCoeffs {
     /// check for that specific comparison. Not a general "close enough"
     /// check — comparing two arbitrarily-drawn `NuclearCoeffs` with this
     /// would silently answer a question nobody asked.
+    /// **Only `self.c == base.c` is what the `expect` below actually
+    /// covers, since `eps`/`kappa` became `Quanta`.** `Quanta`'s derived
+    /// `PartialEq` compares its inner `f64` exactly, same as the bare
+    /// comparison this method existed to lint-suppress -- but
+    /// `clippy::float_cmp` only fires on a bare float type in the
+    /// expression, not a newtype wrapping one, so `self.eps == base.eps`
+    /// (`Quanta == Quanta`) no longer trips it at all. The `expect` stays
+    /// satisfied only because `self.c == base.c` (still bare `f64`) keeps
+    /// firing it -- a future reader should not read three conjuncts here
+    /// as three lint-covered comparisons.
     #[must_use]
     #[expect(
         clippy::float_cmp,
@@ -371,11 +407,15 @@ pub(crate) fn composition_argmax_int(c: f64, total: u32) -> u32 {
 /// this module's own test, is the only test that can see this); the
 /// division by `total` applied to the whole sum, not per term.
 #[must_use]
-pub(crate) fn total_binding_energy(a: u32, b: u32, coeffs: NuclearCoeffs) -> f64 {
+pub(crate) fn total_binding_energy(a: u32, b: u32, coeffs: NuclearCoeffs) -> Quanta {
     let NuclearCoeffs { eps, kappa, c } = coeffs;
     let total = a + b;
     let t = f64::from(total);
-    let gamma = 2.0 * kappa * c;
+    // Reordered from `2.0 * kappa * c` to `kappa * 2.0 * c` so `kappa`
+    // (now `Quanta`) leads -- `Mul<f64> for Quanta` only takes the
+    // newtype on the left. IEEE-754 `*` is exactly commutative (no
+    // rounding asymmetry, unlike associativity), so this moves no bits.
+    let gamma = kappa * 2.0 * c;
     let t13 = det_math::cbrt(t);
     let d = f64::from(a) - f64::from(b);
     let af = f64::from(a);
@@ -385,21 +425,21 @@ pub(crate) fn total_binding_energy(a: u32, b: u32, coeffs: NuclearCoeffs) -> f64
 /// [`total_binding_energy`], divided once more by `total` — the per-unit
 /// form the mechanism's own diagram is stated against.
 #[must_use]
-pub(crate) fn per_unit_binding_energy(a: u32, b: u32, coeffs: NuclearCoeffs) -> f64 {
+pub(crate) fn per_unit_binding_energy(a: u32, b: u32, coeffs: NuclearCoeffs) -> Quanta {
     total_binding_energy(a, b, coeffs) / f64::from(a + b)
 }
 
 /// The on-valley total energy at a total — `total_binding_energy` at the
 /// composition-changing channel's own argmax, [`composition_argmax_int`].
 #[must_use]
-pub(crate) fn on_valley_total_energy(total: u32, coeffs: NuclearCoeffs) -> f64 {
+pub(crate) fn on_valley_total_energy(total: u32, coeffs: NuclearCoeffs) -> Quanta {
     let a = composition_argmax_int(coeffs.c, total);
     total_binding_energy(a, total - a, coeffs)
 }
 
 /// The on-valley per-unit energy at a total.
 #[must_use]
-pub(crate) fn on_valley_per_unit_energy(total: u32, coeffs: NuclearCoeffs) -> f64 {
+pub(crate) fn on_valley_per_unit_energy(total: u32, coeffs: NuclearCoeffs) -> Quanta {
     on_valley_total_energy(total, coeffs) / f64::from(total)
 }
 
@@ -460,13 +500,13 @@ pub(crate) fn drift_onset(c: f64) -> Option<u32> {
 /// convention into a real reaction channel needs to know which quantity
 /// it's actually computing.
 #[must_use]
-pub(crate) fn shedding_q(total: u32, coeffs: NuclearCoeffs) -> f64 {
+pub(crate) fn shedding_q(total: u32, coeffs: NuclearCoeffs) -> Quanta {
     let whole = on_valley_total_energy(total, coeffs);
     (1..=total / 2)
         .map(|s| {
             on_valley_total_energy(total - s, coeffs) + on_valley_total_energy(s, coeffs) - whole
         })
-        .fold(f64::MIN, |best, q| if q > best { q } else { best })
+        .fold(Quanta(f64::MIN), |best, q| if q > best { q } else { best })
 }
 
 /// The total at which the on-valley per-unit binding energy peaks —
@@ -490,14 +530,17 @@ pub(crate) fn shedding_q(total: u32, coeffs: NuclearCoeffs) -> f64 {
 #[must_use]
 pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
     (1..=T_MAX)
-        .fold((1_u32, f64::MIN), |(best_total, best_energy), total| {
-            let energy = on_valley_per_unit_energy(total, coeffs);
-            if energy > best_energy {
-                (total, energy)
-            } else {
-                (best_total, best_energy)
-            }
-        })
+        .fold(
+            (1_u32, Quanta(f64::MIN)),
+            |(best_total, best_energy), total| {
+                let energy = on_valley_per_unit_energy(total, coeffs);
+                if energy > best_energy {
+                    (total, energy)
+                } else {
+                    (best_total, best_energy)
+                }
+            },
+        )
         .0
 }
 
@@ -530,21 +573,43 @@ pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
 /// never unbound anywhere in `4..=T_MAX` at all, so there are fewer
 /// unbound regions left for the blip to interrupt. Transition-count
 /// distribution moved from `p50 = 0, p90 = 1, max = 3` to `p50 = 0, p90 =
-/// 0, max = 3` — `<= 5` still clears the measured worst case with the same
-/// margin as before.
+/// 0, max = 3` — unchanged at the top, which turns out to matter (see
+/// `MAX_TRANSITIONS`'s own doc below: `3` is not merely the widest margin
+/// observed, it is this mechanism's structural ceiling).
 ///
-/// **Both acceptance criteria are currently unreachable on the sampled
-/// domain — a `/review-pr` finding (`emergence-auditor`), confirmed by
-/// mutation.** Deleting the `total = 2` early-return *and* raising
-/// `MAX_TRANSITIONS` to `50` together still passes the full corpus gate —
-/// no seed anywhere in the 38,416-seed corpus is close to failing either
-/// check today (max transitions measured is `3`, two below the `5` bound;
-/// `total = 2` bound holds in every seed tried). This function is not
-/// dead code — it is called, and both checks are real regression tripwire
-/// for a regime that does not currently occur, not decoration — but a
-/// green run of this function proves less than "the shape check passed"
-/// suggests, and this note exists so a future reader does not read
-/// `38416/38416` as evidence either bound is close to its edge.
+/// **Neither acceptance criterion can be falsified by a coefficient draw,
+/// and they are dead in different ways — a `/review-pr` finding
+/// (`emergence-auditor`), corrected by `geometry-numerics-reviewer`'s
+/// cross-check, which found the originally proposed fix ("delete the
+/// `total = 2` check, subsumed by the loop") would have introduced a
+/// defect.**
+///
+/// The `total = 2` check is not merely unexercised — it is unfalsifiable
+/// for *any* positive `eps`. [`composition_argmax`]'s `(c, 2)` output lies
+/// in `(0.5, 1.0)` for every `c > 0` (strictly decreasing from `1.0` as `c`
+/// grows off `0`; `1.0` itself is attained only at `c = 0`, which the
+/// corpus never draws), so [`composition_argmax_int`] gives `a = 1` and
+/// hence `b = 1` in every universe (0 exceptions over the corpus). At
+/// `a = b = 1` the asymmetry term vanishes (`d = 0`) and the Coulomb term
+/// vanishes (`a*(a-1) = 0`), leaving `on_valley_per_unit_energy(2, ..)`
+/// equal to `eps * contacts(2) / 2` **bit-exactly** (0 mismatches over
+/// 38,416 seeds; `contacts(2) == 1.0` at `NUCLEAR_K = 10`,
+/// [`NUCLEAR_K`]'s value). So `bound(2)` is exactly `eps > 0`, which
+/// `crate::perturbation::perturb`'s own annihilation proof guarantees —
+/// measured `eps` range `[1.3138, 3.9310]`, and a 35,301-cell sweep with
+/// `eps` multipliers from `1e-8` to `1e2` finds it false in **0**.
+///
+/// **It is load-bearing anyway; deleting it is a correctness regression.**
+/// The loop below never visits `total = 2`, so it cannot subsume this
+/// check — it consumes it, through both of its seeds (`prev = true`,
+/// `last_bound = 2`). Mutation-measured with the volume term's sign
+/// flipped: `None` at 38,416/38,416 seeds with this check, `Some(2)` — for
+/// a model bound at *no* total in `2..=T_MAX` — at 38,416/38,416 without
+/// it, which the gate's own `is_some()` accepts. What catches that defect
+/// at the suite level today is the `KNOWN_CLOSURES` pin in
+/// `the_two_armed_gate_passes_over_the_derived_corpus`; before that pin
+/// landed, this line was Arm 2's sole catcher, and Steps 2-7's production
+/// callers have no gate loop around them at all.
 ///
 /// **What this check does and does not discriminate — corrected after
 /// mutation-testing it directly.** It reliably catches a *scattered*
@@ -580,11 +645,64 @@ pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
 /// coefficient-balance defect this shape check should catch, so it is
 /// carved out rather than either asserted-negative (false in ~14% of
 /// universes) or asserted-positive (false in the rest).
+///
+/// **`MAX_TRANSITIONS` was `5`; it is `3`, the mechanism's own ceiling —
+/// tightened after `geometry-numerics-reviewer`'s cross-check.** The only
+/// re-binding mechanism here is a one-total [`crate::packing`]-closure
+/// blip costing exactly 2 transitions, and at most one occurs per universe
+/// (empirically: 2 blip events over the 38,416-seed corpus, both at
+/// `309`; 62 over a 307,461-cell fine box grid, at `{147, 309}` and
+/// nothing else, never two in one universe). One permanent crossing (1)
+/// plus one blip (2) is `3` — so `3` is the observed maximum *because* it
+/// is the structural maximum, not merely where sampling stopped. Counts
+/// above it are a different phenomenon: the nearest 5-transition cell
+/// (`1.333x` outside the P7-reachable box) changes sign at totals
+/// `5, 6, 12, 13, 14` — low-total scatter, the region this model's own doc
+/// admits it has no pairing term for — and **0 of 5,219** swept
+/// 5-transition cells are closure-blip-like. The old `<= 5` bound admitted
+/// exactly that scattered-defect class while rejecting its equally-near
+/// neighbours `7` and `9`, which is a line drawn one unit inside a regime,
+/// not a margin.
+///
+/// **`4` was considered and rejected: the margin would be provably
+/// empty.** `transitions` counts sign changes in `[s_2, s_4, s_5, ..,
+/// s_TMAX]`, so it carries the parity of `s_2 XOR s_TMAX` — and `s_2` is
+/// always `true` (the `total = 2` check above). So **`transitions` is odd
+/// iff the model is unbound at `T_MAX`** (verified: 0/38,416 violations).
+/// A *nonzero* even count needs the sequence to end *bound* after at least
+/// one excursion, which needs `T_MAX` to land on a one-total blip, and
+/// `386` is not a [`crate::packing`] closure (the set is `1, 13, 55, 147,
+/// 309`, next `561`) — zero itself is even and is the overwhelmingly
+/// common case (37,863/38,416 seeds), consistent with the same parity
+/// rule since a never-unbound sequence is bound at `T_MAX` too. Measured
+/// across seven injected defect classes over the 38,416-seed corpus, `3`
+/// and `4` have identical catch counts on every one — no defect tried
+/// produces exactly `4`.
+///
+/// **What tightening buys, measured; and that it costs nothing.**
+/// Replacing `contacts(total)` with a naive linear `total` — the exact
+/// defect that would falsify this module's own claim that the packing
+/// series supplies the real SEMF's surface term — passes `bound_shape` at
+/// **all** 38,416 seeds under the old `<= 5` and fails at 4 under `<= 3`.
+/// A gross `eps` scale error (`x0.1`) goes from caught at 43.3% of seeds
+/// to 68.1%. Cost: none — at `<= 3`, `bound_shape` returns `Some` for
+/// every seed and every payload it returned `Some` for at `<= 5` (0 of
+/// 38,416 corpus verdicts change, and 0 of 68,921 cells on an independent
+/// `41^3` box grid).
 #[must_use]
 pub(crate) fn bound_shape(coeffs: NuclearCoeffs) -> Option<u32> {
-    const MAX_TRANSITIONS: u32 = 5;
+    const MAX_TRANSITIONS: u32 = 3;
 
-    let bound = |total: u32| on_valley_per_unit_energy(total, coeffs) > 0.0;
+    let bound = |total: u32| on_valley_per_unit_energy(total, coeffs) > Quanta::ZERO;
+    // Not subsumable by the loop below, which never visits total = 2: BOTH of
+    // the loop's own seeds (`prev = true`, `last_bound = 2`) are assertions
+    // about total = 2 that only this early return makes true. Delete it and a
+    // model bound at *no* total returns Some(2) -- "bound up to total 2" --
+    // which this function's caller's own is_some() check accepts. Measured
+    // with the volume term's sign flipped: None at 38,416/38,416 seeds with
+    // this line, Some(2) at 38,416/38,416 without it. See this function's own
+    // doc for why the check is unfalsifiable by a coefficient draw and
+    // load-bearing anyway.
     if !bound(2) {
         return None;
     }
@@ -634,7 +752,7 @@ mod tests {
         per_unit_binding_energy, shedding_q, total_binding_energy, valley_peak_total,
     };
     use crate::perturbation::{MigratedConstant, Rung, draw_symmetric};
-    use borbax_units::det_math;
+    use borbax_units::{Quanta, det_math};
 
     /// Reachable `c` band under P7's crate-wide default `|p| <= 0.5`:
     /// `base_c * [0.5, 1.5]`.
@@ -645,8 +763,8 @@ mod tests {
     /// module wherever "at identity" is meant, instead of repeating the
     /// struct literal.
     const IDENTITY: NuclearCoeffs = NuclearCoeffs {
-        eps: BASE_EPS,
-        kappa: BASE_KAPPA,
+        eps: Quanta(BASE_EPS),
+        kappa: Quanta(BASE_KAPPA),
         c: BASE_C,
     };
 
@@ -666,7 +784,14 @@ mod tests {
         let eps = draw_symmetric(seed, rung, MigratedConstant::Eps, BASE_EPS);
         let kappa = draw_symmetric(seed, rung, MigratedConstant::Kappa, BASE_KAPPA);
         let c = draw_symmetric(seed, rung, MigratedConstant::C, BASE_C);
-        (rung, NuclearCoeffs { eps, kappa, c })
+        (
+            rung,
+            NuclearCoeffs {
+                eps: Quanta(eps),
+                kappa: Quanta(kappa),
+                c,
+            },
+        )
     }
 
     /// **1 (acceptance).** Step 1's two-armed gate over the derived corpus.
@@ -829,7 +954,7 @@ mod tests {
             );
 
             let q = shedding_q(T_MAX, coeffs);
-            let has_positive_q = q > 0.0;
+            let has_positive_q = q > Quanta::ZERO;
 
             if interior && has_positive_q {
                 closed += 1;
@@ -896,7 +1021,7 @@ mod tests {
     /// [`composition_argmax_int`] against it under different sweeps.
     fn brute_force_argmax(total: u32, coeffs: NuclearCoeffs) -> u32 {
         (1..=total)
-            .fold((1_u32, f64::MIN), |(best_a, best_e), a| {
+            .fold((1_u32, Quanta(f64::MIN)), |(best_a, best_e), a| {
                 let e = per_unit_binding_energy(a, total - a, coeffs);
                 if e > best_e { (a, e) } else { (best_a, best_e) }
             })
@@ -921,8 +1046,8 @@ mod tests {
                 let brute = brute_force_argmax(
                     total,
                     NuclearCoeffs {
-                        eps: BASE_EPS,
-                        kappa,
+                        eps: Quanta(BASE_EPS),
+                        kappa: Quanta(kappa),
                         c,
                     },
                 );
@@ -954,8 +1079,8 @@ mod tests {
                     let brute = brute_force_argmax(
                         total,
                         NuclearCoeffs {
-                            eps: BASE_EPS,
-                            kappa,
+                            eps: Quanta(BASE_EPS),
+                            kappa: Quanta(kappa),
                             c,
                         },
                     );
@@ -989,15 +1114,15 @@ mod tests {
         assert_eq!(contacts(1).to_bits(), 0.0_f64.to_bits());
         for &(kappa, c) in &[(23.7_f64, 0.015_f64), (0.1, 0.0075), (100.0, 0.0225)] {
             let coeffs = NuclearCoeffs {
-                eps: BASE_EPS,
-                kappa,
+                eps: Quanta(BASE_EPS),
+                kappa: Quanta(kappa),
                 c,
             };
             let e0 = total_binding_energy(0, 1, coeffs);
             let e1 = total_binding_energy(1, 0, coeffs);
             assert_eq!(
-                e0.to_bits(),
-                e1.to_bits(),
+                e0.get().to_bits(),
+                e1.get().to_bits(),
                 "kappa={kappa} c={c}: total_binding_energy(0,1) and (1,0) should be bit-identical \
                  at total=1"
             );
@@ -1037,16 +1162,18 @@ mod tests {
         );
         assert_eq!(composition_argmax_int(0.0192, 125), 50);
         let coeffs = NuclearCoeffs {
-            eps: BASE_EPS,
-            kappa: BASE_KAPPA,
+            eps: Quanta(BASE_EPS),
+            kappa: Quanta(BASE_KAPPA),
             c: 0.0192,
         };
         let e50 = per_unit_binding_energy(50, 75, coeffs);
         let e51 = per_unit_binding_energy(51, 74, coeffs);
         assert!(
-            (e50 - e51).abs() <= 4.0 * f64::EPSILON * e50.abs(),
+            (e50.get() - e51.get()).abs() <= 4.0 * f64::EPSILON * e50.get().abs(),
             "the two candidates at this tie should differ by a few ulp of rounding, not \
-             represent a real preference: e50={e50} e51={e51}"
+             represent a real preference: e50={} e51={}",
+            e50.get(),
+            e51.get()
         );
     }
 
@@ -1295,7 +1422,7 @@ mod tests {
     #[test]
     fn the_identity_configuration_is_bound_over_all_but_two_totals() {
         let unbound: Vec<u32> = (1..=T_MAX)
-            .filter(|&t| on_valley_per_unit_energy(t, IDENTITY) <= 0.0)
+            .filter(|&t| on_valley_per_unit_energy(t, IDENTITY) <= Quanta::ZERO)
             .collect();
         assert_eq!(
             unbound,
@@ -1346,16 +1473,17 @@ mod tests {
             4,
             4,
             NuclearCoeffs {
-                eps: 1.0,
-                kappa: 0.0,
+                eps: Quanta(1.0),
+                kappa: Quanta(0.0),
                 c: 0.0,
             },
         );
         assert_eq!(
-            isolated.to_bits(),
+            isolated.get().to_bits(),
             18.608_003_309_573_23_f64.to_bits(),
-            "eps * contacts(total) at total = 8, eps = 1: got {isolated}, want contacts(8) at \
-             NUCLEAR_K = 10, 18.60800330957323, exactly"
+            "eps * contacts(total) at total = 8, eps = 1: got {}, want contacts(8) at NUCLEAR_K \
+             = 10, 18.60800330957323, exactly",
+            isolated.get()
         );
     }
 
@@ -1379,15 +1507,16 @@ mod tests {
             6,
             2,
             NuclearCoeffs {
-                eps: 0.0,
-                kappa: 2.0,
+                eps: Quanta(0.0),
+                kappa: Quanta(2.0),
                 c: 0.0,
             },
         );
         assert_eq!(
-            isolated.to_bits(),
+            isolated.get().to_bits(),
             (-4.0_f64).to_bits(),
-            "kappa * (a-b)^2 / total at a=6 b=2 kappa=2: got {isolated}, want -4.0 exactly"
+            "kappa * (a-b)^2 / total at a=6 b=2 kappa=2: got {}, want -4.0 exactly",
+            isolated.get()
         );
     }
 
@@ -1412,23 +1541,24 @@ mod tests {
     #[test]
     fn the_coulomb_term_is_gamma_times_a_times_a_minus_one_over_total_to_the_one_third() {
         let coeffs = NuclearCoeffs {
-            eps: 0.0,
-            kappa: 2.0,
+            eps: Quanta(0.0),
+            kappa: Quanta(2.0),
             c: 0.25,
         };
         let isolated = total_binding_energy(4, 4, coeffs);
         assert_eq!(
-            isolated.to_bits(),
+            isolated.get().to_bits(),
             (-6.0_f64).to_bits(),
-            "gamma * a*(a-1) / total^(1/3) at a=4 b=4 kappa=2 c=0.25: got {isolated}, want -6.0 \
-             exactly"
+            "gamma * a*(a-1) / total^(1/3) at a=4 b=4 kappa=2 c=0.25: got {}, want -6.0 exactly",
+            isolated.get()
         );
         let asymmetric = total_binding_energy(6, 2, coeffs);
         assert_eq!(
-            asymmetric.to_bits(),
+            asymmetric.get().to_bits(),
             (-19.0_f64).to_bits(),
-            "at a=6 b=2 kappa=2 c=0.25 (asymmetry -4.0 plus Coulomb -15.0): got {asymmetric}, \
-             want -19.0 exactly"
+            "at a=6 b=2 kappa=2 c=0.25 (asymmetry -4.0 plus Coulomb -15.0): got {}, want -19.0 \
+             exactly",
+            asymmetric.get()
         );
     }
 
@@ -1449,10 +1579,11 @@ mod tests {
     fn the_three_terms_are_summed_left_to_right() {
         let assembled = total_binding_energy(26, 30, IDENTITY);
         assert_eq!(
-            assembled.to_bits(),
+            assembled.get().to_bits(),
             492.160_537_020_485_5_f64.to_bits(),
-            "assembled three-term energy at a=26 b=30, identity coefficients: got {assembled}, \
-             want 492.1605370204855 exactly"
+            "assembled three-term energy at a=26 b=30, identity coefficients: got {}, want \
+             492.1605370204855 exactly",
+            assembled.get()
         );
     }
 
@@ -1476,7 +1607,7 @@ mod tests {
         for total in 1..=T_MAX {
             let a = composition_argmax_int(BASE_C, total);
             let e = total_binding_energy(a, total - a, IDENTITY);
-            for byte in e.to_bits().to_le_bytes() {
+            for byte in e.get().to_bits().to_le_bytes() {
                 h ^= u64::from(byte);
                 h = h.wrapping_mul(0x0000_0100_0000_01b3);
             }

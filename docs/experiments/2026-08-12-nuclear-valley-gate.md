@@ -186,8 +186,17 @@ the same mechanism as) real nuclear shell closures — real magic numbers
 come from the spin-orbit-split shell model, not geometric packing, and
 this crate's own closures don't coincide with them. Three independent
 seeds landing on the same boundary is what makes it the mechanism rather
-than coincidence. Gate set at `≤ 5` transitions, clearing the measured
-worst case with margin.
+than coincidence. **Updated 2026-08-13**: the gate was originally set at
+`≤ 5` transitions, "clearing the measured worst case with margin"; a
+follow-up specialist cross-check (`geometry-numerics-reviewer`, after the
+fourth `/review-pr` round on PR #38) found `5` was not a margin but an
+off-by-one line drawn inside the nearest
+out-of-box defect regime, and proved `3` is this mechanism's own
+structural ceiling (one permanent crossing plus at most one closure-blip,
+which costs exactly 2) — see `bound_shape`'s own doc in
+`crates/borbax-universe/src/nuclear.rs` for the parity proof that `4`
+would have been an empty margin. Gate now set at `≤ 3`, with zero verdicts
+changed on the corpus below.
 
 **Result: 38,416/38,416 pass (`total = 3` excluded from the count, as
 designed).**
@@ -304,8 +313,11 @@ model:**
   anywhere in `4..=T_MAX` at all** (most of what this check used to
   discriminate against no longer occurs at all); the transition-count
   distribution moved from **p50 = 0, p90 = 1, max = 3** to **p50 = 0,
-  p90 = 0, max = 3** — the `≤ 5` bound is unchanged but tighter relative to
-  what is now observed. The `total = 309` shell-closure blip still occurs —
+  p90 = 0, max = 3** — max unchanged at the top. **Updated 2026-08-13**:
+  the bound is `≤ 3`, not `≤ 5` (see the note above this section) — `3`
+  clears this measured max with zero margin remaining above it, which is
+  correct: `3` is the mechanism's structural ceiling, not a margin below
+  one. The `total = 309` shell-closure blip still occurs —
   two seeds (3992, 4425) hit it in this corpus, down from three (14355,
   20107, 21217), for the same reason: fewer universes reach an unbound
   region at all for the blip to interrupt.
