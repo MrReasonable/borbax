@@ -356,6 +356,21 @@ impl NuclearCoeffs {
 /// error — a `/review-pr` finding (`geometry-numerics-reviewer`),
 /// recorded here since it sits directly under this module's own headline
 /// claim that `eps * contacts(total)` reproduces a real SEMF term.
+///
+/// **Not cached, deliberately, for now** — a `/review-pr` round 6 pair
+/// (`rust-developer-expert`, `determinism-auditor`) verified a per-total
+/// lookup table here would be bit-identical (`contacts_upto` is pure: no
+/// `static`/thread-local/RNG/wall-clock anywhere in its call graph) and
+/// roughly 13x faster, but this function has zero production callers
+/// today (Steps 2-7 wire it into `crate::element`) and the module's own
+/// gate test already measures the uncached cost at 2.2s release — not
+/// worth the complexity yet. **If this is ever cached, the cache is sound
+/// only because [`NUCLEAR_K`] is a compile-time constant** —
+/// `packing::contacts_upto` is *also* called with a *drawn*, per-universe
+/// `k` at `element.rs:726` and `bonds.rs:421`; caching at that call shape
+/// would serve the first universe generated in a process to every later
+/// one, a nondeterminism bug that would surface only under `cargo test`'s
+/// multi-threaded, unfixed test order (§13.1).
 #[must_use]
 #[expect(
     clippy::as_conversions,
