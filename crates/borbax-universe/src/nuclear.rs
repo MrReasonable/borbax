@@ -257,14 +257,20 @@ pub(crate) const NUCLEAR_K: usize = 10;
 /// question two `/review-pr` rounds had deferred.** `CodeRabbit` and
 /// `emergence-auditor` independently suggested Quanta-typing these (they
 /// are, unambiguously, energy quantities — G4 names `Quanta` as the
-/// required newtype); `determinism-auditor` proved it bit-identical over a
-/// 416,880-cell sweep both times it was asked. What tipped the deferral
-/// was not headcount but a concrete typing exercise: `rust-developer-expert`
+/// required newtype); `determinism-auditor` proved it bit-identical twice
+/// — a 416,880-cell sweep the first time it was asked (before any code
+/// existed), a 1.17M-cell runtime comparison plus an `--emit asm` diff the
+/// second time (against the shipped diff). What tipped the deferral was
+/// not headcount but a concrete typing exercise: `rust-developer-expert`
 /// dispatched a third time actually wrote the five affected signatures
 /// against `Quanta`'s real trait surface (`element.rs`'s V1 generator
 /// already types its own `eps` this way, with the identical
-/// zero-bit-movement proof) and found no rough edge — no missing operator,
-/// no call site the newtype fights. `c` stays bare `f64`: it is
+/// zero-bit-movement proof) and found one asymmetry and no missing
+/// operator otherwise: `Mul<f64>` only takes the newtype on the left, so
+/// `total_binding_energy`'s `2.0 * kappa * c` became `kappa * 2.0 * c`
+/// (harmless — IEEE-754 `*` is exactly commutative, see that function's
+/// own comment) — no other call site needed a rewrite. `c` stays bare
+/// `f64`: it is
 /// `a_C/(2*a_sym)`, a genuinely dimensionless ratio, not an energy. `total`
 /// (nucleon count), `contacts`'s dimensionless coordination number, and
 /// every `composition_argmax*`/`drift_onset`/`valley_peak_total`/
@@ -276,6 +282,28 @@ pub(crate) const NUCLEAR_K: usize = 10;
 /// routed requirement) — that is a field which does not exist yet, decided
 /// when Steps 5-7 actually build it, not settled by typing this module's
 /// existing internals.
+///
+/// **Advisory, from `physics-plausibility-reviewer`: `Quanta` now silently
+/// carries two unrelated real-world meanings, and their numeric ranges
+/// happen to overlap.** At the identity seed, this module's `Quanta`
+/// values genuinely are `MeV` — `BASE_KAPPA` is Rohlf's real `a_sym` in
+/// `MeV` verbatim, and `total_binding_energy(26, 30, IDENTITY)` reproduces
+/// Fe-56's real total binding energy to a fraction of a percent (a
+/// legitimate G1/G2-revision claim, not smuggled data — see this module's
+/// own citations). `bonds.rs`'s bond-energy `Quanta` values have no real
+/// anchor at all (`element.rs`'s V1 `eps` is an unlabelled draw). Nothing
+/// today combines the two fields, so this is not a live defect — but if a
+/// future reader assumes "1 `Quanta` = 1 `MeV`" universally, because that
+/// happens to be true here, `bonds.rs`'s existing energies would read as
+/// nuclear-decay-scale numbers for chemical bonds: the same class of
+/// category error this reviewer role exists to catch (CLAUDE.md's own
+/// Fe-56/C-C example), latent rather than wired, and harder to notice
+/// because the magnitudes happen to overlap instead of differing by six
+/// orders of magnitude. Whichever step decides `Element::instability`'s
+/// typing should state explicitly what "1 `Quanta`" means project-wide —
+/// nothing real, per `borbax_units`' own charter — rather than silently
+/// inheriting this module's accidental overlap with `bonds.rs` as if it
+/// settled the question.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NuclearCoeffs {
     pub(crate) eps: Quanta,
@@ -499,6 +527,18 @@ pub(crate) fn drift_onset(c: f64) -> Option<u32> {
 /// `Mass` value is constructed here — but a future caller promoting this
 /// convention into a real reaction channel needs to know which quantity
 /// it's actually computing.
+///
+/// **Routed requirement for Steps 5-7 — a `geometry-numerics-reviewer`
+/// finding.** At `total ∈ {0, 1}`, `1..=total/2` is empty and this
+/// function returns its fold seed, `Quanta(f64::MIN)` — an energy of
+/// roughly `-1.8e308`, not a meaningful Q-value. No caller observes this
+/// today (only the gate test calls `shedding_q(T_MAX, ..)`, and `T_MAX`
+/// is far from `0`/`1`), and the module carries `expect(dead_code)`
+/// precisely because no production caller exists yet. `total = 1` is the
+/// first element any per-isotope wiring will hit, so before this function
+/// gets a real caller: return `Option<Quanta>` or an explicit early
+/// return, matching [`drift_onset`]'s and [`bound_shape`]'s own
+/// already-stated preference for `Option` over an out-of-range sentinel.
 #[must_use]
 pub(crate) fn shedding_q(total: u32, coeffs: NuclearCoeffs) -> Quanta {
     let whole = on_valley_total_energy(total, coeffs);
@@ -596,8 +636,15 @@ pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
 /// 38,416 seeds; `contacts(2) == 1.0` at `NUCLEAR_K = 10`,
 /// [`NUCLEAR_K`]'s value). So `bound(2)` is exactly `eps > 0`, which
 /// `crate::perturbation::perturb`'s own annihilation proof guarantees —
-/// measured `eps` range `[1.3138, 3.9310]`, and a 35,301-cell sweep with
-/// `eps` multipliers from `1e-8` to `1e2` finds it false in **0**.
+/// measured `eps` range `[1.3138, 3.9310]`. A 35,301-cell sweep with `eps`
+/// multipliers from `1e-8` to `1e2` finds it false in **0**, which on the
+/// `eps` axis is true by construction rather than evidence (every
+/// multiplier swept is positive, and the identity above is `eps > 0`) — a
+/// `geometry-numerics-reviewer` correction, this task's own recurring
+/// self-referential-check pattern found once more, this time in the
+/// prose justifying an already-correct conclusion. What that sweep
+/// actually tests is that `a = 1` survives across the `kappa`/`c` axes,
+/// the half of the derivation that could fail and didn't.
 ///
 /// **It is load-bearing anyway; deleting it is a correctness regression.**
 /// The loop below never visits `total = 2`, so it cannot subsume this
@@ -646,38 +693,78 @@ pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
 /// carved out rather than either asserted-negative (false in ~14% of
 /// universes) or asserted-positive (false in the rest).
 ///
-/// **`MAX_TRANSITIONS` was `5`; it is `3`, the mechanism's own ceiling —
-/// tightened after `geometry-numerics-reviewer`'s cross-check.** The only
-/// re-binding mechanism here is a one-total [`crate::packing`]-closure
-/// blip costing exactly 2 transitions, and at most one occurs per universe
-/// (empirically: 2 blip events over the 38,416-seed corpus, both at
-/// `309`; 62 over a 307,461-cell fine box grid, at `{147, 309}` and
-/// nothing else, never two in one universe). One permanent crossing (1)
-/// plus one blip (2) is `3` — so `3` is the observed maximum *because* it
-/// is the structural maximum, not merely where sampling stopped. Counts
-/// above it are a different phenomenon: the nearest 5-transition cell
-/// (`1.333x` outside the P7-reachable box) changes sign at totals
-/// `5, 6, 12, 13, 14` — low-total scatter, the region this model's own doc
-/// admits it has no pairing term for — and **0 of 5,219** swept
-/// 5-transition cells are closure-blip-like. The old `<= 5` bound admitted
-/// exactly that scattered-defect class while rejecting its equally-near
-/// neighbours `7` and `9`, which is a line drawn one unit inside a regime,
-/// not a margin.
+/// **`MAX_TRANSITIONS` was `5`; it is `3` over the P7-reachable domain —
+/// tightened after `geometry-numerics-reviewer`'s cross-check, and
+/// re-confirmed over the full reachable continuum (not just the sampled
+/// corpus), not merely the mechanism's own ceiling in general.** Within
+/// the P7-reachable box (`base * [0.5, 1.5]` per coefficient), the only
+/// re-binding observed is a one-total [`crate::packing`]-closure blip
+/// costing exactly 2 transitions, and at most one occurs per universe
+/// (2 blip events over the 38,416-seed corpus, both at `309`; 62 over a
+/// 307,461-cell fine box grid, at `{147, 309}` and nothing else, never two
+/// in one universe; independently re-swept over the full reachable
+/// continuum at `41^3` and `61^3` box grids — max `3`, zero cells at `2`,
+/// in both). One permanent crossing (1) plus one blip (2) is `3`. **This
+/// is box-local, not a claim about the mechanism in the abstract** — a
+/// modest widening (`1.333x`) already reaches a genuinely different
+/// regime: low-total scatter cells with transition counts up to at least
+/// `5`, and one-total blips at non-closure totals. If P7's crate-wide
+/// `|p| <= 0.5` default, or any of `BASE_EPS`/`BASE_KAPPA`/`BASE_C`,
+/// ever moves, re-run the transition histogram over the new box before
+/// trusting `<= 3` again. The old `<= 5` bound admitted the
+/// nearby scattered-defect regime while claiming to have margin against
+/// it — it did not; `<= 3` is the tight bound for the box actually in
+/// use, not a margin below some larger structural limit.
 ///
-/// **`4` was considered and rejected: the margin would be provably
-/// empty.** `transitions` counts sign changes in `[s_2, s_4, s_5, ..,
-/// s_TMAX]`, so it carries the parity of `s_2 XOR s_TMAX` — and `s_2` is
-/// always `true` (the `total = 2` check above). So **`transitions` is odd
-/// iff the model is unbound at `T_MAX`** (verified: 0/38,416 violations).
-/// A *nonzero* even count needs the sequence to end *bound* after at least
-/// one excursion, which needs `T_MAX` to land on a one-total blip, and
-/// `386` is not a [`crate::packing`] closure (the set is `1, 13, 55, 147,
-/// 309`, next `561`) — zero itself is even and is the overwhelmingly
-/// common case (37,863/38,416 seeds), consistent with the same parity
-/// rule since a never-unbound sequence is bound at `T_MAX` too. Measured
-/// across seven injected defect classes over the 38,416-seed corpus, `3`
-/// and `4` have identical catch counts on every one — no defect tried
-/// produces exactly `4`.
+/// **`4` was considered and rejected — but not because the margin is
+/// provably empty. An earlier version of this paragraph claimed exactly
+/// that, and it is false; both halves of the false claim have a
+/// counterexample, found independently by two `/review-pr` round-5
+/// specialists.** `transitions` counts sign changes in `[s_2, s_4, s_5,
+/// .., s_TMAX]`, so it carries the parity of `s_2 XOR s_TMAX` — and `s_2`
+/// is always `true` (the `total = 2` check above). So **`transitions` is
+/// odd iff the model is unbound at `T_MAX`** (verified: 0/38,416
+/// violations) — that part is a real theorem about sign changes in a
+/// boolean sequence, not a measurement, and it still holds.
+///
+/// What does not hold is the next step the earlier version took: that a
+/// *nonzero* even count "needs `T_MAX` to land on a one-total blip." A
+/// nonzero even count only needs the sequence to end **bound** after at
+/// least one excursion — the excursion does not have to be one total wide
+/// and does not have to be anywhere near `T_MAX`. `geometry-numerics-reviewer`
+/// found a real, unmutated cell demonstrating this: `eps = 0.8750,
+/// kappa = 34.7600, c = 0.005000` (a `1.33x` widening of the P7-reachable
+/// box — outside it, not inside) gives exactly 2 transitions, changing
+/// sign at totals `5` and `6` and staying bound all the way to `T_MAX` — a
+/// low-total excursion with no blip anywhere near the top. **This
+/// falsifies the withdrawn *reason*, not the withdrawn *conclusion***: a
+/// count of `2` still passes under both `<= 3` and `<= 4`, so this
+/// particular cell does not itself discriminate between them — it only
+/// shows the mechanism claimed for ruling out nonzero-even counts in
+/// general does not hold, which is exactly the reasoning-error class this
+/// module's own history keeps producing in its justifying prose. Whether
+/// even counts are structurally excluded from the P7-reachable box for a
+/// *different* reason is not established either way by this correction.
+///
+/// The "no defect tried produces exactly `4`" half was also false, and
+/// `determinism-auditor` found the counterexample: an asymmetry term
+/// written `kappa * |a-b| / total` instead of `kappa * (a-b)^2 / total`
+/// gives **exactly 4** transitions at `eps = 1.5436038271613286,
+/// kappa = 33.64056399022681, c = 0.02096496702878145` — sign changes at
+/// totals `379, 380, 383, 384`, ending bound at `T_MAX`, no closure blip
+/// involved anywhere in it. `<= 3` catches this (`4 > 3`); `<= 4` would
+/// wave it through. Both counterexamples were independently re-verified
+/// against the shipped functions before this paragraph was corrected, not
+/// taken on either reviewer's word. **The `3 vs 4` margin is not empty —
+/// it is the specific reason to prefer `3`.** Measured across the other
+/// six injected defect classes over the 38,416-seed corpus, `3` and `4`
+/// still have identical catch counts — this asymmetry-exponent class is
+/// the one that discriminates between them, zero itself remains the
+/// overwhelmingly common transition count (37,863/38,416 seeds, even and
+/// consistent with the same parity rule), and `386` is still not a
+/// [`crate::packing`] closure (the set is `1, 13, 55, 147, 309`, next
+/// `561`) — that fact just no longer does the work this paragraph
+/// previously asked it to do.
 ///
 /// **What tightening buys, measured; and that it costs nothing.**
 /// Replacing `contacts(total)` with a naive linear `total` — the exact
@@ -689,6 +776,31 @@ pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
 /// every seed and every payload it returned `Some` for at `<= 5` (0 of
 /// 38,416 corpus verdicts change, and 0 of 68,921 cells on an independent
 /// `41^3` box grid).
+///
+/// **The margin, stated as a number — `emergence-auditor`'s finding.**
+/// Along the axis that actually governs the sign pattern (`r = eps/kappa`),
+/// the nearest `>= 4`-transition regime begins at `r <= 0.0297427`,
+/// against the P7-reachable floor of `r = 0.0369198` — P7's crate-wide
+/// `|p| <= 0.5` default would need to widen to `0.5766` (a 15.3% increase)
+/// before a legitimately drawn universe could reach it. **What would
+/// consume that margin first is a term this model does not have.** This
+/// module's own doc says four separate times that the model has no
+/// pairing term; a real SEMF pairing term (`± a_P / sqrt(A)`) deepens
+/// exactly the odd-even staggering already responsible for most of the
+/// low-total sign changes this bound watches for. If Steps 2+ ever add
+/// one, a red gate here should first be read as "the model gained a
+/// term," not "the coefficients regressed."
+///
+/// **Once [`bound_shape`] gets a production caller, this bound stops being
+/// instrumentation.** Today it has none (the module-level
+/// `expect(dead_code, ...)` above says so explicitly), so
+/// `MAX_TRANSITIONS` only decides
+/// which universes pass Step 1's own gate test. If a future caller's
+/// `None` branch ever changes what gets *generated* — e.g. `Some(last_bound)`
+/// read as a table-size or heaviest-stable-element source — `3` would stop
+/// measuring the model and start selecting which universes exist, fitted
+/// to a domain established before that caller existed. Worth catching at
+/// whichever step wires the first such caller in, not before.
 #[must_use]
 pub(crate) fn bound_shape(coeffs: NuclearCoeffs) -> Option<u32> {
     const MAX_TRANSITIONS: u32 = 3;
@@ -1307,12 +1419,18 @@ mod tests {
         }
     }
 
-    /// **9 (report).** The drift distribution reported at fixed totals, not
-    /// pooled — pooling makes a degenerate (single-optimum) model look
-    /// diverse, which is exactly the trap the plan names.
+    /// **9 (report + assertion).** The drift distribution reported at fixed
+    /// totals, not pooled — pooling makes a degenerate (single-optimum)
+    /// model look diverse, which is exactly the trap the plan names. Also
+    /// carries a real non-crossing invariant (below), not just reporting.
+    /// **Un-ignored 2026-08-13 — a `/review-pr` round-5 finding
+    /// (`determinism-auditor`): this test was documented as "reporting
+    /// only", but its `low_c >= identity` loop is a real assertion that no
+    /// CI leg was evaluating, same shape as the three tests round 4
+    /// un-ignored for the same reason. It costs 20 loop iterations —
+    /// nowhere near the "expensive" justification that (already proven
+    /// false in round 3) had kept those three `#[ignore]`d.**
     #[test]
-    #[ignore = "reporting only, not run under CI by default -- run: cargo test --locked --release \
-                -p borbax-universe -- --ignored --nocapture nuclear"]
     fn the_drift_distribution_is_reported_at_fixed_totals_not_pooled() {
         for &total in &[20_u32, 56, 120, 200, 386] {
             let lo = composition_argmax(C_MAX, total) / f64::from(total);
@@ -1598,8 +1716,13 @@ mod tests {
     /// 75,075, was off by 2 from `sum(t+1 for t in 1..=T_MAX)`) and fusing
     /// them into `V - (A + C)` moves 43.0% — both pass every
     /// other test in this module. Every value in the sequence is finite
-    /// (checked when the literal was taken), so `to_bits` needs no NaN
-    /// canonicalisation. Same FNV-1a-64 shape `packing.rs`'s own
+    /// and non-zero (checked when the literal was taken), so raw
+    /// `.get().to_bits()` needs no NaN or signed-zero canonicalisation
+    /// here — a `geometry-numerics-reviewer` finding: `borbax_units`'
+    /// `canonical_bits()` exists for exactly those two hazards, and the
+    /// weaker spelling is correct only because this specific sequence
+    /// never hits either, not because the hazard class doesn't apply to
+    /// `Quanta` in general. Same FNV-1a-64 shape `packing.rs`'s own
     /// accumulation-order digests use.
     #[test]
     fn the_identity_on_valley_energy_digest_is_pinned() {
