@@ -83,20 +83,26 @@ use borbax_rng::{Domain, Stream};
 /// wrong axis would let one task's perturbation silently affect the other's
 /// physics.
 ///
-/// **`Nuclear` has no constant tagged with it yet** — Task 26.2 adds the
-/// first. Plain `#[allow(dead_code)]`, not `#[expect(dead_code)]`: measured
-/// this flipping between fulfilled and unfulfilled across otherwise-identical
-/// clean rebuilds while investigating it, which is not a property a
-/// self-verifying `#[expect]` can be trusted to have — `#[allow]` makes no
-/// claim about whether the lint would fire, only that it should be
-/// suppressed either way, which is the honest thing to assert here.
+/// **`Nuclear` is tagged by Task 26.2's coefficients (`eps`, `kappa`, `c`
+/// — originally four including `sigma`, pre-registered 2026-08-12, `sigma`
+/// deleted 2026-08-13 as structurally unjustified) — see
+/// [`MigratedConstant`]'s own doc.** Still `#[allow(dead_code)]`, not
+/// `#[expect(dead_code)]`: nothing in production branches on `.axis()`'s
+/// classification yet (Step 3's independence test is what gives it a first
+/// real reader, and Step 3 has not landed), so the variant is constructed
+/// only by the generated `axis()` match arms below and read only by this
+/// module's own tests — the same "flips between fulfilled and unfulfilled
+/// across otherwise-identical clean rebuilds" property that ruled out
+/// `#[expect]` for this enum originally still holds, since what changed is
+/// which constants tag `Nuclear`, not whether anything outside a test reads
+/// the tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Axis {
     Electronic,
     #[allow(
         dead_code,
-        reason = "Task 26.2 is this variant's first consumer; see this enum's own doc for why \
-                  #[allow] rather than #[expect]"
+        reason = "no production caller of .axis() exists yet -- Step 3's independence test is \
+                  the first; see this enum's own doc for why #[allow] rather than #[expect]"
     )]
     Nuclear,
 }
@@ -106,15 +112,17 @@ pub(crate) enum Axis {
 /// against (issue #26, P7's round-4 correction, `signature.rs:141-144`'s
 /// existing warning about weights with no physical counterpart).
 ///
-/// **`HasReal` has no constant tagged with it yet** — Task 26.2's `kappa`/`c`
-/// (the plan's own P7 migration table) are the first. See [`Axis`]'s own
-/// doc for why this is `#[allow]`, not `#[expect]`.
+/// **`HasReal` is tagged by Task 26.2's `kappa`/`c`** (`base_kappa = 23.7`,
+/// `base_c = 0.015`, Rohlf's self-consistent semi-empirical mass formula
+/// pair — see [`MigratedConstant`]'s own doc for the citation), pinned
+/// 2026-08-12. See [`Axis`]'s own doc for why this is `#[allow]`, not
+/// `#[expect]` — the same "no production reader yet" reasoning applies here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Counterpart {
     #[allow(
         dead_code,
-        reason = "Task 26.2's kappa/c are this variant's first consumer; see Axis's own doc for \
-                  why #[allow] rather than #[expect]"
+        reason = "no production caller of .counterpart() exists yet -- Step 3's independence \
+                  test is the first; see Axis's own doc for why #[allow] rather than #[expect]"
     )]
     HasReal,
     DefaultOnly,
@@ -353,26 +361,201 @@ migrated_constants! {
     /// [`MigratedConstant::p_bound`]. `p_bound` is still set here (to the
     /// crate-wide default) so the fourth tag stays total.
     ScreeningDeep = 12, Axis::Electronic, Counterpart::DefaultOnly, Direction::P_MAX;
+    /// Task 26.2's nuclear binding-energy scale — the model's `eps *
+    /// contacts(total)` term. **Composite, tagged `DefaultOnly` rather than
+    /// `HasReal` even though it approximates a real quantity**: it folds the
+    /// real semi-empirical mass formula's volume *and* surface terms into
+    /// one packing-derived contact count, so it has no single clean real
+    /// coefficient to pin against — see the plan's own P7 pre-registration
+    /// (2026-08-12) for the full accounting.
+    ///
+    /// **`BASE_EPS = 2.625`, corrected 2026-08-12 during Step 1's own gate —
+    /// this entry originally pinned `1.0`, V1's own historical `eps`
+    /// midpoint, which sits at an unrelated scale next to
+    /// [`Self::Kappa`]/[`Self::C`]'s real MeV-pinned values.** Measured at
+    /// the time, at `eps = 1.0` and the shipped `NUCLEAR_K = 10` on the
+    /// four-coefficient model then shipped: 305 of 386 totals (79.0%) had
+    /// negative on-valley per-unit binding energy — unbound over most of
+    /// its domain, not merely peaked low, caught by a
+    /// `physics-plausibility-reviewer` pass dispatched specifically because
+    /// `kappa`/`c` carry real correspondence and `eps` did not. (An earlier
+    /// draft of this correction quoted 288/386, 74.6% — measured against
+    /// the superseded `NUCLEAR_K = 12` before that constant's own
+    /// correction landed; and 305/386 was itself the four-coefficient
+    /// model's figure — after `sigma`'s 2026-08-13 removal, the identical
+    /// measurement at `eps = 1.0` on the current three-coefficient model
+    /// gives 190/386, 49.2%, unbound over roughly half its domain, not
+    /// most of it. Neither figure is stale *in its own historical context*;
+    /// see `crates/borbax-universe/src/nuclear.rs`'s
+    /// `the_identity_configuration_is_bound_over_all_but_two_totals` for the
+    /// figure as a pinned test.) Corrected to `eps = 2*a_V/z`, `a_V = 15.75`
+    /// `MeV` (Rohlf's real SEMF volume coefficient, the same citation `kappa`
+    /// uses), `z = 12` (`crate::packing::shell_size(k, 1)` at the nuclear
+    /// module's own fixed `k = 10`) — matching the real limit
+    /// `eps * contacts(t)/t -> a_V` as `t -> infinity` (a `/review-pr`
+    /// correction: not `BE/A -> a_V`, which is false — real `BE/A` along
+    /// the valley asymptotes to `a_V - a_A`, not `a_V` alone; `a_V` is the
+    /// volume term's own per-nucleon limit, what `eps * contacts(t)/t`
+    /// computes — see `nuclear.rs`'s own "Post-gate correction" for the
+    /// correct `BE/A` asymptote), a limit approached slowly and not
+    /// attained within `T_MAX` (`eps * contacts(T_MAX)/T_MAX` is `13.19`,
+    /// not `15.75`). See `crates/borbax-universe/src/nuclear.rs` for the
+    /// landed constant and the full accounting.
+    ///
+    /// **Does not feed `energy_per_unit`** (V1's and V2's shared bond-pricing
+    /// field) — see the plan's Round 5 correction for why that would
+    /// re-price every bond by nuclear structure, ~10⁶× too strong.
+    /// Symmetric `p` bound: no structural reason to favour one direction,
+    /// and `eps` has zero effect on the composition argmax itself (a
+    /// per-total additive constant that cancels out of the comparison
+    /// across compositions at fixed total). **`eps`'s *direction* is
+    /// independently drawn from `kappa`/`c`'s (each reads its own `Stream`
+    /// index, per [`draw_symmetric`]'s doc) — "independent" here means
+    /// independently *drawn*, not statistically independent: all three
+    /// nuclear constants still share one rung, so their *magnitudes* move
+    /// together. *Deriving* `eps` from `kappa`/`c` instead — the way
+    /// `gamma` is derived from `kappa`/`c` — was considered and
+    /// rejected**, not the independent draw itself: real SEMF
+    /// volume/asymmetry coefficients are independently fitted parameters
+    /// with no derivable relationship (`a_A/a_V` spans 1.348-1.505 across
+    /// five published fits against `a_V`'s own ±5.7% spread), so deriving
+    /// `eps` from `kappa` would assert a physical constraint real nuclear
+    /// physics does not make.
+    Eps = 13, Axis::Nuclear, Counterpart::DefaultOnly, Direction::P_MAX;
+    // Index 14 is retired, not free: `Sigma` (the model's `sigma *
+    // total^(5/3)` size-cost term) was deleted 2026-08-13 (see
+    // `crates/borbax-universe/src/nuclear.rs`'s "Post-gate correction" —
+    // a `physics-plausibility-reviewer` pass found it structurally
+    // unjustified, not merely miscalibrated: `eps * contacts(total)`
+    // already reproduces the real SEMF's volume-and-surface behaviour, so
+    // a separate size-cost term duplicated a role already filled). This
+    // index is never reused — see [`MigratedConstant`]'s own doc,
+    // "discriminants never renumbered": reusing 14 for a future constant
+    // would make that constant collide with every historical draw made
+    // under the old `Sigma` meaning, silently. `Kappa`/`C` keep 15/16
+    // unchanged, so every seed's `kappa`/`c` draw is bit-identical to
+    // before this removal.
+    /// Task 26.2's nuclear asymmetry coefficient — the model's `kappa *
+    /// (a-b)^2 / total` term. **`HasReal`, pinned to Rohlf's semi-empirical
+    /// mass formula asymmetry coefficient**: `BASE_KAPPA = 23.7` (`MeV`).
+    /// Citation: J. W. Rohlf, *Modern Physics from α to Z⁰*, Wiley, New
+    /// York (1994), ISBN 0-471-57270-5 — verified 2026-08-12 against an
+    /// earlier draft that had silently mixed Rohlf's own `a_C` with a
+    /// different fit's `a_sym = 23.2`; see the plan's citation correction
+    /// for the full accounting. `kappa` is pure scale for the composition
+    /// argmax (cancels out entirely once `gamma` is reparameterised as
+    /// `2*kappa*c`, Decision 11) — its value matters for the model's energy
+    /// *magnitude*, never for where the valley sits. Symmetric `p` bound.
+    Kappa = 15, Axis::Nuclear, Counterpart::HasReal, Direction::P_MAX;
+    /// Task 26.2's dimensionless Coulomb-to-asymmetry ratio, `c =
+    /// gamma/(2*kappa)` — the one quantity that actually determines where
+    /// the composition-argmax valley sits (Decision 11); `gamma` itself is
+    /// **derived**, `2*kappa*c`, and is not an independent perturbation
+    /// target. **`HasReal`**: `BASE_C = 0.015` exactly (`a_C / (2 *
+    /// a_sym) = 0.711 / (2 * 23.7)`, Rohlf's self-consistent pair — see
+    /// [`Self::Kappa`]'s own citation). **The excursion bound is the
+    /// crate-wide default despite `c` setting a hard structural
+    /// requirement** (coverage: no element's isotope distribution may be
+    /// empty) **— the requirement is met by choosing `T_MAX`, not by
+    /// tightening `p`.** At `T_MAX = 386` (the plan's own pre-registration,
+    /// 2026-08-12), the worst-case reachable `c` (`BASE_C * 1.5`, at
+    /// `Direction::P_MAX = 0.5`) still gives `a*(T_MAX) = 121.08`, a
+    /// 1.5-unit buffer above the `119.5` bare-minimum coverage threshold
+    /// for `n_elements = 120` — see the plan's own derivation, independently
+    /// verified by `geometry-numerics-reviewer` (0/48,000 mismatches against
+    /// brute-force integer argmax). `T_MAX` itself is not migrated through
+    /// P7 — it is a fixed design constant of the model family, not a
+    /// per-universe or per-constant quantity (Decision 11: using the drawn
+    /// table's own size would make `c`'s legal range circular and couple
+    /// the nuclear axis to Task 26.1's electronic one through `n_elements`,
+    /// contradicting Step 3's independence requirement).
+    ///
+    /// **Correction, 2026-08-12, found during Step 1's own gate: this proof
+    /// covers only the composition argmax's shape (does `a*(t)` reach every
+    /// integer as `t` ranges to `T_MAX`), not whether binding stays
+    /// positive out that far — and those are different questions once
+    /// `eps` is perturbed too.** `contacts(total)` itself is **not**
+    /// bounded (it grows roughly linearly in `total`) — what saturates is
+    /// `contacts(total)/total`, toward `z/2 = 6`, so `eps *
+    /// contacts(total)/total` (the volume term's own per-unit contribution)
+    /// is bounded, and the on-valley per-unit energy can in principle turn
+    /// negative past some total if `eps`/`kappa` are perturbed unfavourably
+    /// — real physics too (real SEMF binding per nucleon crosses zero at
+    /// `A ~ 3076` under the `Z(Z-1)` Coulomb convention this model itself
+    /// uses, far past `T_MAX`, so the identity configuration correctly
+    /// reproduces "bound everywhere in range"), but under perturbation that
+    /// crossover can be pulled inside `1..=T_MAX`. `T_MAX`'s coverage proof
+    /// is real and still holds for what it actually proves; it does not by
+    /// itself guarantee the table stays bound that far. See
+    /// `crates/borbax-universe/src/nuclear.rs`'s own gate for the
+    /// measurement; how this bears on `n_elements`'s own draw is a question
+    /// for Steps 2+, not resolved here.
+    ///
+    /// **Post-gate correction, 2026-08-13: this entry originally also
+    /// carried a fourth coefficient, `sigma`, and roughly half this doc's
+    /// own history discussed `sigma`'s outsized contribution to the
+    /// shortfall above.** A `physics-plausibility-reviewer` pass found
+    /// `sigma * total^(5/3)` structurally unjustified rather than merely
+    /// miscalibrated — `eps * contacts(total)` already reproduces the real
+    /// SEMF's volume-plus-surface term (within 2.63% for `total >= 50`,
+    /// within 1% for `total >= 266`, degrading to 34.6% at `total = 3` —
+    /// a `/review-pr` correction: an earlier draft of this sentence quoted
+    /// the `total >= 50` figures without that qualifier, understating the
+    /// worst case by 13x), so the three surviving coefficients already
+    /// form the real four-term SEMF at Rohlf's own values. `sigma` was
+    /// deleted, along with this variant's own `Sigma` sibling
+    /// (`MigratedConstant`'s index 14, now retired) — see
+    /// `crates/borbax-universe/src/nuclear.rs`'s own module doc, "Post-gate
+    /// correction," for the full account.
+    ///
+    /// **Measured over the same joint P7 sample, after the removal: the
+    /// bound range — the last total any composition is still bound at, per
+    /// seed — reaches p50 = 138, p10 = 130, p1 = 116, min = 38 elements,
+    /// with 1.09% (419/38,416) of universes covering fewer than 120
+    /// elements while still bound, down from 9.25% (3,554/38,416) at the
+    /// four-coefficient model.** `composition_argmax` itself reaches every
+    /// integer up to 120 given a large enough `total`, so this residual
+    /// shortfall — smaller, not zero — is still a real, separate finding
+    /// for Steps 2+, not something Step 1 itself is positioned to fix by
+    /// picking a threshold here. Removing `sigma` was justified by the
+    /// structural finding above, not by this improvement; the improvement
+    /// is its consequence, not its reason.
+    C = 16, Axis::Nuclear, Counterpart::HasReal, Direction::P_MAX;
 }
 
 /// How far a universe's constants sit from the identity configuration —
 /// `0..=MAX`, drawn once per universe.
 ///
-/// **`MAX` is provisional.** Routed requirement 8 (issue #26's plan) calls
-/// for deriving it from a target `P(identity) = 1/(MAX + 1)`, and that
-/// target has not been chosen. `8` is a placeholder giving `P(identity) =
-/// 1/9 ≈ 11.1%` — large enough to reach in a small seed sweep, small enough
-/// that "identity" stays a minority of universes. Task 26.1 revisits this
-/// value when the real target is picked; nothing here depends on the exact
-/// number beyond what `the_binomial_band_pins_p_identity_as_a_number` (this
-/// module's own `#[cfg(test)]` tests, not linkable from public docs) checks
-/// against whatever `MAX` currently is.
+/// **`MAX = 99`, settling routed requirement 8 — a product decision, not a
+/// tuning parameter, made explicitly rather than left implicit in `MAX`'s
+/// value.** Ian, 2026-08-12, choosing `P(identity) = 1/(MAX + 1) = 1%`: the
+/// search-cost case for a *common* identity seed is weak, since it only
+/// needs to be found once and then ships as a named universe (Step 1b's own
+/// precedent — typing a name like `emily` already reaches a specific seed
+/// directly), so real chemistry stays a genuine rarity rather than an
+/// ordinary rung a casual seed sweep turns up roughly one time in nine, as
+/// the placeholder `MAX = 8` this replaces did. `MAX = 99` also gives every
+/// migrated constant — Task 26.1's electronic axis included, not only Task
+/// 26.2's new nuclear one — a finer 100-rung perturbation ladder than the
+/// placeholder's 9 rungs. Nothing here depends on the exact number beyond
+/// what `the_binomial_band_pins_p_identity_as_a_number` (this module's own
+/// `#[cfg(test)]` tests, not linkable from public docs) checks against
+/// whatever `MAX` currently is — but note that test's own corpus size and
+/// band were recalibrated for this value, not merely left as they were: at
+/// `P(identity) = 1%`, the gap to the `next_range(2·MAX + 1)` defect
+/// reading (`1/199 ≈ 0.503%`) is under half a percentage point, an order of
+/// magnitude tighter than the placeholder's `1/9` vs `1/17` gap, so the
+/// same corpus size and band that safely discriminated the two at `MAX = 8`
+/// do not at `MAX = 99` — see that test's own comment for the recomputed
+/// figures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Rung(u8);
 
 impl Rung {
-    /// The top of the rung's legal range, `m` in the plan's notation.
-    pub(crate) const MAX: u8 = 8;
+    /// The top of the rung's legal range, `m` in the plan's notation. See
+    /// this type's own doc for the 2026-08-12 pre-registration that pinned
+    /// this value.
+    pub(crate) const MAX: u8 = 99;
 
     /// `Rung(0)` — the identity configuration.
     pub(crate) const IDENTITY: Self = Self(0);
@@ -602,40 +785,130 @@ mod tests {
         // itself (see MigratedConstant's own doc), so this is really a
         // regression test on the macro's own correctness, not on any one
         // variant.
+        //
+        // Pins explicit (variant, index) pairs, not "index == position in
+        // ALL" -- the latter held only by coincidence while the enum had no
+        // gaps, and Sigma's removal (2026-08-13, index 14 retired rather
+        // than reused -- see MigratedConstant's own doc) created the first
+        // one. Nothing in the workspace consumes a variant's *position*;
+        // draw_symmetric and orbital.rs both consume .index() directly, so
+        // the real property to pin is "ALL is exactly this list, in
+        // strictly increasing index order, with no duplicate index" -- which
+        // this is a strictly stronger check of than position-equality was
+        // (it still catches a typo'd literal, and it survives every future
+        // gap the same way this one had to be accommodated).
+        let expected: &[(MigratedConstant, u64)] = &[
+            (MigratedConstant::ScreeningInner, 0),
+            (MigratedConstant::PromotionBudget, 1),
+            (MigratedConstant::RadiusScale, 2),
+            (MigratedConstant::CapacityScale, 3),
+            (MigratedConstant::BaseMass, 4),
+            (MigratedConstant::ContactDefect, 5),
+            (MigratedConstant::WShape, 6),
+            (MigratedConstant::WCharge, 7),
+            (MigratedConstant::IdealGap, 8),
+            (MigratedConstant::Scale, 9),
+            (MigratedConstant::Gamma, 10),
+            (MigratedConstant::IonicScale, 11),
+            (MigratedConstant::ScreeningDeep, 12),
+            (MigratedConstant::Eps, 13),
+            // index 14 retired (formerly Sigma) -- not present, not reused.
+            (MigratedConstant::Kappa, 15),
+            (MigratedConstant::C, 16),
+        ];
         assert_eq!(
-            MigratedConstant::ALL,
-            &[
-                MigratedConstant::ScreeningInner,
-                MigratedConstant::PromotionBudget,
-                MigratedConstant::RadiusScale,
-                MigratedConstant::CapacityScale,
-                MigratedConstant::BaseMass,
-                MigratedConstant::ContactDefect,
-                MigratedConstant::WShape,
-                MigratedConstant::WCharge,
-                MigratedConstant::IdealGap,
-                MigratedConstant::Scale,
-                MigratedConstant::Gamma,
-                MigratedConstant::IonicScale,
-                MigratedConstant::ScreeningDeep,
-            ]
+            MigratedConstant::ALL.len(),
+            expected.len(),
+            "ALL's length should match the pinned (variant, index) list"
         );
-        for (i, constant) in MigratedConstant::ALL.iter().enumerate() {
+        for (constant, (expected_variant, expected_index)) in
+            MigratedConstant::ALL.iter().zip(expected)
+        {
+            assert_eq!(
+                constant, expected_variant,
+                "ALL's variant order should match the pinned list"
+            );
             assert_eq!(
                 constant.index(),
-                u64::try_from(i).unwrap_or_else(|_| unreachable!("ALL.len() is a small constant")),
-                "{constant:?}: index should match its position in ALL"
+                *expected_index,
+                "{constant:?}: index should match its pinned value"
+            );
+        }
+        assert!(
+            !MigratedConstant::ALL.iter().any(|c| c.index() == 14),
+            "index 14 is retired (formerly Sigma, deleted 2026-08-13) and must never be reused \
+             -- see MigratedConstant's own doc, 'discriminants never renumbered'. A future \
+             constant drawn at this index would silently correlate its perturbation with every \
+             historical seed's now-deleted sigma draw"
+        );
+        // Duplicate discriminants are already a compile error (rustc E0081) on this
+        // #[repr(u64)] enum with explicit literals -- verified with a standalone repro.
+        // Kept as a belt-and-braces read of ALL rather than of the enum, not because this
+        // branch is reachable.
+        let mut indices: Vec<u64> = MigratedConstant::ALL.iter().map(|c| c.index()).collect();
+        indices.sort_unstable();
+        indices.dedup();
+        assert_eq!(
+            indices.len(),
+            MigratedConstant::ALL.len(),
+            "every variant's index should be unique"
+        );
+        for pair in MigratedConstant::ALL.windows(2) {
+            let [a, b] = pair else {
+                unreachable!("windows(2) always yields a 2-element slice")
+            };
+            assert!(
+                a.index() < b.index(),
+                "ALL should be in strictly increasing index order: {a:?} ({}) then {b:?} ({})",
+                a.index(),
+                b.index()
             );
         }
     }
 
+    /// The electronic/nuclear partition, shared by
+    /// `electronic_constants_are_electronic_and_default_only`,
+    /// `nuclear_constants_are_nuclear_and_only_kappa_and_c_have_real_counterparts`
+    /// and `every_migrated_constant_is_electronic_or_nuclear_exactly_once` —
+    /// one canonical pair of lists rather than three independent copies, so
+    /// a constant added to the wrong half has exactly one place to hide,
+    /// not three.
+    const ELECTRONIC: &[MigratedConstant] = &[
+        MigratedConstant::ScreeningInner,
+        MigratedConstant::PromotionBudget,
+        MigratedConstant::RadiusScale,
+        MigratedConstant::CapacityScale,
+        MigratedConstant::BaseMass,
+        MigratedConstant::ContactDefect,
+        MigratedConstant::WShape,
+        MigratedConstant::WCharge,
+        MigratedConstant::IdealGap,
+        MigratedConstant::Scale,
+        MigratedConstant::Gamma,
+        MigratedConstant::IonicScale,
+        MigratedConstant::ScreeningDeep,
+    ];
+    const NUCLEAR: &[MigratedConstant] = &[
+        MigratedConstant::Eps,
+        MigratedConstant::Kappa,
+        MigratedConstant::C,
+    ];
+
+    /// **Task 26.1's electronic constants stay electronic, and only
+    /// `Kappa`/`C` (of Task 26.2's three surviving nuclear additions) carry
+    /// `HasReal`.** Superseded 2026-08-12: an earlier version of this test
+    /// asserted every variant was `Axis::Electronic` and
+    /// `Counterpart::DefaultOnly`, which stopped being true the moment
+    /// Task 26.2's nuclear constants landed. Split by an explicit
+    /// electronic/nuclear partition, derived from the same list the
+    /// `ALL`-contents test pins, rather than iterating `ALL` and special-
+    /// casing three variants inline — a constant added later to the wrong
+    /// half of this partition is exactly the defect this test exists to
+    /// catch, and an inline special case would be one place that defect
+    /// could hide.
     #[test]
-    fn every_migrated_constant_is_electronic_and_default_only() {
-        // Every variant today belongs to Task 26.1's own electronic axis
-        // and has no real physical counterpart pinned -- Task 26.2 is what
-        // gives Axis::Nuclear and Counterpart::HasReal their first real
-        // variants (kappa/c, per the plan's own P7 migration table).
-        for &constant in MigratedConstant::ALL {
+    fn electronic_constants_are_electronic_and_default_only() {
+        for &constant in ELECTRONIC {
             assert_eq!(
                 constant.axis(),
                 Axis::Electronic,
@@ -647,6 +920,80 @@ mod tests {
                 "{constant:?}: should be Counterpart::DefaultOnly"
             );
         }
+    }
+
+    /// The nuclear side of the same partition — see
+    /// [`electronic_constants_are_electronic_and_default_only`] for why
+    /// this is split rather than exhaustive over `ALL` with exceptions.
+    #[test]
+    fn nuclear_constants_are_nuclear_and_only_kappa_and_c_have_real_counterparts() {
+        for &constant in NUCLEAR {
+            assert_eq!(
+                constant.axis(),
+                Axis::Nuclear,
+                "{constant:?}: should be Axis::Nuclear"
+            );
+        }
+        assert_eq!(
+            MigratedConstant::Eps.counterpart(),
+            Counterpart::DefaultOnly,
+            "Eps should be Counterpart::DefaultOnly (no single real coefficient)"
+        );
+        for &constant in &[MigratedConstant::Kappa, MigratedConstant::C] {
+            assert_eq!(
+                constant.counterpart(),
+                Counterpart::HasReal,
+                "{constant:?}: should be Counterpart::HasReal (Rohlf's self-consistent \
+                 a_sym/a_C pair)"
+            );
+        }
+    }
+
+    /// **The partition above is exhaustive, not merely non-overlapping —
+    /// found worth pinning separately after the split.** Two lists that
+    /// each individually check out could still, together, omit a variant
+    /// `ALL` contains (or double-count one) with neither per-list test
+    /// noticing.
+    ///
+    /// **Corrected by `/review-pr` (`CodeRabbit`, corroborating an earlier
+    /// informal `emergence-auditor` note): the original version of this
+    /// test summed `axis() == Electronic` and `axis() == Nuclear` counts
+    /// and compared the sum to `ALL.len()` — a tautology given `Axis` has
+    /// exactly two variants, since every constant's `axis()` call returns
+    /// one of the two by construction regardless of whether `ELECTRONIC`/
+    /// `NUCLEAR` are correct. A third `Axis` variant added later without
+    /// updating either list would still pass silently.** Checks per-
+    /// constant membership against the two explicit lists instead: every
+    /// `ALL` entry must appear in exactly one of `ELECTRONIC`/`NUCLEAR`,
+    /// and its `axis()` must agree with which list it's in — the check
+    /// this test's name has always claimed to make.
+    #[test]
+    fn every_migrated_constant_is_electronic_or_nuclear_exactly_once() {
+        for &constant in MigratedConstant::ALL {
+            let in_electronic = ELECTRONIC.contains(&constant);
+            let in_nuclear = NUCLEAR.contains(&constant);
+            assert!(
+                in_electronic ^ in_nuclear,
+                "{constant:?}: must appear in exactly one of ELECTRONIC/NUCLEAR -- found in \
+                 ELECTRONIC={in_electronic}, in NUCLEAR={in_nuclear}"
+            );
+            let expected_axis = if in_nuclear {
+                Axis::Nuclear
+            } else {
+                Axis::Electronic
+            };
+            assert_eq!(
+                constant.axis(),
+                expected_axis,
+                "{constant:?}: axis() disagrees with which partition list it's in"
+            );
+        }
+        assert_eq!(
+            NUCLEAR.len(),
+            3,
+            "Task 26.2's nuclear model has three coefficients (eps, kappa, c) since the \
+             2026-08-13 post-gate removal of sigma -- see nuclear.rs's own module doc"
+        );
     }
 
     #[test]
@@ -907,10 +1254,30 @@ mod tests {
     /// value — mutation-verified to let a widened band (`0.06`) and the
     /// named `2*MAX+1` defect both pass together, undetected by either
     /// test, catchable only by the exact pinned sequence below.
-    const P_IDENTITY_BAND: f64 = 0.02;
+    ///
+    /// **Recalibrated 2026-08-12 for `Rung::MAX = 99`, both values, not
+    /// just the band — the placeholder's `N = 20_000` no longer has enough
+    /// resolving power at the new `P(identity)`.** At `MAX = 8`,
+    /// `P(identity) = 1/9 ≈ 11.1%` sat far enough from the `2*MAX+1` defect
+    /// reading (`1/17 ≈ 5.9%`, a `~5.2` percentage-point gap) that a loose
+    /// band and a modest corpus both worked. At `MAX = 99`, `P(identity) =
+    /// 1%` sits much closer to its own defect reading (`1/199 ≈ 0.503%`, a
+    /// `~0.497` percentage-point gap — an order of magnitude tighter) —
+    /// smaller probabilities need a larger corpus to resolve to the same
+    /// *relative* precision, and this document's own earlier `N = 20_000`
+    /// draws left `BAND = 0.02` unable to distinguish the two at all
+    /// (`0.02` alone exceeds the entire gap). `N = 200_000` brings the
+    /// binomial standard error at `p ≈ 1%` to `≈0.02225` percentage
+    /// points; `BAND = 0.15` percentage points is `≈6.74σ` on that scale —
+    /// tight enough that `BAND + 6σ ≈ 0.283` percentage points still
+    /// leaves `≈9.62σ` of margin against the `0.497`-point gap to the
+    /// defect reading (see
+    /// [`the_defect_reading_is_distinguishable_from_the_correct_one`] for
+    /// the computed bound, not a restatement of this figure).
+    const P_IDENTITY_BAND: f64 = 0.0015;
 
     /// See [`P_IDENTITY_BAND`].
-    const P_IDENTITY_N: u32 = 20_000;
+    const P_IDENTITY_N: u32 = 200_000;
 
     /// Decision 10's other required test: `P(identity) = 1/(MAX + 1)`,
     /// pinned as a number over repeated draws — not an `O(m)`-order check,
@@ -925,18 +1292,21 @@ mod tests {
             .unwrap_or_else(|_| unreachable!("hits cannot exceed P_IDENTITY_N, which fits in u32"));
         let want_p = 1.0 / f64::from(u32::from(Rung::MAX) + 1);
         let observed_p = f64::from(hits) / f64::from(P_IDENTITY_N);
-        // Binomial standard error at N=20,000: sqrt(p(1-p)/N) ~= 0.00222 at
-        // p ~= 0.1111. P_IDENTITY_BAND = 0.02 is ~9.0 sigma on that scale —
-        // corrected in `/review-pr`, where an earlier version of this
-        // comment claimed "6-sigma (~0.013)", measurably wrong for the
-        // value actually shipped. Generous enough to survive sampling
-        // noise while tight enough that the 2*MAX+1 defect (p ~= 0.0588,
-        // a ~23.5-sigma miss on this scale — also corrected from an
-        // earlier "~5-sigma" claim) fails loudly rather than marginally.
-        // See `the_defect_reading_is_distinguishable_from_the_correct_one`
-        // for the exact, computed discriminability bound, and note that an
-        // off-by-one dropping the `+ 1` (`next_range(MAX)`, p ~= 0.128)
-        // passes this band — it is caught only by
+        // Binomial standard error at N=200,000: sqrt(p(1-p)/N) ~= 0.000222
+        // at p ~= 0.01. P_IDENTITY_BAND = 0.0015 is ~6.74 sigma on that
+        // scale — recalibrated 2026-08-12 for Rung::MAX=99 (was 0.02 at
+        // N=20,000, ~9.0 sigma, for the placeholder MAX=8 — see
+        // P_IDENTITY_BAND's own doc for why both the band and the corpus
+        // size had to move together, not just the band). Generous enough
+        // to survive sampling noise while tight enough that the 2*MAX+1
+        // defect (p ~= 0.005025, a gap of ~0.004975 from the correct
+        // reading, ~9.6-sigma beyond this band's own threshold) fails
+        // loudly rather than marginally. See
+        // `the_defect_reading_is_distinguishable_from_the_correct_one` for
+        // the exact, computed discriminability bound, and note that an
+        // off-by-one dropping the `+ 1` (`next_range(MAX)`, p ~= 0.0101,
+        // a gap of only ~0.0001 from the correct reading) passes this band
+        // easily — it is caught only by
         // `the_rung_sequence_over_0_to_64_is_pinned`, which is load-bearing
         // for that case, not belt-and-braces.
         assert!(
@@ -969,8 +1339,10 @@ mod tests {
         for seed in 0..64 {
             mix(u64::from(Rung::draw(seed).0));
         }
+        // Regenerated 2026-08-12: deliberate change to Rung::MAX (8 -> 99), see this
+        // constant's own doc. Was 0xce60_cec5_2ce3_ee01 under MAX=8.
         assert_eq!(
-            h, 0xce60_cec5_2ce3_ee01,
+            h, 0x48fe_64a7_e6b5_261b,
             "the rung sequence over seeds 0..64 moved — say whether this is a deliberate \
              change to Rung::MAX, to the draw's rejection-sampling, or a bug, and regenerate \
              deliberately if the first"
@@ -1085,9 +1457,12 @@ mod tests {
             h = h.wrapping_mul(0x0100_0000_01b3);
             cells += 1;
         }
-        assert_eq!(cells, 1620, "the pinned grid changed size");
+        // 18_000 = 100 rungs (0..=Rung::MAX=99) * 10 bases * 18 directions.
+        // Was 1620 (9 rungs) under MAX=8 -- deliberate, see Rung::MAX's own doc.
+        assert_eq!(cells, 18_000, "the pinned grid changed size");
+        // Regenerated 2026-08-12 for Rung::MAX=99. Was 0x0839_1cd4_8bbc_19c1 under MAX=8.
         assert_eq!(
-            h, 0x0839_1cd4_8bbc_19c1,
+            h, 0xb5e2_f79e_a584_c7ce,
             "perturb's output moved. This is a physics change, not a tidy-up: say whether \
              the expression shape, Rung::strength's ladder, Rung::MAX or Direction::P_MAX \
              changed deliberately, and regenerate every downstream golden with it"
@@ -1112,9 +1487,10 @@ mod tests {
                 perturb(base, rung, p).to_bits() != (base + base * s * pv).to_bits()
             })
             .count();
-        // 294 of 1620 cells when this was written. The floor is 0, not 294:
-        // a deliberate change to `strength`'s ladder moves the count without
-        // weakening the grid, and should fire the golden above alone.
+        // 4063 of 18_000 cells when this was written (was 294 of 1620 under
+        // Rung::MAX=8). The floor is 0, not 4063: a deliberate change to
+        // `strength`'s ladder moves the count without weakening the grid,
+        // and should fire the golden above alone.
         assert!(
             differing > 0,
             "the grid no longer distinguishes `base + base * strength * p` from \

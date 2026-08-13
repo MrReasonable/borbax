@@ -208,37 +208,74 @@ impl BindConsts {
 /// three ways (two specialist reviewers plus a direct mutation probe run
 /// against this file's own `fixture_v2` corpus):
 ///
+/// **Every figure in the three bullets below was re-measured 2026-08-12
+/// against `Rung::MAX` 8 -> 99** (Task 26.2's pre-registration — every
+/// non-identity rung draws differently, so every V2 constant moves). The
+/// previous values are kept inline for a bisect. The pinned counters in
+/// `the_prefilter_is_a_genuine_bound` are what forced the update, which is
+/// the mechanism those pins were added for working as designed.
+///
 /// - **The flat bound is *not* exactly zero on a self-pair.** It sums
 ///   *squared* opposite-sorted differences, `Σ(x[i] + x[D-1-i])²` — zero
 ///   only if the centred sorted vector is exactly antisymmetric about its
 ///   midpoint, which mean-centred real data is not. Measured over the real
 ///   corpus: **0 of 42** self-pairs give a flat bound of exactly (or even
-///   nearly) zero, range `[0.0602, 17.1930]` across both channels. What *is*
-///   exactly zero on a self-pair is the predecessor's `(‖x‖ − ‖y‖)²` — a
-///   different bound, and the source of the false generalisation.
+///   nearly) zero, range `[0.0279, 11.9751]` across both channels
+///   (previously `[0.0602, 17.1930]`). The floor halved and is still
+///   fourteen orders above the float-zero the claim is contrasted with, so
+///   the bullet stands — but the *margin* on the word "nearly" is what
+///   moved, and it is unpinned prose rather than an asserted counter, so a
+///   future change could walk it to zero silently. What *is* exactly zero
+///   on a self-pair is the predecessor's `(‖x‖ − ‖y‖)²` — a different
+///   bound, and the source of the false generalisation.
 /// - **The flat bound carries the self-pair result: it wins at least one
-///   channel on 41 of the 42 self-pairs in the measured corpus**
-///   (`the_prefilter_is_a_genuine_bound`'s own `flat_wins_self` counter).
-///   On the one remaining self-pair the block bound wins *both* channels —
-///   so "block never wins a self-pair" (an earlier version of this bullet,
-///   and of [`fit`]'s doc) is not the right generalisation either. What
-///   makes flat the one that matters for the self-pair bar specifically:
-///   dropping flat entirely breaches it (`worst_gap_self` rises from
-///   0.9592 combined to 0.9877 block-only), while dropping block does not
-///   (0.9665 flat-only, still under bar). See
-///   `the_prefilter_is_a_genuine_bound`'s own `flat_wins_shape`/
-///   `block_wins_shape`/`flat_wins_charge`/`block_wins_charge` counters for
-///   the exact per-channel split (20/22 shape, 41/1 charge on self-pairs).
+///   channel on 42 of the 42 self-pairs in the measured corpus**
+///   (`the_prefilter_is_a_genuine_bound`'s own `flat_wins_self` counter;
+///   previously 41 of 42). **The D=42 counterexample to "block never wins
+///   a self-pair" is gone, and the claim it refuted is still wrong** — an
+///   earlier version of this bullet, and of [`fit`]'s doc, generalised
+///   from a count of 42 to a structural rule, and a count of 42 is exactly
+///   what this corpus now reports again. The counterexample survives at
+///   another resolution in this same file's own corpus:
+///   `the_prefilter_stays_tight_at::<12>` runs the identical molecules at
+///   D=12, where flat wins a channel on **40** of 42 self-pairs, so block
+///   wins *both* channels on 2 of them. That figure is **measured but not
+///   pinned** — `the_prefilter_stays_tight_at` counts gaps, not channel
+///   wins — so it is the one number in this doc a future physics change
+///   can rot without failing anything. Pinning it needs `channel_wins` to
+///   be generic over `D` (it is hard-wired to the module's `const D: usize
+///   = 42`); worth doing the next time this function is touched.
+///   What makes flat the one that matters for the self-pair bar
+///   specifically: dropping flat entirely breaches it (`worst_gap_self`
+///   rises from 0.9383775 combined to 0.9877180 block-only, over the 0.98
+///   bar), while dropping block does not (0.9568754 flat-only, still under
+///   bar) — the same conclusion as before the regeneration, from
+///   0.9592/0.9877/0.9665. **Self-pair-restricted split, measured not
+///   pinned (a `/review-pr` correction — an earlier draft pointed at
+///   `the_prefilter_is_a_genuine_bound`'s own
+///   `flat_wins_shape`/`block_wins_shape`/`flat_wins_charge`/
+///   `block_wins_charge` counters as carrying this figure; those count
+///   over all 315 pairs, not the self-pair subset, and report `(72, 243,
+///   260, 55)` — a different number for a different population)**: 20/22
+///   shape, 42/0 charge on self-pairs specifically; previously 20/22 and
+///   41/1 — the shape channel did not move at all, and the whole of the
+///   self-pair change is in the charge channel. Pinning this split needs
+///   its own counters, generic over `D` for the same reason noted above.
 /// - **What the antipodal-block bound actually earns its place on is
-///   hetero-pairs: it wins at least one channel on 241 of 273 real hetero
+///   hetero-pairs: it wins at least one channel on 232 of 273 real hetero
 ///   comparisons** in the measured corpus (`block_wins_hetero`, same
-///   robustness reasoning) — the pair class the previous version of this
-///   comment had backwards. Combining both bounds still measurably helps
-///   there: `worst_gap_hetero` is 0.9145 combined, tighter than either
-///   bound alone (0.9445 flat-only, 0.9331 block-only) — each bound catches
-///   pairs the other misses, and this is what `flat_beats_block`/
-///   `block_beats_flat` (251/263 of 315 pairs) verify without needing a bar
-///   at all.
+///   robustness reasoning; previously 241 of 273) — the pair class the
+///   previous version of this comment had backwards. Combining both bounds
+///   still measurably helps there: `worst_gap_hetero` is 0.8974058
+///   combined, tighter than either bound alone (0.9164060 flat-only,
+///   0.9189375 block-only; previously 0.9145 combined against 0.9445 and
+///   0.9331) — each bound catches pairs the other misses, and this is what
+///   `flat_beats_block`/`block_beats_flat` (271/254 of 315 pairs;
+///   previously 251/263) verify without needing a bar at all. **Note the
+///   two swapped rank**: flat now wins at least one channel on more pairs
+///   than block does, where block led before. Nothing in `ceiling` reads
+///   that ordering — it takes the per-channel max either way — so this is
+///   a fact about the corpus, not a behaviour change.
 ///
 /// [`Geodesic::contact_perms`] commuting with [`Geodesic::anti`] (verified
 /// exhaustively at D = 12/42/162 — every contact permutation maps antipodal
@@ -598,8 +635,8 @@ fn block_bound<const D: usize>(blocks_a: &[f64; D], blocks_b: &[f64; D]) -> f64 
 /// Measured on `fixture_v2` seeds 6/17/42 at D=42 — 315 pairs, the corpus
 /// `the_prefilter_is_a_genuine_bound` runs (V2 only; no test in this file
 /// measures this on V1): neither bound is redundant, and neither
-/// dominates. Block beats flat on 250 of 315 pairs in the shape channel
-/// and 77 of 315 in the charge channel; flat beats block on 65 and 238
+/// dominates. Block beats flat on 243 of 315 pairs in the shape channel
+/// and 55 of 315 in the charge channel; flat beats block on 72 and 260
 /// respectively. The two channels disagree about which bound wins on most
 /// pairs, which is exactly why this is per-channel rather than a single
 /// whole-bound comparison. See `the_prefilter_is_a_genuine_bound`'s own
@@ -607,6 +644,13 @@ fn block_bound<const D: usize>(blocks_a: &[f64; D], blocks_b: &[f64; D]) -> f64 
 /// `block_wins_charge` counters, pinned exactly rather than left as prose,
 /// so a future physics change cannot silently make this paragraph stale
 /// again the way it did between `/review-pr` round 2 and round 3.
+/// (Re-measured 2026-08-12 for `Rung::MAX` 8 -> 99, from 250/77 block and
+/// 65/238 flat — and the pinned counters are what forced the update, which
+/// is the mechanism working as designed rather than a reader noticing.)
+/// **The per-channel split shifted toward flat in the charge channel and
+/// toward block in the shape channel, but neither count reached zero in
+/// either channel, so "neither bound is redundant" is re-measured rather
+/// than assumed to have survived.**
 ///
 /// This replaces the predecessor's single Cauchy–Schwarz bound
 /// (`(‖x‖ − ‖y‖)²`), which is **exactly zero on every self-pair** — the
@@ -773,9 +817,13 @@ pub fn ceiling<const D: usize>(a: &SigSummary<D>, b: &SigSummary<D>, k: BindCons
 /// [`ceiling`] uses today) was exactly zero on every self-pair regardless of
 /// shape — the discrimination-killing failure the rearrangement-inequality
 /// **flat bound** now closes (see [`SigSummary`]'s own doc: flat carries
-/// the self-pair diagonal, winning at least one channel on 41 of the 42
+/// the self-pair diagonal, winning at least one channel on 42 of the 42
 /// measured self-pairs, while the antipodal-**block** bound earns its
-/// place mainly on hetero-pairs — 241 of 273). That is this codebase's own
+/// place mainly on hetero-pairs — 232 of 273; re-measured 2026-08-12 for
+/// `Rung::MAX` 8 -> 99, from 41 of 42 and 241 of 273. **42 of 42 is not
+/// licence to restate "block never wins a self-pair"** — that is the exact
+/// overclaim this doc carried once already, and [`SigSummary`]'s doc
+/// records where the counterexample still lives). That is this codebase's own
 /// version of the degenerate, size-only catalysis assignment Hordijk, Wills
 /// & Steel study as the extreme worth quantifying rather than assuming
 /// harmless — and fixing it moves this kernel from scoring some pairs on
@@ -1397,8 +1445,12 @@ mod tests {
         }
         // 3 seeds x 45 unordered pairs of 9 molecules.
         assert_eq!(bounds, 3 * 45, "the corpus did not run to completion");
+        // Regenerated 2026-08-12, `Rung::MAX` 8 -> 99 (Task 26.2
+        // pre-registration): every non-identity rung draws differently, so
+        // every V2 constant moves. The re-check this message demands was
+        // done in the same commit — see the two siblings named below.
         assert_eq!(
-            hash, 0x11d8_f8ea_6dfb_0ec9,
+            hash, 0xb403_1c8c_9aaf_7942,
             "the V2 prefilter bound moved. If you meant to change the V2-only physics \
              (`orbital.rs`, `perturbation.rs`), regenerate this constant and say so in the \
              commit message — and re-check `the_prefilter_is_a_genuine_bound`'s and \
@@ -1406,7 +1458,9 @@ mod tests {
              bars in the same commit, since they read the same corpus shape this digest does. \
              First pinned 2026-08-10, `/review-pr` round 3, finding F6 — see \
              `the_prefilter_digest_is_pinned`'s own doc for why a V1-only digest could not \
-             have caught the staleness that made this test necessary."
+             have caught the staleness that made this test necessary. **Regenerated \
+             2026-08-12 for `Rung::MAX` 8 -> 99; previous value \
+             `0x11d8_f8ea_6dfb_0ec9`.**"
         );
     }
 
@@ -1686,13 +1740,42 @@ mod tests {
     /// gap bars below are re-measured against what this branch actually
     /// ships.** `ceiling` is justified in its own doc by turning Task 20's
     /// D=162 sweep from hours into minutes, and a bound that never rejects
-    /// delivers none of that. Measured 2026-08-10 against the physics this
-    /// branch ships (`.abs()` -> clamp AND `sigma_deep`, both landed in the
-    /// same `/review-pr` round-2 commit — an intermediate figure taken
-    /// between the two, 0.9491563/0.9651054, was carried in a previous
-    /// version of this comment for a full round without being re-measured
-    /// against the second change): hetero 0.9144535, self 0.9592222. A
-    /// ceiling of `0.0` gives 1.0 for every pair and fails both bars.
+    /// delivers none of that. **Re-measured 2026-08-12 against `Rung::MAX`
+    /// 8 -> 99 (Task 26.2's pre-registration): hetero 0.8974058, self
+    /// 0.9383775** — both *tighter* than the 2026-08-10 figures they
+    /// replace (hetero 0.9144535, self 0.9592222, themselves measured
+    /// against `.abs()` -> clamp AND `sigma_deep`, after an intermediate
+    /// 0.9491563/0.9651054 was carried for a full round without being
+    /// re-measured against the second change). A ceiling of `0.0` gives 1.0
+    /// for every pair and fails both bars.
+    ///
+    /// **The bars did not move with the figures, deliberately.** `gap =
+    /// (bound − best) / max(|best|, 1)` equals `1 − |bound|/|best|` in the
+    /// regime that matters, so a *falling* gap means the ceiling's
+    /// magnitude is a larger fraction of the true score — the filter
+    /// rejecting more, not less. Margin against the bars therefore grew
+    /// (hetero 1.67% -> 3.50%, self 2.12% -> 4.25%), and a bar with more
+    /// room than it was sized for is a weaker guard but never an unsound
+    /// one. Retightening is a change to guard strictness and wants its own
+    /// decision, not a line in a regeneration commit — the same separation
+    /// that kept `sigma_deep`'s re-measurement honest.
+    ///
+    /// **What that improvement is NOT evidence of, and the distinction is
+    /// the kind this file keeps having to relearn: the bound did not get
+    /// better, the corpus is a different corpus.** `random_tree` picks
+    /// `ids[pick]` out of `chain_capable(&tbl)`, so a changed element table
+    /// changes which elements the trees are built from — and `ids[0]`, the
+    /// root, along with them. These 42 species are not the previous 42
+    /// species re-scored under new constants; they are different molecules.
+    /// So "hetero 0.9144535 -> 0.8974058" is a corpus-to-corpus comparison
+    /// and attributes nothing to `flat_bound`, `block_bound` or `ceiling`,
+    /// none of which changed. What it *does* establish is the only thing
+    /// the bars ask: on the corpus this branch actually ships, under the
+    /// physics it actually ships, the prefilter is comfortably non-vacuous.
+    /// The controlled experiment that would separate the two — hold the
+    /// species fixed and vary only the constants — has **not** been run;
+    /// it needs a corpus keyed on something other than the table, which no
+    /// fixture here provides.
     #[test]
     fn the_prefilter_is_a_genuine_bound() {
         let g = geo();
@@ -1780,7 +1863,9 @@ mod tests {
             }
         }
         assert_eq!(checked, 3 * 105, "the corpus did not run to completion");
-        // Exact counts, not `> 0` — see this function's own doc.
+        // Exact counts, not `> 0` — see this function's own doc. All three
+        // tuples regenerated 2026-08-12, `Rung::MAX` 8 -> 99. Previous
+        // values, for a bisect: (65, 250, 238, 77), (251, 263), (41, 241).
         assert_eq!(
             (
                 flat_wins_shape,
@@ -1788,24 +1873,45 @@ mod tests {
                 flat_wins_charge,
                 block_wins_charge
             ),
-            (65, 250, 238, 77),
+            (72, 243, 260, 55),
             "the flat/block per-channel win split moved. If you changed the physics, \
              regenerate these AND update `ceiling`'s doc (its per-channel figures) and \
-             `SigSummary`'s doc in the same commit."
+             `SigSummary`'s doc in the same commit. (Regenerated 2026-08-12, `Rung::MAX` \
+             8 -> 99, from (65, 250, 238, 77).)"
         );
         assert_eq!(
             (flat_beats_block, block_beats_flat),
-            (251, 263),
+            (271, 254),
             "the combined (either-channel) win split moved — see `SigSummary`'s doc, which \
-             quotes both of these."
+             quotes both of these. (Regenerated 2026-08-12, `Rung::MAX` 8 -> 99, from \
+             (251, 263).)"
         );
         // The specialised claim — see this function's own doc.
         assert_eq!(
             (flat_wins_self, block_wins_hetero),
-            (41, 241),
-            "the pair-class split moved — see `SigSummary`'s doc, which quotes both of these."
+            (42, 232),
+            "the pair-class split moved — see `SigSummary`'s doc, which quotes both of these. \
+             (Regenerated 2026-08-12, `Rung::MAX` 8 -> 99, from (41, 241) — note flat now \
+             wins a channel on ALL 42 self-pairs, so this corpus no longer contains the \
+             one self-pair where block won both; `SigSummary`'s doc records where the \
+             counterexample survives.)"
         );
-        // Re-measured against the shipped physics — see this function's own doc.
+        // **Bars unchanged at the 2026-08-12 regeneration, and that is a
+        // measurement rather than an omission**: both gaps moved AWAY from
+        // their bars under `Rung::MAX` 8 -> 99 (hetero 0.9144535 ->
+        // 0.8974058, margin 1.67% -> 3.50% of the bar; self 0.9592222 ->
+        // 0.9383775, margin 2.12% -> 4.25%), so holding the bars still is
+        // the conservative choice — retightening them to match is a
+        // separate decision about guard strictness, not part of
+        // regenerating a pin. This is a corpus-to-corpus comparison and
+        // says nothing about the bound itself having improved; see this
+        // function's own doc for why, and for the controlled experiment
+        // that was not run.
+        //
+        // Both bars survived the change untouched, which is the useful
+        // fact: `Rung::MAX` 8 -> 99 is a large perturbation to every
+        // non-identity universe, and the prefilter stayed non-vacuous
+        // through it without a threshold being moved to accommodate it.
         assert!(
             worst_gap_hetero < 0.93,
             "the worst hetero-pair ceiling-to-score gap is {worst_gap_hetero}, so the bound \
@@ -1910,18 +2016,36 @@ mod tests {
     /// least room in its own bar, not the most.
     #[test]
     fn the_prefilter_stays_sound_and_tight_at_every_resolution() {
-        // Measured 2026-08-10 against the physics this branch actually
-        // ships (`.abs()` -> clamp AND `sigma_deep`, both landed in the same
-        // `/review-pr` round-2 commit — an earlier version of this comment
-        // carried a figure taken between the two, never re-measured against
-        // the second change, the same staleness
-        // `the_prefilter_is_a_genuine_bound`'s own bar carried): D=12 hetero
-        // 0.8351392 / self 0.8954218; D=162 hetero 0.9312796 / self
-        // 0.9741071. D=12's bars were never touched by that staleness (they
+        // **Re-measured 2026-08-12, `Rung::MAX` 8 -> 99** (Task 26.2's
+        // pre-registration; every non-identity rung draws differently, so
+        // every V2 constant moves): D=12 hetero 0.8274358 / self 0.8951095;
+        // D=162 hetero 0.9105539 / self 0.9586098. **No bar moved, and this
+        // test did not fail** — all four gaps are at or below the
+        // 2026-08-10 figures they replace (D=12 hetero 0.8351392 / self
+        // 0.8954218; D=162 hetero 0.9312796 / self 0.9741071), so every
+        // margin grew: D=12 hetero 7.21% -> 8.06%, self 7.69% -> 7.72%;
+        // D=162 hetero 0.93% -> 3.13%, self 0.60% -> 2.18%. D=162 is the
+        // leg this function's own doc calls the one with least room, and it
+        // is the leg that gained the most. **Corpus-to-corpus, not a claim
+        // that the bound improved** — `the_prefilter_is_a_genuine_bound`'s
+        // own doc has the accounting: a changed element table changes which
+        // species `random_tree` builds, so these are different molecules
+        // rather than the same ones re-scored.
+        //
+        // The 2026-08-10 figures were themselves measured against `.abs()`
+        // -> clamp AND `sigma_deep`, both in the same `/review-pr` round-2
+        // commit — an earlier version of this comment carried a figure taken
+        // between the two, never re-measured against the second change, the
+        // same staleness `the_prefilter_is_a_genuine_bound`'s own bar
+        // carried. D=12's bars were never touched by that staleness (they
         // already had comfortable margin against the real number); D=162's
-        // hetero bar was loosened on the strength of the stale figure and is
-        // retightened here to the same proportion of margin D=42's own bar
-        // (`the_prefilter_is_a_genuine_bound`) carries.
+        // hetero bar was loosened on the strength of the stale figure and
+        // was retightened then to the same proportion of margin D=42's own
+        // bar (`the_prefilter_is_a_genuine_bound`) carries. That proportion
+        // no longer holds after 2026-08-12 — D=162's bars are now *tighter*
+        // than proportional to D=42's and D=12's are looser — which is a
+        // live question about guard strictness, deliberately not answered
+        // by a regeneration commit.
         the_prefilter_stays_tight_at::<12>(0.90, 0.97);
         the_prefilter_stays_tight_at::<162>(0.94, 0.98);
     }

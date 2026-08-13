@@ -34,9 +34,9 @@ seems to need a second mechanism, the feature is wrong.
 table in this repository. Elements, valences, bond energies and folding rules
 are all generated from `universe_seed`, so a Borbax universe has its own
 chemistry that nobody — including us — knew in advance. A CI gate rejects real
-element names, real chemical file formats, and any data file in a chemistry
-crate. Temperature is measured in *thermals*, energy in *quanta*, distance in
-*spans*: distinct types, and mixing them does not compile.
+element names and any data file in a chemistry crate. Temperature is measured
+in *thermals*, energy in *quanta*, distance in *spans*: distinct types, and
+mixing them does not compile.
 
 **Nothing about life is hardcoded.** No `struct Cell`, no replication rule, no
 "if conditions are right, spawn a protocell". Catalysis is not implemented — a

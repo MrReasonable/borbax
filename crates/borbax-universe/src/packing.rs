@@ -63,7 +63,11 @@ pub(crate) const fn shell_size(k: usize, n: usize) -> usize {
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`cap` is a shell capacity, bounded by 14*4^2+2 = 226 over the drawn range"
+    reason = "`cap` is a shell capacity: at most 130 over V1's own drawn range (k in 6..=14, \
+              units <= 120 -- this file's own doc on shell_size states 'caps run 8..130'), at \
+              most 252 under nuclear.rs's fixed k = 10 caller reaching units = T_MAX = 386 (see \
+              unmade_lateral's own reason for the derivation) -- far below f64's exact-integer \
+              range either way"
 )]
 pub(crate) fn lateral_coordination(cap: usize) -> f64 {
     6.0 - 12.0 / cap as f64
@@ -131,7 +135,10 @@ pub(crate) fn lateral_coordination(cap: usize) -> f64 {
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`cap` and `outer` are bounded shell counts, at most 226 over the drawn range"
+    reason = "`cap` and `outer` are bounded shell counts: at most 130 over V1's own drawn range \
+              (k in 6..=14, units <= 120 -- this file's own doc on shell_size states 'caps run \
+              8..130'), at most 252 under nuclear.rs's fixed k = 10 caller reaching \
+              units = T_MAX = 386 -- both far below f64's exact-integer range"
 )]
 pub(crate) fn unmade_lateral(cap: usize, outer: usize) -> f64 {
     let f = outer as f64 / cap as f64;
@@ -169,7 +176,9 @@ pub(crate) fn unmade_lateral(cap: usize, outer: usize) -> f64 {
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`cap` is a bounded shell count, at most 226 over the drawn range"
+    reason = "`cap` is a bounded shell count: at most 130 over V1's own drawn range, at most \
+              252 under nuclear.rs's fixed k = 10 caller (see unmade_lateral's own reason) -- \
+              far below f64's exact-integer range either way"
 )]
 pub(crate) fn continuum_at(cap: usize, f: f64) -> f64 {
     FRONTIER_COEFF * (cap as f64 * f * (1.0 - f)).sqrt()
@@ -243,7 +252,11 @@ pub(crate) const FRONTIER_COEFF: f64 = 6.90;
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`a` is at most a shell capacity, 226 over the drawn range"
+    reason = "`a` is at most a shell capacity: at most 130 over V1's own drawn range, at most \
+              252 under nuclear.rs's fixed k = 10 caller (see unmade_lateral's own reason) -- \
+              a /review-pr style-consistency fix (geometry-numerics-reviewer): the prior 226 \
+              was not wrong (max `a` actually reached is 126) but was inconsistent with this \
+              file's other four bound comments, all updated to name the real 252 ceiling"
 )]
 pub(crate) fn compact_bound(a: usize) -> f64 {
     if a == 0 {
@@ -288,7 +301,11 @@ pub(crate) fn lateral_made(cap: usize, outer: usize) -> f64 {
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`outer` is at most a shell capacity, 226 over the drawn range"
+    reason = "`outer` is at most a shell capacity: at most 130 over V1's own drawn range, at \
+              most 252 under nuclear.rs's fixed k = 10 caller (see unmade_lateral's own reason) \
+              -- a /review-pr style-consistency fix (geometry-numerics-reviewer): the prior 226 \
+              was not wrong (max `outer` actually reached is 162) but was inconsistent with \
+              this file's other four bound comments, all updated to name the real 252 ceiling"
 )]
 pub(crate) fn lateral_made_raw(cap: usize, outer: usize) -> f64 {
     (lateral_coordination(cap) * outer as f64 - unmade_lateral(cap, outer)) * 0.5
@@ -363,11 +380,21 @@ impl PackingConsts {
 /// is untouched (0 of 4320 cells change `defect_sub`) but `energy_per_unit`,
 /// `peak` and every `instability` are not. `the_universe_digest_is_pinned` is
 /// what fails if it moves; nothing else would. Do not tidy (§13.4).
+///
+/// **The 1080-cell domain above is V1's own (`k in 6..=14`, `N in 1..=120`) —
+/// `nuclear.rs` calls this at the fixed `k = 10` up to `N = T_MAX = 386`, a
+/// wider domain, since re-measured (`/review-pr`, `geometry-numerics-reviewer`):
+/// fusing the same two `total +=` moves **67 of the 386 `N` cells at `k =
+/// 10`**, worst 2.2737e-13 — the same ~17% cell fraction as V1's 167/1080,
+/// twice the absolute error. The "do not tidy" conclusion holds unchanged
+/// on this domain too, now as a measured figure rather than a caveat.
 #[must_use]
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`prev_cap`, `cap` and `take` are bounded shell counts; `units` is at most 120"
+    reason = "`prev_cap`, `cap` and `take` are bounded shell counts; `units` is at most 120 \
+              over V1's own drawn range, at most T_MAX = 386 under nuclear.rs's fixed k = 10 \
+              caller -- both far below f64's exact-integer range"
 )]
 pub(crate) fn contacts_upto(c: PackingConsts, units: usize) -> f64 {
     if units <= 1 {

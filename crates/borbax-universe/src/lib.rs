@@ -66,6 +66,18 @@
 pub mod bonds;
 pub mod element;
 pub mod naming;
+/// **`pub(crate)`, not `pub` — same narrow-API hygiene as `packing` and
+/// `perturbation`, below.** Task 26.2's Step 1 gate (this module's own
+/// tests) is the only consumer today; Steps 2-7 wire it into
+/// [`element::Element`], and nothing outside this crate has a legitimate
+/// reason to price a nuclear binding energy directly.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "same reasoning as packing and perturbation: the items are `pub(crate)` *and* the \
+              module is, deliberately, so a future widening of the module to `pub` cannot \
+              silently carry its contents public with it"
+)]
+pub(crate) mod nuclear;
 pub(crate) mod orbital;
 /// **`pub(crate)`, not `pub`, and that is §8.6 enforced by the compiler rather
 /// than by discipline.** Everything here runs at intern time and its results are
@@ -860,8 +872,14 @@ mod tests {
                 // candidate's screening sum, restores a real
                 // lanthanide-analogue radius contraction (calibrated against
                 // the real La->Lu Shannon radii) where the model previously
-                // showed none at all.
-                PhysicsVersion::V2 => 0x6322_4e33_d99f_3593,
+                // showed none at all. Moved a fifth time, 2026-08-12: deliberate
+                // physics change, Rung::MAX 8 -> 99 (issue #26 Task 26.2
+                // pre-registration, routed requirement 8) -- every rung != 0 in
+                // the seed range draws a different perturbed universe under the
+                // new ladder. V1 is unaffected: it draws a Rung too (costs
+                // nothing, per `Universe.rung`'s own doc) but has no migrated
+                // constant that reads it, so its own digest above is untouched.
+                PhysicsVersion::V2 => 0xe2f2_5a58_7daa_261f,
             };
             assert_eq!(
                 h, want,
@@ -984,18 +1002,34 @@ mod tests {
     /// naming mechanism exists to provide, checked end-to-end through
     /// `Universe::generate_under` for the first time.
     ///
-    /// **Seed 21, not a `find()` over a small sample.** An earlier version
+    /// **Seed 103, not a `find()` over a small sample.** An earlier version
     /// of this test searched `[1, 2, 3]` for an identity seed and silently
-    /// `return`ed if none matched — since `P(identity) = 1/(MAX+1) = 1/9`,
+    /// `return`ed if none matched — since `P(identity)` was `1/(MAX+1)`,
     /// that early return fired on this exact draw (none of 1/2/3 are
     /// identity) every time, so the test always passed without ever
     /// reaching either assertion below. Caught by checking, not by the
     /// suite: seeds 21/27/43/44 were found identity by direct probe over
-    /// 0..50 and 21 is pinned here so the test always exercises its own
-    /// claim rather than sometimes skipping it.
+    /// 0..50 under the placeholder `Rung::MAX = 8`, and 21 was pinned so
+    /// the test always exercises its own claim rather than sometimes
+    /// skipping it. **Re-derived 2026-08-12** for `Rung::MAX = 99`
+    /// (`P(identity)` 1/9 → 1/100, per the plan's pre-registration): seed
+    /// 21 stopped being identity, and the much lower probability means the
+    /// small `0..50` sample that found the original four no longer finds
+    /// any — seeds 103/110/113/130/157 were the first five hits of the
+    /// same probe widened to `0..500_000` (at `P(identity) = 1%` that scan
+    /// finds roughly 5,000 identity seeds, not five), and 103 is pinned
+    /// here on the same discipline.
     #[test]
     fn identity_seeds_get_real_names_and_exactly_118_elements() {
-        let seed = 21;
+        // Re-derived 2026-08-12 for Rung::MAX=8 -> 99 (P(identity) 1/9 -> 1/100):
+        // seed 21 stopped being identity under the new rung draw. Re-found by a
+        // scan over seeds 0..500_000 (perturbation.rs's own
+        // `Rung::draw(seed).is_identity()`), whose first five hits were
+        // [103, 110, 113, 130, 157] -- not the whole result, which at
+        // P(identity)=1% is roughly 5,000 seeds. 103 is the new pin, same
+        // "hardcode one, don't widen to a `find()`" discipline the comment
+        // below already states.
+        let seed = 103;
         let u = Universe::generate_under(seed, PhysicsVersion::V2);
         assert!(
             u.rung.is_identity(),

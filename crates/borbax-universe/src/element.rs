@@ -824,13 +824,15 @@ fn generate_elements_v1(seed: u64, physics: PhysicsVersion) -> PeriodicTable {
         // precedence 2, not a G3 breach, remedy known and it requotes every
         // number. Do not describe the exponent as derived.
         // Wrapped once, at the point the quantity acquires its meaning. `eps`
-        // and `sigma` stay bare `f64`: they are the drawn *scale* of a contact
-        // and of the strain penalty, and typing them would mint two more energy
-        // units with no operations between them. The expression inside the
-        // constructor is byte-for-byte the one Task 4 shipped — this is a
-        // typing change, and `the_universe_digest_is_pinned` is what says so.
-        // Parenthesised to preserve the left-association exactly, so typing
-        // `eps` as `Quanta` moves no bits (§13.4).
+        // is drawn already `Quanta`-typed (see its own `let` above); `sigma`
+        // stays bare `f64` until wrapped right here, since it is the drawn
+        // *scale* of the strain penalty and typing it earlier would mint a
+        // second energy unit with no operations between the two before this
+        // point. The expression inside the constructor is byte-for-byte the
+        // one Task 4 shipped — this is a typing change, and
+        // `the_universe_digest_is_pinned` is what says so. Parenthesised to
+        // preserve the left-association exactly, so typing `eps` as `Quanta`
+        // moves no bits (§13.4).
         let energy_per_unit = (eps * contacts) / units as f64
             - Quanta(sigma) * det_math::cbrt((units * units) as f64);
 
@@ -2296,8 +2298,12 @@ mod tests {
                 }
             }
         }
+        // Regenerated 2026-08-12: deliberate physics change, Rung::MAX 8 -> 99
+        // (issue #26 Task 26.2 pre-registration, routed requirement 8) -- every
+        // rung != 0 draws a different perturbed universe under the new ladder.
+        // Was 0x2b40_8e77_7d66_cad5.
         assert_eq!(
-            h, 0x2b40_8e77_7d66_cad5,
+            h, 0x2972_1d1e_51cd_9c85,
             "the V2 universe digest moved — say which of §18.1's three this is, or the \
              fourth: the digest's own input set changed shape. This golden was first \
              measured 2026-08-10, alongside the assembled-universe V2 golden — see this \
