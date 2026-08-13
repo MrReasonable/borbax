@@ -391,11 +391,16 @@ migrated_constants! {
     /// figure as a pinned test.) Corrected to `eps = 2*a_V/z`, `a_V = 15.75`
     /// `MeV` (Rohlf's real SEMF volume coefficient, the same citation `kappa`
     /// uses), `z = 12` (`crate::packing::shell_size(k, 1)` at the nuclear
-    /// module's own fixed `k = 10`) — matching the real limit `BE/A -> a_V`
-    /// as `A -> infinity`, a limit approached slowly and not attained
-    /// within `T_MAX` (`eps * contacts(T_MAX)/T_MAX` is `13.19`, not
-    /// `15.75`). See `crates/borbax-universe/src/nuclear.rs` for the landed
-    /// constant and the full accounting.
+    /// module's own fixed `k = 10`) — matching the real limit
+    /// `eps * contacts(t)/t -> a_V` as `t -> infinity` (a `/review-pr`
+    /// correction: not `BE/A -> a_V`, which is false — real `BE/A` along
+    /// the valley asymptotes to `a_V - a_A`, not `a_V` alone; `a_V` is the
+    /// volume term's own per-nucleon limit, what `eps * contacts(t)/t`
+    /// computes — see `nuclear.rs`'s own "Post-gate correction" for the
+    /// correct `BE/A` asymptote), a limit approached slowly and not
+    /// attained within `T_MAX` (`eps * contacts(T_MAX)/T_MAX` is `13.19`,
+    /// not `15.75`). See `crates/borbax-universe/src/nuclear.rs` for the
+    /// landed constant and the full accounting.
     ///
     /// **Does not feed `energy_per_unit`** (V1's and V2's shared bond-pricing
     /// field) — see the plan's Round 5 correction for why that would
@@ -492,9 +497,11 @@ migrated_constants! {
     /// shortfall above.** A `physics-plausibility-reviewer` pass found
     /// `sigma * total^(5/3)` structurally unjustified rather than merely
     /// miscalibrated — `eps * contacts(total)` already reproduces the real
-    /// SEMF's volume-plus-surface term (worst-case error 2.63% at
-    /// `total = 78`, mean absolute error 1.20%, within 1% from
-    /// `total >= 266` onward), so the three surviving coefficients already
+    /// SEMF's volume-plus-surface term (within 2.63% for `total >= 50`,
+    /// within 1% for `total >= 266`, degrading to 34.6% at `total = 3` —
+    /// a `/review-pr` correction: an earlier draft of this sentence quoted
+    /// the `total >= 50` figures without that qualifier, understating the
+    /// worst case by 13x), so the three surviving coefficients already
     /// form the real four-term SEMF at Rohlf's own values. `sigma` was
     /// deleted, along with this variant's own `Sigma` sibling
     /// (`MigratedConstant`'s index 14, now retired) — see

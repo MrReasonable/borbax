@@ -48,7 +48,13 @@
 //! `eps = 2*a_V/z`, `a_V = 15.75` MeV (Rohlf's real SEMF volume coefficient —
 //! the same citation `kappa` already uses), `z = 12` (this crate's
 //! `packing::shell_size(k, 1)` at `NUCLEAR_K = 10`) — matching the real
-//! limit `BE/A -> a_V` as `A -> infinity`, a limit this model approaches
+//! limit `eps * contacts(t)/t -> a_V` as `t -> infinity` (a `/review-pr`
+//! correction: an earlier draft named this `BE/A -> a_V`, which is false —
+//! the real `BE/A` along the valley asymptotes to `a_V - a_A = -7.95`
+//! MeV/nucleon, not `a_V`; `a_V` alone is the *volume term's own*
+//! per-nucleon limit, which is what `eps * contacts(t)/t` computes, not
+//! `BE/A` overall — see this module's own "Post-gate correction" for the
+//! correct `BE/A` asymptote), a limit this model approaches
 //! slowly and does not reach within `T_MAX` (`eps * contacts(T_MAX)/T_MAX`
 //! is `13.19`, not `15.75`, at `T_MAX = 386`). This is a genuine
 //! pre-registration correction, landing the same way Decision 11's own
@@ -83,10 +89,14 @@
 //! the packing series, not a separate term), asymmetry, Coulomb.
 //! **Precisely, not "1-9% at every total" (a `/review-pr` correction — the
 //! original figure was measured over the wrong range and conflated two
-//! different quantities): the deficit `a_V - eps*contacts(t)/t` fits
-//! `19.75 * t^-0.345` against the real surface term's own `17.8 *
-//! A^-1/3`** (exponent within 3.4%, coefficient within 11%, confirming the
-//! packing series generates a surface term with the right *scaling law*)
+//! different quantities): over `t in [3, 386]`, the deficit
+//! `a_V - eps*contacts(t)/t` fits `19.753 * t^-0.3445` against the real
+//! surface term's own `17.8 * A^-1/3`** (exponent within 3.4% — reproduces
+//! from the unrounded `0.3445`, not the rounded `0.345`, which gives 3.5%
+//! — coefficient within 11%, confirming the packing series generates a
+//! surface term with the right *scaling law*; the fit range matters —
+//! `[1,386]` gives `19.35 * t^-0.3406`, "within 2.2%", and `[50,386]`
+//! gives `19.80 * t^-0.3451`, "within 3.5%")
 //! **— the combined volume-plus-surface reproduction itself is within
 //! 2.63% for `t >= 50`, within 1% for `t >= 266`, degrading to 34.6% at
 //! `t = 3`, where this model — like the real SEMF — has no pairing term.**
@@ -226,17 +236,62 @@ pub(crate) const NUCLEAR_K: usize = 10;
 /// signatures would smuggle them into a computation that structurally
 /// does not need them, hiding the invariant the narrower signature
 /// currently makes visible.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// **No `PartialEq` derive, deliberately — a `/review-pr` finding
+/// (`rust-developer-expert`, sharpened by `determinism-auditor`).** A
+/// derived `PartialEq` on `f64` fields is invisible to `clippy::float_cmp`
+/// (verified: the equivalent hand-written `a == b` on two bare `f64`s is
+/// caught, the derive-generated one is not), so it would launder a float
+/// comparison in a `pub(crate)` type past the exact lint this workspace
+/// relies on to flag one. `the_three_nuclear_coefficients_share_one_rung`
+/// (this module's own test) is the only place that needs equality — see
+/// `NuclearCoeffs::is_identity_config` below, defined only under
+/// `#[cfg(test)]` so a future production caller has no `==` to reach for
+/// at all and has to write out what it actually means (exact match on
+/// every field,
+/// component-wise `.abs() < epsilon`, or something else).
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct NuclearCoeffs {
     pub(crate) eps: f64,
     pub(crate) kappa: f64,
     pub(crate) c: f64,
 }
 
+#[cfg(test)]
+impl NuclearCoeffs {
+    /// Exact IEEE-754 equality against another `NuclearCoeffs` — not
+    /// bit-exact (`-0.0 == 0.0` is `true` despite differing bit patterns)
+    /// and not epsilon-tolerant (`NaN == NaN` is `false`). Correct for
+    /// this module's one use, detecting rung 0 in
+    /// `the_three_nuclear_coefficients_share_one_rung`:
+    /// `draw_symmetric` returns `base` bit-for-bit there (`perturb`
+    /// multiplies by exactly `1.0 + 0.0`), so exact equality is the right
+    /// check for that specific comparison. Not a general "close enough"
+    /// check — comparing two arbitrarily-drawn `NuclearCoeffs` with this
+    /// would silently answer a question nobody asked.
+    #[must_use]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the one deliberate exact-equality comparison this module makes -- see this \
+                  method's own doc for why exact equality is correct here specifically"
+    )]
+    fn is_identity_config(self, base: Self) -> bool {
+        self.eps == base.eps && self.kappa == base.kappa && self.c == base.c
+    }
+}
+
 /// Contacts made by a cluster of `total` nucleons, via this crate's own
 /// packing model at the fixed [`NUCLEAR_K`] (never a drawn `k` — see this
 /// module's doc, correction 3, for why fixing it is required, not merely
-/// convenient).
+/// convenient). **Extrapolates beyond `packing::FRONTIER_COEFF`'s own
+/// calibration domain at `total` near `T_MAX`** — the constant is fitted
+/// against exact counts at caps 12/42/162 (shell coordination 1-3), and
+/// `total = T_MAX = 386` at `NUCLEAR_K = 10` reaches shell 5 (cap 252);
+/// `packing.rs`'s own per-cap fit values (rising toward an asymptote as
+/// cap grows) mean this is a genuine but bounded extrapolation, not an
+/// error — a `/review-pr` finding (`geometry-numerics-reviewer`),
+/// recorded here since it sits directly under this module's own headline
+/// claim that `eps * contacts(total)` reproduces a real SEMF term.
 #[must_use]
 #[expect(
     clippy::as_conversions,
@@ -366,9 +421,10 @@ pub(crate) fn on_valley_per_unit_energy(total: u32, coeffs: NuclearCoeffs) -> f6
 /// identity `c`, is `31`, well past the even-only onset of `22`).
 ///
 /// `None` if no drift is ever found in `2..=T_MAX` — not expected to occur
-/// for any legal `c` (`a* <= t/2` for every `t`, proved in this module's
-/// own tests, so drift is not merely likely but structurally bounded within
-/// `T_MAX`). `Option<u32>`, not a magic out-of-range sentinel: an earlier
+/// for any legal `c` (`a* <= t/2` for every `t`, proved on paper and
+/// pinned by `the_valley_never_reaches_past_half_of_total`, so drift is
+/// not merely likely but structurally bounded within `T_MAX`).
+/// `Option<u32>`, not a magic out-of-range sentinel: an earlier
 /// version returned `T_MAX + 2`, and a caller comparing two such sentinels
 /// against each other (as a range-containment check would) can pass
 /// vacuously — the same shape of hazard `bound_shape`'s `Option<u32>`
@@ -391,6 +447,18 @@ pub(crate) fn drift_onset(c: f64) -> Option<u32> {
 /// Q-value for this channel (it names only "V1's mechanism, kept" without
 /// restating what that means under the corrected model), and Steps 5-7 own
 /// the real per-isotope definition this module does not attempt.
+///
+/// **Does not conserve proton number** — both fragments are scored at
+/// *their own* valley composition, not at a split of the parent's actual
+/// `a`, so the returned Q is closer to a fission-plus-beta-chain total
+/// than a single prompt-fission Q (measured at identity, `total = 238`:
+/// parent `a = 93`, best-split fragments `93 + 101`, a `+8` proton
+/// mismatch — magnitude-consistent with that reading, ~226 `MeV` against
+/// real U-238's ~200 `MeV` prompt / ~215 `MeV` total). `Mass` conservation
+/// (a hard invariant) is not violated anywhere in the crate by this — no
+/// `Mass` value is constructed here — but a future caller promoting this
+/// convention into a real reaction channel needs to know which quantity
+/// it's actually computing.
 #[must_use]
 pub(crate) fn shedding_q(total: u32, coeffs: NuclearCoeffs) -> f64 {
     let whole = on_valley_total_energy(total, coeffs);
@@ -465,6 +533,19 @@ pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
 /// 0, max = 3` — `<= 5` still clears the measured worst case with the same
 /// margin as before.
 ///
+/// **Both acceptance criteria are currently unreachable on the sampled
+/// domain — a `/review-pr` finding (`emergence-auditor`), confirmed by
+/// mutation.** Deleting the `total = 2` early-return *and* raising
+/// `MAX_TRANSITIONS` to `50` together still passes the full corpus gate —
+/// no seed anywhere in the 38,416-seed corpus is close to failing either
+/// check today (max transitions measured is `3`, two below the `5` bound;
+/// `total = 2` bound holds in every seed tried). This function is not
+/// dead code — it is called, and both checks are real regression tripwire
+/// for a regime that does not currently occur, not decoration — but a
+/// green run of this function proves less than "the shape check passed"
+/// suggests, and this note exists so a future reader does not read
+/// `38416/38416` as evidence either bound is close to its edge.
+///
 /// **What this check does and does not discriminate — corrected after
 /// mutation-testing it directly.** It reliably catches a *scattered*
 /// implementation, where several genuinely distinct regions of the range
@@ -485,8 +566,11 @@ pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
 ///
 /// **Why `total = 3` is excluded, not merely tolerated.** Verified against
 /// `physics-plausibility-reviewer`: `total = 3` is negative at the
-/// *identity* configuration (`-0.5615`, no perturbation involved), matching
-/// a known property of a four-term liquid-drop model with no pairing or
+/// *identity* configuration (`-0.4055`, no perturbation involved — a
+/// `/review-pr` correction: an earlier draft of this figure, `-0.5615`,
+/// was the deleted four-coefficient model's value, carried over unmarked
+/// after `sigma`'s removal), matching a known property of a four-term
+/// liquid-drop model with no pairing or
 /// curvature term — the real SEMF's own prediction for the A=3 nuclide this
 /// model actually favours at that total (Z=1, i.e. H-3, both by the real
 /// SEMF's own argmax and by this model's) is `+0.775` `MeV` **per
@@ -629,6 +713,28 @@ mod tests {
     /// (`the_volume_term_is_eps_times_contacts` and its two siblings) exist
     /// to catch instead).
     ///
+    /// **The `interior` conjunct (`peak > 1 && peak < T_MAX`) is
+    /// structurally unfalsifiable within the P7-reachable box — a
+    /// `/review-pr` finding (`emergence-auditor`), found by measuring what
+    /// `valley_peak_total` actually returns rather than trusting that a
+    /// passing conjunct means something.** Across the full 38,416-seed
+    /// corpus it returns exactly one of four values, `{13, 55, 147, 309}`
+    /// — this crate's own packing-shell closures at `NUCLEAR_K = 10` — and
+    /// none of them is `1` or `T_MAX`. So `interior` is `true` for every
+    /// sampled seed not because the coefficients balance correctly, but
+    /// because no P7-reachable coefficient combination can push the peak
+    /// off a closure that far; the whole 38,406/38,416 closure statistic
+    /// is therefore identical to the shedding-Q statistic alone, and the
+    /// interior half contributes nothing to it. It is *not* unfalsifiable
+    /// in general — a wide sweep outside the P7 box gives 2,287/6,912 edge
+    /// peaks — only within the domain this gate actually samples. This
+    /// test's own corpus loop below now additionally pins the exact
+    /// closure set every observed peak must belong to, replacing the
+    /// vacuous `interior` check with one that can fail: a future change
+    /// that lets the peak escape it (a fifth closure appearing, or
+    /// landing at a boundary) fails loudly instead of continuing to read
+    /// as "interior, therefore fine."
+    ///
     /// **Reported, not gated: how far the bound range reaches.**
     /// `physics-plausibility-reviewer` also found `MigratedConstant::C`'s
     /// own landed doc overclaimed coverage — `T_MAX`'s proof covers the
@@ -641,12 +747,23 @@ mod tests {
     /// own shortfall is small but not zero. Still a real, separate finding
     /// for Steps 2+ (see `perturbation.rs`'s `C` doc), not something Step 1
     /// itself is positioned to fix by picking a threshold here.
+    /// **Un-ignored 2026-08-13 — a `/review-pr` finding (`determinism-auditor`):
+    /// this test's own `edge_peaks == 6261` pin (the closure bar Arm 2
+    /// gates on) was, until this change, never evaluated by any CI leg —
+    /// no workflow anywhere in the repo passes `--ignored`. A golden
+    /// nothing evaluates is a golden without a guard. The prior `#[ignore]`
+    /// reason's own re-measurement (2.20s release, 1.74s debug for this
+    /// test alone) already showed the cost claim that had justified
+    /// skipping it was false; debug matters more than that reason
+    /// acknowledged, since `overflow-checks` is exactly what would catch
+    /// [`on_valley_total_energy`]'s `total - a` if [`composition_argmax_int`]'s
+    /// own floor ever regressed.**
     #[test]
-    #[ignore = "not run under CI by default -- NOT actually expensive (measured ~2.5s release for \
-                all four ignored tests combined; an earlier version of this reason overstated the \
-                cost, per a /review-pr finding). Run explicitly: cargo test --locked --release \
-                -p borbax-universe -- --ignored --nocapture nuclear"]
     fn the_two_armed_gate_passes_over_the_derived_corpus() {
+        // 13, 55, 147, 309: packing::shell_size(10, ..)'s own cumulative
+        // closures (1+12, +42, +92, +162) -- see the corpus loop below.
+        const KNOWN_CLOSURES: [u32; 4] = [13, 55, 147, 309];
+
         let drift_at_c_max = drift_onset(C_MAX);
         let drift_at_c_min = drift_onset(C_MIN);
         assert!(
@@ -693,6 +810,23 @@ mod tests {
 
             let peak = valley_peak_total(coeffs);
             let interior = peak > 1 && peak < T_MAX;
+
+            // The interior conjunct above is structurally unfalsifiable within
+            // this corpus (see this test's own doc) -- this closure-set pin is
+            // what actually discriminates, replacing it with a check that can
+            // fail. KNOWN_CLOSURES are packing::shell_size(10, ..)'s own
+            // cumulative closures (1+12, +42, +92, +162) -- the exact set
+            // measured across all 38,416 seeds, never anything else and never
+            // the trivial total=1 the fold technically starts from.
+            assert!(
+                KNOWN_CLOSURES.contains(&peak),
+                "seed {seed}: peak={peak} is not one of this crate's own packing-shell \
+                 closures {KNOWN_CLOSURES:?} at NUCLEAR_K=10 -- coeffs={coeffs:?}. If this is a \
+                 deliberate change (a new closure genuinely reachable, or the coefficients now \
+                 producing a non-quantised optimum), update this list and re-verify the \
+                 'interior' conjunct's own vacuity claim in this test's doc, which was measured \
+                 against exactly this closure set."
+            );
 
             let q = shedding_q(T_MAX, coeffs);
             let has_positive_q = q > 0.0;
@@ -844,8 +978,14 @@ mod tests {
     /// (`a >= 1`, [`composition_argmax_int`]'s floor), not a tie-break, is
     /// what selects `a = 1` — the plan's round-3 correction claimed no exact
     /// tie occurs under the corrected model and round-5 corrected that.
+    ///
+    /// **Not the *only* exact tie — a `/review-pr` correction
+    /// (`geometry-numerics-reviewer`), renamed accordingly.** See
+    /// [`an_exact_tie_at_total_one_twenty_five_is_resolved_by_round_ties_even`]
+    /// below for the tie family this test's own name used to overclaim
+    /// away.
     #[test]
-    fn the_only_exact_tie_is_at_total_one_and_the_domain_restriction_closes_it() {
+    fn the_total_one_tie_is_closed_by_the_domain_restriction() {
         assert_eq!(contacts(1).to_bits(), 0.0_f64.to_bits());
         for &(kappa, c) in &[(23.7_f64, 0.015_f64), (0.1, 0.0075), (100.0, 0.0225)] {
             let coeffs = NuclearCoeffs {
@@ -869,6 +1009,47 @@ mod tests {
         }
     }
 
+    /// `composition_argmax(c, t)` is exactly `k + 0.5` whenever
+    /// `c == (t - 2k - 1) / (k * t^(2/3))` — a family with **4,504**
+    /// solutions in the P7-reachable `c` band (found by
+    /// `geometry-numerics-reviewer`'s exhaustive enumeration; `total = 1`,
+    /// test 4 above, is the one member the domain restriction closes, not
+    /// the only member). A drawn `c` lands inside a tie window with
+    /// probability ~4e-12 (26,853 total ulps of tie window against
+    /// ~6.8e15 legal `f64` values in the band) — a statement about the
+    /// model, not a reachable case, which is why no other test needs to
+    /// account for it.
+    ///
+    /// **At such a cell, [`brute_force_argmax`] is not a valid oracle.**
+    /// `total = 125` is a perfect cube, so `cbrt(125*125) == 25.0` exactly
+    /// and the closed form gives exactly `50.5` at `c = 0.0192`. But
+    /// `per_unit_binding_energy(50, 75, ..)` and `per_unit_binding_energy(51,
+    /// 74, ..)` are mathematically equal and differ only by ~2 ulp of
+    /// accumulated rounding — so a brute-force `>` comparison returns
+    /// whichever way that rounding happens to fall, not a real preference.
+    /// The closed form is the *reliable* side at a tie: `round_ties_even`
+    /// on the exact `.5` quotient is deterministic; the oracle is not.
+    #[test]
+    fn an_exact_tie_at_total_one_twenty_five_is_resolved_by_round_ties_even() {
+        assert_eq!(
+            composition_argmax(0.0192, 125).to_bits(),
+            50.5_f64.to_bits()
+        );
+        assert_eq!(composition_argmax_int(0.0192, 125), 50);
+        let coeffs = NuclearCoeffs {
+            eps: BASE_EPS,
+            kappa: BASE_KAPPA,
+            c: 0.0192,
+        };
+        let e50 = per_unit_binding_energy(50, 75, coeffs);
+        let e51 = per_unit_binding_energy(51, 74, coeffs);
+        assert!(
+            (e50 - e51).abs() <= 4.0 * f64::EPSILON * e50.abs(),
+            "the two candidates at this tie should differ by a few ulp of rounding, not \
+             represent a real preference: e50={e50} e51={e51}"
+        );
+    }
+
     /// **5.** The three nuclear coefficients share one rung (routed
     /// requirement 6) — the fraction of seeds landing all three at their base
     /// values simultaneously must match `P(identity) = 1/(Rung::MAX+1)`, and
@@ -883,17 +1064,16 @@ mod tests {
     /// regardless of how many constants there are), but this test now has
     /// three conjuncts to `AND` together instead of four, a marginally
     /// weaker joint check than before.
+    /// **Un-ignored 2026-08-13, same reason as
+    /// `the_two_armed_gate_passes_over_the_derived_corpus`.**
     #[test]
-    #[ignore = "not run under CI by default -- see the_two_armed_gate_passes_over_the_derived_corpus's \
-                own reason for the timing note. Run: cargo test --locked --release -p borbax-universe \
-                -- --ignored --nocapture nuclear"]
     fn the_three_nuclear_coefficients_share_one_rung() {
         const N: u64 = 200_000;
         const BAND: f64 = 0.0015;
         let mut all_at_base = 0_u64;
         for seed in 0..N {
             let (_rung, coeffs) = draw_universe(seed);
-            if coeffs == IDENTITY {
+            if coeffs.is_identity_config(IDENTITY) {
                 all_at_base += 1;
             }
         }
@@ -957,6 +1137,37 @@ mod tests {
         }
     }
 
+    /// `composition_argmax_int(c, total) <= total / 2` for every legal `c`
+    /// and every `total` — [`drift_onset`]'s own doc cites this property
+    /// as "proved in this module's own tests," but no test actually
+    /// checked it (a `/review-pr` finding, `geometry-numerics-reviewer`);
+    /// this is that test. True on paper (`a* <= t/2 iff t^(2/3) <= t^(5/3)`,
+    /// which holds for `t >= 1`, and `round_ties_even` adds at most `0.5`,
+    /// so `a <= t/2 + 0.5 <= t`), but the citation pointed at a test that
+    /// did not exist — exactly the shape by which a real invariant gets
+    /// silently deleted in a later refactor. Also closes an unsigned-
+    /// underflow risk: every on-valley caller computes `total - a`, which
+    /// panics under `overflow-checks` (or wraps to a garbage magnitude in
+    /// release) if `a` ever exceeded `total`.
+    #[test]
+    fn the_valley_never_reaches_past_half_of_total() {
+        for &c in &[C_MIN, BASE_C, C_MAX] {
+            for total in 1..=T_MAX {
+                let a = composition_argmax_int(c, total);
+                assert!(
+                    a <= total,
+                    "c={c} total={total}: a={a} exceeds total -- total - a would underflow"
+                );
+                assert!(
+                    a <= total / 2 || total == 1,
+                    "c={c} total={total}: a={a} exceeds total/2={} (total=1 is the sole \
+                     documented exception, closed by the domain floor -- see test 4)",
+                    total / 2
+                );
+            }
+        }
+    }
+
     /// **8.** `composition_argmax(c, 1) == 0.5` exactly, for every legal
     /// `c` — makes the rounding hazard visible (`round_ties_even(0.5) ==
     /// 0`) rather than latent, and `composition_argmax_int` must still
@@ -1001,10 +1212,11 @@ mod tests {
     /// coefficients and cannot by itself see how far the peak sits from
     /// V1's own typical position — this test makes that visible rather than
     /// silently absent.
+    /// **Un-ignored 2026-08-13 — this is the test that carries the
+    /// `edge_peaks == 6261` pin `the_two_armed_gate_passes_over_the_derived_corpus`'s
+    /// own closure bar is derived from; see that test's doc for why
+    /// leaving it `#[ignore]`d meant the bar itself had no CI guard.**
     #[test]
-    #[ignore = "not run under CI by default -- see the_two_armed_gate_passes_over_the_derived_corpus's \
-                own reason for the timing note. Run: cargo test --locked --release -p borbax-universe \
-                -- --ignored --nocapture nuclear"]
     fn v1_edge_peak_census_is_pinned_and_arm_two_peak_is_reported_against_it() {
         use crate::packing::{PackingConsts as V1PackingConsts, contacts_upto};
 
@@ -1052,8 +1264,12 @@ mod tests {
         let peak = valley_peak_total(IDENTITY);
         println!(
             "V3 identity: on-valley peak at total={peak} (element {} of up to 120), against \
-             V1's reconstructed p5 ~0.100 / median ~0.581 of n_elements, and the real SEMF's \
-             peak at A~61-62",
+             V1's reconstructed p5 ~0.100 / median ~0.581 of n_elements. NOT independent \
+             corroboration against the real SEMF's A=60 or the experimental A~61-62 (Ni-62/ \
+             Fe-56) -- peak is quantised to this crate's own packing-shell closures \
+             {{13,55,147,309}} regardless of coefficients (a /review-pr finding, \
+             emergence-auditor); the model's own smooth (unquantised) optimum sits at \
+             total=60-70, and 55 is only the nearest closure below it",
             composition_argmax_int(BASE_C, peak)
         );
     }
@@ -1222,7 +1438,7 @@ mod tests {
     /// per §13.4. Each of 12a/12b/12c zeroes two of the three terms to
     /// isolate the third, so none of them can see which order the three
     /// are combined in. Verified by mutation: re-associating to `volume −
-    /// (asymmetry + Coulomb)` moves 130 of 386 identity on-valley totals
+    /// (asymmetry + Coulomb)` moves 131 of 386 identity on-valley totals
     /// (worst `4.5e-13`) and passes every other test in the crate that
     /// existed before this one and [`the_identity_on_valley_energy_digest_is_pinned`]
     /// below. `a = 26, b = 30` is a total where the two associations differ
@@ -1240,14 +1456,16 @@ mod tests {
         );
     }
 
-    /// **14.** A bit-level digest of the identity configuration's on-valley
+    /// **13.** A bit-level digest of the identity configuration's on-valley
     /// energies over `1..=T_MAX` — a comprehensive guard on
     /// [`total_binding_energy`]'s pinned left-to-right term association
     /// (§13.4), complementing 12d's single hand-checkable point with
     /// coverage of the whole sequence. Measured: swapping the two
-    /// subtractions moves 123 of 386 on-valley totals (29,341/75,075 =
-    /// 39.1% of all reachable `(a, b)` cells at identity, worst `4.5e-13`)
-    /// and fusing them into `V - (A + C)` moves 43.0% — both pass every
+    /// subtractions moves 123 of 386 on-valley totals (29,341/75,077 =
+    /// 39.1% of all reachable `(a, b)` cells at identity, worst `4.5e-13`
+    /// — a `/review-pr` correction: an earlier draft of this denominator,
+    /// 75,075, was off by 2 from `sum(t+1 for t in 1..=T_MAX)`) and fusing
+    /// them into `V - (A + C)` moves 43.0% — both pass every
     /// other test in this module. Every value in the sequence is finite
     /// (checked when the literal was taken), so `to_bits` needs no NaN
     /// canonicalisation. Same FNV-1a-64 shape `packing.rs`'s own
@@ -1271,7 +1489,7 @@ mod tests {
         );
     }
 
-    /// **13.** The identity configuration's on-valley peak is pinned to
+    /// **14.** The identity configuration's on-valley peak is pinned to
     /// `total = 55` (element 25) — this module's own general
     /// identity-configuration regression pin. `NUCLEAR_K` (`= 10`, not
     /// `12`, correction 3 of this module's own top-level doc) is guarded

@@ -169,8 +169,12 @@ exponent) makes the gate's own reported numbers look *better*, not worse.
 That class is caught by two added pinned tests instead:
 `the_identity_configuration_is_bound_over_all_but_two_totals` (the
 identity's unbound set is exactly `{1, 3}`) and
-`the_size_term_is_total_to_the_five_thirds` (the term itself, plus the
-identity peak position).
+~~`the_size_term_is_total_to_the_five_thirds`~~ (the term itself, plus the
+identity peak position) — **deleted 2026-08-13 along with `sigma` itself
+(see "Post-gate correction" below); its job is now split across the three
+term-isolation tests in `nuclear.rs`** (`the_volume_term_is_eps_times_contacts`,
+`the_asymmetry_term_is_kappa_times_imbalance_squared_over_total`,
+`the_coulomb_term_is_gamma_times_a_times_a_minus_one_over_total_to_the_one_third`).
 
 Measured over the corpus: **p50 = 0 transitions (never turns unbound at
 all), p90 = 1 (the ordinary single crossover), max = 3** — three seeds
@@ -195,10 +199,11 @@ unbound tail begins? A `physics-plausibility-reviewer` pass found
 coverage proof (that `T_MAX` is large enough for `composition_argmax` to
 reach every integer up to 120) covers only the composition argmax's
 *shape*, not whether binding stays positive that far out — a different
-question once `eps`/`sigma` move too. (All four nuclear coefficients share
-one rung, so their *magnitudes* move together, not independently of `c` —
-only each constant's *direction* is drawn independently, from its own
-`Stream` index.)
+question once `eps`/`sigma` move too. (All four nuclear coefficients — now
+three, `sigma` deleted 2026-08-13, see "Post-gate correction" below —
+shared one rung, so their *magnitudes* moved together, not independently
+of `c` — only each constant's *direction* is drawn independently, from its
+own `Stream` index.)
 
 Measured: **min = 27, p1 = 62, p10 = 122, p50 = 138; 3,554/38,416 (9.25%)
 of universes cover fewer than 120 elements while still bound.** This is a
@@ -240,10 +245,28 @@ The 59,292-cell V1 edge-peak census above was independently computed twice
 `packing.rs`, once here as a permanent `#[cfg(test)]` inside
 `borbax-universe` against the real `contacts_upto`/`shell_size`. Both give
 **6,261/59,292 = 10.559603%** exactly. At the identity coefficients, the
-on-valley peak lands at `total = 55, element 25` — a strong independent
-cross-check, since this exactly matches the physics-plausibility pass's own
-scratch-script prediction for `k=10, eps=2.625` before any of this was
-production code.
+on-valley peak lands at `total = 55, element 25` — this exactly matches
+the physics-plausibility pass's own scratch-script prediction for `k=10,
+eps=2.625` before any of this was production code, a genuine cross-check
+of the script against the implementation.
+
+**Post-gate correction, 2026-08-13: `total=55`'s closeness to a real SEMF
+peak (A=60, or the experimental A~61-62) is not itself independent
+corroboration of the physics — a `/review-pr` finding (`emergence-auditor`).**
+`valley_peak_total` returns exactly one of four values across the entire
+38,416-seed corpus: `{13, 55, 147, 309}` — this crate's own packing-shell
+closures at `NUCLEAR_K=10` (`1+12=13`, `+42=55`, `+92=147`, `+162=309`),
+never anything else. The model's own *smooth* counterpart (no shell
+quantisation, same asymmetry/Coulomb terms, the volume-plus-surface piece
+alone) peaks at `total=70` (using this doc's own fitted `a_S=19.75`) or
+`total=60` (Rohlf's real `a_S=17.8`) — the quantisation pulls the reported
+peak down from a real term-competition optimum near 60-70 to the nearest
+closure below it, 55. `55`'s proximity to `60` is a product of the lattice
+happening to place a closure nearby, not of the coefficients balancing to
+match real physics — a coefficient error large enough to move the smooth
+optimum from 60 to, say, 50 would very likely still round to the same
+closure, 55, and leave this "cross-check" reporting success. See Arm 2's
+own doc, below, for the direct consequence.
 
 ## Post-gate correction, 2026-08-13: `sigma` removed
 
@@ -310,6 +333,10 @@ deliberately not the stated reason.
 - **Whether `sigma`/`gamma` were collinear on the valley** was a
   pre-registered caveat before this gate first ran, and is now moot —
   `sigma` no longer exists.
-- **The `NuclearCoeffs` struct** (bundling `eps`/`kappa`/`c` positionally,
-  recommended by `rust-developer-expert` across two review rounds) remains
-  deferred to Steps 2+, whose real call sites will settle its shape.
+- ~~The `NuclearCoeffs` struct... remains deferred to Steps 2+~~ — **landed
+  2026-08-13**, once the `sigma`-removal diff itself made the churn
+  concrete rather than speculative (7 of 9 changed function signatures had
+  zero logic change). See `crates/borbax-universe/src/nuclear.rs`'s own
+  doc on the struct for why `composition_argmax`/`composition_argmax_int`/
+  `drift_onset` deliberately still take `c: f64` alone. Whether Steps 2+
+  want a different shape at their own real call sites is still open.

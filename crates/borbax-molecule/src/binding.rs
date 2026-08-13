@@ -250,12 +250,17 @@ impl BindConsts {
 ///   rises from 0.9383775 combined to 0.9877180 block-only, over the 0.98
 ///   bar), while dropping block does not (0.9568754 flat-only, still under
 ///   bar) — the same conclusion as before the regeneration, from
-///   0.9592/0.9877/0.9665. See `the_prefilter_is_a_genuine_bound`'s own
+///   0.9592/0.9877/0.9665. **Self-pair-restricted split, measured not
+///   pinned (a `/review-pr` correction — an earlier draft pointed at
+///   `the_prefilter_is_a_genuine_bound`'s own
 ///   `flat_wins_shape`/`block_wins_shape`/`flat_wins_charge`/
-///   `block_wins_charge` counters for the exact per-channel split (20/22
-///   shape, 42/0 charge on self-pairs; previously 20/22 and 41/1 — the
-///   shape channel did not move at all, and the whole of the self-pair
-///   change is in the charge channel).
+///   `block_wins_charge` counters as carrying this figure; those count
+///   over all 315 pairs, not the self-pair subset, and report `(72, 243,
+///   260, 55)` — a different number for a different population)**: 20/22
+///   shape, 42/0 charge on self-pairs specifically; previously 20/22 and
+///   41/1 — the shape channel did not move at all, and the whole of the
+///   self-pair change is in the charge channel. Pinning this split needs
+///   its own counters, generic over `D` for the same reason noted above.
 /// - **What the antipodal-block bound actually earns its place on is
 ///   hetero-pairs: it wins at least one channel on 232 of 273 real hetero
 ///   comparisons** in the measured corpus (`block_wins_hetero`, same

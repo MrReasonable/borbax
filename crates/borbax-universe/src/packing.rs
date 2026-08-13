@@ -252,7 +252,11 @@ pub(crate) const FRONTIER_COEFF: f64 = 6.90;
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`a` is at most a shell capacity, 226 over the drawn range"
+    reason = "`a` is at most a shell capacity: at most 130 over V1's own drawn range, at most \
+              252 under nuclear.rs's fixed k = 10 caller (see unmade_lateral's own reason) -- \
+              a /review-pr style-consistency fix (geometry-numerics-reviewer): the prior 226 \
+              was not wrong (max `a` actually reached is 126) but was inconsistent with this \
+              file's other four bound comments, all updated to name the real 252 ceiling"
 )]
 pub(crate) fn compact_bound(a: usize) -> f64 {
     if a == 0 {
@@ -297,7 +301,11 @@ pub(crate) fn lateral_made(cap: usize, outer: usize) -> f64 {
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
-    reason = "`outer` is at most a shell capacity, 226 over the drawn range"
+    reason = "`outer` is at most a shell capacity: at most 130 over V1's own drawn range, at \
+              most 252 under nuclear.rs's fixed k = 10 caller (see unmade_lateral's own reason) \
+              -- a /review-pr style-consistency fix (geometry-numerics-reviewer): the prior 226 \
+              was not wrong (max `outer` actually reached is 162) but was inconsistent with \
+              this file's other four bound comments, all updated to name the real 252 ceiling"
 )]
 pub(crate) fn lateral_made_raw(cap: usize, outer: usize) -> f64 {
     (lateral_coordination(cap) * outer as f64 - unmade_lateral(cap, outer)) * 0.5

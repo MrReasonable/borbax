@@ -1999,9 +1999,10 @@ computed as abundance-weighted averages over that distribution.
   differs from its base value) before asserting the other axis did not
   move; a test that only checks the second half would pass just as
   vacuously if the perturbation silently failed to apply. Perturbing any
-  nuclear-tagged constant (`eps`, `sigma`, `kappa`, `c` — not `gamma`,
-  which is derived from `kappa` and `c` and is not an independent
-  perturbation target, per Decision 11) leaves `(valence, affinity,
+  nuclear-tagged constant (`eps`, `kappa`, `c` — not `gamma`, which is
+  derived from `kappa` and `c` and is not an independent perturbation
+  target, per Decision 11; not `sigma`, deleted 2026-08-13 as structurally
+  unjustified — see the Round 8 note above) leaves `(valence, affinity,
   radius, block(), BondEnergyMatrix::energy)` bit-identical; perturbing
   any electronic-tagged constant leaves the composition distribution and
   Q-values bit-identical. **`BondEnergyMatrix::energy` added to this
@@ -2068,10 +2069,12 @@ computed as abundance-weighted averages over that distribution.
    independent-draw pre-registration would show — so pre-register `base_i`
    (each coefficient's base value), each coefficient's `p` range, **and**
    `m` together, as three things, not one interval, and re-run Step 1's
-   gating probe sampling `(rung, p_eps, p_sigma, p_kappa, p_c)` jointly, the
-   way `generate_elements` will draw them** — a probe sampling the four
+   gating probe sampling `(rung, p_eps, p_kappa, p_c)` jointly** (originally
+   `p_sigma` too — `sigma` deleted 2026-08-13, see the Round 8 note below),
+   **the way `generate_elements` will draw them** — a probe sampling the
    coefficients independently measures a regime the shipped code does not
-   use.
+   use. Satisfied by `nuclear.rs`'s own `draw_universe` test helper, for
+   the record.
 6. **State the measurement regime alongside any figure requoted from this
    plan's review history** (e.g. the 96.3%/31.7%/68.3% figures, any
    κ/γ-dependent number) — several are correct only under a specific,
