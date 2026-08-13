@@ -83,8 +83,9 @@ use borbax_rng::{Domain, Stream};
 /// wrong axis would let one task's perturbation silently affect the other's
 /// physics.
 ///
-/// **`Nuclear` is tagged by Task 26.2's four new coefficients (`eps`,
-/// `sigma`, `kappa`, `c`), pre-registered 2026-08-12 — see
+/// **`Nuclear` is tagged by Task 26.2's coefficients (`eps`, `kappa`, `c`
+/// — originally four including `sigma`, pre-registered 2026-08-12, `sigma`
+/// deleted 2026-08-13 as structurally unjustified) — see
 /// [`MigratedConstant`]'s own doc.** Still `#[allow(dead_code)]`, not
 /// `#[expect(dead_code)]`: nothing in production branches on `.axis()`'s
 /// classification yet (Step 3's independence test is what gives it a first
@@ -372,15 +373,20 @@ migrated_constants! {
     /// this entry originally pinned `1.0`, V1's own historical `eps`
     /// midpoint, which sits at an unrelated scale next to
     /// [`Self::Kappa`]/[`Self::C`]'s real MeV-pinned values.** Measured at
-    /// `eps = 1.0` and the shipped `NUCLEAR_K = 10`: 305 of 386 totals
-    /// (79.0%) have negative on-valley per-unit binding energy — the model
-    /// is unbound over most of its domain, not merely peaked low, caught by
-    /// a `physics-plausibility-reviewer` pass dispatched specifically
-    /// because `kappa`/`c` carry real correspondence and `eps` did not. (An
-    /// earlier draft of this correction quoted 288/386, 74.6% — measured
-    /// against the superseded `NUCLEAR_K = 12` before that constant's own
-    /// correction landed, and never re-taken; see
-    /// `crates/borbax-universe/src/nuclear.rs`'s
+    /// the time, at `eps = 1.0` and the shipped `NUCLEAR_K = 10` on the
+    /// four-coefficient model then shipped: 305 of 386 totals (79.0%) had
+    /// negative on-valley per-unit binding energy — unbound over most of
+    /// its domain, not merely peaked low, caught by a
+    /// `physics-plausibility-reviewer` pass dispatched specifically because
+    /// `kappa`/`c` carry real correspondence and `eps` did not. (An earlier
+    /// draft of this correction quoted 288/386, 74.6% — measured against
+    /// the superseded `NUCLEAR_K = 12` before that constant's own
+    /// correction landed; and 305/386 was itself the four-coefficient
+    /// model's figure — after `sigma`'s 2026-08-13 removal, the identical
+    /// measurement at `eps = 1.0` on the current three-coefficient model
+    /// gives 190/386, 49.2%, unbound over roughly half its domain, not
+    /// most of it. Neither figure is stale *in its own historical context*;
+    /// see `crates/borbax-universe/src/nuclear.rs`'s
     /// `the_identity_configuration_is_bound_over_all_but_two_totals` for the
     /// figure as a pinned test.) Corrected to `eps = 2*a_V/z`, `a_V = 15.75`
     /// `MeV` (Rohlf's real SEMF volume coefficient, the same citation `kappa`
@@ -821,6 +827,17 @@ mod tests {
                 "{constant:?}: index should match its pinned value"
             );
         }
+        assert!(
+            !MigratedConstant::ALL.iter().any(|c| c.index() == 14),
+            "index 14 is retired (formerly Sigma, deleted 2026-08-13) and must never be reused \
+             -- see MigratedConstant's own doc, 'discriminants never renumbered'. A future \
+             constant drawn at this index would silently correlate its perturbation with every \
+             historical seed's now-deleted sigma draw"
+        );
+        // Duplicate discriminants are already a compile error (rustc E0081) on this
+        // #[repr(u64)] enum with explicit literals -- verified with a standalone repro.
+        // Kept as a belt-and-braces read of ALL rather than of the enum, not because this
+        // branch is reachable.
         let mut indices: Vec<u64> = MigratedConstant::ALL.iter().map(|c| c.index()).collect();
         indices.sort_unstable();
         indices.dedup();

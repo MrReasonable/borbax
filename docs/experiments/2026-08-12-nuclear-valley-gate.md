@@ -275,8 +275,9 @@ model:**
   number of universes, and losing it costs ten of them. Still comfortably
   above the 89.44% bar.
 - **Arm 2b** (bound-set shape): still 38,416/38,416, but the shape
-  underneath changed. Last-bound-total range widened from `[62, 386]` to
-  `[92, 386]`; **98.6% of universes (37,863/38,416) are now never unbound
+  underneath changed. Last-bound-total range narrowed from `[62, 386]` to
+  `[92, 386]` (the worst universe now stays bound 30 totals further in);
+  **98.6% of universes (37,863/38,416) are now never unbound
   anywhere in `4..=T_MAX` at all** (most of what this check used to
   discriminate against no longer occurs at all); the transition-count
   distribution moved from **p50 = 0, p90 = 1, max = 3** to **p50 = 0,

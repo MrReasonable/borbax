@@ -77,17 +77,24 @@
 //! **`sigma * total^(5/3)`, and the constant that fed it, are deleted.** A
 //! `physics-plausibility-reviewer` pass found the term structurally
 //! unjustified, not merely miscalibrated: `eps * contacts(total)` already
-//! reproduces the real SEMF's volume-and-surface behaviour to within 1-9%
-//! at every tested total (a fitted deficit of `19.8 * t^-0.345` against the
-//! real surface term's own `17.8 * A^-1/3`), so the three surviving
-//! coefficients (`eps`, `kappa`, `c`) already form the real four-term SEMF
-//! at Rohlf's own values — volume, surface (emergent from the packing
-//! series, not a separate term), asymmetry, Coulomb. `sigma * total^(5/3)`
-//! was a fifth term duplicating a role already filled — structurally a
-//! second, weaker Coulomb-shaped cost (its own per-unit form, `sigma *
-//! t^(2/3)`, is the one *growing* shape shared with a real SEMF term, and
-//! that term is Coulomb's, not surface's), not a calibration problem the
-//! model's own structure already accommodated.
+//! reproduces the real SEMF's volume-and-surface behaviour, so the three
+//! surviving coefficients (`eps`, `kappa`, `c`) already form the real
+//! four-term SEMF at Rohlf's own values — volume, surface (emergent from
+//! the packing series, not a separate term), asymmetry, Coulomb.
+//! **Precisely, not "1-9% at every total" (a `/review-pr` correction — the
+//! original figure was measured over the wrong range and conflated two
+//! different quantities): the deficit `a_V - eps*contacts(t)/t` fits
+//! `19.75 * t^-0.345` against the real surface term's own `17.8 *
+//! A^-1/3`** (exponent within 3.4%, coefficient within 11%, confirming the
+//! packing series generates a surface term with the right *scaling law*)
+//! **— the combined volume-plus-surface reproduction itself is within
+//! 2.63% for `t >= 50`, within 1% for `t >= 266`, degrading to 34.6% at
+//! `t = 3`, where this model — like the real SEMF — has no pairing term.**
+//! `sigma * total^(5/3)` was a fifth term duplicating a role already
+//! filled — structurally a second, weaker Coulomb-shaped cost (its own
+//! per-unit form, `sigma * t^(2/3)`, is the one *growing* shape shared
+//! with a real SEMF term, and that term is Coulomb's, not surface's), not
+//! a calibration problem the model's own structure already accommodated.
 //!
 //! **The "growth limit" argument that had justified keeping it does not
 //! hold.** `docs/superpowers/plans/2026-08-07-borbax-real-physics.md`'s own
@@ -98,8 +105,14 @@
 //! be unbounded itself, and `eps`/`kappa`'s own per-unit saturation already
 //! does exactly that — the on-valley per-unit asymptote at `sigma = 0` is
 //! `eps * z/2 - kappa`, which at the identity coefficients is `-7.95`
-//! MeV/nucleon, matching the real SEMF's own asymptote (`a_V - a_A`)
-//! exactly. `sigma` was never load-bearing for the model having *a* growth
+//! MeV/nucleon, **identical to** the real SEMF's own asymptote (`a_V -
+//! a_A`) — by construction, not independent corroboration (`BASE_EPS` is
+//! *defined* as `2*a_V/z` and `BASE_KAPPA` *is* `a_A`, so `eps*z/2 - kappa
+//! == a_V - a_A` algebraically for any `z`). The substantive, actually
+//! checkable claim is that `contacts(total)/total` really does converge to
+//! `z/2` — verified, though slowly (`5.303` at `total=1000`, `5.684` at
+//! `10^4`, `5.854` at `10^5`, against `z/2 = 6`). `sigma` was never
+//! load-bearing for the model having *a* growth
 //! limit — only for exactly where it fell, and where it fell was wrong:
 //! at the shipped `sigma = 0.075`, the identity zero-crossing sat at
 //! `total = 603`; without it, `total = 3055`, close to the real SEMF's own
@@ -122,9 +135,23 @@
 //! (`0.999740`) — `sigma` was, per the physics reviewer's own finding, a
 //! meaningful contributor to positive shedding-`Q` at `T_MAX` for a small
 //! number of universes, and losing it costs ten of them; the closure bar
-//! (`0.894404`) still clears with wide margin. [`crate::nuclear::bound_shape`]'s own gate
+//! (`0.894404`) still clears with wide margin. **A `/review-pr` follow-up
+//! instrumented the split `bound_shape`/`shedding_q` alone don't
+//! distinguish: all ten losses fail only the Q-value half, none the
+//! interior-peak half — but the interior-peak half is passing on a
+//! lattice artefact for a wider set than the ten that actually fail.**
+//! [`crate::packing`]'s shell closures at `NUCLEAR_K = 10` are `1, 13, 55,
+//! 147, 309`; without `sigma`'s growth-limiting term, a high-`eps`/low-`kappa`
+//! universe's on-valley curve can still be rising at `T_MAX`, so the peak
+//! walks up to the *last* closure rather than a real turnover from term
+//! competition — 65/38,416 universes (0.17%) now peak exactly at `309`,
+//! and only 10 of those 65 also fail positive-Q; the other 55 pass Arm 2
+//! on margin in the same regime. Not a defect here — a coverage question
+//! for Steps 2+, which own whether "interior peak" should mean more than
+//! "not at the literal boundary." [`crate::nuclear::bound_shape`]'s own gate
 //! still holds `38416/38416`, but the shape of what it is holding changed:
-//! the last-bound-total range widened from `[62, 386]` to `[92, 386]`, and
+//! the last-bound-total range narrowed from `[62, 386]` to `[92, 386]`
+//! (the worst universe now stays bound 30 totals further in), and
 //! `98.6%` of universes (37,863/38,416) are now never unbound anywhere in
 //! `4..=T_MAX` at all (most of what `bound_shape` used to discriminate
 //! against no longer occurs) — the transition-count distribution that sets
@@ -177,6 +204,35 @@ pub(crate) const T_MAX: u32 = 386;
 /// this module's own doc, correction 3, for why `10` and not `12`.
 pub(crate) const NUCLEAR_K: usize = 10;
 
+/// The three nuclear coefficients, always drawn and threaded together
+/// (routed requirements 5/6: one shared rung, never independent draws) —
+/// introduced 2026-08-13 during `/review-pr`'s round 3 on the "Post-gate
+/// correction" above, once that correction's own diff made the case
+/// concrete rather than speculative: of the nine function signatures it
+/// touched, seven had zero logic change, purely a `- sigma: f64,`/
+/// `- sigma,` edit repeated because these three values travel everywhere
+/// together. Two prior review rounds recommended this same struct and
+/// deferred it pending real production call sites (Steps 2-7); this
+/// round's own diff is a measured demonstration that the churn is real
+/// and entirely internal to this module, independent of what those call
+/// sites end up wanting — so waiting no longer bought anything.
+///
+/// **Deliberately not adopted by [`composition_argmax`]/
+/// [`composition_argmax_int`]/[`drift_onset`], which keep `c: f64`
+/// alone** — that narrower signature statically encodes "`kappa` cancels
+/// from the argmax, by construction" (also stated in prose by this
+/// module's own doc and by `the_valley_is_a_one_parameter_family_in_c`,
+/// this module's own test); folding `eps`/`kappa` back into these
+/// signatures would smuggle them into a computation that structurally
+/// does not need them, hiding the invariant the narrower signature
+/// currently makes visible.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct NuclearCoeffs {
+    pub(crate) eps: f64,
+    pub(crate) kappa: f64,
+    pub(crate) c: f64,
+}
+
 /// Contacts made by a cluster of `total` nucleons, via this crate's own
 /// packing model at the fixed [`NUCLEAR_K`] (never a drawn `k` — see this
 /// module's doc, correction 3, for why fixing it is required, not merely
@@ -194,9 +250,11 @@ pub(crate) fn contacts(total: u32) -> f64 {
 /// κ-free spelling only, per this module's doc, correction 1.
 ///
 /// `total^(2/3)` as `cbrt(total*total)`, matching `element.rs:627`'s house
-/// convention and this module's own [`total_binding_energy`], which needs
-/// the identical `t^(2/3)` value computed the identical way (Task 26.2's
-/// own "every float spelling pinned" requirement).
+/// convention (Task 26.2's own "every float spelling pinned" requirement).
+/// **Not shared with [`total_binding_energy`] any more** — that function
+/// computed the identical `t^(2/3)` value once, for `sigma`'s term; the
+/// "Post-gate correction" (this module's own top-level doc) deleted it,
+/// so this is now the only `t^(2/3)` computation in the module.
 #[must_use]
 pub(crate) fn composition_argmax(c: f64, total: u32) -> f64 {
     let t = f64::from(total);
@@ -232,10 +290,11 @@ pub(crate) fn composition_argmax_int(c: f64, total: u32) -> u32 {
     if rounded < 1.0 { 1 } else { rounded as u32 }
 }
 
-/// The three-term per-unit binding energy (the mechanism's own diagram,
-/// stated as one signed total-energy expression divided once by `total`,
-/// per Task 26.2's "state the model in per-unit form" instruction) —
-/// exactly Rohlf's real SEMF's volume, asymmetry and Coulomb terms at
+/// The three-term **total** binding energy — the mechanism's own diagram,
+/// stated as one signed expression; [`per_unit_binding_energy`] divides
+/// this once by `total` to reach the per-unit form Task 26.2's own "state
+/// the model in per-unit form" instruction actually asks for. Exactly
+/// Rohlf's real SEMF's volume, asymmetry and Coulomb terms at
 /// `eps`/`kappa`/`c`'s real citations. (This module's own doc, "Post-gate
 /// correction," records why a fourth, `sigma * total^(5/3)`, size-cost
 /// term was deleted rather than kept alongside these three: `eps *
@@ -250,18 +309,15 @@ pub(crate) fn composition_argmax_int(c: f64, total: u32) -> u32 {
 ///
 /// Every float spelling pinned per Task 26.2's own list: `total^(1/3)` as
 /// `cbrt(total)`; `(a-b)^2` as `let d = a as f64 - b as f64; d*d`
-/// (subtraction before cast, never on the unsigned difference); `a*(a-1)`
+/// (cast before subtraction, never on the unsigned difference); `a*(a-1)`
 /// as `let af = a as f64; af*(af - 1.0)` (cast-first, never on the unsigned
 /// product, which underflows at `a = 0` under `overflow-checks`);
-/// left-to-right term association; the division by `total` applied to the
-/// whole sum, not per term.
+/// left-to-right term association (`the_three_terms_are_summed_left_to_right`,
+/// this module's own test, is the only test that can see this); the
+/// division by `total` applied to the whole sum, not per term.
 #[must_use]
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a, b, c, d, t are this module's own pinned mathematical notation, matching the \
-              plan's own variable names for the same quantities"
-)]
-pub(crate) fn total_binding_energy(a: u32, b: u32, eps: f64, kappa: f64, c: f64) -> f64 {
+pub(crate) fn total_binding_energy(a: u32, b: u32, coeffs: NuclearCoeffs) -> f64 {
+    let NuclearCoeffs { eps, kappa, c } = coeffs;
     let total = a + b;
     let t = f64::from(total);
     let gamma = 2.0 * kappa * c;
@@ -274,22 +330,22 @@ pub(crate) fn total_binding_energy(a: u32, b: u32, eps: f64, kappa: f64, c: f64)
 /// [`total_binding_energy`], divided once more by `total` — the per-unit
 /// form the mechanism's own diagram is stated against.
 #[must_use]
-pub(crate) fn per_unit_binding_energy(a: u32, b: u32, eps: f64, kappa: f64, c: f64) -> f64 {
-    total_binding_energy(a, b, eps, kappa, c) / f64::from(a + b)
+pub(crate) fn per_unit_binding_energy(a: u32, b: u32, coeffs: NuclearCoeffs) -> f64 {
+    total_binding_energy(a, b, coeffs) / f64::from(a + b)
 }
 
 /// The on-valley total energy at a total — `total_binding_energy` at the
 /// composition-changing channel's own argmax, [`composition_argmax_int`].
 #[must_use]
-pub(crate) fn on_valley_total_energy(total: u32, eps: f64, kappa: f64, c: f64) -> f64 {
-    let a = composition_argmax_int(c, total);
-    total_binding_energy(a, total - a, eps, kappa, c)
+pub(crate) fn on_valley_total_energy(total: u32, coeffs: NuclearCoeffs) -> f64 {
+    let a = composition_argmax_int(coeffs.c, total);
+    total_binding_energy(a, total - a, coeffs)
 }
 
 /// The on-valley per-unit energy at a total.
 #[must_use]
-pub(crate) fn on_valley_per_unit_energy(total: u32, eps: f64, kappa: f64, c: f64) -> f64 {
-    on_valley_total_energy(total, eps, kappa, c) / f64::from(total)
+pub(crate) fn on_valley_per_unit_energy(total: u32, coeffs: NuclearCoeffs) -> f64 {
+    on_valley_total_energy(total, coeffs) / f64::from(total)
 }
 
 /// The smallest even `total` at which [`composition_argmax_int`] first
@@ -336,13 +392,11 @@ pub(crate) fn drift_onset(c: f64) -> Option<u32> {
 /// restating what that means under the corrected model), and Steps 5-7 own
 /// the real per-isotope definition this module does not attempt.
 #[must_use]
-pub(crate) fn shedding_q(total: u32, eps: f64, kappa: f64, c: f64) -> f64 {
-    let whole = on_valley_total_energy(total, eps, kappa, c);
+pub(crate) fn shedding_q(total: u32, coeffs: NuclearCoeffs) -> f64 {
+    let whole = on_valley_total_energy(total, coeffs);
     (1..=total / 2)
         .map(|s| {
-            on_valley_total_energy(total - s, eps, kappa, c)
-                + on_valley_total_energy(s, eps, kappa, c)
-                - whole
+            on_valley_total_energy(total - s, coeffs) + on_valley_total_energy(s, coeffs) - whole
         })
         .fold(f64::MIN, |best, q| if q > best { q } else { best })
 }
@@ -366,10 +420,10 @@ pub(crate) fn shedding_q(total: u32, eps: f64, kappa: f64, c: f64) -> f64 {
 /// P7-reachable box), which is a reason not to expect trouble, not a
 /// licence to parallelise or reorder either one.
 #[must_use]
-pub(crate) fn valley_peak_total(eps: f64, kappa: f64, c: f64) -> u32 {
+pub(crate) fn valley_peak_total(coeffs: NuclearCoeffs) -> u32 {
     (1..=T_MAX)
         .fold((1_u32, f64::MIN), |(best_total, best_energy), total| {
-            let energy = on_valley_per_unit_energy(total, eps, kappa, c);
+            let energy = on_valley_per_unit_energy(total, coeffs);
             if energy > best_energy {
                 (total, energy)
             } else {
@@ -443,10 +497,10 @@ pub(crate) fn valley_peak_total(eps: f64, kappa: f64, c: f64) -> u32 {
 /// carved out rather than either asserted-negative (false in ~14% of
 /// universes) or asserted-positive (false in the rest).
 #[must_use]
-pub(crate) fn bound_shape(eps: f64, kappa: f64, c: f64) -> Option<u32> {
+pub(crate) fn bound_shape(coeffs: NuclearCoeffs) -> Option<u32> {
     const MAX_TRANSITIONS: u32 = 5;
 
-    let bound = |total: u32| on_valley_per_unit_energy(total, eps, kappa, c) > 0.0;
+    let bound = |total: u32| on_valley_per_unit_energy(total, coeffs) > 0.0;
     if !bound(2) {
         return None;
     }
@@ -491,7 +545,7 @@ mod tests {
                   being checked"
     )]
     use super::{
-        BASE_C, BASE_EPS, BASE_KAPPA, T_MAX, bound_shape, composition_argmax,
+        BASE_C, BASE_EPS, BASE_KAPPA, NuclearCoeffs, T_MAX, bound_shape, composition_argmax,
         composition_argmax_int, contacts, drift_onset, on_valley_per_unit_energy,
         per_unit_binding_energy, shedding_q, total_binding_energy, valley_peak_total,
     };
@@ -502,6 +556,15 @@ mod tests {
     /// `base_c * [0.5, 1.5]`.
     const C_MIN: f64 = 0.5 * BASE_C;
     const C_MAX: f64 = 1.5 * BASE_C;
+
+    /// `BASE_EPS`/`BASE_KAPPA`/`BASE_C` bundled — used throughout this test
+    /// module wherever "at identity" is meant, instead of repeating the
+    /// struct literal.
+    const IDENTITY: NuclearCoeffs = NuclearCoeffs {
+        eps: BASE_EPS,
+        kappa: BASE_KAPPA,
+        c: BASE_C,
+    };
 
     /// Same corpus-size derivation `perturbation.rs`'s own
     /// `P_IDENTITY_N`/`P_IDENTITY_BAND` pair uses: every reported fraction
@@ -514,12 +577,12 @@ mod tests {
     /// [`draw_symmetric`] per constant — never independent draws (routed
     /// requirements 5/6: a probe sampling the coefficients independently
     /// measures a regime the shipped code does not use).
-    fn draw_universe(seed: u64) -> (Rung, f64, f64, f64) {
+    fn draw_universe(seed: u64) -> (Rung, NuclearCoeffs) {
         let rung = Rung::draw(seed);
         let eps = draw_symmetric(seed, rung, MigratedConstant::Eps, BASE_EPS);
         let kappa = draw_symmetric(seed, rung, MigratedConstant::Kappa, BASE_KAPPA);
         let c = draw_symmetric(seed, rung, MigratedConstant::C, BASE_C);
-        (rung, eps, kappa, c)
+        (rung, NuclearCoeffs { eps, kappa, c })
     }
 
     /// **1 (acceptance).** Step 1's two-armed gate over the derived corpus.
@@ -604,7 +667,8 @@ mod tests {
         let mut drift_seen: Vec<u32> = Vec::with_capacity(CORPUS_N as usize);
 
         for seed in 0..CORPUS_N {
-            let (_rung, eps, kappa, c) = draw_universe(seed);
+            let (_rung, coeffs) = draw_universe(seed);
+            let NuclearCoeffs { c, .. } = coeffs;
             examined += 1;
 
             let drift = drift_onset(c);
@@ -617,20 +681,20 @@ mod tests {
             );
             drift_seen.push(drift.unwrap_or_else(|| unreachable!("checked is_some() above")));
 
-            let shape = bound_shape(eps, kappa, c);
+            let shape = bound_shape(coeffs);
             assert!(
                 shape.is_some(),
                 "seed {seed}: on-valley binding does not have the expected \
-                 low-transition-count bound/unbound shape -- eps={eps} kappa={kappa} c={c}"
+                 low-transition-count bound/unbound shape -- coeffs={coeffs:?}"
             );
             let t_bound = shape.unwrap_or_else(|| unreachable!("checked is_some() above"));
             t_bounds.push(t_bound);
             elements_reached_while_bound.push(composition_argmax_int(c, t_bound));
 
-            let peak = valley_peak_total(eps, kappa, c);
+            let peak = valley_peak_total(coeffs);
             let interior = peak > 1 && peak < T_MAX;
 
-            let q = shedding_q(T_MAX, eps, kappa, c);
+            let q = shedding_q(T_MAX, coeffs);
             let has_positive_q = q > 0.0;
 
             if interior && has_positive_q {
@@ -696,10 +760,10 @@ mod tests {
     /// `a in 1..=total`, domain-restricted per [`composition_argmax_int`]'s
     /// own floor. Shared by tests 2 and 3, which both cross-check
     /// [`composition_argmax_int`] against it under different sweeps.
-    fn brute_force_argmax(total: u32, eps: f64, kappa: f64, c: f64) -> u32 {
+    fn brute_force_argmax(total: u32, coeffs: NuclearCoeffs) -> u32 {
         (1..=total)
             .fold((1_u32, f64::MIN), |(best_a, best_e), a| {
-                let e = per_unit_binding_energy(a, total - a, eps, kappa, c);
+                let e = per_unit_binding_energy(a, total - a, coeffs);
                 if e > best_e { (a, e) } else { (best_a, best_e) }
             })
             .0
@@ -720,7 +784,14 @@ mod tests {
         for &total in &TOTALS {
             let reference = composition_argmax_int(c, total);
             for &kappa in &KAPPAS {
-                let brute = brute_force_argmax(total, BASE_EPS, kappa, c);
+                let brute = brute_force_argmax(
+                    total,
+                    NuclearCoeffs {
+                        eps: BASE_EPS,
+                        kappa,
+                        c,
+                    },
+                );
                 assert_eq!(
                     brute, reference,
                     "total={total} kappa={kappa} c={c}: brute-force argmax {brute} != the \
@@ -746,7 +817,14 @@ mod tests {
                 for total in 1..=T_MAX {
                     examined += 1;
                     let closed_form = composition_argmax_int(c, total);
-                    let brute = brute_force_argmax(total, BASE_EPS, kappa, c);
+                    let brute = brute_force_argmax(
+                        total,
+                        NuclearCoeffs {
+                            eps: BASE_EPS,
+                            kappa,
+                            c,
+                        },
+                    );
                     assert_eq!(
                         closed_form, brute,
                         "kappa={kappa} c={c} total={total}: closed form {closed_form} != brute \
@@ -770,8 +848,13 @@ mod tests {
     fn the_only_exact_tie_is_at_total_one_and_the_domain_restriction_closes_it() {
         assert_eq!(contacts(1).to_bits(), 0.0_f64.to_bits());
         for &(kappa, c) in &[(23.7_f64, 0.015_f64), (0.1, 0.0075), (100.0, 0.0225)] {
-            let e0 = total_binding_energy(0, 1, BASE_EPS, kappa, c);
-            let e1 = total_binding_energy(1, 0, BASE_EPS, kappa, c);
+            let coeffs = NuclearCoeffs {
+                eps: BASE_EPS,
+                kappa,
+                c,
+            };
+            let e0 = total_binding_energy(0, 1, coeffs);
+            let e1 = total_binding_energy(1, 0, coeffs);
             assert_eq!(
                 e0.to_bits(),
                 e1.to_bits(),
@@ -809,8 +892,8 @@ mod tests {
         const BAND: f64 = 0.0015;
         let mut all_at_base = 0_u64;
         for seed in 0..N {
-            let (_rung, eps, kappa, c) = draw_universe(seed);
-            if eps == BASE_EPS && kappa == BASE_KAPPA && c == BASE_C {
+            let (_rung, coeffs) = draw_universe(seed);
+            if coeffs == IDENTITY {
                 all_at_base += 1;
             }
         }
@@ -966,7 +1049,7 @@ mod tests {
              element.rs:887-914 comment reports 2/24 ~ 8.3% on a 24-seed sample)"
         );
 
-        let peak = valley_peak_total(BASE_EPS, BASE_KAPPA, BASE_C);
+        let peak = valley_peak_total(IDENTITY);
         println!(
             "V3 identity: on-valley peak at total={peak} (element {} of up to 120), against \
              V1's reconstructed p5 ~0.100 / median ~0.581 of n_elements, and the real SEMF's \
@@ -978,11 +1061,15 @@ mod tests {
     /// **11.** The identity configuration is bound over all but two totals —
     /// pinned as a count, not left to a corpus percentile. This is what
     /// correction 2 (`BASE_EPS` `1.0 -> 2.625`) was *for*, and until this
-    /// test existed nothing failed when it was undone: at `eps = 1.0` (this
-    /// module's `NUCLEAR_K = 10`), 305 of 386 totals are unbound, and
-    /// [`bound_shape`] returns `Some` on every one of them regardless,
-    /// because the sequence crosses zero exactly once (a scale error, not a
-    /// scattered one). Mutation-probed against `BASE_EPS = 1.0`.
+    /// test existed nothing failed when it was undone: at `eps = 1.0`,
+    /// **190 of 386 totals (49.2%) are unbound on the current three-term
+    /// model** — re-measured post-removal, not the four-term model's
+    /// original `305/386` (79.0%, still the correct figure for the
+    /// pre-registration correction 2 itself describes, see
+    /// `perturbation.rs`'s `Eps` doc), and [`bound_shape`] returns `Some`
+    /// on every one of them regardless, because the sequence crosses zero
+    /// exactly once (a scale error, not a scattered one). Mutation-probed
+    /// against `BASE_EPS = 1.0`.
     ///
     /// **Re-observed, not assumed, after the "Post-gate correction" removed
     /// `sigma`** — the unbound set stays exactly `{1, 3}` (measured: setting
@@ -992,15 +1079,16 @@ mod tests {
     #[test]
     fn the_identity_configuration_is_bound_over_all_but_two_totals() {
         let unbound: Vec<u32> = (1..=T_MAX)
-            .filter(|&t| on_valley_per_unit_energy(t, BASE_EPS, BASE_KAPPA, BASE_C) <= 0.0)
+            .filter(|&t| on_valley_per_unit_energy(t, IDENTITY) <= 0.0)
             .collect();
         assert_eq!(
             unbound,
             vec![1, 3],
             "identity should be unbound only at total = 1 (contacts(1) == 0, so the volume \
-             term vanishes) and total = 3 (the known three-term liquid-drop limitation \
-             bound_shape's own doc records) -- a different unbound set here means eps's scale \
-             has drifted"
+             term vanishes) and total = 3 (the known four-term liquid-drop limitation \
+             bound_shape's own doc records -- the real SEMF's own four physical terms, not \
+             this crate's three coefficients, since eps's own packing series supplies both \
+             volume and surface) -- a different unbound set here means eps's scale has drifted"
         );
     }
 
@@ -1022,9 +1110,31 @@ mod tests {
     /// change moves only the left side and the test actually discriminates
     /// it — a strictly stronger guard than a peak-position assertion, but
     /// only once it stopped calling the function it exists to check.
+    ///
+    /// **What this does not claim**: `eps` is fixed at `1.0` here, so
+    /// `eps` vs `eps^2` is invisible to this test alone (`1.0^2 == 1.0`).
+    /// Caught elsewhere instead (mutation-tested): the identity unbound-set
+    /// and identity-peak tests, both of which use `BASE_EPS != 1.0`. **Not**
+    /// the closed-form/one-parameter-family tests — `eps` is a per-total
+    /// additive constant that cancels from the composition argmax by
+    /// construction, so those are correctly, permanently blind to it.
+    /// **Also does not stand in for [`crate::packing`]'s own guard on
+    /// `contacts_upto`'s internal accumulation order** (`packing.rs`'s own
+    /// `the_universe_digest_is_pinned`-style tests) — `total = 8` happens
+    /// not to be one of the 67 (of 386, at `k = 10`) cells that guard's own
+    /// hazard actually moves, so this literal pins one point's *value*,
+    /// not the packing series' own summation order.
     #[test]
     fn the_volume_term_is_eps_times_contacts() {
-        let isolated = total_binding_energy(4, 4, 1.0, 0.0, 0.0);
+        let isolated = total_binding_energy(
+            4,
+            4,
+            NuclearCoeffs {
+                eps: 1.0,
+                kappa: 0.0,
+                c: 0.0,
+            },
+        );
         assert_eq!(
             isolated.to_bits(),
             18.608_003_309_573_23_f64.to_bits(),
@@ -1034,33 +1144,130 @@ mod tests {
     }
 
     /// **12b.** The asymmetry term is `-kappa * (a-b)^2 / total`, pinned
-    /// directly: `total_binding_energy(3, 1, eps=0, kappa=1, c=0)` zeroes
+    /// directly: `total_binding_energy(6, 2, eps=0, kappa=2, c=0)` zeroes
     /// the volume term (`eps=0`) and the Coulomb term (`gamma =
-    /// 2*kappa*c = 0`), leaving `-1 * (3-1)^2 / 4 = -1.0` exactly (`4/4`
+    /// 2*kappa*c = 0`), leaving `-2 * (6-2)^2 / 8 = -4.0` exactly (`16/8`
     /// divides evenly, no rounding).
+    ///
+    /// **Not `(3, 1, kappa=1)` — found doubly degenerate by mutation
+    /// testing.** That fixture gives `(a-b)^2/total = 1` *and* `kappa = 1`,
+    /// so any exponent applied to the whole term, or to `kappa` alone,
+    /// leaves the result at `1^n = 1` — invisible. Verified: mutating the
+    /// term to its own square, or halving-then-squaring `kappa`, both left
+    /// the old fixture's assertion passing. `(6, 2, kappa=2)` gives
+    /// `(a-b)^2/total = 2` and `kappa = 2`, breaking both degeneracies at
+    /// once; re-run against the same mutations and both now fail here.
     #[test]
     fn the_asymmetry_term_is_kappa_times_imbalance_squared_over_total() {
-        let isolated = total_binding_energy(3, 1, 0.0, 1.0, 0.0);
+        let isolated = total_binding_energy(
+            6,
+            2,
+            NuclearCoeffs {
+                eps: 0.0,
+                kappa: 2.0,
+                c: 0.0,
+            },
+        );
         assert_eq!(
             isolated.to_bits(),
-            (-1.0_f64).to_bits(),
-            "kappa * (a-b)^2 / total at a=3 b=1 kappa=1: got {isolated}, want -1.0 exactly"
+            (-4.0_f64).to_bits(),
+            "kappa * (a-b)^2 / total at a=6 b=2 kappa=2: got {isolated}, want -4.0 exactly"
         );
     }
 
     /// **12c.** The Coulomb term is `-gamma * a*(a-1) / total^(1/3)`, pinned
-    /// directly: `total_binding_energy(4, 4, eps=0, kappa=1, c=0.5)` zeroes
-    /// the volume term (`eps=0`) and the asymmetry term (`a == b`), and
-    /// `gamma = 2*kappa*c = 1.0` gives `-1.0 * 4*3 / cbrt(8) = -12/2 = -6.0`
+    /// two ways. First, isolated at `a == b` (zeroing the asymmetry term):
+    /// `total_binding_energy(4, 4, eps=0, kappa=2, c=0.25)` gives
+    /// `gamma = 2*kappa*c = 1.0`, so `-1.0 * 4*3 / cbrt(8) = -12/2 = -6.0`
     /// exactly (`8` is a perfect cube, `libm::cbrt` is exact on those).
+    /// Second, at `a != b` — `total_binding_energy(6, 2, eps=0, kappa=2,
+    /// c=0.25)` adds the asymmetry term back in (`-2 * (6-2)^2/8 = -4.0`)
+    /// on top of the same Coulomb term read at `a=6`
+    /// (`-1.0 * 6*5/cbrt(8) = -15.0`), giving `-19.0` exactly.
+    ///
+    /// **Not `kappa=1` — found degenerate by mutation testing, same shape
+    /// as 12b's fix**: at `kappa=1`, `gamma = 2*kappa*c` mutated to
+    /// `2*kappa^2*c` is invisible (`1^2 == 1`). `kappa=2` breaks it. **The
+    /// second, asymmetric assertion is new** — the original single `a==b`
+    /// fixture cannot see the Coulomb term reading the wrong variable
+    /// (`b*(b-1)` instead of `a*(a-1)`), since `a==b` makes them identical;
+    /// verified this mutation passed the original fixture and fails the
+    /// asymmetric one.
     #[test]
     fn the_coulomb_term_is_gamma_times_a_times_a_minus_one_over_total_to_the_one_third() {
-        let isolated = total_binding_energy(4, 4, 0.0, 1.0, 0.5);
+        let coeffs = NuclearCoeffs {
+            eps: 0.0,
+            kappa: 2.0,
+            c: 0.25,
+        };
+        let isolated = total_binding_energy(4, 4, coeffs);
         assert_eq!(
             isolated.to_bits(),
             (-6.0_f64).to_bits(),
-            "gamma * a*(a-1) / total^(1/3) at a=4 b=4 kappa=1 c=0.5: got {isolated}, want -6.0 \
+            "gamma * a*(a-1) / total^(1/3) at a=4 b=4 kappa=2 c=0.25: got {isolated}, want -6.0 \
              exactly"
+        );
+        let asymmetric = total_binding_energy(6, 2, coeffs);
+        assert_eq!(
+            asymmetric.to_bits(),
+            (-19.0_f64).to_bits(),
+            "at a=6 b=2 kappa=2 c=0.25 (asymmetry -4.0 plus Coulomb -15.0): got {asymmetric}, \
+             want -19.0 exactly"
+        );
+    }
+
+    /// **12d.** The three terms are combined left to right, `(volume −
+    /// asymmetry) − Coulomb`, not `volume − (asymmetry + Coulomb)` — this
+    /// module's own "every float spelling pinned" requirement, load-bearing
+    /// per §13.4. Each of 12a/12b/12c zeroes two of the three terms to
+    /// isolate the third, so none of them can see which order the three
+    /// are combined in. Verified by mutation: re-associating to `volume −
+    /// (asymmetry + Coulomb)` moves 130 of 386 identity on-valley totals
+    /// (worst `4.5e-13`) and passes every other test in the crate that
+    /// existed before this one and [`the_identity_on_valley_energy_digest_is_pinned`]
+    /// below. `a = 26, b = 30` is a total where the two associations differ
+    /// (chosen for that reason, not arbitrary — `(25, 30)`, `(4, 4)` and
+    /// `(60, 60)` all happen not to differ) — a single hand-checkable
+    /// worked example, complementing the digest's full-sequence coverage.
+    #[test]
+    fn the_three_terms_are_summed_left_to_right() {
+        let assembled = total_binding_energy(26, 30, IDENTITY);
+        assert_eq!(
+            assembled.to_bits(),
+            492.160_537_020_485_5_f64.to_bits(),
+            "assembled three-term energy at a=26 b=30, identity coefficients: got {assembled}, \
+             want 492.1605370204855 exactly"
+        );
+    }
+
+    /// **14.** A bit-level digest of the identity configuration's on-valley
+    /// energies over `1..=T_MAX` — a comprehensive guard on
+    /// [`total_binding_energy`]'s pinned left-to-right term association
+    /// (§13.4), complementing 12d's single hand-checkable point with
+    /// coverage of the whole sequence. Measured: swapping the two
+    /// subtractions moves 123 of 386 on-valley totals (29,341/75,075 =
+    /// 39.1% of all reachable `(a, b)` cells at identity, worst `4.5e-13`)
+    /// and fusing them into `V - (A + C)` moves 43.0% — both pass every
+    /// other test in this module. Every value in the sequence is finite
+    /// (checked when the literal was taken), so `to_bits` needs no NaN
+    /// canonicalisation. Same FNV-1a-64 shape `packing.rs`'s own
+    /// accumulation-order digests use.
+    #[test]
+    fn the_identity_on_valley_energy_digest_is_pinned() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for total in 1..=T_MAX {
+            let a = composition_argmax_int(BASE_C, total);
+            let e = total_binding_energy(a, total - a, IDENTITY);
+            for byte in e.to_bits().to_le_bytes() {
+                h ^= u64::from(byte);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        assert_eq!(
+            h, 0x6010_7983_e565_657a,
+            "the identity on-valley energy sequence moved -- if this is a deliberate physics \
+             change, regenerate; if it is a refactor of total_binding_energy's term order, it \
+             is not (see that function's own doc: the association is pinned)"
         );
     }
 
@@ -1075,7 +1282,7 @@ mod tests {
     /// general regression pin, not `NUCLEAR_K`'s primary guard).
     #[test]
     fn the_identity_peak_is_pinned_to_total_fifty_five() {
-        let peak = valley_peak_total(BASE_EPS, BASE_KAPPA, BASE_C);
+        let peak = valley_peak_total(IDENTITY);
         assert_eq!(
             (peak, composition_argmax_int(BASE_C, peak)),
             (55, 25),

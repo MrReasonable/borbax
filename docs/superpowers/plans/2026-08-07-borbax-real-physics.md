@@ -1795,6 +1795,16 @@ computed as abundance-weighted averages over that distribution.
   measures `sigma + gamma/4`'s. **The growth limit itself rests entirely on
   `sigma`, provably — stated per-unit, and completed to cover the
   Coulomb-analogue term the original version of this proof omitted.**
+  **Correction, 2026-08-13 (Round 8, below): this premise is true (`sigma`
+  genuinely was the model's only unbounded term) but the word "provably"
+  here is doing more work than the premise supports — the proof that
+  follows shows `sigma` is unbounded, not that it is *required*. Read
+  "provably" as scoped to unboundedness only; the further paragraph below
+  that once concluded from it "adopt this as the stated reason the
+  corrected model cannot lose its growth limit" has been struck as a
+  non-sequitur, and `sigma` itself no longer exists in the shipped model —
+  see `crates/borbax-universe/src/nuclear.rs`'s own module doc, "Post-gate
+  correction."**
   **Round 4 correction: stated in *total* form, as an earlier revision did,
   the assertion is false for every sufficiently large `total`** (on-valley
   imbalance-term cost grows `∝ kappa * total`, unbounded) — the proof only
@@ -1908,9 +1918,13 @@ computed as abundance-weighted averages over that distribution.
   open: asked, a `physics-plausibility-reviewer` pass found `sigma *
   total^(5/3)` structurally unjustified, not merely miscalibrated — `eps *
   contacts(total)` already reproduces the real SEMF's volume-and-surface
-  behaviour (1-9% error across the tested range), so the three surviving
-  coefficients already form the real four-term SEMF at Rohlf's own values,
-  and `sigma` was a fifth term duplicating a role already filled. The
+  behaviour (within 2.63% for `total >= 50`, within 1% for `total >= 266`,
+  degrading to 34.6% at `total = 3` where there is no pairing term — a
+  second `/review-pr` correction of the same session's own first-draft
+  "1-9% at every total" figure, which conflated two different quantities),
+  so the three surviving coefficients already form the real four-term SEMF
+  at Rohlf's own values, and `sigma` was a fifth term duplicating a role
+  already filled. The
   "growth limit" argument this section's own proof made for keeping it
   (above, "the growth limit itself rests entirely on `sigma`, provably")
   does not follow from its own premise: a bounded cost exceeding a
